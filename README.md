@@ -67,8 +67,8 @@ P2Pool/XvB split centrally, so the worker config stays minimal and you **never p
 in it**.
 
 During setup RigForge asks for your **stack/pool hostname or IP** and writes it into `config.json`
-(the `P2POOL_NODE_HOSTNAME` field). A short hostname is resolved over mDNS as `<host>.local`; pass a
-full hostname or IP to skip that.
+(the `P2POOL_NODE_HOSTNAME` field). The pool/stack host must be an IP or a DNS-resolvable hostname
+(for a stable LAN address, set a DHCP reservation or static IP).
 
 To connect any XMRig instance **by hand instead**, this is the whole pool config:
 

@@ -115,12 +115,7 @@ parse_config() {
         ACCESS_TOKEN=$(hostname)
     fi
 
-    # Smart Address Handling: Only append .local if it looks like a short hostname (no dots)
-    if [[ "$P2POOL_NODE_HOSTNAME" != *.* ]]; then
-        P2POOL_NODE_ADDRESS="${P2POOL_NODE_HOSTNAME}.local"
-    else
-        P2POOL_NODE_ADDRESS="$P2POOL_NODE_HOSTNAME"
-    fi
+    P2POOL_NODE_ADDRESS="$P2POOL_NODE_HOSTNAME"
 
     # Resolve Template Path (Handle absolute vs relative paths)
     if [[ "$WORKER_CONFIG_FILE" = /* ]]; then
@@ -181,7 +176,7 @@ install_dependencies() {
         local check_cmd=""
 
         if command -v apt-get &> /dev/null; then
-            dependencies="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev avahi-daemon gettext-base"
+            dependencies="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base"
             if [ "$OS_TYPE" == "Linux" ]; then
                 dependencies="$dependencies linux-tools-common"
                 if apt-cache show "linux-tools-$(uname -r)" &> /dev/null; then
@@ -191,11 +186,11 @@ install_dependencies() {
             install_cmd="sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
             check_cmd="dpkg -s"
         elif command -v dnf &> /dev/null; then
-            dependencies="git cmake libuv-devel openssl-devel hwloc-devel avahi gettext gcc gcc-c++ make automake kernel-devel"
+            dependencies="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel"
             install_cmd="sudo dnf install -y"
             check_cmd="rpm -q"
         elif command -v pacman &> /dev/null; then
-            dependencies="git cmake libuv openssl hwloc avahi gettext base-devel"
+            dependencies="git cmake libuv openssl hwloc gettext base-devel"
             install_cmd="sudo pacman -Sy --noconfirm --needed"
             check_cmd="pacman -Qi"
         else
