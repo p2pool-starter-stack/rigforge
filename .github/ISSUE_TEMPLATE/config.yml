@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Pithead (P2Pool stack) questions
+    url: https://github.com/p2pool-starter-stack/pithead/issues
+    about: >-
+      For questions about the P2Pool stack itself — the Monero node, P2Pool,
+      xmrig-proxy, payouts, or dashboard — please open an issue on the Pithead
+      repo. RigForge issues here should be about the miner/worker setup.
