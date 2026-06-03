@@ -8,7 +8,7 @@ tuning for maximum RandomX hashrate, and runs it as a managed service. You point
 walk away.
 
 It's built as the companion miner for the
-**[P2Pool Starter Stack](https://github.com/p2pool-starter-stack/p2pool-starter-stack)** — connect
+**[Pithead](https://github.com/p2pool-starter-stack/pithead)** — connect
 as many RigForge workers as you like to your stack's single endpoint — but it works against **any
 RandomX Stratum pool**.
 
@@ -44,7 +44,7 @@ which this script applies for you.
 | **RAM** | **~2.3 GB free** for RandomX *fast mode* — a 2080 MB dataset + 256 MB cache — plus **~2 MB of L3 cache per mining thread** | **4 GB+**; budget more on high-core-count CPUs |
 | **HugePages** | Optional, but a significant speedup | The script configures **2 MB and 1 GB** HugePages (plus MSR access) for you — Linux only, and it needs a **reboot** to take effect |
 | **OS** | Ubuntu 22.04+, Debian 12, or macOS | — |
-| **Network** | Reach your pool / stack host on its Stratum port (the P2Pool Starter Stack uses **3333**) | Local network; workers do **not** need Tor |
+| **Network** | Reach your pool / stack host on its Stratum port (Pithead uses **3333**) | Local network; workers do **not** need Tor |
 
 > RandomX *light mode* needs only 256 MB of RAM but is far slower — **fast mode** (the default) is
 > what you want for real hashrate. These memory figures are from XMRig's own
@@ -53,15 +53,15 @@ which this script applies for you.
 ### Miner version
 
 There's **no required XMRig version** — RigForge always builds the latest upstream XMRig, and any
-RandomX-capable XMRig (5.0+, 2019) speaks the standard Stratum protocol that the P2Pool Starter
-Stack's proxy and P2Pool accept. The stack's component versions don't dictate a miner version.
+RandomX-capable XMRig (5.0+, 2019) speaks the standard Stratum protocol that Pithead's proxy and
+P2Pool accept. The stack's component versions don't dictate a miner version.
 
 ---
 
 ## 🔌 Connecting to a pool or stack
 
 RigForge points XMRig at a single **Stratum endpoint**. With the
-[P2Pool Starter Stack](https://github.com/p2pool-starter-stack/p2pool-starter-stack) that's the
+[Pithead](https://github.com/p2pool-starter-stack/pithead) that's the
 stack's `xmrig-proxy` on port **3333** — the stack handles pool selection, payouts, and the
 P2Pool/XvB split centrally, so the worker config stays minimal and you **never put a wallet address
 in it**.
@@ -169,8 +169,8 @@ If you see MSR errors, you may need to **disable Secure Boot** in your BIOS/UEFI
 ## Hardware sizing for the stack host
 
 RigForge sizes the **miner**. The **stack host** these workers connect to (Monero node, P2Pool,
-proxy, dashboard) is sized separately — see the P2Pool Starter Stack's
-[Hardware Requirements](https://github.com/p2pool-starter-stack/p2pool-starter-stack/blob/main/docs/hardware.md).
+proxy, dashboard) is sized separately — see Pithead's
+[Hardware Requirements](https://github.com/p2pool-starter-stack/pithead/blob/main/docs/hardware.md).
 
 ---
 
