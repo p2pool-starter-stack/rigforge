@@ -1,0 +1,11 @@
+# User-generated config (created from config.json.template)
+config.json
+
+# Runtime artifacts
+/data/
+/xmrig/
+/xmrig-*/
+/xmrig.log
+
+# OS
+.DS_Store
