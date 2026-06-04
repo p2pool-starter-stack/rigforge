@@ -274,8 +274,10 @@ generate_xmrig_config() {
     ONE_GB_PAGES="true"
     JIT="true"
     INIT_AVX2="-1"
-    HTTP_RESTRICTED="false"
-    HTTP_HOST="0.0.0.0"
+    # Lock down the HTTP API by default: read-only (restricted) and bound to
+    # localhost so the miner-control API is not reachable over the network.
+    HTTP_RESTRICTED="true"
+    HTTP_HOST="127.0.0.1"
 
     # macOS Specific Overrides
     if [ "$OS_TYPE" == "Darwin" ]; then
