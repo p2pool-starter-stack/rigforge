@@ -12,6 +12,11 @@ if [[ "$*" == *"-q"* ]]; then
     QUIET=1
 fi
 
+# Hardware probe paths. Overridable so the calculation can be tested off a Linux box (the defaults
+# are the real kernel locations, so normal invocation is unchanged).
+CPUINFO="${CPUINFO:-/proc/cpuinfo}"
+HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages}"
+
 # --- 1. Hardware Topology Discovery ---
 
 # Extract L3 Cache size and normalize to Megabytes
@@ -52,8 +57,8 @@ TOTAL_2MB_FALLBACK=$(((BASE_2MB_PAGES * SOCKETS) + THREADS + 50))
 if [[ "$*" == *"--runtime"* ]]; then
     # Check if 1GB pages are already allocated
     PAGES_1GB=0
-    if [ -f /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages ]; then
-        PAGES_1GB=$(cat /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages || echo 0)
+    if [ -f "$HUGEPAGES_1G_NR" ]; then
+        PAGES_1GB=$(cat "$HUGEPAGES_1G_NR" || echo 0)
     fi
 
     if [ "$PAGES_1GB" -gt 0 ]; then
@@ -67,7 +72,7 @@ fi
 # --- 3. Configuration Generation ---
 
 # Check for 1GB HugePage support (pdpe1gb flag)
-if grep -q "pdpe1gb" /proc/cpuinfo; then
+if grep -q "pdpe1gb" "$CPUINFO" 2>/dev/null; then
     # Strategy: Use 1GB pages for dataset, 2MB for JIT
     NEW_GRUB="quiet splash hugepagesz=1G hugepages=$TOTAL_GB_PAGES hugepagesz=2M hugepages=$TOTAL_2MB_PAGES default_hugepagesz=2M msr.allow_writes=on"
 else

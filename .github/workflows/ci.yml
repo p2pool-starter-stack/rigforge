@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: ShellCheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # shellcheck is preinstalled on ubuntu runners; invoke it directly (avoid `apt-get update`,
+      # which intermittently fails when an unrelated third-party mirror is briefly out of sync).
+      - name: Run ShellCheck
+        run: shellcheck --severity=warning rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/run.sh tests/e2e/in-container.sh
+
+  test:
+    name: Test suite
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Ubuntu is RigForge's supported target. The suite still exercises the macOS code path here via
+      # stubs (OS_TYPE=Darwin + faked sysctl), so the macOS config profile is covered without a Mac
+      # runner; contributors on macOS can also run `make test` locally. jq is preinstalled on the runner.
+      - name: Run test suite
+        run: bash tests/run.sh
+
+  e2e:
+    name: End-to-end (Docker)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
+      # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
+      - name: Run end-to-end suite
+        run: bash tests/e2e/run.sh
