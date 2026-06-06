@@ -136,15 +136,16 @@ mkconf() { # <name> <json>
 CFG_TPL='"WORKER_CONFIG_FILE": "./worker-config/example-config.json.template"'
 
 # ---------------------------------------------------------------------------
-# The dotless-hostname -> ".local" / mDNS behaviour is slated for removal (issue #14 / PR #15
-# "Remove .local / Avahi support"). Rather than exhaustively pin behaviour that's about to change,
-# keep one sanity check of the durable case (an explicit host/IP is passed through untouched, which
-# stays true after the removal); PR #15 owns testing its replacement.
-echo "== unit: parse_config — pool address handling (sanity; see #14/#15) =="
+# PR #15 (#14) removed the .local/mDNS appending: P2POOL_NODE_ADDRESS is now the host verbatim,
+# whether it's a short name, an FQDN, or an IP. The dotless case is the regression guard that proves
+# the removal — it must NOT come back as "box.local".
+echo "== unit: parse_config — pool address used verbatim (#15) =="
+c="$(mkconf dotless "{ \"P2POOL_NODE_HOSTNAME\": \"box\", $CFG_TPL }")"
+assert_eq "short host used as-is (no .local)" "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "box"
 c="$(mkconf fqdn "{ \"P2POOL_NODE_HOSTNAME\": \"box.lan\", $CFG_TPL }")"
-assert_eq "explicit host passed through"  "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "box.lan"
+assert_eq "FQDN passed through"               "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "box.lan"
 c="$(mkconf ip "{ \"P2POOL_NODE_HOSTNAME\": \"10.0.0.5\", $CFG_TPL }")"
-assert_eq "IPv4 host passed through"      "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "10.0.0.5"
+assert_eq "IPv4 host passed through"          "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "10.0.0.5"
 
 echo "== unit: parse_config — workspace + token + template resolution =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
