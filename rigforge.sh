@@ -20,13 +20,36 @@ error() { echo -e "${C_RED}[ERROR]${C_RESET} $1"; exit 1; }
 # --- Global Variables ---
 OS_TYPE="$(uname -s)"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-REAL_USER="${SUDO_USER:-$USER}"
+REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 TEMPLATE_JSON="$SCRIPT_DIR/config.json.template"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 
+# System paths the script writes to. Overridable so the test suite can redirect them at a sandbox
+# (the defaults are the real locations, so production behaviour is unchanged).
+LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
+GRUB_DEFAULT="${GRUB_DEFAULT:-/etc/default/grub}"
+FSTAB="${FSTAB:-/etc/fstab}"
+LIMITS_CONF="${LIMITS_CONF:-/etc/security/limits.conf}"
+MODULES_LOAD_DIR="${MODULES_LOAD_DIR:-/etc/modules-load.d}"
+MODULES_FILE="${MODULES_FILE:-/etc/modules}"
+SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
+HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
+
+# Detect whether we're being sourced (e.g. by the test suite). When sourced we only define
+# functions/constants and skip running main, so functions can be exercised in isolation.
+_RIGFORGE_SOURCED=0
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
+
 # --- Helper Functions ---
+
+# Append a single line to a file only if that exact line is not already present (idempotent).
+# Uses sudo so it works on root-owned system files; harmless when the file is user-writable.
+append_once() {
+    local file="$1" line="$2"
+    grep -qFx "$line" "$file" 2>/dev/null || echo "$line" | sudo tee -a "$file" > /dev/null
+}
 
 check_prerequisites() {
     log "Verifying system prerequisites..."
@@ -104,7 +127,12 @@ parse_config() {
     else
         WORKER_ROOT="$RAW_HOME/worker"
     fi
-    DONATION=$(jq -r .DONATION "$CONFIG_JSON")
+    DONATION=$(jq -r '.DONATION // 1' "$CONFIG_JSON")
+    # donate-level is a percentage; the compile step also seds this into donate.h, so a malformed
+    # value would corrupt both the XMRig config and the source patch. Require an integer 0-100.
+    if ! [[ "$DONATION" =~ ^[0-9]+$ ]] || [ "$DONATION" -gt 100 ]; then
+        error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
+    fi
     WORKER_CONFIG_FILE=$(jq -r .WORKER_CONFIG_FILE "$CONFIG_JSON")
     if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
         error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
@@ -387,7 +415,7 @@ generate_xmrig_config() {
     if [ "$OS_TYPE" == "Linux" ]; then
         log "Configuring log rotation policy..."
         # Install logrotate configuration
-        sudo tee /etc/logrotate.d/xmrig > /dev/null <<EOF
+        sudo tee "$LOGROTATE_DIR/xmrig" > /dev/null <<EOF
     $LOG_FILE_PATH {
         daily
         missingok
@@ -411,7 +439,7 @@ install_service() {
         export CPUPOWER_PATH
 
         # Overwrite the existing file
-        envsubst '$BUILD_DIR $CPUPOWER_PATH' < "$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee /etc/systemd/system/xmrig.service > /dev/null
+        envsubst '$BUILD_DIR $CPUPOWER_PATH' < "$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/xmrig.service" > /dev/null
 
         # Reload systemd daemon
         sudo systemctl daemon-reload
@@ -437,10 +465,10 @@ tune_kernel() {
     if [[ "$(uname -m)" == "x86_64" || "$(uname -m)" == "i686" ]]; then
         log "Enabling MSR module for hardware prefetcher tuning..."
         sudo modprobe msr 2>/dev/null || true
-        if [ -d "/etc/modules-load.d" ]; then
-            echo "msr" | sudo tee /etc/modules-load.d/msr.conf > /dev/null
-        elif [ -f "/etc/modules" ]; then
-            grep -qFx "msr" /etc/modules || echo "msr" | sudo tee -a /etc/modules > /dev/null
+        if [ -d "$MODULES_LOAD_DIR" ]; then
+            echo "msr" | sudo tee "$MODULES_LOAD_DIR/msr.conf" > /dev/null
+        elif [ -f "$MODULES_FILE" ]; then
+            append_once "$MODULES_FILE" "msr"
         fi
     fi
 
@@ -456,15 +484,15 @@ tune_kernel() {
     fi
 
     log "Configuring bootloader (GRUB) for persistent HugePages..."
-    if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "/etc/default/grub" ]; then
+    if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
         NEW_PARAMS=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
-        
+
         # Check if GRUB is already configured
-        if grep -Fq "GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"" /etc/default/grub; then
+        if grep -Fq "GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"" "$GRUB_DEFAULT"; then
             log "GRUB is already configured with optimal HugePages settings."
         else
-            sudo cp /etc/default/grub /etc/default/grub.bak
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"|" /etc/default/grub
+            sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
@@ -483,25 +511,17 @@ configure_limits() {
     fi
 
     log "Configuring persistent HugePage mounts and memory limits..."
-    sudo mkdir -p /dev/hugepages1G
+    sudo mkdir -p "$HUGEPAGES_1G_DIR"
 
     # Configure fstab for HugePage mounts (Idempotent)
-    FSTAB_LINES="hugetlbfs /dev/hugepages hugetlbfs defaults 0 0
-hugetlbfs_1g /dev/hugepages1G hugetlbfs pagesize=1G 0 0"
-
-    echo "$FSTAB_LINES" | while read -r line; do
-        grep -qF "$line" /etc/fstab || echo "$line" | sudo tee -a /etc/fstab > /dev/null
-    done
+    append_once "$FSTAB" "hugetlbfs /dev/hugepages hugetlbfs defaults 0 0"
+    append_once "$FSTAB" "hugetlbfs_1g $HUGEPAGES_1G_DIR hugetlbfs pagesize=1G 0 0"
 
     sudo mount -a || warn "Mount operation returned errors. Check 'dmesg' for details."
 
     # Configure security limits for memlock (Idempotent)
-    LIMITS="* soft memlock unlimited
-* hard memlock unlimited"
-
-    echo "$LIMITS" | while read -r line; do
-        grep -qF "$line" /etc/security/limits.conf || echo "$line" | sudo tee -a /etc/security/limits.conf > /dev/null
-    done
+    append_once "$LIMITS_CONF" "* soft memlock unlimited"
+    append_once "$LIMITS_CONF" "* hard memlock unlimited"
 }
 
 finish_deployment() {
@@ -540,4 +560,6 @@ main() {
     finish_deployment
 }
 
-main "$@"
+if [ "$_RIGFORGE_SOURCED" = "0" ]; then
+    main "$@"
+fi
