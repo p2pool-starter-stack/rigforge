@@ -327,8 +327,10 @@ e2e_setup() { # echoes the work dir
     : > "$W/etc/security/limits.conf"
     printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' > "$W/etc/default/grub"
     printf 'flags : fpu pdpe1gb\n' > "$W/proc/cpuinfo"
+    # Use an explicit (dotted) host so this E2E doesn't depend on the .local/mDNS appending that
+    # PR #15 removes — "poolbox.lan" -> "poolbox.lan:3333" holds before and after that change.
     cat > "$W/config.json" <<EOF
-{ "HOME_DIR": "$W/home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox" }
+{ "HOME_DIR": "$W/home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox.lan" }
 EOF
     echo "$W"
 }
@@ -361,7 +363,7 @@ assert_contains "build: cloned xmrig"               "$(cat "$W/calls.log")" "[gi
 assert_contains "build: ran cmake"                  "$(cat "$W/calls.log")" "[cmake]"
 assert_contains "build: ran make"                   "$(cat "$W/calls.log")" "[make]"
 assert_contains "build: donate.h patched to 7"      "$(cat "$W/home/worker/xmrig/src/donate.h")" "DonateLevel = 7;"
-assert_eq       "deploy: pool url from hostname"    "$(J "$BUILD/config.json" '.pools[0].url')"   "poolbox.local:3333"
+assert_eq       "deploy: pool url from hostname"    "$(J "$BUILD/config.json" '.pools[0].url')"   "poolbox.lan:3333"
 assert_eq       "deploy: donate-level = 7"          "$(J "$BUILD/config.json" '.["donate-level"]')" "7"
 if [ "$HOST_OS" = Linux ]; then
     assert_eq       "deploy: EPYC numa applied"         "$(J "$BUILD/config.json" '.randomx.numa')" "true"

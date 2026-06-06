@@ -60,9 +60,10 @@ done
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
 
-# 5. Seed config.json (writable HOME_DIR; DONATION 7; dotless host -> .local).
+# 5. Seed config.json (writable HOME_DIR; DONATION 7). Use an explicit (dotted) host so this doesn't
+#    depend on the .local/mDNS appending that PR #15 removes.
 cat > "$WORK/config.json" <<EOF
-{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox" }
+{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox.lan" }
 EOF
 
 BUILD="$WORK/data-home/worker/xmrig/build"
@@ -73,7 +74,7 @@ out1="$(./rigforge.sh </dev/null 2>&1)"; rc1=$?
 assert_rc       "first run exits 0"                "$rc1" "0"
 [ "$rc1" = 0 ] || printf '%s\n' "$out1" | tail -20
 assert_contains "donate.h patched by real sed"     "$(cat "$WORK/data-home/worker/xmrig/src/donate.h" 2>/dev/null)" "DonateLevel = 7;"
-assert_eq       "deploy: pool url from hostname"   "$(jq -r '.pools[0].url' "$BUILD/config.json" 2>/dev/null)"   "poolbox.local:3333"
+assert_eq       "deploy: pool url from hostname"   "$(jq -r '.pools[0].url' "$BUILD/config.json" 2>/dev/null)"   "poolbox.lan:3333"
 assert_eq       "deploy: EPYC numa applied"        "$(jq -r '.randomx.numa' "$BUILD/config.json" 2>/dev/null)"   "true"
 assert_eq       "deploy: donate-level = 7"         "$(jq -r '.["donate-level"]' "$BUILD/config.json" 2>/dev/null)" "7"
 assert_contains "service rendered by real envsubst" "$(cat /etc/systemd/system/xmrig.service 2>/dev/null)" "$BUILD"
