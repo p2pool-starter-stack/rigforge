@@ -19,6 +19,9 @@ All notable changes to RigForge are documented here. The format is based on
 - Pinned, checksum-verified `shellcheck` + `shfmt` formatting check in CI, plus a `make fmt` target (#6).
 - Documented the Pithead worker-API contract (port 8080, read-only, token = rig name) in the README (#24).
 - Community-health files: SECURITY policy, CONTRIBUTING guide, issue/PR templates (#16).
+- A `docs/` set (getting-started, hardware, configuration, operations, how-it-works, Pithead
+  integration, FAQ) mirroring Pithead's structure; the README is slimmed to a quick-start that links
+  out to it, and the release bundle now ships `docs/` (#25).
 - `VERSION`, this changelog, `RELEASING.md`, and a tag-driven release pipeline that publishes a GitHub
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
