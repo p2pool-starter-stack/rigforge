@@ -1,6 +1,16 @@
-# 🔥 RigForge
+<div align="center">
+
+<img src="./images/rigforge-mark.svg" alt="RigForge" width="110">
+
+# RigForge
 
 ### Provision a hardware-tuned XMRig miner in one command.
+
+[![CI](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml/badge.svg)](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+![Platform: Ubuntu 22.04+](https://img.shields.io/badge/Platform-Ubuntu%2022.04%2B-E95420?logo=ubuntu&logoColor=white)
+[![Miner: XMRig](https://img.shields.io/badge/Miner-XMRig-F26822?logo=monero&logoColor=white)](https://github.com/xmrig/xmrig)
+[![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 
 RigForge turns a fresh Ubuntu/Debian (or macOS) machine into a fully tuned [XMRig](https://github.com/xmrig/xmrig)
 mining worker — it installs the toolchain, compiles XMRig from source, applies kernel- and CPU-level
@@ -10,6 +20,8 @@ walk away.
 It works against **any RandomX Stratum pool**, and it's built as the companion miner for
 **[Pithead](https://github.com/p2pool-starter-stack/pithead)** — connect as many RigForge workers as
 you like to your stack's single endpoint.
+
+</div>
 
 > **RigForge is not a custom miner.** It compiles stock, upstream XMRig and wraps it in the setup,
 > hardware tuning, and service management that are otherwise fiddly to get right by hand.

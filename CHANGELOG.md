@@ -22,6 +22,8 @@ All notable changes to RigForge are documented here. The format is based on
 - A `docs/` set (getting-started, hardware, configuration, operations, how-it-works, Pithead
   integration, FAQ) mirroring Pithead's structure; the README is slimmed to a quick-start that links
   out to it, and the release bundle now ships `docs/` (#25).
+- Branded README header: a flame logo (`images/rigforge-mark.svg`, shared with the project website)
+  and status badges (CI, license, platform, miner, companion), mirroring Pithead's header.
 - `VERSION`, this changelog, `RELEASING.md`, and a tag-driven release pipeline that publishes a GitHub
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
