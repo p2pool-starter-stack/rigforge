@@ -190,13 +190,18 @@ prepare_workspace() {
     fi
 
     # Prune old build archives so re-runs don't grow the disk without bound (keep the most recent
-    # few). Override the retention count with KEEP_ARCHIVES.
-    local keep="${KEEP_ARCHIVES:-3}"
+    # few). Override the retention count with KEEP_ARCHIVES. The `|| true` keeps an empty glob (no
+    # archives yet) from tripping `set -e`/`pipefail`.
+    local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
-    ls -dt "${GIT_DIR}-"* 2>/dev/null | tail -n +"$((keep + 1))" | while IFS= read -r old; do
-        log "Pruning old build archive: $(basename "$old")"
-        rm -rf "$old" 2>/dev/null || sudo rm -rf "$old"
-    done
+    archives="$(ls -dt "${GIT_DIR}-"* 2>/dev/null || true)"
+    if [ -n "$archives" ]; then
+        printf '%s\n' "$archives" | tail -n +"$((keep + 1))" | while IFS= read -r old; do
+            [ -n "$old" ] || continue
+            log "Pruning old build archive: $(basename "$old")"
+            rm -rf "$old" 2>/dev/null || sudo rm -rf "$old"
+        done
+    fi
 }
 
 install_dependencies() {

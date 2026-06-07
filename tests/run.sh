@@ -349,6 +349,12 @@ mkdir -p "$ws/xmrig" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
   PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 prepare_workspace >/dev/null 2>&1 )
 assert_eq "archives pruned to KEEP_ARCHIVES"    "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
 assert_eq "current install was archived (gone)" "$([ -d "$ws/xmrig" ] && echo present || echo gone)" "gone"
+# Regression: with NO archives present the prune must not trip set -e/pipefail (the script runs under
+# `set -Eeuo pipefail`, so this runs WITHOUT the `set +e` the other unit helpers use).
+empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
+( source "$SCRIPT"; OS_TYPE=Linux; WORKER_ROOT="$empty"
+  PATH="$STUBS:$PATH" prepare_workspace >/dev/null 2>&1 ); rc=$?
+assert_rc "prune is set -e safe with no archives" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
