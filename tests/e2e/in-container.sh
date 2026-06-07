@@ -42,7 +42,10 @@ exec "$@"
 X
 cat > "$STUBS/git" <<'X'
 #!/usr/bin/env bash
-if [ "${1:-}" = clone ]; then mkdir -p xmrig/src; printf 'static int DonateLevel = 1;\n' > xmrig/src/donate.h; fi
+case "$*" in
+  *rev-parse*) echo "${XMRIG_COMMIT:-}" ;;   # #18 verifies the cloned commit
+  *clone*)     mkdir -p xmrig/src; printf 'static int DonateLevel = 1;\n' > xmrig/src/donate.h ;;
+esac
 exit 0
 X
 cat > "$STUBS/lscpu" <<'X'
@@ -59,6 +62,9 @@ for c in cmake make systemctl modprobe mount cpupower update-grub sysctl dpkg; d
 done
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
+# Pin the XMRig version/commit to known test values so the build's commit verification (#18) passes
+# without a real clone; the git stub echoes XMRIG_COMMIT for `rev-parse`.
+export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
 
 # 5. Seed config.json (writable HOME_DIR; DONATION 7). Use an explicit (dotted) host so this doesn't
 #    depend on the .local/mDNS appending that PR #15 removes.
@@ -74,6 +80,7 @@ out1="$(./rigforge.sh </dev/null 2>&1)"; rc1=$?
 assert_rc       "first run exits 0"                "$rc1" "0"
 [ "$rc1" = 0 ] || printf '%s\n' "$out1" | tail -20
 assert_contains "donate.h patched by real sed"     "$(cat "$WORK/data-home/worker/xmrig/src/donate.h" 2>/dev/null)" "DonateLevel = 7;"
+assert_contains "build: verified pinned commit"    "$out1" "Verified XMRig"
 assert_eq       "deploy: pool url from hostname"   "$(jq -r '.pools[0].url' "$BUILD/config.json" 2>/dev/null)"   "poolbox.lan:3333"
 assert_eq       "deploy: EPYC numa applied"        "$(jq -r '.randomx.numa' "$BUILD/config.json" 2>/dev/null)"   "true"
 assert_eq       "deploy: donate-level = 7"         "$(jq -r '.["donate-level"]' "$BUILD/config.json" 2>/dev/null)" "7"

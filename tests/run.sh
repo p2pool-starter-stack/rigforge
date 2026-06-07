@@ -81,14 +81,16 @@ case "${1:-}" in
   *)  echo "${STUB_UNAME_S:-Linux}" ;;
 esac
 EOF
-    # git clone fabricates a minimal xmrig tree so the donate.h sed patch in compile_xmrig has a target.
+    # git stub: `clone` fabricates a minimal xmrig tree (so the donate.h sed patch has a target);
+    # `rev-parse` reports the pinned commit so #18's commit verification passes. A test can force a
+    # mismatch by exporting STUB_GIT_HEAD.
     cat > "$bin/git" <<'EOF'
 #!/usr/bin/env bash
 echo "[git] $*" >> "${CALL_LOG:-/dev/null}"
-if [ "${1:-}" = "clone" ]; then
-    mkdir -p xmrig/src
-    printf 'static int DonateLevel = 1;\n' > xmrig/src/donate.h
-fi
+case "$*" in
+  *rev-parse*) echo "${STUB_GIT_HEAD:-${XMRIG_COMMIT:-}}" ;;
+  *clone*)     mkdir -p xmrig/src; printf 'static int DonateLevel = 1;\n' > xmrig/src/donate.h ;;
+esac
 exit 0
 EOF
     # envsubst stub: substitute exactly the two vars the systemd template uses (gettext may be absent on macOS).
@@ -309,6 +311,28 @@ out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 HUGEPAGES_1G_NR="$SAN
 assert_eq "grub --runtime: 1G allocated"   "$out" "154"
 
 # ---------------------------------------------------------------------------
+# Pinned-build verification (#18): compile_xmrig clones the pinned XMRIG_VERSION and aborts if the
+# cloned HEAD doesn't match XMRIG_COMMIT. STUB_GIT_HEAD makes the git stub report a tampered commit
+# so we can prove the supply-chain check rejects it (and passes when they match).
+echo "== unit: compile_xmrig pinned-commit verification (#18) =="
+pin_compile() { # <stub_git_head>; runs compile_xmrig in a sandbox, prints its output, returns rc
+    local d; d="$(mktemp -d "$SANDBOX/pin.XXXXXX")"
+    ( cd "$d" || exit 1
+      source "$SCRIPT"
+      OS_TYPE="$(uname -s)"; DONATION=1
+      export XMRIG_COMMIT="pinnedsha000000000000000000000000000000"
+      [ -n "$1" ] && export STUB_GIT_HEAD="$1"
+      set +e
+      PATH="$STUBS:$PATH" compile_xmrig 2>&1 )
+}
+out="$(pin_compile "")"; rc=$?
+assert_rc       "matching commit builds"        "$rc" "0"
+assert_contains "matching commit is verified"   "$out" "Verified XMRig"
+out="$(pin_compile "tamperedsha1111111111111111111111111111")"; rc=$?
+assert_rc       "tampered commit fails build"   "$rc" "1"
+assert_contains "tampered commit is reported"   "$out" "commit mismatch"
+
+# ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
 # Every /etc target is redirected into the work dir, and passthrough sudo lets the writes land there.
 #
@@ -352,6 +376,7 @@ e2e_run() { # <work-dir> <os>; sets E2E_OUT, returns the script's exit code
         SYSTEMD_DIR="$W/etc/systemd" HUGEPAGES_1G_DIR="$W/dev/hugepages1G" \
         CPUINFO="$W/proc/cpuinfo" HUGEPAGES_1G_NR="$W/sys/none" \
         CALL_LOG="$W/calls.log" \
+        XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000" \
         bash "$W/rigforge.sh" </dev/null 2>&1 )"
 }
 
@@ -364,6 +389,7 @@ assert_contains "build: cloned xmrig"               "$(cat "$W/calls.log")" "[gi
 assert_contains "build: ran cmake"                  "$(cat "$W/calls.log")" "[cmake]"
 assert_contains "build: ran make"                   "$(cat "$W/calls.log")" "[make]"
 assert_contains "build: donate.h patched to 7"      "$(cat "$W/home/worker/xmrig/src/donate.h")" "DonateLevel = 7;"
+assert_contains "build: verified pinned commit"     "$E2E_OUT" "Verified XMRig"
 assert_eq       "deploy: pool url from hostname"    "$(J "$BUILD/config.json" '.pools[0].url')"   "poolbox.lan:3333"
 assert_eq       "deploy: donate-level = 7"          "$(J "$BUILD/config.json" '.["donate-level"]')" "7"
 if [ "$HOST_OS" = Linux ]; then
