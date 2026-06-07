@@ -429,6 +429,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Release metadata (#3): VERSION must be valid SemVer so it stays in lock-step with tags/CHANGELOG.
+echo "== unit: VERSION is SemVer (#3) =="
+ver="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null)"
+if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVer ($ver)"; else bad "VERSION is SemVer" "got [$ver]"; fi
+
+# ---------------------------------------------------------------------------
 echo ""
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then printf '\033[1;31m%d failed\033[0m\n' "$FAIL"; exit 1; fi
