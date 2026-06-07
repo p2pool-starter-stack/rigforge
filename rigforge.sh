@@ -85,6 +85,17 @@ append_once() {
     grep -qFx "$line" "$file" 2>/dev/null || echo "$line" | sudo tee -a "$file" >/dev/null
 }
 
+# Inverse of append_once: remove every exact-match line from a file (idempotent). Used by `uninstall`.
+remove_line() { # <file> <line>
+    local file="$1" line="$2" tmp
+    [ -f "$file" ] || return 0
+    grep -qFx "$line" "$file" 2>/dev/null || return 0
+    tmp=$(mktemp)
+    grep -vFx "$line" "$file" >"$tmp" 2>/dev/null || true
+    sudo cp "$tmp" "$file"
+    rm -f "$tmp"
+}
+
 # Choose a safe build parallelism: don't exceed core count, and cap at ~1 job per 2 GB of RAM so the
 # heavy XMRig/RandomX C++ translation units don't OOM low-memory hosts. Honors MEMINFO for testing.
 compute_build_jobs() { # <ncpu>
@@ -120,6 +131,19 @@ grub_merge_cmdline() {
         esac
     done
     echo "${preserved:+$preserved }$managed"
+}
+
+# Drop only the kernel params RigForge manages (HugePages/MSR), preserving everything else. The inverse
+# of what tune_kernel adds — used by `uninstall` to revert the GRUB cmdline.
+grub_strip_managed() { # <current cmdline>
+    local current="$1" preserved="" tok
+    for tok in $current; do
+        case "$tok" in
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop
+        *) preserved="${preserved:+$preserved }$tok" ;;
+        esac
+    done
+    printf '%s' "$preserved"
 }
 
 check_prerequisites() {
@@ -723,6 +747,95 @@ upgrade() {
     log "Upgraded to XMRig $XMRIG_VERSION."
 }
 
+# Cleanly revert everything setup changed (#12): the service, logrotate, fstab/limits/modules edits, the
+# GRUB cmdline, the 1G mount, and the worker build/logs. Idempotent and conservative — it only removes
+# the exact lines/files RigForge added; your config.json is left in place.
+uninstall() {
+    if [ "$OS_TYPE" != "Linux" ]; then
+        error "uninstall manages Linux system changes and is only supported on Linux."
+    fi
+    if [ "${1:-}" != "--yes" ] && [ "${1:-}" != "-y" ]; then
+        warn "This removes the xmrig service and reverts RigForge's system changes (fstab, limits, modules, GRUB)."
+        read -r -p "Proceed with uninstall? (y/N): " ANS
+        [[ "$ANS" =~ ^[Yy] ]] || {
+            log "Aborted."
+            return 0
+        }
+    fi
+
+    # Work out the worker root the same way parse_config would, without requiring a valid config.
+    local raw_home worker_root=""
+    if [ -f "$CONFIG_JSON" ]; then
+        raw_home=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON" 2>/dev/null)
+        if [ "$raw_home" = "DYNAMIC_HOME" ] || [ -z "$raw_home" ] || [ "$raw_home" = "null" ]; then
+            worker_root="$SCRIPT_DIR/data/worker"
+        else
+            worker_root="$raw_home/worker"
+        fi
+    fi
+
+    # 1. systemd service
+    if [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
+        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        sudo systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service"
+        sudo systemctl daemon-reload 2>/dev/null || true
+        log "Removed the $SERVICE_NAME service."
+    fi
+
+    # 2. logrotate policy
+    sudo rm -f "$LOGROTATE_DIR/xmrig"
+
+    # 3. fstab HugePage mounts
+    remove_line "$FSTAB" "hugetlbfs /dev/hugepages hugetlbfs defaults 0 0"
+    remove_line "$FSTAB" "hugetlbfs_1g $HUGEPAGES_1G_DIR hugetlbfs pagesize=1G 0 0"
+
+    # 4. memlock limits (current per-user form + the legacy wildcard form, for older installs)
+    remove_line "$LIMITS_CONF" "$REAL_USER soft memlock unlimited"
+    remove_line "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
+    remove_line "$LIMITS_CONF" "* soft memlock unlimited"
+    remove_line "$LIMITS_CONF" "* hard memlock unlimited"
+
+    # 5. msr module autoload
+    sudo rm -f "$MODULES_LOAD_DIR/msr.conf"
+    remove_line "$MODULES_FILE" "msr"
+
+    # 6. 1G HugePage mount
+    if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$HUGEPAGES_1G_DIR" 2>/dev/null; then
+        sudo umount "$HUGEPAGES_1G_DIR" 2>/dev/null || true
+    fi
+    sudo rmdir "$HUGEPAGES_1G_DIR" 2>/dev/null || true
+
+    # 7. GRUB cmdline — strip only the params we added
+    if [ -f "$GRUB_DEFAULT" ]; then
+        local cur stripped
+        cur=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
+        stripped=$(grub_strip_managed "$cur")
+        if [ "$cur" != "$stripped" ]; then
+            sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$stripped\"|" "$GRUB_DEFAULT"
+            if command -v update-grub >/dev/null; then
+                sudo update-grub
+                REBOOT_REQUIRED=true
+            else
+                warn "'update-grub' not found — revert your bootloader config manually."
+            fi
+            log "Reverted RigForge's GRUB kernel parameters."
+        fi
+    fi
+
+    # 8. worker build + logs (leave config.json in the repo root)
+    if [ -n "$worker_root" ] && [ -d "$worker_root" ]; then
+        sudo rm -rf "$worker_root"
+        log "Removed worker build/logs at $worker_root."
+    fi
+
+    log "Uninstall complete. config.json was left in place."
+    if [ "$REBOOT_REQUIRED" = true ]; then
+        warn "Reboot to fully release the HugePages reserved at boot."
+    fi
+}
+
 # --- Command surface (#11) -------------------------------------------------
 
 # Service-control verbs are thin wrappers over systemd and are Linux-only.
@@ -891,6 +1004,7 @@ Usage: $0 [command]
   setup      (default) provision the worker: dependencies, build, kernel tuning, service
   upgrade    rebuild + restart only if the pinned XMRig version/commit changed
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild)
+  uninstall  remove the service and revert all system changes (add --yes to skip the prompt)
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   bench      run a one-off 'xmrig --bench' and report the hashrate
   status     show the systemd service status
@@ -911,6 +1025,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     case "${1:-setup}" in
     setup) main ;;
     upgrade) upgrade ;;
+    uninstall) uninstall "${2:-}" ;;
     doctor) doctor ;;
     status) svc_status ;;
     logs) svc_logs ;;
@@ -923,6 +1038,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     bench) bench ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, doctor, bench, status, logs, start, stop, restart, enable, disable, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, status, logs, start, stop, restart, enable, disable, version, help." ;;
     esac
 fi
