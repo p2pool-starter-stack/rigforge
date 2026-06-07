@@ -242,6 +242,7 @@ assert_eq "generic: priority default"    "$(J  "$cfg" '.cpu.priority')"      "nu
 # integration (issue #24). The access-token assertion below is the auth half of the lockdown.
 assert_eq "generic: http restricted"     "$(J  "$cfg" '.http.restricted')"   "true"
 assert_eq "generic: http reachable (LAN)" "$(J  "$cfg" '.http.host')"        "0.0.0.0"
+assert_eq "contract: http port 8080 (#24)" "$(J "$cfg" '.http.port')"        "8080"
 # Shared invariants (assert once, here):
 assert_eq "pools collapsed to one"       "$(J  "$cfg" '.pools | length')"    "1"
 assert_eq "pool url = addr:3333"         "$(J  "$cfg" '.pools[0].url')"      "myrig.local:3333"
