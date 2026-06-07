@@ -12,7 +12,8 @@ an architecture doc.
 A `setup` run executes these stages in order. Each is idempotent, so re-running skips work that's
 already done.
 
-1. **Prerequisites** — checks it's running as root and detects the OS (Linux vs. macOS).
+1. **Prerequisites** — detects the OS (Linux vs. macOS) and installs `jq` if it's missing. Privileged
+   steps use `sudo` as needed, so run the script with `sudo` (or as root).
 2. **Config** — creates a minimal `config.json` interactively if none exists, then parses and validates
    it (see [Configuration](configuration.md)).
 3. **Rebuild decision** — figures out whether XMRig actually needs (re)building, based on the pinned
@@ -37,10 +38,14 @@ already done.
 
 RigForge builds XMRig from source rather than shipping a binary:
 
-- **Pinned** to a known `XMRIG_VERSION` / `XMRIG_COMMIT`, with the source checksum verified — so every
-  worker runs the same audited build, and supply-chain risk is bounded.
+- **Pinned** to a known `XMRIG_VERSION` / `XMRIG_COMMIT`, and the checkout is **verified against the
+  pinned commit** (`git rev-parse HEAD` must match `XMRIG_COMMIT`, or the build aborts) — so every
+  worker runs the same audited source, and supply-chain risk is bounded.
 - **Donate level patched at build time.** The configured `DONATION` is `sed`'d into `donate.h` so the
   compiled binary honors it (XMRig's floor is otherwise 1%). It's also written into the runtime config.
+  Because this patch happens during the compile, changing `DONATION` after XMRig is already built only
+  updates the runtime config — re-patching the binary requires a rebuild (see
+  [Configuration](configuration.md#changing-settings-later)).
 - **Memory-guarded parallelism.** `make -j` is capped based on available RAM, so the build doesn't OOM
   on small machines.
 - **Idempotent.** If the pinned build already exists, setup skips the (slow) recompile entirely; the
