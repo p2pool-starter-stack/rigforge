@@ -38,7 +38,7 @@ jobs:
           stage="rigforge-$TAG"
           mkdir -p "$stage"
           # Runtime files a user needs to deploy a worker — no tests/, .github/, or dev cruft.
-          cp -a rigforge.sh util worker-config systemd config.json.template README.md docs LICENSE VERSION "$stage/"
+          cp -a rigforge.sh util worker-config systemd config.json.template README.md docs images LICENSE VERSION "$stage/"
           zip -rq "$stage.zip" "$stage"
           tar -czf "$stage.tar.gz" "$stage"
           sha256sum "$stage.zip" "$stage.tar.gz" > SHA256SUMS
