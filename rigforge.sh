@@ -262,6 +262,10 @@ parse_config() {
         [ -n "$ACCESS_TOKEN" ] || ACCESS_TOKEN=$(hostname)
     fi
 
+    # Opt-in periodic live auto-tuning (#46): when true, setup installs a systemd timer that runs
+    # `autotune` on a schedule.
+    AUTOTUNE=$(jq -r '.autotune // false' "$CONFIG_JSON")
+
     # XMRig config template RigForge tunes from. Internal — bundled with the project, not user-facing.
     TEMPLATE_CONFIG="$SCRIPT_DIR/worker-config/example-config.json.template"
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
@@ -543,6 +547,19 @@ generate_xmrig_config() {
         ."http"."host" = $host' \
         "$TEMPLATE_CONFIG" >config.json
 
+    # Overlay any tuned knobs (#46) on top — kept in a separate file (written by `tune`) so the user's
+    # config.json is never touched. A recursive merge lets tuning win for just the keys it sets.
+    if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
+        local _ovr
+        _ovr=$(mktemp)
+        if jq -s '.[0] * .[1]' config.json "$WORKER_ROOT/tune-overrides.json" >"$_ovr" 2>/dev/null; then
+            mv "$_ovr" config.json
+            log "Applied tuned overrides from tune-overrides.json."
+        else
+            rm -f "$_ovr"
+        fi
+    fi
+
     if [ "$OS_TYPE" == "Linux" ]; then
         log "Configuring log rotation policy..."
         # Install logrotate configuration
@@ -593,6 +610,45 @@ install_service() {
     else
         warn "Service installation is not supported on $OS_TYPE."
     fi
+}
+
+# Install (or remove) the systemd timer that runs `autotune` periodically, based on the `autotune`
+# config flag (#46). Idempotent: toggling the flag off cleanly removes the timer.
+install_autotune() {
+    [ "$OS_TYPE" == "Linux" ] || return 0
+    local svc="$SYSTEMD_DIR/rigforge-autotune.service" tmr="$SYSTEMD_DIR/rigforge-autotune.timer"
+    if [ "${AUTOTUNE:-false}" != "true" ]; then
+        if [ -f "$tmr" ]; then
+            sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
+            sudo rm -f "$svc" "$tmr"
+            sudo systemctl daemon-reload 2>/dev/null || true
+            log "Periodic autotune disabled."
+        fi
+        return 0
+    fi
+    log "Enabling periodic autotune (${AUTOTUNE_ONCALENDAR:-daily})..."
+    sudo tee "$svc" >/dev/null <<EOF
+[Unit]
+Description=RigForge live autotune trial
+After=$SERVICE_NAME.service
+
+[Service]
+Type=oneshot
+ExecStart=$SCRIPT_DIR/rigforge.sh autotune
+EOF
+    sudo tee "$tmr" >/dev/null <<EOF
+[Unit]
+Description=Periodic RigForge autotune
+
+[Timer]
+OnCalendar=${AUTOTUNE_ONCALENDAR:-daily}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rigforge-autotune.timer 2>/dev/null || true
 }
 
 tune_kernel() {
@@ -726,6 +782,8 @@ main() {
     configure_limits
     CURRENT_STEP="installing the service"
     install_service
+    CURRENT_STEP="configuring autotune"
+    install_autotune
     CURRENT_STEP="finishing up"
     finish_deployment
 }
@@ -774,7 +832,11 @@ uninstall() {
         fi
     fi
 
-    # 1. systemd service
+    # 1. systemd service (+ the optional autotune timer, #46)
+    if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
+        sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-autotune.timer" "$SYSTEMD_DIR/rigforge-autotune.service"
+    fi
     if [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
         sudo systemctl disable "$SERVICE_NAME" 2>/dev/null || true
@@ -834,6 +896,137 @@ uninstall() {
     if [ "$REBOOT_REQUIRED" = true ]; then
         warn "Reboot to fully release the HugePages reserved at boot."
     fi
+}
+
+# --- Auto-tuning (#46) -----------------------------------------------------
+
+# Paths for the tuning state (relative to the worker root, resolved by parse_config).
+#   tune-overrides.json — the winning knobs, merged on top of every generated config (so your own
+#                         config.json is never touched; generate_xmrig_config applies it).
+#   rigforge-tune.json  — the full benchmark log of every candidate tried (auditable / reusable).
+
+# tune (#46): benchmark candidate configs with `xmrig --bench` over several iterations and keep the
+# fastest. Sweeps the knobs whose best value genuinely varies per CPU — the RandomX scratchpad prefetch
+# mode and `cpu.yield` — benchmarking each combo TUNE_ITERS times and keeping its best run, then writes
+# the winning knobs to tune-overrides.json. `tune --clear` removes the tuning state. Run it on an
+# otherwise-idle machine for stable numbers.
+tune() {
+    parse_config # resolves WORKER_ROOT (and validates the config)
+    local overrides="$WORKER_ROOT/tune-overrides.json" logf="$WORKER_ROOT/rigforge-tune.json"
+
+    if [ "${1:-}" == "--clear" ]; then
+        sudo rm -f "$overrides" "$logf"
+        log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config."
+        return 0
+    fi
+
+    local build="$WORKER_ROOT/xmrig/build" bin base
+    bin="$build/xmrig"
+    base="$build/config.json"
+    [ -x "$bin" ] && [ -f "$base" ] || error "No built worker at $build. Run 'setup' first, then 'tune'."
+
+    local bench="${TUNE_BENCH:-1M}" iters="${TUNE_ITERS:-2}"
+    local prefetch_modes="${TUNE_PREFETCH_MODES:-0 1 2 3}" yields="${TUNE_YIELDS:-true false}"
+    log "Auto-tuning via 'xmrig --bench=$bench' x$iters — prefetch_mode={$prefetch_modes}, yield={$yields}"
+
+    local tmp results first=1 best_hr="-1" best_p="" best_y="" p y i out hr cand
+    tmp=$(mktemp)
+    results="["
+    for p in $prefetch_modes; do
+        for y in $yields; do
+            cand="-1"
+            for i in $(seq 1 "$iters"); do
+                jq --argjson p "$p" --argjson y "$y" \
+                    '.randomx.scratchpad_prefetch_mode = $p | .cpu.yield = $y' "$base" >"$tmp"
+                out=$("$bin" --bench="$bench" --config="$tmp" 2>&1 || true)
+                hr=$(printf '%s' "$out" | _parse_hashrate)
+                [ -n "$hr" ] || hr=0
+                awk "BEGIN{exit !($hr > $cand)}" && cand="$hr"
+            done
+            log "  prefetch_mode=$p yield=$y -> $cand H/s (best of $iters)"
+            [ "$first" = 1 ] || results="$results,"
+            first=0
+            results="$results{\"prefetch_mode\":$p,\"yield\":$y,\"hashrate\":$cand}"
+            if awk "BEGIN{exit !($cand > $best_hr)}"; then
+                best_hr="$cand"
+                best_p="$p"
+                best_y="$y"
+            fi
+        done
+    done
+    results="$results]"
+
+    if [ -z "$best_p" ] || awk "BEGIN{exit !($best_hr <= 0)}"; then
+        rm -f "$tmp"
+        error "Benchmarks produced no hashrate — check that the worker is built correctly."
+    fi
+
+    printf '%s\n' "$results" | jq --argjson p "$best_p" --argjson y "$best_y" \
+        '{best: {scratchpad_prefetch_mode: $p, yield: $y}, results: .}' >"$tmp.log" &&
+        sudo cp "$tmp.log" "$logf" && rm -f "$tmp.log"
+    jq -n --argjson p "$best_p" --argjson y "$best_y" \
+        '{randomx: {scratchpad_prefetch_mode: $p}, cpu: {yield: $y}}' >"$tmp.ovr" &&
+        sudo cp "$tmp.ovr" "$overrides" && rm -f "$tmp.ovr"
+    rm -f "$tmp"
+
+    log "Best: prefetch_mode=$best_p yield=$best_y ($best_hr H/s). Saved to $overrides (log: $logf)."
+    log "Apply it: sudo $0 apply    (reset anytime with: sudo $0 tune --clear)"
+}
+
+# autotune (#46): one LIVE trial against the running miner. Reads the current hashrate from the worker's
+# HTTP API, tries the next candidate prefetch mode, applies it (via the overrides file) and restarts,
+# measures again over a window, and KEEPS the change only if it beats the baseline by a margin — else
+# it rolls back. Meant to be run periodically: when `autotune: true` is set in config.json, setup
+# installs a systemd timer that calls this. Live numbers are noisy, hence the margin + rollback.
+autotune() {
+    if [ "$OS_TYPE" != "Linux" ]; then
+        error "autotune drives the live systemd service and is only supported on Linux."
+    fi
+    parse_config
+    local overrides="$WORKER_ROOT/tune-overrides.json"
+    local cur next base_hr new_hr
+    cur=$(jq -r '.randomx.scratchpad_prefetch_mode // 1' "$overrides" 2>/dev/null || echo 1)
+    next=$(((cur + 1) % 4)) # cycle through prefetch modes 0..3 across runs
+    base_hr=$(_read_api_hashrate)
+    [ -n "$base_hr" ] || {
+        warn "autotune: could not read a live hashrate from the API — is the miner running? Skipping."
+        return 0
+    }
+    log "autotune: baseline prefetch_mode=$cur at $base_hr H/s; trying prefetch_mode=$next..."
+
+    # Apply the candidate via the overrides overlay, regenerate + restart, then measure.
+    local tmp
+    tmp=$(mktemp)
+    jq -n --argjson m "$next" '{randomx: {scratchpad_prefetch_mode: $m}}' >"$tmp" && sudo cp "$tmp" "$overrides"
+    rm -f "$tmp"
+    apply >/dev/null 2>&1 || true
+    sleep "${AUTOTUNE_WARMUP:-60}"
+    new_hr=$(_read_api_hashrate)
+    [ -n "$new_hr" ] || new_hr=0
+
+    # Keep only if faster by at least the margin (default 1%); else roll back to the previous mode.
+    if awk "BEGIN{exit !($new_hr > $base_hr * (1 + ${AUTOTUNE_MARGIN:-0.01}))}"; then
+        log "autotune: prefetch_mode=$next is faster ($new_hr vs $base_hr H/s) — keeping it."
+    else
+        log "autotune: prefetch_mode=$next not better ($new_hr vs $base_hr H/s) — rolling back to $cur."
+        tmp=$(mktemp)
+        jq -n --argjson m "$cur" '{randomx: {scratchpad_prefetch_mode: $m}}' >"$tmp" && sudo cp "$tmp" "$overrides"
+        rm -f "$tmp"
+        apply >/dev/null 2>&1 || true
+    fi
+}
+
+# Read the current total hashrate from the worker's HTTP API (empty if unreachable). Overridable for
+# tests via API_CMD.
+_read_api_hashrate() {
+    local url="http://127.0.0.1:8080/2/summary"
+    if [ -n "${API_CMD:-}" ]; then
+        eval "$API_CMD"
+        return
+    fi
+    command -v curl >/dev/null 2>&1 || return 0
+    curl -fsS --max-time 5 -H "Authorization: Bearer ${ACCESS_TOKEN:-}" "$url" 2>/dev/null |
+        jq -r '.hashrate.total[0] // empty' 2>/dev/null
 }
 
 # --- Command surface (#11) -------------------------------------------------
@@ -1007,6 +1200,8 @@ Usage: $0 [command]
   uninstall  remove the service and revert all system changes (add --yes to skip the prompt)
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   bench      run a one-off 'xmrig --bench' and report the hashrate
+  tune       benchmark candidate configs over N iterations and keep the fastest ('tune --clear' resets)
+  autotune   one live trial against the running miner (enable periodic runs with autotune:true in config)
   status     show the systemd service status
   logs       follow the live service logs
   start      start the miner service
@@ -1026,6 +1221,8 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     setup) main ;;
     upgrade) upgrade ;;
     uninstall) uninstall "${2:-}" ;;
+    tune) tune "${2:-}" ;;
+    autotune) autotune ;;
     doctor) doctor ;;
     status) svc_status ;;
     logs) svc_logs ;;
@@ -1038,6 +1235,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     bench) bench ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, status, logs, start, stop, restart, enable, disable, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, status, logs, start, stop, restart, enable, disable, version, help." ;;
     esac
 fi

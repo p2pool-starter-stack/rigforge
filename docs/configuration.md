@@ -41,6 +41,7 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 | `ACCESS_TOKEN` | the rig name (first pool's `user`) | The XMRig HTTP API bearer token. Leave it unset so it defaults to the rig name — **Pithead authenticates as `Bearer <rig name>`**, so the token must equal the rig name (or be unset). See [Pithead Integration](pithead-integration.md). |
 | `DONATION` | `1` | XMRig donate level, an integer **0–100** (percent). Patched into the build (`donate.h`) **and** written to the generated config, so it must be a valid integer or setup fails fast. |
 | `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
+| `autotune` | `false` | When `true`, setup installs a systemd timer that periodically live-tunes the worker. See [Operations › Live auto-tuning](operations.md#live-auto-tuning-opt-in). |
 
 ---
 
