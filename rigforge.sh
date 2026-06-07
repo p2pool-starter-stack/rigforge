@@ -67,6 +67,20 @@ xmrig_already_built() {
     [ -x "$WORKER_ROOT/xmrig/build/xmrig" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$XMRIG_COMMIT" ]
 }
 
+# Merge the HugePage/MSR kernel params we manage into an existing GRUB cmdline, preserving every
+# other parameter and replacing only the ones we own (so re-runs don't accumulate). Echoes the merged
+# cmdline. Usage: grub_merge_cmdline "<managed params>" "<current cmdline>"
+grub_merge_cmdline() {
+    local managed="$1" current="$2" preserved="" tok
+    for tok in $current; do
+        case "$tok" in
+            hugepagesz=*|hugepages=*|default_hugepagesz=*|msr.allow_writes=*) ;; # ours — drop, re-added below
+            *) preserved="${preserved:+$preserved }$tok" ;;
+        esac
+    done
+    echo "${preserved:+$preserved }$managed"
+}
+
 check_prerequisites() {
     log "Verifying system prerequisites..."
     if ! command -v jq &> /dev/null; then
@@ -153,7 +167,16 @@ parse_config() {
     if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
         error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
     fi
-    P2POOL_NODE_HOSTNAME=$(jq -r .P2POOL_NODE_HOSTNAME "$CONFIG_JSON")
+    P2POOL_NODE_HOSTNAME=$(jq -r '.P2POOL_NODE_HOSTNAME // empty' "$CONFIG_JSON")
+    # The host goes straight into the XMRig pool URL, so validate it before building: it must be set
+    # and look like a hostname/FQDN or an IPv4/IPv6 literal. This also rejects the unfilled template
+    # placeholder (<...>) and any shell/URL metacharacters.
+    if [ -z "$P2POOL_NODE_HOSTNAME" ]; then
+        error "P2POOL_NODE_HOSTNAME is required in $CONFIG_JSON (your pool/stack host or IP)."
+    fi
+    if ! [[ "$P2POOL_NODE_HOSTNAME" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+        error "P2POOL_NODE_HOSTNAME is not a valid host/IP: '$P2POOL_NODE_HOSTNAME'. Use a hostname, FQDN, or IP address."
+    fi
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
     if [ -z "$ACCESS_TOKEN" ]; then
         ACCESS_TOKEN=$(hostname)
@@ -533,14 +556,20 @@ tune_kernel() {
 
     log "Configuring bootloader (GRUB) for persistent HugePages..."
     if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
-        NEW_PARAMS=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
+        # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
+        # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
+        # clobber other kernel parameters the user/distro set (#19 — boot-safety).
+        MANAGED=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
+        MANAGED="${MANAGED#quiet splash }"
 
-        # Check if GRUB is already configured
-        if grep -Fq "GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"" "$GRUB_DEFAULT"; then
+        CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
+        MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
+
+        if [ "$CURRENT" = "$MERGED" ]; then
             log "GRUB is already configured with optimal HugePages settings."
         else
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"|" "$GRUB_DEFAULT"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$MERGED\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
@@ -588,7 +617,7 @@ finish_deployment() {
         log "Service created. xmrig running in background."
     else
         log "You can run the miner manually:"
-        echo "sudo screen -S xmrig $WORKER_ROOT/xmrig/build/xmrig --config=$WORKER_ROOT/config.json"
+        echo "sudo screen -S xmrig $WORKER_ROOT/xmrig/build/xmrig --config=$WORKER_ROOT/xmrig/build/config.json"
     fi
 }
 
