@@ -132,6 +132,11 @@ parse_and_print() { # <config_file> <script_dir> <var>
         eval "printf '%s' \"\${$var}\""
     )
 }
+# Convenience: the host of the first resolved pool (POOLS_JSON[0].url with the default :3333 stripped),
+# so the host-resolution regression tests can keep asserting a bare host.
+pool_host0() { # <config_file> <script_dir>
+    parse_and_print "$1" "$2" POOLS_JSON | jq -r '.[0].url | sub(":3333$"; "")'
+}
 # Same, but we only care about parse_config's exit code.
 parse_rc() { # <config_file> <script_dir>
     (
@@ -153,25 +158,25 @@ mkconf() { # <name> <json>
 CFG_TPL='"WORKER_CONFIG_FILE": "./worker-config/example-config.json.template"'
 
 # ---------------------------------------------------------------------------
-# PR #15 (#14) removed the .local/mDNS appending: POOL_ADDRESS is now the host verbatim,
+# PR #15 (#14) removed the .local/mDNS appending: the pool host is now used verbatim,
 # whether it's a short name, an FQDN, or an IP. The dotless case is the regression guard that proves
 # the removal — it must NOT come back as "box.local".
 echo "== unit: parse_config — pool address used verbatim (#15) =="
 c="$(mkconf dotless "{ \"POOL_HOST\": \"box\", $CFG_TPL }")"
-assert_eq "short host used as-is (no .local)" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "box"
+assert_eq "short host used as-is (no .local)" "$(pool_host0 "$c" "$ROOT")" "box"
 c="$(mkconf fqdn "{ \"POOL_HOST\": \"box.lan\", $CFG_TPL }")"
-assert_eq "FQDN passed through" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "box.lan"
+assert_eq "FQDN passed through" "$(pool_host0 "$c" "$ROOT")" "box.lan"
 c="$(mkconf ip "{ \"POOL_HOST\": \"10.0.0.5\", $CFG_TPL }")"
-assert_eq "IPv4 host passed through" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "10.0.0.5"
+assert_eq "IPv4 host passed through" "$(pool_host0 "$c" "$ROOT")" "10.0.0.5"
 
 # #35: POOL_HOST is the canonical key; P2POOL_NODE_HOSTNAME is a backward-compatible alias.
 echo "== unit: POOL_HOST + legacy alias (#35) =="
 c="$(mkconf poolhost "{ \"POOL_HOST\": \"pool.example\", $CFG_TPL }")"
-assert_eq "POOL_HOST honoured" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "pool.example"
+assert_eq "POOL_HOST honoured" "$(pool_host0 "$c" "$ROOT")" "pool.example"
 c="$(mkconf legacy "{ \"P2POOL_NODE_HOSTNAME\": \"legacy.example\", $CFG_TPL }")"
-assert_eq "P2POOL_NODE_HOSTNAME alias still works" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "legacy.example"
+assert_eq "P2POOL_NODE_HOSTNAME alias still works" "$(pool_host0 "$c" "$ROOT")" "legacy.example"
 c="$(mkconf both "{ \"POOL_HOST\": \"new.example\", \"P2POOL_NODE_HOSTNAME\": \"old.example\", $CFG_TPL }")"
-assert_eq "POOL_HOST wins over the alias" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "new.example"
+assert_eq "POOL_HOST wins over the alias" "$(pool_host0 "$c" "$ROOT")" "new.example"
 
 echo "== unit: hostname validation (#8) =="
 for h in box box.lan 10.0.0.5 fe80::1 rig-01; do
@@ -190,6 +195,43 @@ for h in 'bad host' 'evil;rm' 'a/b' '<POOL_HOST>'; do
     parse_rc "$c" "$ROOT"
     assert_rc "host '$h' rejected" "$?" "1"
 done
+
+# #21/#42: config.json may set XMRig's native `pools` array directly; blank/missing fields fall back to
+# Pithead-friendly defaults (empty url -> POOL_HOST:3333). With no `pools` array, a single default pool
+# is synthesized from POOL_HOST. Custom port + TLS (#21) and backup pools (#42) are just pool entries.
+echo "== unit: native pools array + defaults (#21, #42) =="
+PJ() { parse_and_print "$1" "$ROOT" POOLS_JSON; } # echoes the resolved POOLS_JSON
+# No pools array -> one default pool from POOL_HOST.
+c="$(mkconf p_simple "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
+assert_eq "no pools -> one pool" "$(PJ "$c" | jq -c 'length')" "1"
+assert_eq "default url = host:3333" "$(PJ "$c" | jq -r '.[0].url')" "h:3333"
+assert_eq "default pass = x" "$(PJ "$c" | jq -r '.[0].pass')" "x"
+assert_eq "default tls = false" "$(PJ "$c" | jq -c '.[0].tls')" "false"
+assert_eq "default keepalive = true" "$(PJ "$c" | jq -c '.[0].keepalive')" "true"
+# Explicit pools array — full XMRig structure passed through (#21: any url/port + tls).
+c="$(mkconf p_full "{ \"pools\": [{\"url\":\"pool.example:443\",\"tls\":true,\"pass\":\"w\"}], $CFG_TPL }")"
+assert_eq "explicit url kept" "$(PJ "$c" | jq -r '.[0].url')" "pool.example:443"
+assert_eq "explicit tls kept" "$(PJ "$c" | jq -c '.[0].tls')" "true"
+assert_eq "explicit pass kept" "$(PJ "$c" | jq -r '.[0].pass')" "w"
+# Blank fields in an explicit pool fall back (empty url -> POOL_HOST:3333; missing pass -> x).
+c="$(mkconf p_blank "{ \"POOL_HOST\": \"stack.lan\", \"pools\": [{\"url\":\"\"}], $CFG_TPL }")"
+assert_eq "blank url -> POOL_HOST:3333" "$(PJ "$c" | jq -r '.[0].url')" "stack.lan:3333"
+assert_eq "missing pass -> x" "$(PJ "$c" | jq -r '.[0].pass')" "x"
+# Backup pools (#42) = multiple entries, order preserved.
+c="$(mkconf p_backup "{ \"pools\": [{\"url\":\"a:3333\"},{\"url\":\"b:14444\",\"tls\":true}], $CFG_TPL }")"
+assert_eq "two pools" "$(PJ "$c" | jq -c 'length')" "2"
+assert_eq "order preserved" "$(PJ "$c" | jq -c '[.[].url]')" '["a:3333","b:14444"]'
+assert_eq "backup tls kept" "$(PJ "$c" | jq -c '.[1].tls')" "true"
+# Validation: bad url, non-boolean tls, and no-host-anywhere all fail fast.
+c="$(mkconf p_badurl "{ \"pools\": [{\"url\":\"evil;rm\"}], $CFG_TPL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "bad pool url rejected" "$?" "1"
+c="$(mkconf p_badtls "{ \"POOL_HOST\": \"h\", \"pools\": [{\"tls\":\"yes\"}], $CFG_TPL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "non-boolean tls rejected" "$?" "1"
+c="$(mkconf p_nohost "{ $CFG_TPL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "no POOL_HOST and no pools rejected" "$?" "1"
 
 echo "== unit: parse_config — workspace + token + template resolution =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
@@ -261,6 +303,11 @@ gen_config() { # echoes path to the dir containing config.json
         WORKER_ROOT="$d"
         TEMPLATE_CONFIG="$TEMPLATE"
         POOL_ADDRESS="${SIM_ADDR:-myrig.local}"
+        if [ -n "${SIM_POOLS:-}" ]; then
+            POOLS_JSON="$SIM_POOLS"
+        else
+            POOLS_JSON="[{\"url\":\"$POOL_ADDRESS:3333\",\"user\":\"\",\"pass\":\"x\",\"keepalive\":true,\"tls\":false,\"enabled\":true}]"
+        fi
         ACCESS_TOKEN="${SIM_TOK:-tok123}"
         DONATION="${SIM_DON:-1}"
         LOGROTATE_DIR="$d"
@@ -314,6 +361,7 @@ log_out="$(
     WORKER_ROOT="$d"
     TEMPLATE_CONFIG="$TEMPLATE"
     POOL_ADDRESS=myrig.local
+    POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
     ACCESS_TOKEN=tok123
     DONATION=1
     LOGROTATE_DIR="$d"
@@ -359,6 +407,23 @@ assert_eq "macos: http restricted" "$(J "$cfg" '.http.restricted')" "true"
 assert_eq "macos: yield off" "$(J "$cfg" '.cpu.yield')" "false"
 unset STUB_CPU_MODEL STUB_NPROC STUB_NCPU STUB_HOSTNAME STUB_L3 STUB_SOCKETS
 
+# #21 / #42: the emitted pools array carries each entry through in order, all enabled, blank user filled
+# with the rig name.
+echo "== config-gen: multi-pool passthrough (#21, #42) =="
+export STUB_CPU_MODEL="Intel(R) Xeon" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+SIM_OS=Linux SIM_DON=1
+SIM_POOLS='[{"url":"primary:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true},{"url":"backup:14444","user":"","pass":"x","keepalive":true,"tls":true,"enabled":true}]'
+d="$(gen_config)"
+cfg="$d/config.json"
+unset SIM_POOLS
+assert_eq "two pool entries emitted" "$(J "$cfg" '.pools | length')" "2"
+assert_eq "pool[0] url passed through" "$(J "$cfg" '.pools[0].url')" "primary:3333"
+assert_eq "pool[1] url passed through" "$(J "$cfg" '.pools[1].url')" "backup:14444"
+assert_eq "pool[1] tls applied" "$(J "$cfg" '.pools[1].tls')" "true"
+assert_eq "all pools enabled" "$(J "$cfg" '[.pools[].enabled] | all')" "true"
+assert_eq "blank user filled with rig name" "$(JC "$cfg" '[.pools[].user] | unique')" '["rigbox"]'
+unset STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+
 echo "== config-gen: idempotent (same inputs -> identical output) =="
 export STUB_CPU_MODEL="Intel(R) Xeon(R)" STUB_NPROC=8 STUB_HOSTNAME=rigbox
 SIM_OS=Linux SIM_DON=1
@@ -370,6 +435,7 @@ d="$(mktemp -d "$SANDBOX/idem.XXXXXX")"
     WORKER_ROOT="$d"
     TEMPLATE_CONFIG="$TEMPLATE"
     POOL_ADDRESS=myrig.local
+    POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
     ACCESS_TOKEN=tok123
     DONATION=1
     LOGROTATE_DIR="$d"
@@ -384,6 +450,7 @@ cp "$d/config.json" "$d/first.json"
     WORKER_ROOT="$d"
     TEMPLATE_CONFIG="$TEMPLATE"
     POOL_ADDRESS=myrig.local
+    POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
     ACCESS_TOKEN=tok123
     DONATION=1
     LOGROTATE_DIR="$d"

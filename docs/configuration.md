@@ -29,7 +29,8 @@ your pool host). You can also pre-create one from
 
 | Key | Default | What it does |
 |---|---|---|
-| `POOL_HOST` | _(required)_ | Your pool / stratum host or IP. Goes straight into the XMRig pool URL as `POOL_HOST:3333`. Must be a hostname, FQDN, or IP — it's validated before the build (the unfilled template placeholder and shell/URL metacharacters are rejected). |
+| `POOL_HOST` | _(required, unless `pools` is set)_ | Your pool / stratum host or IP. RigForge builds a single pool from it as `POOL_HOST:3333` — the simple, Pithead-out-of-the-box path. Must be a hostname, FQDN, or IP (the unfilled template placeholder and shell/URL metacharacters are rejected). For a custom port, TLS, or multiple pools, use `pools` (see [Pools](#pools-full-control)). |
+| `pools` | _(derived from `POOL_HOST`)_ | XMRig's native pools array, passed through as-is. Lets you set any port/TLS and list backup pools for failover. Blank fields fall back to Pithead defaults. See [Pools](#pools-full-control). |
 | `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
 | `DONATION` | `1` | XMRig donate level, an integer **0–100** (percent). Patched into the build (`donate.h`) **and** written to the generated config, so it must be a valid integer or setup fails fast. |
 | `WORKER_CONFIG_FILE` | `./worker-config/example-config.json.template` | The XMRig config **template** RigForge tunes from. Relative paths resolve against the repo; absolute paths are used as-is. The default suits most setups. |
@@ -75,6 +76,41 @@ RigForge points XMRig at a single **Stratum endpoint**, `POOL_HOST:3333`:
 
 The host must be an IP or DNS-resolvable hostname; for a stable LAN address, set a DHCP reservation or
 a static IP. If the host has a firewall, allow the Stratum port (3333) on the LAN.
+
+---
+
+## Pools (full control)
+
+For anything beyond the simple `POOL_HOST:3333` default — a **custom port**, **TLS**, or **backup
+pools** for failover — set XMRig's native **`pools`** array directly in `config.json`. RigForge passes
+it straight through to XMRig; you can use any field XMRig supports. **Blank or missing fields fall back
+to Pithead-friendly defaults**, so you only specify what you care about:
+
+| Field | Default if blank/omitted |
+|---|---|
+| `url` | `POOL_HOST:3333` (so you can leave it empty and just set `POOL_HOST`) |
+| `user` | the rig's hostname — keeps the Pithead token contract |
+| `pass` | `"x"` |
+| `keepalive` | `true` |
+| `tls` | `false` |
+| `enabled` | `true` |
+
+XMRig tries the entries **in order** and fails over to the next if one is unreachable — handy for a
+primary stack with a public-pool fallback:
+
+```json
+{
+    "pools": [
+        { "url": "stack.lan:3333" },
+        { "url": "pool.supportxmr.com:443", "tls": true }
+    ],
+    "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template"
+}
+```
+
+Here the worker mines to `stack.lan:3333` (plain) and falls back to `pool.supportxmr.com:443` over TLS,
+with `user`/`pass`/`keepalive` filled in for both. (The simplest config — just `POOL_HOST` — is exactly
+equivalent to a one-entry `pools` array with everything left blank.)
 
 ---
 

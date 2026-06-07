@@ -200,24 +200,49 @@ parse_config() {
     if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
         error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
     fi
-    # Pool/stratum host. POOL_HOST is the canonical key; P2POOL_NODE_HOSTNAME is accepted as a
-    # backward-compatible alias (#35) so existing configs keep working.
+    # Pool(s). config.json may set XMRig's native `pools` array directly (#21, #42) — same structure
+    # XMRig uses ({"url","user","pass","keepalive","tls",...}); any blank/missing field falls back to a
+    # Pithead-friendly default (empty url -> POOL_HOST:3333). If there's no `pools` array, a single pool
+    # is synthesized from POOL_HOST — the simple, out-of-the-box path. POOL_HOST is the canonical simple
+    # key (P2POOL_NODE_HOSTNAME stays a backward-compatible alias, #35). The pool `user` is left blank
+    # here and filled with the rig name in generate_xmrig_config.
     POOL_HOST=$(jq -r '.POOL_HOST // .P2POOL_NODE_HOSTNAME // empty' "$CONFIG_JSON")
-    # The host goes straight into the XMRig pool URL, so validate it before building: it must be set
-    # and look like a hostname/FQDN or an IPv4/IPv6 literal. This also rejects the unfilled template
-    # placeholder (<...>) and any shell/URL metacharacters.
-    if [ -z "$POOL_HOST" ]; then
-        error "POOL_HOST is required in $CONFIG_JSON (your pool / stratum host or IP)."
+
+    if jq -e '.pools | type == "array" and length > 0' "$CONFIG_JSON" >/dev/null 2>&1; then
+        POOLS_JSON=$(jq -c --arg host "$POOL_HOST" '
+            .pools | map({
+                url: (if (.url // "") == "" then ($host + ":3333") else .url end),
+                user: (.user // ""),
+                pass: (.pass // "x"),
+                keepalive: (.keepalive // true),
+                tls: (.tls // false),
+                enabled: (.enabled // true)
+            })
+        ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    else
+        POOLS_JSON=$(jq -cn --arg host "$POOL_HOST" \
+            '[{url: ($host + ":3333"), user: "", pass: "x", keepalive: true, tls: false, enabled: true}]')
     fi
-    if ! [[ "$POOL_HOST" =~ ^[A-Za-z0-9._:-]+$ ]]; then
-        error "POOL_HOST is not a valid host/IP: '$POOL_HOST'. Use a hostname, FQDN, or IP address."
-    fi
+
+    # Validate every resolved pool: a non-empty host[:port] (an empty host shows up as a leading ":",
+    # which also catches "no POOL_HOST and no url"; the regex rejects the unfilled placeholder <...> and
+    # shell/URL metacharacters), and a boolean tls.
+    while IFS=$'\t' read -r _u _t; do
+        case "$_u" in
+        :*) error "POOL_HOST is required in $CONFIG_JSON (a pool has no url and no POOL_HOST to use)." ;;
+        esac
+        if ! [[ "$_u" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+            error "Pool url is not valid: '$_u'. Use host[:port] or an IP (set POOL_HOST or pools[].url)."
+        fi
+        if [ "$_t" != "true" ] && [ "$_t" != "false" ]; then
+            error "Pool tls must be true or false (got: $_t)."
+        fi
+    done < <(jq -r '.[] | [.url, (.tls | tostring)] | @tsv' <<<"$POOLS_JSON")
+
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
     if [ -z "$ACCESS_TOKEN" ]; then
         ACCESS_TOKEN=$(hostname)
     fi
-
-    POOL_ADDRESS="$POOL_HOST"
 
     # Resolve Template Path (Handle absolute vs relative paths)
     if [[ "$WORKER_CONFIG_FILE" = /* ]]; then
@@ -462,7 +487,7 @@ generate_xmrig_config() {
     FULL_USER="$(hostname)"
 
     # Generate config.json via jq
-    jq --arg url "$POOL_ADDRESS:3333" \
+    jq --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
         --arg log "$LOG_FILE_PATH" \
@@ -482,11 +507,8 @@ generate_xmrig_config() {
         --argjson restricted "$HTTP_RESTRICTED" \
         --argjson donation "$DONATION" \
         --arg host "$HTTP_HOST" \
-        '.pools[0].url = $url | 
-        .pools[0].user = $user | 
-        .pools[0].enabled = true |
-        .pools = [.pools[0]] |
-        ."log-file" = $log | 
+        '.pools = ($pools | map(.user = (if (.user // "") == "" then $user else .user end))) |
+        ."log-file" = $log |
         .cpu.yield = $yield | 
         .cpu.priority = $prio | 
         .cpu.asm = $asm | 

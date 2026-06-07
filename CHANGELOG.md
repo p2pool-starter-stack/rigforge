@@ -8,6 +8,10 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- Full control over the pool connection: `config.json` can set XMRig's native **`pools`** array
+  directly (any port, TLS, and multiple pools for failover), with blank fields falling back to
+  Pithead-friendly defaults. The simple `POOL_HOST` shorthand still synthesizes a single
+  `POOL_HOST:3333` pool out of the box (#21, #42).
 - Dependency-free test suite, Ubuntu end-to-end container harness, and CI (#5).
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
