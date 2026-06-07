@@ -19,7 +19,7 @@ you like to your stack's single endpoint.
 ## ✨ What it does
 
 - **Automated setup** — installs build dependencies (`cmake`, `libuv`, `hwloc`, …) and compiles a
-  pinned, checksum-verified XMRig from source.
+  pinned, commit-verified XMRig from source.
 - **Hardware-aware tuning** — detects the CPU (e.g. AMD EPYC, Ryzen X3D) and applies a matching
   performance profile (NUMA binding, ASM, thread layout, MSR registers).
 - **Kernel & system tuning (Linux)** — topology-aware HugePages (1 GB and 2 MB), MSR access for

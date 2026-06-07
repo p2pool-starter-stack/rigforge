@@ -87,9 +87,13 @@ sudo ./rigforge.sh
 ```
 
 Re-runs are idempotent — setup regenerates the managed XMRig config and re-applies system tuning
-without duplicating anything, and skips the recompile if the pinned XMRig is already built. Changes
-that only affect the generated config (e.g. `POOL_HOST`, `DONATION`) take effect on the next service
-restart.
+without duplicating anything, and skips the recompile if the pinned XMRig is already built. Changes to
+the generated config (e.g. `POOL_HOST`) take effect on the next service restart.
+
+> **Note on `DONATION`:** the donate level is also compiled into the XMRig binary at build time. Since
+> re-running setup skips the recompile when XMRig is already built, changing `DONATION` afterwards
+> updates the runtime config but **not** the binary's built-in level. To re-patch the binary, force a
+> rebuild — remove `<WORKER_ROOT>/xmrig` (or bump the pinned XMRig) and run setup again.
 
 ---
 

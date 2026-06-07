@@ -59,7 +59,7 @@ config. The profiles it ships:
 | **AMD EPYC** (multi-socket / high-NUMA) | NUMA-aware RandomX (`randomx.numa = true`), automatic ASM, MSR tuning, dataset spread across NUMA nodes. |
 | **AMD Ryzen X3D** (large 3D V-Cache) | The `ryzen` ASM path, an explicit per-core RandomX thread list, raised CPU priority, AVX2 dataset init. |
 | **Generic Linux x86** | Auto thread count (`cpu.rx = -1`), automatic ASM, HugePages + MSR enabled, API bound LAN-wide. |
-| **macOS (Apple Silicon / Intel)** | No HugePages/MSR (not available on macOS), boolean ASM, conservative priorities, loopback-only API. |
+| **macOS (Apple Silicon / Intel)** | No HugePages/MSR (not available on macOS), boolean ASM, conservative priorities, read-only API bound LAN-wide (IPv6 `::`). |
 
 > You don't choose a profile — detection is automatic. If your CPU isn't specifically recognized, the
 > generic profile gives XMRig sensible defaults and lets it auto-tune thread count.

@@ -9,7 +9,7 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 - Dependency-free test suite, Ubuntu end-to-end container harness, and CI (#5).
-- Pinned, checksum-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
+- Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
   when the pinned XMRig is already built; old build archives are pruned so re-runs don't leak disk (#4).
 - Config-input validation before building: `DONATION` (integer 0–100) and the pool host
@@ -17,7 +17,7 @@ All notable changes to RigForge are documented here. The format is based on
 - Build robustness: build output is captured to a logfile, an ERR trap names the failed step, and
   `make -j` is capped by available RAM to avoid OOM on low-memory hosts (#9).
 - Pinned, checksum-verified `shellcheck` + `shfmt` formatting check in CI, plus a `make fmt` target (#6).
-- Documented the Pithead worker-API contract (port 8080, read-only, token = rig name) in the README (#24).
+- Documented the Pithead worker-API contract (port 8080, read-only, token = rig name) in the docs (#24).
 - Community-health files: SECURITY policy, CONTRIBUTING guide, issue/PR templates (#16).
 - A `docs/` set (getting-started, hardware, configuration, operations, how-it-works, Pithead
   integration, FAQ) mirroring Pithead's structure; the README is slimmed to a quick-start that links
