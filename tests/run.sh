@@ -325,7 +325,7 @@ pin_compile() { # <stub_git_head>; runs compile_xmrig in a sandbox, prints its o
     local d; d="$(mktemp -d "$SANDBOX/pin.XXXXXX")"
     ( cd "$d" || exit 1
       source "$SCRIPT"
-      OS_TYPE="$(uname -s)"; DONATION=1
+      OS_TYPE="$(uname -s)"; DONATION=1; WORKER_ROOT="$d"   # compile_xmrig writes its commit marker under WORKER_ROOT
       export XMRIG_COMMIT="pinnedsha000000000000000000000000000000"
       [ -n "$1" ] && export STUB_GIT_HEAD="$1"
       set +e
@@ -355,6 +355,46 @@ empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
 ( source "$SCRIPT"; OS_TYPE=Linux; WORKER_ROOT="$empty"
   PATH="$STUBS:$PATH" prepare_workspace >/dev/null 2>&1 ); rc=$?
 assert_rc "prune is set -e safe with no archives" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow
+# recompile + restart are skipped, so re-running is a fast no-op and `upgrade` only acts on a bump.
+echo "== unit: xmrig_already_built detection (#4) =="
+b="$(mktemp -d "$SANDBOX/built.XXXXXX")"; mkdir -p "$b/xmrig/build"
+: > "$b/xmrig/build/xmrig"; chmod +x "$b/xmrig/build/xmrig"; printf 'ABC\n' > "$b/xmrig/.rigforge-commit"
+( source "$SCRIPT"; WORKER_ROOT="$b"; XMRIG_COMMIT=ABC; set +e; xmrig_already_built ); assert_rc "matching commit -> built"   "$?" "0"
+( source "$SCRIPT"; WORKER_ROOT="$b"; XMRIG_COMMIT=XYZ; set +e; xmrig_already_built ); assert_rc "different commit -> rebuild" "$?" "1"
+rm -f "$b/xmrig/build/xmrig"
+( source "$SCRIPT"; WORKER_ROOT="$b"; XMRIG_COMMIT=ABC; set +e; xmrig_already_built ); assert_rc "missing binary -> rebuild"  "$?" "1"
+
+echo "== unit: compile_xmrig honours XMRIG_REBUILD (#4) =="
+s="$(mktemp -d "$SANDBOX/skip.XXXXXX")"
+( cd "$s" || exit 1; source "$SCRIPT"; OS_TYPE="$(uname -s)"; WORKER_ROOT="$s"; DONATION=1; XMRIG_REBUILD=false
+  set +e; PATH="$STUBS:$PATH" CALL_LOG="$s/calls.log" compile_xmrig >/dev/null 2>&1 )
+assert_absent "skips clone when already built" "$(cat "$s/calls.log" 2>/dev/null)" "clone"
+r="$(mktemp -d "$SANDBOX/rebuild.XXXXXX")"
+( cd "$r" || exit 1; source "$SCRIPT"; OS_TYPE="$(uname -s)"; WORKER_ROOT="$r"; DONATION=1; XMRIG_REBUILD=true; export XMRIG_COMMIT=ABC
+  set +e; PATH="$STUBS:$PATH" CALL_LOG="$r/calls.log" compile_xmrig >/dev/null 2>&1 )
+assert_contains "clones when rebuilding"   "$(cat "$r/calls.log" 2>/dev/null)" "clone"
+assert_eq       "records the built commit" "$(cat "$r/xmrig/.rigforge-commit" 2>/dev/null)" "ABC"
+
+echo "== black-box: upgrade / help / unknown command (#4) =="
+U="$(mktemp -d "$SANDBOX/upg.XXXXXX")"; cp "$SCRIPT" "$U/rigforge.sh"; cp -R "$ROOT/worker-config" "$U/"
+mkdir -p "$U/home/worker/xmrig/build"; : > "$U/home/worker/xmrig/build/xmrig"; chmod +x "$U/home/worker/xmrig/build/xmrig"
+printf 'ABC\n' > "$U/home/worker/xmrig/.rigforge-commit"
+cat > "$U/config.json" <<EOF
+{ "HOME_DIR": "$U/home", "DONATION": 1, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox.lan" }
+EOF
+out="$(cd "$U" && PATH="$STUBS:$PATH" XMRIG_COMMIT=ABC bash ./rigforge.sh upgrade </dev/null 2>&1)"; rc=$?
+assert_rc       "upgrade exits 0 when up-to-date"      "$rc" "0"
+assert_contains "upgrade no-op when version unchanged" "$out" "nothing to upgrade"
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh help 2>&1)"; rc=$?
+assert_rc       "help exits 0"            "$rc" "0"
+assert_contains "help shows usage"        "$out" "Usage:"
+assert_contains "help lists upgrade"      "$out" "upgrade"
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh frobnicate 2>&1)"; rc=$?
+assert_rc       "unknown command fails"   "$rc" "1"
+assert_contains "unknown command message" "$out" "Unknown command"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
