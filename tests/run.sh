@@ -149,6 +149,20 @@ assert_eq "FQDN passed through"               "$(parse_and_print "$c" "$ROOT" P2
 c="$(mkconf ip "{ \"P2POOL_NODE_HOSTNAME\": \"10.0.0.5\", $CFG_TPL }")"
 assert_eq "IPv4 host passed through"          "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "10.0.0.5"
 
+echo "== unit: hostname validation (#8) =="
+for h in box box.lan 10.0.0.5 fe80::1 rig-01; do
+    c="$(mkconf hnok "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+    parse_rc "$c" "$ROOT"; assert_rc "host '$h' accepted" "$?" "0"
+done
+c="$(mkconf hnempty "{ \"P2POOL_NODE_HOSTNAME\": \"\", $CFG_TPL }")"
+parse_rc "$c" "$ROOT"; assert_rc "empty host rejected"   "$?" "1"
+c="$(mkconf hnmiss "{ $CFG_TPL }")"
+parse_rc "$c" "$ROOT"; assert_rc "missing host rejected" "$?" "1"
+for h in 'bad host' 'evil;rm' 'a/b' '<P2POOL_NODE_HOSTNAME>'; do
+    c="$(mkconf hnbad "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+    parse_rc "$c" "$ROOT"; assert_rc "host '$h' rejected" "$?" "1"
+done
+
 echo "== unit: parse_config — workspace + token + template resolution =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
