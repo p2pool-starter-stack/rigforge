@@ -149,6 +149,20 @@ assert_eq "FQDN passed through"               "$(parse_and_print "$c" "$ROOT" P2
 c="$(mkconf ip "{ \"P2POOL_NODE_HOSTNAME\": \"10.0.0.5\", $CFG_TPL }")"
 assert_eq "IPv4 host passed through"          "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "10.0.0.5"
 
+echo "== unit: hostname validation (#8) =="
+for h in box box.lan 10.0.0.5 fe80::1 rig-01; do
+    c="$(mkconf hnok "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+    parse_rc "$c" "$ROOT"; assert_rc "host '$h' accepted" "$?" "0"
+done
+c="$(mkconf hnempty "{ \"P2POOL_NODE_HOSTNAME\": \"\", $CFG_TPL }")"
+parse_rc "$c" "$ROOT"; assert_rc "empty host rejected"   "$?" "1"
+c="$(mkconf hnmiss "{ $CFG_TPL }")"
+parse_rc "$c" "$ROOT"; assert_rc "missing host rejected" "$?" "1"
+for h in 'bad host' 'evil;rm' 'a/b' '<P2POOL_NODE_HOSTNAME>'; do
+    c="$(mkconf hnbad "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+    parse_rc "$c" "$ROOT"; assert_rc "host '$h' rejected" "$?" "1"
+done
+
 echo "== unit: parse_config — workspace + token + template resolution =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
@@ -353,6 +367,16 @@ assert_contains "matching commit is verified"   "$out" "Verified XMRig"
 out="$(pin_compile "tamperedsha1111111111111111111111111111")"; rc=$?
 assert_rc       "tampered commit fails build"   "$rc" "1"
 assert_contains "tampered commit is reported"   "$out" "commit mismatch"
+
+# ---------------------------------------------------------------------------
+# The manual-run hint must point at the config where it's actually generated — the build dir
+# ($WORKER_ROOT/xmrig/build/config.json), the same path the systemd unit uses — not $WORKER_ROOT (#20).
+echo "== unit: finish_deployment manual-run hint (#20) =="
+hint="$( source "$SCRIPT"; WORKER_ROOT=/opt/rig/worker; REBOOT_REQUIRED=false; SERVICE_INSTALLED=false
+         set +e; finish_deployment 2>&1 )"
+assert_contains "hint runs the built binary"        "$hint" "/opt/rig/worker/xmrig/build/xmrig"
+assert_contains "hint config points at build dir"   "$hint" "--config=/opt/rig/worker/xmrig/build/config.json"
+assert_absent   "hint not the stale top-level path" "$hint" "--config=/opt/rig/worker/config.json"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
