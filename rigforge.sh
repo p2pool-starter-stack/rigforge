@@ -56,6 +56,20 @@ append_once() {
     grep -qFx "$line" "$file" 2>/dev/null || echo "$line" | sudo tee -a "$file" > /dev/null
 }
 
+# Merge the HugePage/MSR kernel params we manage into an existing GRUB cmdline, preserving every
+# other parameter and replacing only the ones we own (so re-runs don't accumulate). Echoes the merged
+# cmdline. Usage: grub_merge_cmdline "<managed params>" "<current cmdline>"
+grub_merge_cmdline() {
+    local managed="$1" current="$2" preserved="" tok
+    for tok in $current; do
+        case "$tok" in
+            hugepagesz=*|hugepages=*|default_hugepagesz=*|msr.allow_writes=*) ;; # ours — drop, re-added below
+            *) preserved="${preserved:+$preserved }$tok" ;;
+        esac
+    done
+    echo "${preserved:+$preserved }$managed"
+}
+
 check_prerequisites() {
     log "Verifying system prerequisites..."
     if ! command -v jq &> /dev/null; then
@@ -504,14 +518,20 @@ tune_kernel() {
 
     log "Configuring bootloader (GRUB) for persistent HugePages..."
     if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
-        NEW_PARAMS=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
+        # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
+        # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
+        # clobber other kernel parameters the user/distro set (#19 — boot-safety).
+        MANAGED=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
+        MANAGED="${MANAGED#quiet splash }"
 
-        # Check if GRUB is already configured
-        if grep -Fq "GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"" "$GRUB_DEFAULT"; then
+        CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
+        MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
+
+        if [ "$CURRENT" = "$MERGED" ]; then
             log "GRUB is already configured with optimal HugePages settings."
         else
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"|" "$GRUB_DEFAULT"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$MERGED\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
