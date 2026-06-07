@@ -174,6 +174,36 @@ proxy, dashboard) is sized separately — see Pithead's
 
 ---
 
+## 🧪 Testing & development
+
+RigForge ships a dependency-free test suite plus an opt-in container end-to-end run. Both mirror the
+CI jobs, so `make test` locally is what CI checks.
+
+```bash
+make lint        # shellcheck the script, utilities, and test scripts
+make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
+make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
+```
+
+**What `make test` covers** — it sources `rigforge.sh` and exercises its functions in isolation, with
+every external/privileged command (`git`, `make`, `cmake`, `sudo`, `systemctl`, `modprobe`,
+`apt-get`, …) and all hardware detection (`uname`, `lscpu`, `sysctl`, `nproc`, `hostname`) replaced by
+fakes on `PATH`. Because the hardware is faked, **one run on any machine simulates every supported
+platform** — it asserts the generated XMRig config for the AMD EPYC, Ryzen X3D, generic-Linux and
+macOS profiles, plus config parsing, `DONATION` validation, the `.local` hostname handling, and a full
+stubbed deployment run (executed twice to prove idempotency).
+
+**What `make test-e2e` adds** — it runs the *real* `rigforge.sh` end-to-end inside a throwaway
+`ubuntu` container (RigForge's documented Linux target, `linux/amd64`), against a real, disposable
+`/etc`. This validates the Linux-only deploy path with genuine tools — GNU `sed`, `envsubst`, the
+`fstab`/`limits`/GRUB edits and their idempotency — which can't run natively on a macOS host. Only the
+heavy XMRig compile and the package install are stubbed. It skips cleanly if Docker isn't available.
+
+No XMRig binary is compiled by the tests — the heavy native build is stubbed; the suite asserts the
+*orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
+
+---
+
 ## 📝 License
 
 Provided "as-is" under the [MIT License](./LICENSE).
