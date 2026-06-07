@@ -188,6 +188,15 @@ prepare_workspace() {
         log "Archiving existing worker installation..."
         mv "$GIT_DIR" "${GIT_DIR}-${TIMESTAMP}"
     fi
+
+    # Prune old build archives so re-runs don't grow the disk without bound (keep the most recent
+    # few). Override the retention count with KEEP_ARCHIVES.
+    local keep="${KEEP_ARCHIVES:-3}"
+    # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
+    ls -dt "${GIT_DIR}-"* 2>/dev/null | tail -n +"$((keep + 1))" | while IFS= read -r old; do
+        log "Pruning old build archive: $(basename "$old")"
+        rm -rf "$old" 2>/dev/null || sudo rm -rf "$old"
+    done
 }
 
 install_dependencies() {

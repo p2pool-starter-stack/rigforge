@@ -339,6 +339,18 @@ assert_rc       "tampered commit fails build"   "$rc" "1"
 assert_contains "tampered commit is reported"   "$out" "commit mismatch"
 
 # ---------------------------------------------------------------------------
+# prepare_workspace archives the existing build and must prune old archives so re-runs don't grow the
+# disk without bound (#4). KEEP_ARCHIVES caps how many are retained.
+echo "== unit: prepare_workspace prunes old build archives (#4) =="
+ws="$(mktemp -d "$SANDBOX/ws.XXXXXX")"
+mkdir -p "$ws/xmrig" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
+         "$ws/xmrig-20240101_000003" "$ws/xmrig-20240101_000004"
+( source "$SCRIPT"; OS_TYPE=Linux; WORKER_ROOT="$ws"; set +e
+  PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 prepare_workspace >/dev/null 2>&1 )
+assert_eq "archives pruned to KEEP_ARCHIVES"    "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
+assert_eq "current install was archived (gone)" "$([ -d "$ws/xmrig" ] && echo present || echo gone)" "gone"
+
+# ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
 # Every /etc target is redirected into the work dir, and passthrough sudo lets the writes land there.
 #
