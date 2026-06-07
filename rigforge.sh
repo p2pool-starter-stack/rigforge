@@ -559,7 +559,7 @@ finish_deployment() {
         log "Service created. xmrig running in background."
     else
         log "You can run the miner manually:"
-        echo "sudo screen -S xmrig $WORKER_ROOT/xmrig/build/xmrig --config=$WORKER_ROOT/config.json"
+        echo "sudo screen -S xmrig $WORKER_ROOT/xmrig/build/xmrig --config=$WORKER_ROOT/xmrig/build/config.json"
     fi
 }
 
