@@ -19,7 +19,7 @@ it by hand means:
 - Wiring up a systemd service, a performance governor, and log rotation.
 - Redoing the CPU-specific parts every time you deploy a different machine.
 
-RigForge does all of that in one command, with a per-CPU profile picked automatically, idempotent
+RigForge does all of that in one command, with tuning auto-detected from your CPU, idempotent
 re-runs, and a build pinned to an audited XMRig version. It's the difference between a one-off
 afternoon of tuning and `sudo ./rigforge.sh`. If you enjoy hand-wiring it, the manual route is a great
 learning exercise — RigForge just compiles **stock upstream XMRig**, so you're never locked into a
@@ -46,7 +46,7 @@ between the miner and the stack.
 ## What hardware do I need?
 
 A 64-bit x86 CPU with **AVX2**, ~2.3 GB of free RAM for RandomX fast mode (4 GB+ recommended), and —
-for the HugePages/MSR speedups — a Linux box you can reboot once. Full sizing and the per-CPU profiles
+for the HugePages/MSR speedups — a Linux box you can reboot once. Full sizing and how the tuning is chosen
 are in [Hardware Requirements](hardware.md). Hashrate scales with cores **and L3 cache** (RandomX wants
 ~2 MB of L3 per thread).
 

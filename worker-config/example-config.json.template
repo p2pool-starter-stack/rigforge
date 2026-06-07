@@ -7,8 +7,8 @@
         "hwloc": true,
         "memory-pool": true,
         "yield": false,
-        "priority": 4,
-        "asm": "ryzen",
+        "priority": 2,
+        "asm": "auto",
         "rx": null
     },
     "randomx": {
@@ -16,15 +16,10 @@
         "mode": "fast",
         "1gb-pages": true,
         "rdmsr": true,
-        "wrmsr": ["0xc0011022:0x510000"],
+        "wrmsr": true,
         "cache_qos": false,
         "numa": true,
         "scratchpad_prefetch_mode": 1
-    },
-    "msr": {
-        "enabled": true,
-        "preset": "zen2", 
-        "fork": true
     },
     "pools": [
         {

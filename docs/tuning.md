@@ -55,14 +55,17 @@ RigForge builds XMRig from source rather than shipping a binary:
 
 ## Hardware tuning
 
-The hashrate win comes from configuration, not the silicon alone. RigForge detects the CPU and applies:
+The hashrate win comes from configuration, not the silicon alone. RigForge leans on XMRig's own
+auto-detection and adds dedicated-miner defaults:
 
-- **A per-CPU profile** — assembly path, thread count, priorities, and NUMA binding tailored to the
-  CPU family (AMD EPYC, Ryzen X3D, generic x86, macOS). See
-  [Hardware › Per-CPU profiles](hardware.md#per-cpu-tuning-profiles).
+- **Auto-detected thread count, ASM path, MSR preset and NUMA** — XMRig reads the CPU topology and
+  sizes everything to it (`cpu.rx: -1`, `cpu.asm: auto`, `randomx.wrmsr: true`, `randomx.numa: true`),
+  which stays correct for CPUs a model-name table would miss. See
+  [Hardware › How RigForge tunes](hardware.md#how-rigforge-tunes).
+- **Dedicated-miner defaults** — `cpu.yield: false` (busy-wait for max hashrate) and `cpu.priority: 2`.
 - **RandomX fast mode** — the full 2 GB dataset in memory for maximum hashrate.
-- **Thread layout sized to L3** — RandomX wants ~2 MB of L3 per thread; the profile sizes threads
-  accordingly rather than blindly using every core.
+- **Thread layout sized to L3** — RandomX wants ~2 MB of L3 per thread; XMRig sizes threads to the
+  detected L3 rather than blindly using every core.
 
 ---
 
@@ -82,7 +85,7 @@ These are why a **reboot** is needed on Linux:
   `fstab` and `limits.conf` so XMRig can pin memory. These edits are applied **once** (append-only,
   deduplicated) so re-runs don't accumulate duplicate lines.
 
-macOS doesn't expose HugePages or MSRs, so those stages are skipped there; the macOS profile sets
+macOS doesn't expose HugePages or MSRs, so those stages are skipped there; the macOS path sets
 XMRig accordingly.
 
 ---
@@ -114,6 +117,6 @@ RigForge is built to be re-run:
 
 ## See also
 
-- [Hardware Requirements](hardware.md) — the per-CPU profiles and L3 math.
+- [Hardware Requirements](hardware.md) — the tuning knobs and L3 math.
 - [Operations & Maintenance](operations.md) — commands, upgrades, and troubleshooting.
 - [Configuration](configuration.md) — the keys that drive the generated config.

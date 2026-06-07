@@ -8,7 +8,7 @@
 # How platforms are simulated FROM ANY MACHINE: hardware detection (uname/lscpu/sysctl/nproc/hostname)
 # and the privileged/external commands (git/make/cmake/sudo/systemctl/modprobe/mount/apt-get/...) are
 # all faked in a stub directory placed first on PATH. The fakes read STUB_* env vars, so one test run
-# can exercise the EPYC, Ryzen X3D, generic-Linux and macOS code paths back to back.
+# can exercise the generic-Linux (incl. EPYC / Ryzen X3D inputs) and macOS code paths back to back.
 #
 # We source the script-under-test from a dynamic path, and set many globals that the sourced rigforge
 # functions consume (shellcheck can't see across the source boundary). Disable the two warnings that
@@ -277,10 +277,16 @@ d="$(gen_config)"
 cfg="$d/config.json"
 assert_eq "generic: rx auto (-1)" "$(J "$cfg" '.cpu.rx')" "-1"
 assert_eq "generic: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
-assert_eq "generic: numa off" "$(J "$cfg" '.randomx.numa')" "false"
+assert_eq "generic: numa on (XMRig default)" "$(J "$cfg" '.randomx.numa')" "true"
 assert_eq "generic: huge-pages on" "$(J "$cfg" '.cpu."huge-pages"')" "true"
-assert_eq "generic: msr on" "$(J "$cfg" '.cpu.msr')" "true"
-assert_eq "generic: priority default" "$(J "$cfg" '.cpu.priority')" "null"
+# Dedicated-miner defaults (#43): busy-wait for max hashrate, priority 2.
+assert_eq "generic: yield off (dedicated)" "$(J "$cfg" '.cpu.yield')" "false"
+assert_eq "generic: priority 2" "$(J "$cfg" '.cpu.priority')" "2"
+# MSR mod is driven by randomx.wrmsr (XMRig auto-detects the CPU family). The old cpu.msr key and
+# top-level msr object are NOT valid XMRig keys and must not appear in the generated config (#43).
+assert_eq "generic: randomx.wrmsr on (real MSR control)" "$(J "$cfg" '.randomx.wrmsr')" "true"
+assert_eq "generic: no dead cpu.msr key" "$(J "$cfg" '.cpu.msr')" "null"
+assert_eq "generic: no dead msr object" "$(J "$cfg" '.msr')" "null"
 # HTTP API locked down on Linux (#7 / #17): made READ-ONLY (restricted) so it can't control the
 # miner remotely. It stays bound to 0.0.0.0 (NOT localhost) on purpose: Pithead reads per-rig stats
 # from the stack host at http://<rig>:8080 (read-only, token = rig name) — localhost would break that
@@ -318,22 +324,24 @@ cfg="$d/config.json"
 assert_eq "epyc: numa on" "$(J "$cfg" '.randomx.numa')" "true"
 assert_eq "epyc: rx auto (-1)" "$(J "$cfg" '.cpu.rx')" "-1"
 assert_eq "epyc: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
-assert_eq "epyc: msr on" "$(J "$cfg" '.cpu.msr')" "true"
+assert_eq "epyc: randomx.wrmsr on" "$(J "$cfg" '.randomx.wrmsr')" "true"
 assert_eq "epyc: http stays restricted" "$(J "$cfg" '.http.restricted')" "true"
 assert_eq "epyc: http reachable (LAN)" "$(J "$cfg" '.http.host')" "0.0.0.0"
-assert_contains "epyc: profile logged" "$log_out" "AMD EPYC"
+assert_contains "epyc: detected CPU logged" "$log_out" "AMD EPYC"
 
-echo "== config-gen: AMD Ryzen X3D (desktop) =="
+# #44: a dual-CCD X3D (7950X3D) must NOT get a hand-pinned all-cores list — only one CCD has the
+# V-cache, so listing every core forces threads onto the slow CCD. It now uses XMRig's cache-aware
+# auto-config like every other CPU.
+echo "== config-gen: AMD Ryzen X3D — auto, not hand-pinned (#44) =="
 export STUB_CPU_MODEL="AMD Ryzen 9 7950X3D 16-Core Processor" STUB_NPROC=4 STUB_HOSTNAME=rigbox
 SIM_OS=Linux SIM_DON=1
 d="$(gen_config)"
 cfg="$d/config.json"
-assert_eq "x3d: rx pins cores [0..3]" "$(JC "$cfg" '.cpu.rx')" "[0,1,2,3]"
-assert_eq "x3d: asm ryzen" "$(J "$cfg" '.cpu.asm')" "ryzen"
-assert_eq "x3d: priority 4" "$(J "$cfg" '.cpu.priority')" "4"
+assert_eq "x3d: rx auto (-1), not all-cores" "$(J "$cfg" '.cpu.rx')" "-1"
+assert_eq "x3d: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
+assert_eq "x3d: priority 2" "$(J "$cfg" '.cpu.priority')" "2"
 assert_eq "x3d: yield off" "$(J "$cfg" '.cpu.yield')" "false"
-assert_eq "x3d: init-avx2 on" "$(J "$cfg" '.randomx."init-avx2"')" "1"
-assert_eq "x3d: msr on" "$(J "$cfg" '.cpu.msr')" "true"
+assert_eq "x3d: no dead cpu.msr key" "$(J "$cfg" '.cpu.msr')" "null"
 
 echo "== config-gen: macOS overrides =="
 export STUB_CPU_MODEL="Apple M2" STUB_NCPU=4 STUB_HOSTNAME=rigbox
