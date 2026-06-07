@@ -356,7 +356,7 @@ pin_compile() { # <stub_git_head>; runs compile_xmrig in a sandbox, prints its o
     local d; d="$(mktemp -d "$SANDBOX/pin.XXXXXX")"
     ( cd "$d" || exit 1
       source "$SCRIPT"
-      OS_TYPE="$(uname -s)"; DONATION=1; WORKER_ROOT="$d"   # compile_xmrig writes its commit marker under WORKER_ROOT
+      OS_TYPE="$(uname -s)"; DONATION=1; WORKER_ROOT="$d"   # compile_xmrig writes build.log + the commit marker under WORKER_ROOT
       export XMRIG_COMMIT="pinnedsha000000000000000000000000000000"
       [ -n "$1" ] && export STUB_GIT_HEAD="$1"
       set +e
@@ -370,6 +370,19 @@ assert_rc       "tampered commit fails build"   "$rc" "1"
 assert_contains "tampered commit is reported"   "$out" "commit mismatch"
 
 # ---------------------------------------------------------------------------
+# Build robustness (#9): cap -j by RAM (~1 job / 2 GB) and report the failing step on error.
+echo "== unit: compute_build_jobs caps -j by RAM (#9) =="
+mk_meminfo() { printf 'MemTotal:       %s kB\n' "$1" > "$SANDBOX/$2"; echo "$SANDBOX/$2"; }
+assert_eq "2GB host caps to 1 job"    "$( source "$SCRIPT"; MEMINFO="$(mk_meminfo 2097152 mi2)"  compute_build_jobs 8 )"  "1"
+assert_eq "8GB host caps to 4 jobs"   "$( source "$SCRIPT"; MEMINFO="$(mk_meminfo 8388608 mi8)"  compute_build_jobs 16 )" "4"
+assert_eq "ample RAM uses all cores"  "$( source "$SCRIPT"; MEMINFO="$(mk_meminfo 33554432 mi32)" compute_build_jobs 8 )" "8"
+assert_eq "unknown RAM -> all cores"  "$( source "$SCRIPT"; MEMINFO=/nonexistent compute_build_jobs 6 )" "6"
+
+echo "== unit: on_err reports the failing step (#9) =="
+out="$( source "$SCRIPT"; set +e; CURRENT_STEP="compiling XMRig"; false; on_err 2>&1 )"
+assert_contains "err trap names the step"   "$out" "compiling XMRig"
+assert_contains "err trap suggests bash -x" "$out" "bash -x"
+
 # prepare_workspace archives the existing build and must prune old archives so re-runs don't grow the
 # disk without bound (#4). KEEP_ARCHIVES caps how many are retained.
 echo "== unit: prepare_workspace prunes old build archives (#4) =="
@@ -494,6 +507,7 @@ assert_contains "build: cloned xmrig"               "$(cat "$W/calls.log")" "[gi
 assert_contains "build: ran cmake"                  "$(cat "$W/calls.log")" "[cmake]"
 assert_contains "build: ran make"                   "$(cat "$W/calls.log")" "[make]"
 assert_contains "build: donate.h patched to 7"      "$(cat "$W/home/worker/xmrig/src/donate.h")" "DonateLevel = 7;"
+assert_eq       "build: output captured to logfile" "$([ -f "$W/home/worker/build.log" ] && echo yes || echo no)" "yes"
 assert_contains "build: verified pinned commit"     "$E2E_OUT" "Verified XMRig"
 assert_eq       "deploy: pool url from hostname"    "$(J "$BUILD/config.json" '.pools[0].url')"   "poolbox.lan:3333"
 assert_eq       "deploy: donate-level = 7"          "$(J "$BUILD/config.json" '.["donate-level"]')" "7"

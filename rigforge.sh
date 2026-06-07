@@ -17,6 +17,18 @@ log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
 warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1"; }
 error() { echo -e "${C_RED}[ERROR]${C_RESET} $1"; exit 1; }
 
+# Names the phase currently running so the ERR trap can report where an unexpected failure happened.
+CURRENT_STEP="starting up"
+on_err() {
+    local ec=$?
+    echo -e "${C_RED}[ERROR]${C_RESET} rigforge aborted while ${CURRENT_STEP} (exit $ec)." >&2
+    if [ -n "${BUILD_LOG:-}" ] && [ -f "${BUILD_LOG:-}" ]; then
+        echo "  Build output is in: $BUILD_LOG — last lines:" >&2
+        tail -n 20 "$BUILD_LOG" >&2 2>/dev/null || true
+    fi
+    echo "  Re-run with 'bash -x $0' to trace the exact command." >&2
+}
+
 # --- Global Variables ---
 OS_TYPE="$(uname -s)"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -50,6 +62,9 @@ HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
 _RIGFORGE_SOURCED=0
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 
+# Report which step failed on an unexpected error (skip when sourced by the test suite).
+[ "$_RIGFORGE_SOURCED" = "0" ] && trap on_err ERR
+
 # --- Helper Functions ---
 
 # Append a single line to a file only if that exact line is not already present (idempotent).
@@ -57,6 +72,20 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 append_once() {
     local file="$1" line="$2"
     grep -qFx "$line" "$file" 2>/dev/null || echo "$line" | sudo tee -a "$file" > /dev/null
+}
+
+# Choose a safe build parallelism: don't exceed core count, and cap at ~1 job per 2 GB of RAM so the
+# heavy XMRig/RandomX C++ translation units don't OOM low-memory hosts. Honors MEMINFO for testing.
+compute_build_jobs() { # <ncpu>
+    local mem_kb mem_gb jobs="$1" max
+    mem_kb=$(awk '/^MemTotal:/ {print $2}' "${MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)
+    mem_gb=$(( mem_kb / 1024 / 1024 ))
+    if [ "$mem_gb" -gt 0 ]; then
+        max=$(( mem_gb / 2 )); [ "$max" -lt 1 ] && max=1
+        [ "$jobs" -gt "$max" ] && jobs="$max"
+    fi
+    [ "$jobs" -lt 1 ] && jobs=1
+    echo "$jobs"
 }
 
 # True if a finished XMRig build for the pinned commit already exists, so we can skip the recompile.
@@ -316,22 +345,30 @@ compile_xmrig() {
     [ "$actual" = "$XMRIG_COMMIT" ] || error "XMRig commit mismatch: expected $XMRIG_COMMIT, got $actual"
     log "Verified XMRig $XMRIG_VERSION at commit $XMRIG_COMMIT"
 
+    # Build output goes to a logfile (not /dev/null) so a failed compile is diagnosable; the ERR trap
+    # points the user at it. BUILD_LOG is global so on_err can find it.
+    BUILD_LOG="$WORKER_ROOT/build.log"
+    : > "$BUILD_LOG" 2>/dev/null || true
+
+    local cores jobs
     if [ "$OS_TYPE" == "Darwin" ]; then
         sed -i '' "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
-        CORES=$(sysctl -n hw.ncpu)
-        log "Compiling binary (Concurrency: $CORES threads)..."
+        cores=$(sysctl -n hw.ncpu)
+        jobs=$(compute_build_jobs "$cores")
+        log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
         mkdir -p xmrig/build && cd xmrig/build
         # macOS often needs explicit OpenSSL root for cmake if installed via brew
-        cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" &> /dev/null
+        cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" >> "$BUILD_LOG" 2>&1
     else
         sed -i "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
-        CORES=$(nproc)
-        log "Compiling binary (Concurrency: $CORES threads)..."
+        cores=$(nproc)
+        jobs=$(compute_build_jobs "$cores")
+        log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
         mkdir -p xmrig/build && cd xmrig/build
-        cmake .. -DWITH_HWLOC=ON &> /dev/null
+        cmake .. -DWITH_HWLOC=ON >> "$BUILD_LOG" 2>&1
     fi
 
-    make -j$CORES &> /dev/null
+    make -j"$jobs" >> "$BUILD_LOG" 2>&1
 
     # Record the built commit so a later run can detect "already built" and skip the recompile (#4).
     echo "$XMRIG_COMMIT" > "$WORKER_ROOT/xmrig/.rigforge-commit"
@@ -634,18 +671,18 @@ decide_rebuild() {
 }
 
 main() {
-    check_prerequisites
-    ensure_config_exists
-    parse_config
-    decide_rebuild
-    prepare_workspace
-    install_dependencies
-    compile_xmrig
-    generate_xmrig_config
-    tune_kernel
-    configure_limits
-    install_service
-    finish_deployment
+    CURRENT_STEP="verifying prerequisites";  check_prerequisites
+    CURRENT_STEP="ensuring config exists";   ensure_config_exists
+    CURRENT_STEP="parsing config";           parse_config
+    CURRENT_STEP="checking the build";        decide_rebuild
+    CURRENT_STEP="preparing workspace";      prepare_workspace
+    CURRENT_STEP="installing dependencies";  install_dependencies
+    CURRENT_STEP="compiling XMRig";          compile_xmrig
+    CURRENT_STEP="generating XMRig config";  generate_xmrig_config
+    CURRENT_STEP="tuning the kernel";        tune_kernel
+    CURRENT_STEP="configuring limits";       configure_limits
+    CURRENT_STEP="installing the service";   install_service
+    CURRENT_STEP="finishing up";             finish_deployment
 }
 
 # Upgrade flow: rebuild + restart ONLY if the pinned XMRig version/commit changed. Skips the
