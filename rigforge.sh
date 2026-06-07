@@ -142,7 +142,16 @@ parse_config() {
     if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
         error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
     fi
-    P2POOL_NODE_HOSTNAME=$(jq -r .P2POOL_NODE_HOSTNAME "$CONFIG_JSON")
+    P2POOL_NODE_HOSTNAME=$(jq -r '.P2POOL_NODE_HOSTNAME // empty' "$CONFIG_JSON")
+    # The host goes straight into the XMRig pool URL, so validate it before building: it must be set
+    # and look like a hostname/FQDN or an IPv4/IPv6 literal. This also rejects the unfilled template
+    # placeholder (<...>) and any shell/URL metacharacters.
+    if [ -z "$P2POOL_NODE_HOSTNAME" ]; then
+        error "P2POOL_NODE_HOSTNAME is required in $CONFIG_JSON (your pool/stack host or IP)."
+    fi
+    if ! [[ "$P2POOL_NODE_HOSTNAME" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+        error "P2POOL_NODE_HOSTNAME is not a valid host/IP: '$P2POOL_NODE_HOSTNAME'. Use a hostname, FQDN, or IP address."
+    fi
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
     if [ -z "$ACCESS_TOKEN" ]; then
         ACCESS_TOKEN=$(hostname)
