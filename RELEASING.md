@@ -21,13 +21,24 @@ Pre-1.0 (`0.x`), minor versions may include breaking changes while the interface
    ```bash
    git commit -am "release: vX.Y.Z"
    ```
-5. Tag and push (annotated tag, matching `VERSION`):
+5. Tag and push (annotated tag, **matching `VERSION`**):
    ```bash
    git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
    git push origin main --follow-tags
    ```
-6. Create the GitHub Release from the `vX.Y.Z` tag, pasting that version's `CHANGELOG.md` section as
-   the notes.
+
+That's it — pushing the tag triggers the **release pipeline**
+([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
+
+- **verifies** the tag matches `VERSION` (the build fails otherwise),
+- packages the deploy bundle (`rigforge.sh`, `util/`, `worker-config/`, `systemd/`,
+  `config.json.template`, `README.md`, `LICENSE`, `VERSION`) as `rigforge-vX.Y.Z.zip` **and**
+  `.tar.gz` — `tests/`, `.github/`, and other dev files are excluded,
+- generates `SHA256SUMS` for the artifacts,
+- pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
+- publishes the GitHub Release (0.x tags are marked pre-release).
+
+To verify a downloaded bundle: `sha256sum -c SHA256SUMS`.
 
 ## Notes
 

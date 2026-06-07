@@ -1,0 +1,72 @@
+name: Release
+
+# Cut a release by pushing an annotated tag that matches VERSION, e.g.:
+#   git tag -a v1.0.0 -m "RigForge v1.0.0" && git push origin v1.0.0
+# This packages the deploy bundle, checksums it, pulls notes from CHANGELOG.md, and publishes a
+# GitHub Release. See RELEASING.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release + upload assets
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify the tag matches VERSION
+        run: |
+          set -euo pipefail
+          want="v$(tr -d '[:space:]' < VERSION)"
+          if [ "$TAG" != "$want" ]; then
+            echo "::error::Tag '$TAG' does not match VERSION ('$want'). Bump VERSION or retag."
+            exit 1
+          fi
+
+      - name: Build the deploy bundle (.zip + .tar.gz + checksums)
+        run: |
+          set -euo pipefail
+          stage="rigforge-$TAG"
+          mkdir -p "$stage"
+          # Runtime files a user needs to deploy a worker — no tests/, .github/, or dev cruft.
+          cp -a rigforge.sh util worker-config systemd config.json.template README.md LICENSE VERSION "$stage/"
+          zip -rq "$stage.zip" "$stage"
+          tar -czf "$stage.tar.gz" "$stage"
+          sha256sum "$stage.zip" "$stage.tar.gz" > SHA256SUMS
+          echo "--- SHA256SUMS ---"; cat SHA256SUMS
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          # Print the body of this version's "## [x.y.z]" section (up to the next "## " heading).
+          awk -v ver="$ver" '
+            index($0, "## [" ver "]") == 1 { grab = 1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          # Fall back to a generic note if that version has no changelog section yet.
+          if ! grep -q '[^[:space:]]' RELEASE_NOTES.md; then
+            printf 'RigForge %s\n' "$TAG" > RELEASE_NOTES.md
+          fi
+          echo "--- notes ---"; cat RELEASE_NOTES.md
+
+      - name: Publish the GitHub Release
+        run: |
+          set -euo pipefail
+          # Mark 0.x tags as pre-releases.
+          pre=""
+          case "${TAG#v}" in 0.*) pre="--prerelease" ;; esac
+          gh release create "$TAG" $pre \
+            --title "RigForge $TAG" \
+            --notes-file RELEASE_NOTES.md \
+            "rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS
