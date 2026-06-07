@@ -317,6 +317,22 @@ out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 HUGEPAGES_1G_NR="$SAN
 assert_eq "grub --runtime: 1G allocated"   "$out" "154"
 
 # ---------------------------------------------------------------------------
+# tune_kernel must MERGE its HugePage/MSR params into the existing GRUB cmdline, not overwrite it
+# wholesale (#19 — overwriting drops other kernel params; a boot-safety risk).
+echo "== unit: grub_merge_cmdline preserves other kernel params (#19) =="
+m="$( source "$SCRIPT"; grub_merge_cmdline "default_hugepagesz=2M hugepages=1234 msr.allow_writes=on" "quiet splash nomodeset" )"
+assert_contains "merge keeps quiet"            "$m" "quiet"
+assert_contains "merge keeps custom nomodeset" "$m" "nomodeset"
+assert_contains "merge adds hugepages"         "$m" "hugepages=1234"
+assert_contains "merge adds msr.allow_writes"  "$m" "msr.allow_writes=on"
+m2="$( source "$SCRIPT"; grub_merge_cmdline "default_hugepagesz=2M hugepages=1234 msr.allow_writes=on" "$m" )"
+assert_eq       "merge is idempotent"          "$m2" "$m"
+m3="$( source "$SCRIPT"; grub_merge_cmdline "hugepages=2000" "quiet hugepages=999 default_hugepagesz=2M" )"
+assert_contains "stale managed param replaced" "$m3" "hugepages=2000"
+assert_absent   "old managed param dropped"    "$m3" "hugepages=999"
+assert_contains "non-managed param kept"       "$m3" "quiet"
+
+# ---------------------------------------------------------------------------
 # Pinned-build verification (#18): compile_xmrig clones the pinned XMRIG_VERSION and aborts if the
 # cloned HEAD doesn't match XMRIG_COMMIT. STUB_GIT_HEAD makes the git stub report a tampered commit
 # so we can prove the supply-chain check rejects it (and passes when they match).
@@ -405,6 +421,7 @@ if [ "$HOST_OS" = Linux ]; then
     assert_contains "limits: fstab 2M mount written"    "$(cat "$W/etc/fstab")" "hugetlbfs /dev/hugepages"
     assert_contains "limits: memlock unlimited written" "$(cat "$W/etc/security/limits.conf")" "soft memlock unlimited"
     assert_contains "grub: hugepages params written"    "$(cat "$W/etc/default/grub")" "default_hugepagesz=2M"
+    assert_contains "grub: preserves existing params (#19)" "$(cat "$W/etc/default/grub")" "quiet splash"
 else
     assert_eq       "deploy: macOS huge-pages off"      "$(J "$BUILD/config.json" '.cpu."huge-pages"')" "false"
     assert_eq       "deploy: macOS http host all v6"    "$(J "$BUILD/config.json" '.http.host')" "::"
