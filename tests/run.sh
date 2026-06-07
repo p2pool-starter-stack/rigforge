@@ -242,6 +242,20 @@ c="$(mkconf tok "{ \"ACCESS_TOKEN\": \"tok123\", \"POOL_HOST\": \"h\", $CFG_TPL 
 assert_eq "ACCESS_TOKEN honoured" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "tok123"
 c="$(mkconf notok "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "ACCESS_TOKEN falls back to hostname" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rigbox"
+
+# #22: configurable rig label. Defaults to hostname; the token follows the rig name so the Pithead
+# "Bearer <rig name>" contract holds even with a custom name.
+echo "== unit: WORKER_NAME / rig label (#22) =="
+c="$(mkconf wname "{ \"WORKER_NAME\": \"rig-07\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
+assert_eq "WORKER_NAME honoured" "$(parse_and_print "$c" "$ROOT" WORKER_NAME)" "rig-07"
+assert_eq "token defaults to rig name" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rig-07"
+c="$(mkconf wnamedef "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
+assert_eq "WORKER_NAME defaults to hostname" "$(parse_and_print "$c" "$ROOT" WORKER_NAME)" "rigbox"
+c="$(mkconf wnametok "{ \"WORKER_NAME\": \"rig-07\", \"ACCESS_TOKEN\": \"custom\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
+assert_eq "explicit token overrides rig name" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "custom"
+c="$(mkconf wnamebad "{ \"WORKER_NAME\": \"bad name!\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "invalid WORKER_NAME rejected" "$?" "1"
 c="$(mkconf rel "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "relative template resolved vs SCRIPT_DIR" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$ROOT/./worker-config/example-config.json.template"
 c="$(mkconf abs "{ \"POOL_HOST\": \"h\", \"WORKER_CONFIG_FILE\": \"$TEMPLATE\" }")"
@@ -251,9 +265,11 @@ echo "== unit: parse_config — error paths =="
 printf '{ not json ' >"$SANDBOX/bad.json"
 parse_rc "$SANDBOX/bad.json" "$ROOT"
 assert_rc "invalid JSON rejected" "$?" "1"
+# #23: WORKER_CONFIG_FILE is optional — a minimal config.json needs only POOL_HOST.
 c="$(mkconf noworker "{ \"POOL_HOST\": \"h\" }")"
 parse_rc "$c" "$ROOT"
-assert_rc "missing WORKER_CONFIG_FILE rejected" "$?" "1"
+assert_rc "missing WORKER_CONFIG_FILE uses default" "$?" "0"
+assert_eq "default template resolved" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$ROOT/./worker-config/example-config.json.template"
 c="$(mkconf notmpl "{ \"POOL_HOST\": \"h\", \"WORKER_CONFIG_FILE\": \"./nope/missing.json\" }")"
 parse_rc "$c" "$ROOT"
 assert_rc "missing template file rejected" "$?" "1"
@@ -309,6 +325,7 @@ gen_config() { # echoes path to the dir containing config.json
             POOLS_JSON="[{\"url\":\"$POOL_ADDRESS:3333\",\"user\":\"\",\"pass\":\"x\",\"keepalive\":true,\"tls\":false,\"enabled\":true}]"
         fi
         ACCESS_TOKEN="${SIM_TOK:-tok123}"
+        WORKER_NAME="${SIM_NAME:-}"
         DONATION="${SIM_DON:-1}"
         LOGROTATE_DIR="$d"
         set +e
@@ -423,6 +440,15 @@ assert_eq "pool[1] tls applied" "$(J "$cfg" '.pools[1].tls')" "true"
 assert_eq "all pools enabled" "$(J "$cfg" '[.pools[].enabled] | all')" "true"
 assert_eq "blank user filled with rig name" "$(JC "$cfg" '[.pools[].user] | unique')" '["rigbox"]'
 unset STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+
+# #22: a custom rig label flows into the pool user.
+echo "== config-gen: custom rig label (#22) =="
+export STUB_CPU_MODEL="Intel(R) Xeon" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+SIM_OS=Linux SIM_DON=1 SIM_NAME=fancy-rig
+d="$(gen_config)"
+cfg="$d/config.json"
+unset SIM_NAME STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+assert_eq "pool user = WORKER_NAME" "$(J "$cfg" '.pools[0].user')" "fancy-rig"
 
 echo "== config-gen: idempotent (same inputs -> identical output) =="
 export STUB_CPU_MODEL="Intel(R) Xeon(R)" STUB_NPROC=8 STUB_HOSTNAME=rigbox
@@ -808,6 +834,15 @@ fi
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"
 if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVer ($ver)"; else bad "VERSION is SemVer" "got [$ver]"; fi
+
+# #23: the advanced example must be valid JSON and must document every config.json key parse_config
+# reads — so the reference can't silently drift from the code.
+echo "== unit: config.advanced.example.json (#23) =="
+ADV="$ROOT/config.advanced.example.json"
+if jq -e . "$ADV" >/dev/null 2>&1; then ok "advanced example is valid JSON"; else bad "advanced example is valid JSON" "jq parse failed"; fi
+for k in POOL_HOST pools WORKER_NAME ACCESS_TOKEN DONATION HOME_DIR WORKER_CONFIG_FILE; do
+    if jq -e --arg k "$k" 'has($k)' "$ADV" >/dev/null 2>&1; then ok "advanced example documents $k"; else bad "advanced example documents $k" "key missing"; fi
+done
 
 # ---------------------------------------------------------------------------
 echo ""

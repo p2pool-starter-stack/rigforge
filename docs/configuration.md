@@ -12,16 +12,22 @@ your pool host). You can also pre-create one from
 
 ## Minimal config
 
+The only field you must set is **`POOL_HOST`** — every other key is optional and falls back to a
+sensible default:
+
 ```json
 {
-    "HOME_DIR": "DYNAMIC_HOME",
-    "DONATION": 1,
-    "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template",
     "POOL_HOST": "YOUR_POOL_HOST_OR_IP"
 }
 ```
 
-`POOL_HOST` is the only field you must set. The rest have sensible defaults.
+That's a complete, working config. The interactive first-run setup writes a slightly fuller version
+(also listing `HOME_DIR`, `DONATION`, and `WORKER_CONFIG_FILE` at their defaults) — both are valid.
+
+> **Two-tier config (like Pithead).** Keep `config.json` minimal and only add the keys you actually
+> want to change. [`config.advanced.example.json`](../config.advanced.example.json) is a reference that
+> lists **every** key with its default — copy in only what you need; anything you omit keeps the
+> default. The reference table below documents each key.
 
 ---
 
@@ -33,8 +39,9 @@ your pool host). You can also pre-create one from
 | `pools` | _(derived from `POOL_HOST`)_ | XMRig's native pools array, passed through as-is. Lets you set any port/TLS and list backup pools for failover. Blank fields fall back to Pithead defaults. See [Pools](#pools-full-control). |
 | `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
 | `DONATION` | `1` | XMRig donate level, an integer **0–100** (percent). Patched into the build (`donate.h`) **and** written to the generated config, so it must be a valid integer or setup fails fast. |
-| `WORKER_CONFIG_FILE` | `./worker-config/example-config.json.template` | The XMRig config **template** RigForge tunes from. Relative paths resolve against the repo; absolute paths are used as-is. The default suits most setups. |
-| `ACCESS_TOKEN` | the machine's `hostname` | The XMRig HTTP API bearer token. Leave it unset so it defaults to the hostname — **Pithead authenticates as `Bearer <rig name>`**, so the token must equal the rig name (or be unset). See [Pithead Integration](pithead-integration.md). |
+| `WORKER_CONFIG_FILE` | `./worker-config/example-config.json.template` | The XMRig config **template** RigForge tunes from. Relative paths resolve against the repo; absolute paths are used as-is. Optional — omit it to use the bundled default. |
+| `WORKER_NAME` | the machine's `hostname` | The rig's label — the XMRig pool `user` and the name shown on the Pithead dashboard. Letters, digits, `.`, `-`, `_` only. |
+| `ACCESS_TOKEN` | same as `WORKER_NAME` | The XMRig HTTP API bearer token. Leave it unset so it defaults to the rig name — **Pithead authenticates as `Bearer <rig name>`**, so the token must equal the rig name (or be unset). See [Pithead Integration](pithead-integration.md). |
 
 ### Backward compatibility
 
@@ -89,7 +96,7 @@ to Pithead-friendly defaults**, so you only specify what you care about:
 | Field | Default if blank/omitted |
 |---|---|
 | `url` | `POOL_HOST:3333` (so you can leave it empty and just set `POOL_HOST`) |
-| `user` | the rig's hostname — keeps the Pithead token contract |
+| `user` | the rig name (`WORKER_NAME`, default hostname) — keeps the Pithead token contract |
 | `pass` | `"x"` |
 | `keepalive` | `true` |
 | `tls` | `false` |

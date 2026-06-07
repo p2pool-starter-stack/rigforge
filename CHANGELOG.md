@@ -12,6 +12,10 @@ All notable changes to RigForge are documented here. The format is based on
   directly (any port, TLS, and multiple pools for failover), with blank fields falling back to
   Pithead-friendly defaults. The simple `POOL_HOST` shorthand still synthesizes a single
   `POOL_HOST:3333` pool out of the box (#21, #42).
+- Configurable rig label via `WORKER_NAME` (defaults to the hostname); the API token follows the rig
+  name so the Pithead `Bearer <rig name>` contract still holds. Two-tier config like Pithead: a minimal
+  `config.json` (only `POOL_HOST` is required — `WORKER_CONFIG_FILE` now defaults) plus a
+  `config.advanced.example.json` documenting every key and its default (#22, #23).
 - Dependency-free test suite, Ubuntu end-to-end container harness, and CI (#5).
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart

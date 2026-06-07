@@ -196,10 +196,9 @@ parse_config() {
     if ! [[ "$DONATION" =~ ^[0-9]+$ ]] || [ "$DONATION" -gt 100 ]; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
-    WORKER_CONFIG_FILE=$(jq -r .WORKER_CONFIG_FILE "$CONFIG_JSON")
-    if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
-        error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
-    fi
+    # XMRig config template to tune from. Optional — defaults to the bundled example so a minimal
+    # config.json only needs POOL_HOST (#23).
+    WORKER_CONFIG_FILE=$(jq -r '.WORKER_CONFIG_FILE // "./worker-config/example-config.json.template"' "$CONFIG_JSON")
     # Pool(s). config.json may set XMRig's native `pools` array directly (#21, #42) — same structure
     # XMRig uses ({"url","user","pass","keepalive","tls",...}); any blank/missing field falls back to a
     # Pithead-friendly default (empty url -> POOL_HOST:3333). If there's no `pools` array, a single pool
@@ -239,9 +238,20 @@ parse_config() {
         fi
     done < <(jq -r '.[] | [.url, (.tls | tostring)] | @tsv' <<<"$POOLS_JSON")
 
+    # Rig label (#22): the worker's name on the dashboard and the XMRig pool `user`. Defaults to the
+    # machine hostname. The HTTP API token defaults to the SAME value, so the Pithead contract
+    # (the dashboard authenticates as `Bearer <rig name>`) keeps holding even with a custom name.
+    WORKER_NAME=$(jq -r '.WORKER_NAME // empty' "$CONFIG_JSON")
+    if [ -z "$WORKER_NAME" ]; then
+        WORKER_NAME=$(hostname)
+    fi
+    if ! [[ "$WORKER_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        error "WORKER_NAME may only contain letters, digits, dot, dash and underscore (got: '$WORKER_NAME')."
+    fi
+
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
     if [ -z "$ACCESS_TOKEN" ]; then
-        ACCESS_TOKEN=$(hostname)
+        ACCESS_TOKEN="$WORKER_NAME"
     fi
 
     # Resolve Template Path (Handle absolute vs relative paths)
@@ -483,8 +493,9 @@ generate_xmrig_config() {
         log "Detected CPU: ${CPU_MODEL:-unknown} — using XMRig auto-tuning (threads, asm, MSR, NUMA auto-detected)."
     fi
 
-    # Construct User ID (Hostname)
-    FULL_USER="$(hostname)"
+    # Rig label for the pool `user` field (#22). parse_config sets WORKER_NAME (default: hostname); the
+    # fallback keeps unit tests that call this function directly without parse_config working.
+    FULL_USER="${WORKER_NAME:-$(hostname)}"
 
     # Generate config.json via jq
     jq --argjson pools "$POOLS_JSON" \

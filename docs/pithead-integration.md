@@ -38,7 +38,7 @@ set up stack-side:
 | **Port** | `8080` | Pithead reads `GET http://<rig>:8080/1/summary`; the port is fixed dashboard-side. |
 | **Bind** | `0.0.0.0` (all interfaces) | The dashboard polls each worker from the stack host over the LAN. |
 | **Mode** | `restricted: true` (read-only) | The API can be **read** but not used to **control** the miner remotely. |
-| **Auth token** | the rig's hostname (or `ACCESS_TOKEN` in `config.json`) | Pithead authenticates as `Bearer <rig name>`, so the token must equal the rig name (or be unset). |
+| **Auth token** | the rig name (`WORKER_NAME`, default hostname; or an explicit `ACCESS_TOKEN`) | Pithead authenticates as `Bearer <rig name>`, so the token defaults to the rig name and stays in sync even with a custom `WORKER_NAME`. |
 
 Pithead discovers workers from the stratum proxy's connection list (the pool `user` label, which is the
 rig name) — there's **nothing to register** stack-side. Workers run on a trusted LAN and need no Tor.
