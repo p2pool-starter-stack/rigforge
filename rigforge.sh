@@ -302,10 +302,13 @@ generate_xmrig_config() {
     ONE_GB_PAGES="true"
     JIT="true"
     INIT_AVX2="-1"
-    # Lock down the HTTP API by default: read-only (restricted) and bound to
-    # localhost so the miner-control API is not reachable over the network.
+    # Lock down the HTTP API to READ-ONLY (restricted) so it can't be used to *control* the miner
+    # remotely. Keep it bound to all interfaces, NOT localhost: Pithead reads per-rig stats from the
+    # stack host via GET http://<rig>:8080/1/summary (read-only, authenticated by the per-rig access
+    # token = rig name). Binding localhost would break that integration — see issue #24. Workers are
+    # expected to live on a trusted LAN.
     HTTP_RESTRICTED="true"
-    HTTP_HOST="127.0.0.1"
+    HTTP_HOST="0.0.0.0"
 
     # macOS Specific Overrides
     if [ "$OS_TYPE" == "Darwin" ]; then

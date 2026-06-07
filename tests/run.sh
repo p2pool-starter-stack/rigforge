@@ -219,10 +219,12 @@ assert_eq "generic: numa off"            "$(J  "$cfg" '.randomx.numa')"      "fa
 assert_eq "generic: huge-pages on"       "$(J  "$cfg" '.cpu."huge-pages"')"  "true"
 assert_eq "generic: msr on"              "$(J  "$cfg" '.cpu.msr')"           "true"
 assert_eq "generic: priority default"    "$(J  "$cfg" '.cpu.priority')"      "null"
-# HTTP API locked down on Linux (#7 / #17): read-only + bound to localhost so the miner-control
-# API isn't reachable over the network.
+# HTTP API locked down on Linux (#7 / #17): made READ-ONLY (restricted) so it can't control the
+# miner remotely. It stays bound to 0.0.0.0 (NOT localhost) on purpose: Pithead reads per-rig stats
+# from the stack host at http://<rig>:8080 (read-only, token = rig name) — localhost would break that
+# integration (issue #24). The access-token assertion below is the auth half of the lockdown.
 assert_eq "generic: http restricted"     "$(J  "$cfg" '.http.restricted')"   "true"
-assert_eq "generic: http host localhost" "$(J  "$cfg" '.http.host')"         "127.0.0.1"
+assert_eq "generic: http reachable (LAN)" "$(J  "$cfg" '.http.host')"        "0.0.0.0"
 # Shared invariants (assert once, here):
 assert_eq "pools collapsed to one"       "$(J  "$cfg" '.pools | length')"    "1"
 assert_eq "pool url = addr:3333"         "$(J  "$cfg" '.pools[0].url')"      "myrig.local:3333"
@@ -245,7 +247,7 @@ assert_eq "epyc: rx auto (-1)"           "$(J "$cfg" '.cpu.rx')"        "-1"
 assert_eq "epyc: asm auto"               "$(J "$cfg" '.cpu.asm')"       "auto"
 assert_eq "epyc: msr on"                 "$(J "$cfg" '.cpu.msr')"       "true"
 assert_eq "epyc: http stays restricted"  "$(J "$cfg" '.http.restricted')" "true"
-assert_eq "epyc: http stays localhost"   "$(J "$cfg" '.http.host')"     "127.0.0.1"
+assert_eq "epyc: http reachable (LAN)"   "$(J "$cfg" '.http.host')"     "0.0.0.0"
 assert_contains "epyc: profile logged"   "$log_out"                     "AMD EPYC"
 
 echo "== config-gen: AMD Ryzen X3D (desktop) =="
