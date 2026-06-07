@@ -180,7 +180,7 @@ RigForge ships a dependency-free test suite plus an opt-in container end-to-end 
 CI jobs, so `make test` locally is what CI checks.
 
 ```bash
-make lint        # shellcheck the script, utilities, and test scripts
+make lint        # shellcheck + shfmt the script, utilities, and test scripts
 make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
 ```
