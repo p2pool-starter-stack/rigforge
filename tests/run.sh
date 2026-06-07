@@ -722,7 +722,7 @@ fi
 # ---------------------------------------------------------------------------
 # Release metadata (#3): VERSION must be valid SemVer so it stays in lock-step with tags/CHANGELOG.
 echo "== unit: VERSION is SemVer (#3) =="
-ver="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null)"
+ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"
 if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVer ($ver)"; else bad "VERSION is SemVer" "got [$ver]"; fi
 
 # ---------------------------------------------------------------------------
