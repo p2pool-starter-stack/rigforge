@@ -94,6 +94,7 @@ rc1=$?
 assert_rc "first run exits 0" "$rc1" "0"
 [ "$rc1" = 0 ] || printf '%s\n' "$out1" | tail -20
 assert_contains "donate.h patched by real sed" "$(cat "$WORK/data-home/worker/xmrig/src/donate.h" 2>/dev/null)" "DonateLevel = 7;"
+assert_eq "build: output captured to logfile" "$([ -f "$WORK/data-home/worker/build.log" ] && echo yes || echo no)" "yes"
 assert_contains "build: verified pinned commit" "$out1" "Verified XMRig"
 assert_eq "deploy: pool url from hostname" "$(jq -r '.pools[0].url' "$BUILD/config.json" 2>/dev/null)" "poolbox.lan:3333"
 assert_eq "deploy: EPYC numa applied" "$(jq -r '.randomx.numa' "$BUILD/config.json" 2>/dev/null)" "true"
@@ -102,6 +103,7 @@ assert_contains "service rendered by real envsubst" "$(cat /etc/systemd/system/x
 assert_contains "limits: fstab hugepages written" "$(cat /etc/fstab)" "hugetlbfs /dev/hugepages"
 assert_contains "limits: memlock written" "$(cat /etc/security/limits.conf)" "soft memlock unlimited"
 assert_contains "grub: hugepages configured" "$(cat /etc/default/grub)" "hugepages"
+assert_contains "grub: preserves existing params" "$(cat /etc/default/grub)" "quiet splash"
 if [ "$ARCH" = x86_64 ]; then
     assert_contains "kernel: msr module enabled (x86)" "$(cat /etc/modules-load.d/msr.conf 2>/dev/null)" "msr"
 else

@@ -20,6 +20,18 @@ error() {
     exit 1
 }
 
+# Names the phase currently running so the ERR trap can report where an unexpected failure happened.
+CURRENT_STEP="starting up"
+on_err() {
+    local ec=$?
+    echo -e "${C_RED}[ERROR]${C_RESET} rigforge aborted while ${CURRENT_STEP} (exit $ec)." >&2
+    if [ -n "${BUILD_LOG:-}" ] && [ -f "${BUILD_LOG:-}" ]; then
+        echo "  Build output is in: $BUILD_LOG — last lines:" >&2
+        tail -n 20 "$BUILD_LOG" >&2 2>/dev/null || true
+    fi
+    echo "  Re-run with 'bash -x $0' to trace the exact command." >&2
+}
+
 # --- Global Variables ---
 OS_TYPE="$(uname -s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -33,6 +45,9 @@ SERVICE_INSTALLED=false
 # Override via environment if you need a different release.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
+# Set to false when the pinned XMRig commit is already built, so a re-run/upgrade skips the (slow)
+# recompile and the service restart — making re-runs idempotent (#4).
+XMRIG_REBUILD=true
 
 # System paths the script writes to. Overridable so the test suite can redirect them at a sandbox
 # (the defaults are the real locations, so production behaviour is unchanged).
@@ -50,6 +65,9 @@ HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
 _RIGFORGE_SOURCED=0
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 
+# Report which step failed on an unexpected error (skip when sourced by the test suite).
+[ "$_RIGFORGE_SOURCED" = "0" ] && trap on_err ERR
+
 # --- Helper Functions ---
 
 # Append a single line to a file only if that exact line is not already present (idempotent).
@@ -57,6 +75,43 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 append_once() {
     local file="$1" line="$2"
     grep -qFx "$line" "$file" 2>/dev/null || echo "$line" | sudo tee -a "$file" >/dev/null
+}
+
+# Choose a safe build parallelism: don't exceed core count, and cap at ~1 job per 2 GB of RAM so the
+# heavy XMRig/RandomX C++ translation units don't OOM low-memory hosts. Honors MEMINFO for testing.
+compute_build_jobs() { # <ncpu>
+    local mem_kb mem_gb jobs="$1" max
+    mem_kb=$(awk '/^MemTotal:/ {print $2}' "${MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)
+    mem_gb=$((mem_kb / 1024 / 1024))
+    if [ "$mem_gb" -gt 0 ]; then
+        max=$((mem_gb / 2))
+        [ "$max" -lt 1 ] && max=1
+        [ "$jobs" -gt "$max" ] && jobs="$max"
+    fi
+    [ "$jobs" -lt 1 ] && jobs=1
+    echo "$jobs"
+}
+
+# True if a finished XMRig build for the pinned commit already exists, so we can skip the recompile.
+# Requires BOTH the built binary and a commit marker that matches XMRIG_COMMIT (a marker without a
+# binary means an incomplete build → rebuild).
+xmrig_already_built() {
+    local marker="$WORKER_ROOT/xmrig/.rigforge-commit"
+    [ -x "$WORKER_ROOT/xmrig/build/xmrig" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$XMRIG_COMMIT" ]
+}
+
+# Merge the HugePage/MSR kernel params we manage into an existing GRUB cmdline, preserving every
+# other parameter and replacing only the ones we own (so re-runs don't accumulate). Echoes the merged
+# cmdline. Usage: grub_merge_cmdline "<managed params>" "<current cmdline>"
+grub_merge_cmdline() {
+    local managed="$1" current="$2" preserved="" tok
+    for tok in $current; do
+        case "$tok" in
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop, re-added below
+        *) preserved="${preserved:+$preserved }$tok" ;;
+        esac
+    done
+    echo "${preserved:+$preserved }$managed"
 }
 
 check_prerequisites() {
@@ -145,7 +200,16 @@ parse_config() {
     if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
         error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
     fi
-    P2POOL_NODE_HOSTNAME=$(jq -r .P2POOL_NODE_HOSTNAME "$CONFIG_JSON")
+    P2POOL_NODE_HOSTNAME=$(jq -r '.P2POOL_NODE_HOSTNAME // empty' "$CONFIG_JSON")
+    # The host goes straight into the XMRig pool URL, so validate it before building: it must be set
+    # and look like a hostname/FQDN or an IPv4/IPv6 literal. This also rejects the unfilled template
+    # placeholder (<...>) and any shell/URL metacharacters.
+    if [ -z "$P2POOL_NODE_HOSTNAME" ]; then
+        error "P2POOL_NODE_HOSTNAME is required in $CONFIG_JSON (your pool/stack host or IP)."
+    fi
+    if ! [[ "$P2POOL_NODE_HOSTNAME" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+        error "P2POOL_NODE_HOSTNAME is not a valid host/IP: '$P2POOL_NODE_HOSTNAME'. Use a hostname, FQDN, or IP address."
+    fi
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
     if [ -z "$ACCESS_TOKEN" ]; then
         ACCESS_TOKEN=$(hostname)
@@ -186,10 +250,24 @@ prepare_workspace() {
     GIT_DIR="xmrig"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-    # Archive existing installation if present
-    if [ -d "$GIT_DIR" ]; then
+    # Archive the existing installation only when we're about to rebuild (a no-op re-run keeps it).
+    if [ "$XMRIG_REBUILD" = true ] && [ -d "$GIT_DIR" ]; then
         log "Archiving existing worker installation..."
         mv "$GIT_DIR" "${GIT_DIR}-${TIMESTAMP}"
+    fi
+
+    # Prune old build archives so re-runs don't grow the disk without bound (keep the most recent
+    # few). Override the retention count with KEEP_ARCHIVES. The `|| true` keeps an empty glob (no
+    # archives yet) from tripping `set -e`/`pipefail`.
+    local keep="${KEEP_ARCHIVES:-3}" archives
+    # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
+    archives="$(ls -dt "${GIT_DIR}-"* 2>/dev/null || true)"
+    if [ -n "$archives" ]; then
+        printf '%s\n' "$archives" | tail -n +"$((keep + 1))" | while IFS= read -r old; do
+            [ -n "$old" ] || continue
+            log "Pruning old build archive: $(basename "$old")"
+            rm -rf "$old" 2>/dev/null || sudo rm -rf "$old"
+        done
     fi
 }
 
@@ -259,6 +337,10 @@ install_dependencies() {
 }
 
 compile_xmrig() {
+    if [ "$XMRIG_REBUILD" != true ]; then
+        log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
+        return 0
+    fi
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
     git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git
 
@@ -267,22 +349,33 @@ compile_xmrig() {
     [ "$actual" = "$XMRIG_COMMIT" ] || error "XMRig commit mismatch: expected $XMRIG_COMMIT, got $actual"
     log "Verified XMRig $XMRIG_VERSION at commit $XMRIG_COMMIT"
 
+    # Build output goes to a logfile (not /dev/null) so a failed compile is diagnosable; the ERR trap
+    # points the user at it. BUILD_LOG is global so on_err can find it.
+    BUILD_LOG="$WORKER_ROOT/build.log"
+    : >"$BUILD_LOG" 2>/dev/null || true
+
+    local cores jobs
     if [ "$OS_TYPE" == "Darwin" ]; then
         sed -i '' "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
-        CORES=$(sysctl -n hw.ncpu)
-        log "Compiling binary (Concurrency: $CORES threads)..."
+        cores=$(sysctl -n hw.ncpu)
+        jobs=$(compute_build_jobs "$cores")
+        log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
         mkdir -p xmrig/build && cd xmrig/build
         # macOS often needs explicit OpenSSL root for cmake if installed via brew
-        cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" &>/dev/null
+        cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" >>"$BUILD_LOG" 2>&1
     else
         sed -i "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
-        CORES=$(nproc)
-        log "Compiling binary (Concurrency: $CORES threads)..."
+        cores=$(nproc)
+        jobs=$(compute_build_jobs "$cores")
+        log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
         mkdir -p xmrig/build && cd xmrig/build
-        cmake .. -DWITH_HWLOC=ON &>/dev/null
+        cmake .. -DWITH_HWLOC=ON >>"$BUILD_LOG" 2>&1
     fi
 
-    make -j$CORES &>/dev/null
+    make -j"$jobs" >>"$BUILD_LOG" 2>&1
+
+    # Record the built commit so a later run can detect "already built" and skip the recompile (#4).
+    echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig/.rigforge-commit"
 }
 
 generate_xmrig_config() {
@@ -460,9 +553,15 @@ install_service() {
         # Enable service to start on boot
         sudo systemctl enable xmrig.service
 
-        # Restart service to apply new configuration
-        log "Restarting XMRig service..."
-        sudo systemctl restart xmrig.service
+        # Restart only when the binary was rebuilt; otherwise just ensure it's running (a running
+        # service is left undisturbed on a no-op re-run).
+        if [ "$XMRIG_REBUILD" = true ]; then
+            log "Restarting XMRig service..."
+            sudo systemctl restart xmrig.service
+        else
+            log "No rebuild — ensuring the service is running (no restart)."
+            sudo systemctl start xmrig.service
+        fi
         SERVICE_INSTALLED=true
     else
         warn "Service installation is not supported on $OS_TYPE."
@@ -498,14 +597,20 @@ tune_kernel() {
 
     log "Configuring bootloader (GRUB) for persistent HugePages..."
     if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
-        NEW_PARAMS=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
+        # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
+        # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
+        # clobber other kernel parameters the user/distro set (#19 — boot-safety).
+        MANAGED=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
+        MANAGED="${MANAGED#quiet splash }"
 
-        # Check if GRUB is already configured
-        if grep -Fq "GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"" "$GRUB_DEFAULT"; then
+        CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
+        MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
+
+        if [ "$CURRENT" = "$MERGED" ]; then
             log "GRUB is already configured with optimal HugePages settings."
         else
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_PARAMS\"|" "$GRUB_DEFAULT"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$MERGED\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
@@ -553,26 +658,85 @@ finish_deployment() {
         log "Service created. xmrig running in background."
     else
         log "You can run the miner manually:"
-        echo "sudo screen -S xmrig $WORKER_ROOT/xmrig/build/xmrig --config=$WORKER_ROOT/config.json"
+        echo "sudo screen -S xmrig $WORKER_ROOT/xmrig/build/xmrig --config=$WORKER_ROOT/xmrig/build/config.json"
     fi
 }
 
 # --- Main Execution ---
 
+# Decide whether the pinned XMRig needs (re)building. Call after parse_config (needs WORKER_ROOT).
+decide_rebuild() {
+    if xmrig_already_built; then
+        XMRIG_REBUILD=false
+        log "XMRig $XMRIG_VERSION already built at the pinned commit — recompile will be skipped."
+    else
+        XMRIG_REBUILD=true
+    fi
+}
+
 main() {
+    CURRENT_STEP="verifying prerequisites"
     check_prerequisites
+    CURRENT_STEP="ensuring config exists"
     ensure_config_exists
+    CURRENT_STEP="parsing config"
     parse_config
+    CURRENT_STEP="checking the build"
+    decide_rebuild
+    CURRENT_STEP="preparing workspace"
     prepare_workspace
+    CURRENT_STEP="installing dependencies"
     install_dependencies
+    CURRENT_STEP="compiling XMRig"
     compile_xmrig
+    CURRENT_STEP="generating XMRig config"
     generate_xmrig_config
+    CURRENT_STEP="tuning the kernel"
     tune_kernel
+    CURRENT_STEP="configuring limits"
     configure_limits
+    CURRENT_STEP="installing the service"
     install_service
+    CURRENT_STEP="finishing up"
     finish_deployment
 }
 
+# Upgrade flow: rebuild + restart ONLY if the pinned XMRig version/commit changed. Skips the
+# setup-only steps (dependency install, kernel tuning) — those don't change on a version bump.
+upgrade() {
+    check_prerequisites
+    parse_config
+    decide_rebuild
+    if [ "$XMRIG_REBUILD" != true ]; then
+        log "Already on the pinned XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}); nothing to upgrade."
+        return 0
+    fi
+    prepare_workspace
+    compile_xmrig
+    generate_xmrig_config
+    install_service
+    log "Upgraded to XMRig $XMRIG_VERSION."
+}
+
+usage() {
+    cat <<USAGE
+RigForge — provision and maintain an XMRig mining worker.
+
+Usage: $0 [command]
+
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service
+  upgrade    rebuild + restart only if the pinned XMRig version/commit changed
+  help       show this help
+
+Re-running 'setup' is idempotent: it skips the recompile when the pinned XMRig is already built.
+USAGE
+}
+
 if [ "$_RIGFORGE_SOURCED" = "0" ]; then
-    main "$@"
+    case "${1:-setup}" in
+    setup) main ;;
+    upgrade) upgrade ;;
+    help | -h | --help) usage ;;
+    *) error "Unknown command: $1. Try: setup (default), upgrade, help." ;;
+    esac
 fi

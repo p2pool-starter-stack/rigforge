@@ -164,6 +164,24 @@ assert_eq "FQDN passed through" "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDR
 c="$(mkconf ip "{ \"P2POOL_NODE_HOSTNAME\": \"10.0.0.5\", $CFG_TPL }")"
 assert_eq "IPv4 host passed through" "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "10.0.0.5"
 
+echo "== unit: hostname validation (#8) =="
+for h in box box.lan 10.0.0.5 fe80::1 rig-01; do
+    c="$(mkconf hnok "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+    parse_rc "$c" "$ROOT"
+    assert_rc "host '$h' accepted" "$?" "0"
+done
+c="$(mkconf hnempty "{ \"P2POOL_NODE_HOSTNAME\": \"\", $CFG_TPL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "empty host rejected" "$?" "1"
+c="$(mkconf hnmiss "{ $CFG_TPL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "missing host rejected" "$?" "1"
+for h in 'bad host' 'evil;rm' 'a/b' '<P2POOL_NODE_HOSTNAME>'; do
+    c="$(mkconf hnbad "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+    parse_rc "$c" "$ROOT"
+    assert_rc "host '$h' rejected" "$?" "1"
+done
+
 echo "== unit: parse_config — workspace + token + template resolution =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
@@ -260,6 +278,7 @@ assert_eq "generic: priority default" "$(J "$cfg" '.cpu.priority')" "null"
 # integration (issue #24). The access-token assertion below is the auth half of the lockdown.
 assert_eq "generic: http restricted" "$(J "$cfg" '.http.restricted')" "true"
 assert_eq "generic: http reachable (LAN)" "$(J "$cfg" '.http.host')" "0.0.0.0"
+assert_eq "contract: http port 8080 (#24)" "$(J "$cfg" '.http.port')" "8080"
 # Shared invariants (assert once, here):
 assert_eq "pools collapsed to one" "$(J "$cfg" '.pools | length')" "1"
 assert_eq "pool url = addr:3333" "$(J "$cfg" '.pools[0].url')" "myrig.local:3333"
@@ -381,6 +400,31 @@ out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 HUGEPAGES_1G_NR="$SAN
 assert_eq "grub --runtime: 1G allocated" "$out" "154"
 
 # ---------------------------------------------------------------------------
+# tune_kernel must MERGE its HugePage/MSR params into the existing GRUB cmdline, not overwrite it
+# wholesale (#19 — overwriting drops other kernel params; a boot-safety risk).
+echo "== unit: grub_merge_cmdline preserves other kernel params (#19) =="
+m="$(
+    source "$SCRIPT"
+    grub_merge_cmdline "default_hugepagesz=2M hugepages=1234 msr.allow_writes=on" "quiet splash nomodeset"
+)"
+assert_contains "merge keeps quiet" "$m" "quiet"
+assert_contains "merge keeps custom nomodeset" "$m" "nomodeset"
+assert_contains "merge adds hugepages" "$m" "hugepages=1234"
+assert_contains "merge adds msr.allow_writes" "$m" "msr.allow_writes=on"
+m2="$(
+    source "$SCRIPT"
+    grub_merge_cmdline "default_hugepagesz=2M hugepages=1234 msr.allow_writes=on" "$m"
+)"
+assert_eq "merge is idempotent" "$m2" "$m"
+m3="$(
+    source "$SCRIPT"
+    grub_merge_cmdline "hugepages=2000" "quiet hugepages=999 default_hugepagesz=2M"
+)"
+assert_contains "stale managed param replaced" "$m3" "hugepages=2000"
+assert_absent "old managed param dropped" "$m3" "hugepages=999"
+assert_contains "non-managed param kept" "$m3" "quiet"
+
+# ---------------------------------------------------------------------------
 # Pinned-build verification (#18): compile_xmrig clones the pinned XMRIG_VERSION and aborts if the
 # cloned HEAD doesn't match XMRIG_COMMIT. STUB_GIT_HEAD makes the git stub report a tampered commit
 # so we can prove the supply-chain check rejects it (and passes when they match).
@@ -393,6 +437,7 @@ pin_compile() { # <stub_git_head>; runs compile_xmrig in a sandbox, prints its o
         source "$SCRIPT"
         OS_TYPE="$(uname -s)"
         DONATION=1
+        WORKER_ROOT="$d" # compile_xmrig writes build.log + the commit marker under WORKER_ROOT
         export XMRIG_COMMIT="pinnedsha000000000000000000000000000000"
         [ -n "$1" ] && export STUB_GIT_HEAD="$1"
         set +e
@@ -407,6 +452,172 @@ out="$(pin_compile "tamperedsha1111111111111111111111111111")"
 rc=$?
 assert_rc "tampered commit fails build" "$rc" "1"
 assert_contains "tampered commit is reported" "$out" "commit mismatch"
+
+# ---------------------------------------------------------------------------
+# Build robustness (#9): cap -j by RAM (~1 job / 2 GB) and report the failing step on error.
+echo "== unit: compute_build_jobs caps -j by RAM (#9) =="
+mk_meminfo() {
+    printf 'MemTotal:       %s kB\n' "$1" >"$SANDBOX/$2"
+    echo "$SANDBOX/$2"
+}
+assert_eq "2GB host caps to 1 job" "$(
+    source "$SCRIPT"
+    MEMINFO="$(mk_meminfo 2097152 mi2)" compute_build_jobs 8
+)" "1"
+assert_eq "8GB host caps to 4 jobs" "$(
+    source "$SCRIPT"
+    MEMINFO="$(mk_meminfo 8388608 mi8)" compute_build_jobs 16
+)" "4"
+assert_eq "ample RAM uses all cores" "$(
+    source "$SCRIPT"
+    MEMINFO="$(mk_meminfo 33554432 mi32)" compute_build_jobs 8
+)" "8"
+assert_eq "unknown RAM -> all cores" "$(
+    source "$SCRIPT"
+    MEMINFO=/nonexistent compute_build_jobs 6
+)" "6"
+
+echo "== unit: on_err reports the failing step (#9) =="
+out="$(
+    source "$SCRIPT"
+    set +e
+    CURRENT_STEP="compiling XMRig"
+    false
+    on_err 2>&1
+)"
+assert_contains "err trap names the step" "$out" "compiling XMRig"
+assert_contains "err trap suggests bash -x" "$out" "bash -x"
+
+# prepare_workspace archives the existing build and must prune old archives so re-runs don't grow the
+# disk without bound (#4). KEEP_ARCHIVES caps how many are retained.
+echo "== unit: prepare_workspace prunes old build archives (#4) =="
+ws="$(mktemp -d "$SANDBOX/ws.XXXXXX")"
+mkdir -p "$ws/xmrig" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
+    "$ws/xmrig-20240101_000003" "$ws/xmrig-20240101_000004"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$ws"
+    set +e
+    PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 prepare_workspace >/dev/null 2>&1
+)
+assert_eq "archives pruned to KEEP_ARCHIVES" "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
+assert_eq "current install was archived (gone)" "$([ -d "$ws/xmrig" ] && echo present || echo gone)" "gone"
+# Regression: with NO archives present the prune must not trip set -e/pipefail (the script runs under
+# `set -Eeuo pipefail`, so this runs WITHOUT the `set +e` the other unit helpers use).
+empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$empty"
+    PATH="$STUBS:$PATH" prepare_workspace >/dev/null 2>&1
+)
+rc=$?
+assert_rc "prune is set -e safe with no archives" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow
+# recompile + restart are skipped, so re-running is a fast no-op and `upgrade` only acts on a bump.
+echo "== unit: xmrig_already_built detection (#4) =="
+b="$(mktemp -d "$SANDBOX/built.XXXXXX")"
+mkdir -p "$b/xmrig/build"
+: >"$b/xmrig/build/xmrig"
+chmod +x "$b/xmrig/build/xmrig"
+printf 'ABC\n' >"$b/xmrig/.rigforge-commit"
+(
+    source "$SCRIPT"
+    WORKER_ROOT="$b"
+    XMRIG_COMMIT=ABC
+    set +e
+    xmrig_already_built
+)
+assert_rc "matching commit -> built" "$?" "0"
+(
+    source "$SCRIPT"
+    WORKER_ROOT="$b"
+    XMRIG_COMMIT=XYZ
+    set +e
+    xmrig_already_built
+)
+assert_rc "different commit -> rebuild" "$?" "1"
+rm -f "$b/xmrig/build/xmrig"
+(
+    source "$SCRIPT"
+    WORKER_ROOT="$b"
+    XMRIG_COMMIT=ABC
+    set +e
+    xmrig_already_built
+)
+assert_rc "missing binary -> rebuild" "$?" "1"
+
+echo "== unit: compile_xmrig honours XMRIG_REBUILD (#4) =="
+s="$(mktemp -d "$SANDBOX/skip.XXXXXX")"
+(
+    cd "$s" || exit 1
+    source "$SCRIPT"
+    OS_TYPE="$(uname -s)"
+    WORKER_ROOT="$s"
+    DONATION=1
+    XMRIG_REBUILD=false
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$s/calls.log" compile_xmrig >/dev/null 2>&1
+)
+assert_absent "skips clone when already built" "$(cat "$s/calls.log" 2>/dev/null)" "clone"
+r="$(mktemp -d "$SANDBOX/rebuild.XXXXXX")"
+(
+    cd "$r" || exit 1
+    source "$SCRIPT"
+    OS_TYPE="$(uname -s)"
+    WORKER_ROOT="$r"
+    DONATION=1
+    XMRIG_REBUILD=true
+    export XMRIG_COMMIT=ABC
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$r/calls.log" compile_xmrig >/dev/null 2>&1
+)
+assert_contains "clones when rebuilding" "$(cat "$r/calls.log" 2>/dev/null)" "clone"
+assert_eq "records the built commit" "$(cat "$r/xmrig/.rigforge-commit" 2>/dev/null)" "ABC"
+
+echo "== black-box: upgrade / help / unknown command (#4) =="
+U="$(mktemp -d "$SANDBOX/upg.XXXXXX")"
+cp "$SCRIPT" "$U/rigforge.sh"
+cp -R "$ROOT/worker-config" "$U/"
+mkdir -p "$U/home/worker/xmrig/build"
+: >"$U/home/worker/xmrig/build/xmrig"
+chmod +x "$U/home/worker/xmrig/build/xmrig"
+printf 'ABC\n' >"$U/home/worker/xmrig/.rigforge-commit"
+cat >"$U/config.json" <<EOF
+{ "HOME_DIR": "$U/home", "DONATION": 1, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox.lan" }
+EOF
+out="$(cd "$U" && PATH="$STUBS:$PATH" XMRIG_COMMIT=ABC bash ./rigforge.sh upgrade </dev/null 2>&1)"
+rc=$?
+assert_rc "upgrade exits 0 when up-to-date" "$rc" "0"
+assert_contains "upgrade no-op when version unchanged" "$out" "nothing to upgrade"
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh help 2>&1)"
+rc=$?
+assert_rc "help exits 0" "$rc" "0"
+assert_contains "help shows usage" "$out" "Usage:"
+assert_contains "help lists upgrade" "$out" "upgrade"
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh frobnicate 2>&1)"
+rc=$?
+assert_rc "unknown command fails" "$rc" "1"
+assert_contains "unknown command message" "$out" "Unknown command"
+
+# ---------------------------------------------------------------------------
+# The manual-run hint must point at the config where it's actually generated — the build dir
+# ($WORKER_ROOT/xmrig/build/config.json), the same path the systemd unit uses — not $WORKER_ROOT (#20).
+echo "== unit: finish_deployment manual-run hint (#20) =="
+hint="$(
+    source "$SCRIPT"
+    WORKER_ROOT=/opt/rig/worker
+    REBOOT_REQUIRED=false
+    SERVICE_INSTALLED=false
+    set +e
+    finish_deployment 2>&1
+)"
+assert_contains "hint runs the built binary" "$hint" "/opt/rig/worker/xmrig/build/xmrig"
+assert_contains "hint config points at build dir" "$hint" "--config=/opt/rig/worker/xmrig/build/config.json"
+assert_absent "hint not the stale top-level path" "$hint" "--config=/opt/rig/worker/config.json"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
@@ -472,6 +683,7 @@ assert_contains "build: cloned xmrig" "$(cat "$W/calls.log")" "[git] clone"
 assert_contains "build: ran cmake" "$(cat "$W/calls.log")" "[cmake]"
 assert_contains "build: ran make" "$(cat "$W/calls.log")" "[make]"
 assert_contains "build: donate.h patched to 7" "$(cat "$W/home/worker/xmrig/src/donate.h")" "DonateLevel = 7;"
+assert_eq "build: output captured to logfile" "$([ -f "$W/home/worker/build.log" ] && echo yes || echo no)" "yes"
 assert_contains "build: verified pinned commit" "$E2E_OUT" "Verified XMRig"
 assert_eq "deploy: pool url from hostname" "$(J "$BUILD/config.json" '.pools[0].url')" "poolbox.lan:3333"
 assert_eq "deploy: donate-level = 7" "$(J "$BUILD/config.json" '.["donate-level"]')" "7"
@@ -482,6 +694,7 @@ if [ "$HOST_OS" = Linux ]; then
     assert_contains "limits: fstab 2M mount written" "$(cat "$W/etc/fstab")" "hugetlbfs /dev/hugepages"
     assert_contains "limits: memlock unlimited written" "$(cat "$W/etc/security/limits.conf")" "soft memlock unlimited"
     assert_contains "grub: hugepages params written" "$(cat "$W/etc/default/grub")" "default_hugepagesz=2M"
+    assert_contains "grub: preserves existing params (#19)" "$(cat "$W/etc/default/grub")" "quiet splash"
 else
     assert_eq "deploy: macOS huge-pages off" "$(J "$BUILD/config.json" '.cpu."huge-pages"')" "false"
     assert_eq "deploy: macOS http host all v6" "$(J "$BUILD/config.json" '.http.host')" "::"
