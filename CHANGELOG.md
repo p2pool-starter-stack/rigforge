@@ -12,7 +12,7 @@ All notable changes to RigForge are documented here. The format is based on
 - Pinned, checksum-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
   when the pinned XMRig is already built; old build archives are pruned so re-runs don't leak disk (#4).
-- Config-input validation before building: `DONATION` (integer 0–100) and `P2POOL_NODE_HOSTNAME`
+- Config-input validation before building: `DONATION` (integer 0–100) and the pool host
   (hostname / FQDN / IP, no metacharacters) fail fast with a clear message (#8).
 - Build robustness: build output is captured to a logfile, an ERR trap names the failed step, and
   `make -j` is capped by available RAM to avoid OOM on low-memory hosts (#9).
@@ -23,6 +23,9 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- Generalized the project's language and config for any RandomX/XMRig pool: the pool/stratum host is
+  now configured via `POOL_HOST` (the former `P2POOL_NODE_HOSTNAME` key still works as an alias), and
+  the docs lead with the generic worker use case rather than P2Pool specifically (#35).
 - XMRig HTTP API on Linux is now read-only (`restricted: true`) while staying LAN-reachable, so
   Pithead can still read per-rig stats at `:8080` (#17, #7).
 - Removed the `.local` / Avahi mDNS handling — point workers at an IP or DNS-resolvable hostname (#15, #14).

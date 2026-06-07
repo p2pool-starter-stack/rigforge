@@ -157,10 +157,10 @@ ensure_config_exists() {
                 default_config_file=$(jq -r '.WORKER_CONFIG_FILE // "./worker-config/example-config.json.template"' "$TEMPLATE_JSON")
             fi
 
-            read -r -p "Enter P2Pool Node Hostname/IP: " IN_HOSTNAME
+            read -r -p "Enter your pool / stratum host or IP: " IN_HOST
 
-            if [ -z "$IN_HOSTNAME" ]; then
-                error "Hostname is required. Aborting."
+            if [ -z "$IN_HOST" ]; then
+                error "A pool host is required. Aborting."
             fi
 
             cat <<EOF >"$CONFIG_JSON"
@@ -168,7 +168,7 @@ ensure_config_exists() {
     "HOME_DIR": "$default_home",
     "DONATION": $default_donation,
     "WORKER_CONFIG_FILE": "$default_config_file",
-    "P2POOL_NODE_HOSTNAME": "$IN_HOSTNAME"
+    "POOL_HOST": "$IN_HOST"
 }
 EOF
             log "Created $CONFIG_JSON successfully."
@@ -200,22 +200,24 @@ parse_config() {
     if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
         error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
     fi
-    P2POOL_NODE_HOSTNAME=$(jq -r '.P2POOL_NODE_HOSTNAME // empty' "$CONFIG_JSON")
+    # Pool/stratum host. POOL_HOST is the canonical key; P2POOL_NODE_HOSTNAME is accepted as a
+    # backward-compatible alias (#35) so existing configs keep working.
+    POOL_HOST=$(jq -r '.POOL_HOST // .P2POOL_NODE_HOSTNAME // empty' "$CONFIG_JSON")
     # The host goes straight into the XMRig pool URL, so validate it before building: it must be set
     # and look like a hostname/FQDN or an IPv4/IPv6 literal. This also rejects the unfilled template
     # placeholder (<...>) and any shell/URL metacharacters.
-    if [ -z "$P2POOL_NODE_HOSTNAME" ]; then
-        error "P2POOL_NODE_HOSTNAME is required in $CONFIG_JSON (your pool/stack host or IP)."
+    if [ -z "$POOL_HOST" ]; then
+        error "POOL_HOST is required in $CONFIG_JSON (your pool / stratum host or IP)."
     fi
-    if ! [[ "$P2POOL_NODE_HOSTNAME" =~ ^[A-Za-z0-9._:-]+$ ]]; then
-        error "P2POOL_NODE_HOSTNAME is not a valid host/IP: '$P2POOL_NODE_HOSTNAME'. Use a hostname, FQDN, or IP address."
+    if ! [[ "$POOL_HOST" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+        error "POOL_HOST is not a valid host/IP: '$POOL_HOST'. Use a hostname, FQDN, or IP address."
     fi
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
     if [ -z "$ACCESS_TOKEN" ]; then
         ACCESS_TOKEN=$(hostname)
     fi
 
-    P2POOL_NODE_ADDRESS="$P2POOL_NODE_HOSTNAME"
+    POOL_ADDRESS="$POOL_HOST"
 
     # Resolve Template Path (Handle absolute vs relative paths)
     if [[ "$WORKER_CONFIG_FILE" = /* ]]; then
@@ -472,7 +474,7 @@ generate_xmrig_config() {
     FULL_USER="$(hostname)"
 
     # Generate config.json via jq
-    jq --arg url "$P2POOL_NODE_ADDRESS:3333" \
+    jq --arg url "$POOL_ADDRESS:3333" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
         --arg log "$LOG_FILE_PATH" \
