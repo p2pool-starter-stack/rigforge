@@ -66,8 +66,8 @@ stack's `xmrig-proxy` on port **3333** — the stack handles pool selection, pay
 P2Pool/XvB split centrally, so the worker config stays minimal and you **never put a wallet address
 in it**.
 
-During setup RigForge asks for your **stack/pool hostname or IP** and writes it into `config.json`
-(the `P2POOL_NODE_HOSTNAME` field). The pool/stack host must be an IP or a DNS-resolvable hostname
+During setup RigForge asks for your **pool/stack host or IP** and writes it into `config.json`
+(the `POOL_HOST` field). The host must be an IP or a DNS-resolvable hostname
 (for a stable LAN address, set a DHCP reservation or static IP).
 
 To connect any XMRig instance **by hand instead**, this is the whole pool config:
@@ -134,11 +134,12 @@ The script needs root to install packages and tune the system. On first run it c
     "HOME_DIR": "DYNAMIC_HOME",
     "DONATION": 1,
     "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template",
-    "P2POOL_NODE_HOSTNAME": "YOUR_STACK_IP_OR_HOSTNAME"
+    "POOL_HOST": "YOUR_POOL_HOST_OR_IP"
 }
 ```
 
-- `P2POOL_NODE_HOSTNAME` — the only field you must set: your stack/pool host.
+- `POOL_HOST` — the only field you must set: your pool/stack host. (The former
+  `P2POOL_NODE_HOSTNAME` key is still accepted as an alias for existing configs.)
 - `HOME_DIR` — where worker files live. `DYNAMIC_HOME` defaults to `data/` inside this folder.
 - `WORKER_CONFIG_FILE` — the XMRig config template to tune from; the default suits most setups.
 - `DONATION` — XMRig donate level (patched into the build).

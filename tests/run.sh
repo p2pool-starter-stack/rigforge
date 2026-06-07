@@ -153,72 +153,81 @@ mkconf() { # <name> <json>
 CFG_TPL='"WORKER_CONFIG_FILE": "./worker-config/example-config.json.template"'
 
 # ---------------------------------------------------------------------------
-# PR #15 (#14) removed the .local/mDNS appending: P2POOL_NODE_ADDRESS is now the host verbatim,
+# PR #15 (#14) removed the .local/mDNS appending: POOL_ADDRESS is now the host verbatim,
 # whether it's a short name, an FQDN, or an IP. The dotless case is the regression guard that proves
 # the removal — it must NOT come back as "box.local".
 echo "== unit: parse_config — pool address used verbatim (#15) =="
-c="$(mkconf dotless "{ \"P2POOL_NODE_HOSTNAME\": \"box\", $CFG_TPL }")"
-assert_eq "short host used as-is (no .local)" "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "box"
-c="$(mkconf fqdn "{ \"P2POOL_NODE_HOSTNAME\": \"box.lan\", $CFG_TPL }")"
-assert_eq "FQDN passed through" "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "box.lan"
-c="$(mkconf ip "{ \"P2POOL_NODE_HOSTNAME\": \"10.0.0.5\", $CFG_TPL }")"
-assert_eq "IPv4 host passed through" "$(parse_and_print "$c" "$ROOT" P2POOL_NODE_ADDRESS)" "10.0.0.5"
+c="$(mkconf dotless "{ \"POOL_HOST\": \"box\", $CFG_TPL }")"
+assert_eq "short host used as-is (no .local)" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "box"
+c="$(mkconf fqdn "{ \"POOL_HOST\": \"box.lan\", $CFG_TPL }")"
+assert_eq "FQDN passed through" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "box.lan"
+c="$(mkconf ip "{ \"POOL_HOST\": \"10.0.0.5\", $CFG_TPL }")"
+assert_eq "IPv4 host passed through" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "10.0.0.5"
+
+# #35: POOL_HOST is the canonical key; P2POOL_NODE_HOSTNAME is a backward-compatible alias.
+echo "== unit: POOL_HOST + legacy alias (#35) =="
+c="$(mkconf poolhost "{ \"POOL_HOST\": \"pool.example\", $CFG_TPL }")"
+assert_eq "POOL_HOST honoured" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "pool.example"
+c="$(mkconf legacy "{ \"P2POOL_NODE_HOSTNAME\": \"legacy.example\", $CFG_TPL }")"
+assert_eq "P2POOL_NODE_HOSTNAME alias still works" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "legacy.example"
+c="$(mkconf both "{ \"POOL_HOST\": \"new.example\", \"P2POOL_NODE_HOSTNAME\": \"old.example\", $CFG_TPL }")"
+assert_eq "POOL_HOST wins over the alias" "$(parse_and_print "$c" "$ROOT" POOL_ADDRESS)" "new.example"
 
 echo "== unit: hostname validation (#8) =="
 for h in box box.lan 10.0.0.5 fe80::1 rig-01; do
-    c="$(mkconf hnok "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+    c="$(mkconf hnok "{ \"POOL_HOST\": \"$h\", $CFG_TPL }")"
     parse_rc "$c" "$ROOT"
     assert_rc "host '$h' accepted" "$?" "0"
 done
-c="$(mkconf hnempty "{ \"P2POOL_NODE_HOSTNAME\": \"\", $CFG_TPL }")"
+c="$(mkconf hnempty "{ \"POOL_HOST\": \"\", $CFG_TPL }")"
 parse_rc "$c" "$ROOT"
 assert_rc "empty host rejected" "$?" "1"
 c="$(mkconf hnmiss "{ $CFG_TPL }")"
 parse_rc "$c" "$ROOT"
 assert_rc "missing host rejected" "$?" "1"
-for h in 'bad host' 'evil;rm' 'a/b' '<P2POOL_NODE_HOSTNAME>'; do
-    c="$(mkconf hnbad "{ \"P2POOL_NODE_HOSTNAME\": \"$h\", $CFG_TPL }")"
+for h in 'bad host' 'evil;rm' 'a/b' '<POOL_HOST>'; do
+    c="$(mkconf hnbad "{ \"POOL_HOST\": \"$h\", $CFG_TPL }")"
     parse_rc "$c" "$ROOT"
     assert_rc "host '$h' rejected" "$?" "1"
 done
 
 echo "== unit: parse_config — workspace + token + template resolution =="
-c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
-c="$(mkconf home "{ \"HOME_DIR\": \"/opt/rig\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+c="$(mkconf home "{ \"HOME_DIR\": \"/opt/rig\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "custom HOME_DIR -> HOME/worker" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "/opt/rig/worker"
-c="$(mkconf tok "{ \"ACCESS_TOKEN\": \"tok123\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+c="$(mkconf tok "{ \"ACCESS_TOKEN\": \"tok123\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "ACCESS_TOKEN honoured" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "tok123"
-c="$(mkconf notok "{ \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+c="$(mkconf notok "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "ACCESS_TOKEN falls back to hostname" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rigbox"
-c="$(mkconf rel "{ \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+c="$(mkconf rel "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "relative template resolved vs SCRIPT_DIR" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$ROOT/./worker-config/example-config.json.template"
-c="$(mkconf abs "{ \"P2POOL_NODE_HOSTNAME\": \"h\", \"WORKER_CONFIG_FILE\": \"$TEMPLATE\" }")"
+c="$(mkconf abs "{ \"POOL_HOST\": \"h\", \"WORKER_CONFIG_FILE\": \"$TEMPLATE\" }")"
 assert_eq "absolute template kept as-is" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$TEMPLATE"
 
 echo "== unit: parse_config — error paths =="
 printf '{ not json ' >"$SANDBOX/bad.json"
 parse_rc "$SANDBOX/bad.json" "$ROOT"
 assert_rc "invalid JSON rejected" "$?" "1"
-c="$(mkconf noworker "{ \"P2POOL_NODE_HOSTNAME\": \"h\" }")"
+c="$(mkconf noworker "{ \"POOL_HOST\": \"h\" }")"
 parse_rc "$c" "$ROOT"
 assert_rc "missing WORKER_CONFIG_FILE rejected" "$?" "1"
-c="$(mkconf notmpl "{ \"P2POOL_NODE_HOSTNAME\": \"h\", \"WORKER_CONFIG_FILE\": \"./nope/missing.json\" }")"
+c="$(mkconf notmpl "{ \"POOL_HOST\": \"h\", \"WORKER_CONFIG_FILE\": \"./nope/missing.json\" }")"
 parse_rc "$c" "$ROOT"
 assert_rc "missing template file rejected" "$?" "1"
 
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
-    c="$(mkconf "don$d" "{ \"DONATION\": $d, \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+    c="$(mkconf "don$d" "{ \"DONATION\": $d, \"POOL_HOST\": \"h\", $CFG_TPL }")"
     parse_rc "$c" "$ROOT"
     assert_rc "DONATION $d accepted" "$?" "0"
 done
-c="$(mkconf d0 "{ \"DONATION\": 0, \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+c="$(mkconf d0 "{ \"DONATION\": 0, \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "DONATION 0 parsed as 0" "$(parse_and_print "$c" "$ROOT" DONATION)" "0"
-c="$(mkconf dmiss "{ \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+c="$(mkconf dmiss "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
 assert_eq "DONATION defaults to 1 when absent" "$(parse_and_print "$c" "$ROOT" DONATION)" "1"
 for d in 101 -1 1.5 abc; do
-    c="$(mkconf "donbad" "{ \"DONATION\": \"$d\", \"P2POOL_NODE_HOSTNAME\": \"h\", $CFG_TPL }")"
+    c="$(mkconf "donbad" "{ \"DONATION\": \"$d\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
     parse_rc "$c" "$ROOT"
     assert_rc "DONATION '$d' rejected" "$?" "1"
 done
@@ -251,7 +260,7 @@ gen_config() { # echoes path to the dir containing config.json
         OS_TYPE="$SIM_OS"
         WORKER_ROOT="$d"
         TEMPLATE_CONFIG="$TEMPLATE"
-        P2POOL_NODE_ADDRESS="${SIM_ADDR:-myrig.local}"
+        POOL_ADDRESS="${SIM_ADDR:-myrig.local}"
         ACCESS_TOKEN="${SIM_TOK:-tok123}"
         DONATION="${SIM_DON:-1}"
         LOGROTATE_DIR="$d"
@@ -298,7 +307,7 @@ log_out="$(
     OS_TYPE=Linux
     WORKER_ROOT="$d"
     TEMPLATE_CONFIG="$TEMPLATE"
-    P2POOL_NODE_ADDRESS=myrig.local
+    POOL_ADDRESS=myrig.local
     ACCESS_TOKEN=tok123
     DONATION=1
     LOGROTATE_DIR="$d"
@@ -352,7 +361,7 @@ d="$(mktemp -d "$SANDBOX/idem.XXXXXX")"
     OS_TYPE=Linux
     WORKER_ROOT="$d"
     TEMPLATE_CONFIG="$TEMPLATE"
-    P2POOL_NODE_ADDRESS=myrig.local
+    POOL_ADDRESS=myrig.local
     ACCESS_TOKEN=tok123
     DONATION=1
     LOGROTATE_DIR="$d"
@@ -366,7 +375,7 @@ cp "$d/config.json" "$d/first.json"
     OS_TYPE=Linux
     WORKER_ROOT="$d"
     TEMPLATE_CONFIG="$TEMPLATE"
-    P2POOL_NODE_ADDRESS=myrig.local
+    POOL_ADDRESS=myrig.local
     ACCESS_TOKEN=tok123
     DONATION=1
     LOGROTATE_DIR="$d"
@@ -587,7 +596,7 @@ mkdir -p "$U/home/worker/xmrig/build"
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 printf 'ABC\n' >"$U/home/worker/xmrig/.rigforge-commit"
 cat >"$U/config.json" <<EOF
-{ "HOME_DIR": "$U/home", "DONATION": 1, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox.lan" }
+{ "HOME_DIR": "$U/home", "DONATION": 1, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "POOL_HOST": "poolbox.lan" }
 EOF
 out="$(cd "$U" && PATH="$STUBS:$PATH" XMRIG_COMMIT=ABC bash ./rigforge.sh upgrade </dev/null 2>&1)"
 rc=$?
@@ -643,7 +652,7 @@ e2e_setup() { # echoes the work dir
     # Use an explicit (dotted) host so this E2E doesn't depend on the .local/mDNS appending that
     # PR #15 removes — "poolbox.lan" -> "poolbox.lan:3333" holds before and after that change.
     cat >"$W/config.json" <<EOF
-{ "HOME_DIR": "$W/home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "P2POOL_NODE_HOSTNAME": "poolbox.lan" }
+{ "HOME_DIR": "$W/home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "POOL_HOST": "poolbox.lan" }
 EOF
     echo "$W"
 }
