@@ -339,6 +339,16 @@ assert_rc       "tampered commit fails build"   "$rc" "1"
 assert_contains "tampered commit is reported"   "$out" "commit mismatch"
 
 # ---------------------------------------------------------------------------
+# The manual-run hint must point at the config where it's actually generated — the build dir
+# ($WORKER_ROOT/xmrig/build/config.json), the same path the systemd unit uses — not $WORKER_ROOT (#20).
+echo "== unit: finish_deployment manual-run hint (#20) =="
+hint="$( source "$SCRIPT"; WORKER_ROOT=/opt/rig/worker; REBOOT_REQUIRED=false; SERVICE_INSTALLED=false
+         set +e; finish_deployment 2>&1 )"
+assert_contains "hint runs the built binary"        "$hint" "/opt/rig/worker/xmrig/build/xmrig"
+assert_contains "hint config points at build dir"   "$hint" "--config=/opt/rig/worker/xmrig/build/config.json"
+assert_absent   "hint not the stale top-level path" "$hint" "--config=/opt/rig/worker/config.json"
+
+# ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
 # Every /etc target is redirected into the work dir, and passthrough sudo lets the writes land there.
 #
