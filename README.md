@@ -89,6 +89,31 @@ To connect any XMRig instance **by hand instead**, this is the whole pool config
 
 ---
 
+## 🔭 Worker API (Pithead integration)
+
+Each worker exposes XMRig's HTTP API so [Pithead](https://github.com/p2pool-starter-stack/pithead)'s
+dashboard can show per-rig stats (hashrate, shares, uptime). RigForge configures the API to match
+Pithead's contract exactly, so no per-worker setup is needed stack-side:
+
+| Setting | Value | Why |
+|---|---|---|
+| **Port** | `8080` | Pithead reads `GET http://<rig>:8080/1/summary`; the port is fixed dashboard-side. |
+| **Bind** | `0.0.0.0` (all interfaces) | The dashboard polls each worker from the stack host over the LAN. |
+| **Mode** | `restricted: true` (read-only) | The API can be **read** but not used to **control** the miner remotely. |
+| **Auth token** | the rig's hostname (or `ACCESS_TOKEN` in `config.json`) | Pithead authenticates as `Bearer <rig name>`, so the token must equal the rig name (or be unset). |
+
+Pithead discovers workers from the stratum proxy's connection list (the pool `user` label, which is
+the rig name) — there's nothing to register stack-side. Workers run on a **trusted LAN** and need no
+Tor.
+
+> ⚠️ **Don't set a random/custom API token** for a Pithead-connected worker: the dashboard
+> authenticates as `Bearer <rig name>`, so a decoupled token means it can't read the worker. A custom
+> token, a non-`8080` API port, or a worker reachable at a different host than the one it connects
+> from all require matching configuration on **both** sides — those are later milestones
+> (RigForge #21/#23; Pithead #171/#172).
+
+---
+
 ## 🚀 Deployment
 
 On the machine you want to turn into a miner:
@@ -180,7 +205,7 @@ RigForge ships a dependency-free test suite plus an opt-in container end-to-end 
 CI jobs, so `make test` locally is what CI checks.
 
 ```bash
-make lint        # shellcheck the script, utilities, and test scripts
+make lint        # shellcheck + shfmt the script, utilities, and test scripts
 make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
 ```
