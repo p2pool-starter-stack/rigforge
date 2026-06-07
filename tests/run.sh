@@ -102,7 +102,7 @@ EOF
     # envsubst stub: substitute exactly the two vars the systemd template uses (gettext may be absent on macOS).
     cat >"$bin/envsubst" <<'EOF'
 #!/usr/bin/env bash
-sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g"
+sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -807,10 +807,19 @@ assert_eq "deploy: pool url from hostname" "$(J "$BUILD/config.json" '.pools[0].
 assert_eq "deploy: donate-level = 7" "$(J "$BUILD/config.json" '.["donate-level"]')" "7"
 if [ "$HOST_OS" = Linux ]; then
     assert_eq "deploy: EPYC numa applied" "$(J "$BUILD/config.json" '.randomx.numa')" "true"
-    assert_contains "service: rendered with build dir" "$(cat "$W/etc/systemd/xmrig.service")" "$BUILD"
+    svc="$(cat "$W/etc/systemd/xmrig.service")"
+    assert_contains "service: rendered with build dir" "$svc" "$BUILD"
+    # #13: hardening directives present, and ReadWritePaths got WORKER_ROOT substituted (not literal).
+    assert_contains "service: NoNewPrivileges" "$svc" "NoNewPrivileges=true"
+    assert_contains "service: ProtectSystem=full" "$svc" "ProtectSystem=full"
+    assert_contains "service: LimitMEMLOCK=infinity" "$svc" "LimitMEMLOCK=infinity"
+    assert_contains "service: ReadWritePaths -> worker root" "$svc" "ReadWritePaths=$W/home/worker"
+    assert_absent "service: no unexpanded WORKER_ROOT" "$svc" 'ReadWritePaths=$WORKER_ROOT'
     assert_contains "kernel: msr module enabled" "$(cat "$W/etc/modules-load.d/msr.conf")" "msr"
     assert_contains "limits: fstab 2M mount written" "$(cat "$W/etc/fstab")" "hugetlbfs /dev/hugepages"
+    # #13: memlock scoped to the mining user, NOT granted to every account ("*").
     assert_contains "limits: memlock unlimited written" "$(cat "$W/etc/security/limits.conf")" "soft memlock unlimited"
+    assert_absent "limits: not wildcard memlock" "$(cat "$W/etc/security/limits.conf")" "* soft memlock unlimited"
     assert_contains "grub: hugepages params written" "$(cat "$W/etc/default/grub")" "default_hugepagesz=2M"
     assert_contains "grub: preserves existing params (#19)" "$(cat "$W/etc/default/grub")" "quiet splash"
 else

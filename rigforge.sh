@@ -536,8 +536,10 @@ install_service() {
         CPUPOWER_PATH=$(command -v cpupower || echo "/usr/bin/cpupower")
         export CPUPOWER_PATH
 
-        # Overwrite the existing file
-        envsubst '$BUILD_DIR $CPUPOWER_PATH' <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/xmrig.service" >/dev/null
+        # Overwrite the existing file. Only the three named vars are substituted; WORKER_ROOT is passed
+        # into envsubst's environment for that one command (the template uses it in ReadWritePaths).
+        WORKER_ROOT="$WORKER_ROOT" envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT' \
+            <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/xmrig.service" >/dev/null
 
         # Reload systemd daemon
         sudo systemctl daemon-reload
@@ -629,9 +631,11 @@ configure_limits() {
 
     sudo mount -a || warn "Mount operation returned errors. Check 'dmesg' for details."
 
-    # Configure security limits for memlock (Idempotent)
-    append_once "$LIMITS_CONF" "* soft memlock unlimited"
-    append_once "$LIMITS_CONF" "* hard memlock unlimited"
+    # Configure security limits for memlock (idempotent). Scope it to the mining user instead of every
+    # account ("*") — the systemd service runs as root with its own LimitMEMLOCK=infinity, so this
+    # entry only needs to cover manual/interactive runs by the operator (#13).
+    append_once "$LIMITS_CONF" "$REAL_USER soft memlock unlimited"
+    append_once "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
 }
 
 finish_deployment() {

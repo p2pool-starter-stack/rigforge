@@ -96,6 +96,13 @@ XMRig accordingly.
 - **`cpupower` performance governor.** Pins the CPU to its performance frequency so it isn't throttled
   down mid-hash.
 - **Log rotation.** A `logrotate` policy compresses and archives `xmrig.log`.
+- **Hardened unit.** The service runs as root (required for the MSR mod and HugePages) but with
+  defense-in-depth sandboxing: `NoNewPrivileges`, `ProtectSystem=full` (read-only `/usr`,`/etc`,…),
+  `PrivateTmp`, `ProtectControlGroups`, `LockPersonality`, and `ReadWritePaths` limited to the worker
+  root. Directives that would break RandomX are deliberately **not** set — `PrivateDevices` (hides
+  `/dev/cpu/*/msr`), `MemoryDenyWriteExecute` (blocks the JIT), and `ProtectKernelModules`.
+- **Scoped `memlock`.** Unlimited `memlock` is granted to the **service** (`LimitMEMLOCK=infinity`) and,
+  for manual runs, to the **mining user only** in `limits.conf` — not to every account via `*`.
 
 ---
 

@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# XMRig runs as root so it can apply the MSR mod (write /dev/cpu/*/msr) and reserve HugePages — both
+# require privilege and are worth ~10-15% hashrate. The hardening below limits the blast radius without
+# touching anything RandomX needs.
 User=root
 
 # --- Performance Optimization ---
@@ -21,8 +24,23 @@ ExecStart=$BUILD_DIR/xmrig --config=$BUILD_DIR/config.json
 Restart=always
 RestartSec=10s
 
-# Unlock memory limits to allow HugePages allocation
+# Unlock memory limits to allow HugePages allocation (scopes the privilege to THIS service rather than
+# granting every user unlimited memlock).
 LimitMEMLOCK=infinity
+
+# --- Hardening (defense-in-depth) ---
+# Deliberately conservative: every directive here is safe for a RandomX miner. We do NOT set
+# PrivateDevices/DeviceAllow (would hide /dev/cpu/*/msr and break the MSR mod), MemoryDenyWriteExecute
+# (would break the RandomX JIT), or ProtectKernelModules (can block msr access).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+PrivateTmp=true
+# The miner only ever writes under its worker root (config, build, log).
+ReadWritePaths=$WORKER_ROOT
 
 [Install]
 WantedBy=multi-user.target
