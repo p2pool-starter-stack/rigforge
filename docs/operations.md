@@ -13,10 +13,29 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 |---|---|
 | `setup` _(default)_ | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent — safe to re-run; skips the recompile when the pinned XMRig is already built. |
 | `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. |
+| `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. |
+| `doctor` | Read-only health check: verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is `performance`, the service is active, and (from the XMRig log) that HugePages are 100% backed. Prints actionable hints for anything off. |
+| `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
+| `status` | Show the systemd service status. |
+| `logs` | Follow the live service logs (`journalctl -f`). |
+| `start` / `stop` / `restart` | Start, stop, or restart the miner service. |
+| `enable` / `disable` | Start the service on boot, or not. |
+| `version` (`-v`, `--version`) | Print the RigForge version. |
 | `help` (`-h`, `--help`) | Show usage. |
 
 `setup` is the default, so `sudo ./rigforge.sh` with no argument provisions (or re-provisions) the
-worker.
+worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`) and `doctor` are Linux-only.
+
+### Health check
+
+After setup (and the reboot), confirm everything took effect:
+
+```bash
+sudo ./rigforge.sh doctor
+```
+
+It's the quickest way to catch the common silent failures — HugePages not reserved (needs a reboot) or
+the MSR mod blocked by Secure Boot. See [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -30,6 +49,9 @@ sudo systemctl stop xmrig       # stop the miner
 sudo systemctl start xmrig      # start the miner
 sudo systemctl restart xmrig    # restart (e.g. after a config change)
 ```
+
+RigForge also wraps these so you don't have to remember the unit name —
+`sudo ./rigforge.sh status` / `logs` / `start` / `stop` / `restart`.
 
 The service is enabled at install, so it starts automatically on boot (and after the post-setup
 reboot).

@@ -84,10 +84,9 @@ Browse the full index at **[docs/](docs/README.md)**.
 ```bash
 sudo ./rigforge.sh              # provision (or re-provision) the worker — idempotent
 sudo ./rigforge.sh upgrade      # rebuild + restart only if the pinned XMRig changed
-./rigforge.sh help              # usage
-
-sudo systemctl status xmrig     # service status
-sudo journalctl -u xmrig -f     # live logs
+sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service
+sudo ./rigforge.sh status       # service status      (also: logs / start / stop / restart)
+./rigforge.sh version           # print the version   (also: help)
 ```
 
 See [Operations & Maintenance](docs/operations.md) for the full reference.
