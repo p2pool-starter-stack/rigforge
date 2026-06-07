@@ -80,6 +80,7 @@ out1="$(./rigforge.sh </dev/null 2>&1)"; rc1=$?
 assert_rc       "first run exits 0"                "$rc1" "0"
 [ "$rc1" = 0 ] || printf '%s\n' "$out1" | tail -20
 assert_contains "donate.h patched by real sed"     "$(cat "$WORK/data-home/worker/xmrig/src/donate.h" 2>/dev/null)" "DonateLevel = 7;"
+assert_eq       "build: output captured to logfile" "$([ -f "$WORK/data-home/worker/build.log" ] && echo yes || echo no)" "yes"
 assert_contains "build: verified pinned commit"    "$out1" "Verified XMRig"
 assert_eq       "deploy: pool url from hostname"   "$(jq -r '.pools[0].url' "$BUILD/config.json" 2>/dev/null)"   "poolbox.lan:3333"
 assert_eq       "deploy: EPYC numa applied"        "$(jq -r '.randomx.numa' "$BUILD/config.json" 2>/dev/null)"   "true"
