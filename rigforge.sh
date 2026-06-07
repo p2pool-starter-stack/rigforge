@@ -15,11 +15,14 @@ readonly C_RED='\033[1;31m'
 
 log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
 warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1"; }
-error() { echo -e "${C_RED}[ERROR]${C_RESET} $1"; exit 1; }
+error() {
+    echo -e "${C_RED}[ERROR]${C_RESET} $1"
+    exit 1
+}
 
 # --- Global Variables ---
 OS_TYPE="$(uname -s)"
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 TEMPLATE_JSON="$SCRIPT_DIR/config.json.template"
@@ -53,14 +56,14 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 # Uses sudo so it works on root-owned system files; harmless when the file is user-writable.
 append_once() {
     local file="$1" line="$2"
-    grep -qFx "$line" "$file" 2>/dev/null || echo "$line" | sudo tee -a "$file" > /dev/null
+    grep -qFx "$line" "$file" 2>/dev/null || echo "$line" | sudo tee -a "$file" >/dev/null
 }
 
 check_prerequisites() {
     log "Verifying system prerequisites..."
-    if ! command -v jq &> /dev/null; then
+    if ! command -v jq &>/dev/null; then
         if [ "$OS_TYPE" == "Darwin" ]; then
-            if command -v brew &> /dev/null; then
+            if command -v brew &>/dev/null; then
                 log "Installing prerequisite: jq..."
                 brew install jq
             else
@@ -68,11 +71,11 @@ check_prerequisites() {
             fi
         else
             log "Installing prerequisite: jq..."
-            if command -v apt-get &> /dev/null; then
+            if command -v apt-get &>/dev/null; then
                 sudo apt-get update -qq && sudo apt-get install -y -qq jq
-            elif command -v dnf &> /dev/null; then
+            elif command -v dnf &>/dev/null; then
                 sudo dnf install -y -q jq
-            elif command -v pacman &> /dev/null; then
+            elif command -v pacman &>/dev/null; then
                 sudo pacman -Sy --noconfirm jq
             else
                 error "jq is required and no supported package manager was found. Please install jq manually."
@@ -87,12 +90,12 @@ ensure_config_exists() {
         read -r -p "Create a minimal configuration now? (y/N): " CREATE_CONF
         if [[ "$CREATE_CONF" =~ ^[Yy] ]]; then
             log "Starting interactive setup..."
-            
+
             # Load defaults from template if available
             local default_home="DYNAMIC_HOME"
             local default_donation=1
             local default_config_file="./worker-config/example-config.json.template"
-            
+
             if [ -f "$TEMPLATE_JSON" ]; then
                 default_home=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$TEMPLATE_JSON")
                 default_donation=$(jq -r '.DONATION // 1' "$TEMPLATE_JSON")
@@ -100,12 +103,12 @@ ensure_config_exists() {
             fi
 
             read -r -p "Enter P2Pool Node Hostname/IP: " IN_HOSTNAME
-            
+
             if [ -z "$IN_HOSTNAME" ]; then
                 error "Hostname is required. Aborting."
             fi
 
-            cat <<EOF > "$CONFIG_JSON"
+            cat <<EOF >"$CONFIG_JSON"
 {
     "HOME_DIR": "$default_home",
     "DONATION": $default_donation,
@@ -164,7 +167,7 @@ parse_config() {
 
 prepare_workspace() {
     log "Preparing workspace at $WORKER_ROOT..."
-    
+
     if [ ! -d "$WORKER_ROOT" ]; then
         mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
     fi
@@ -193,7 +196,7 @@ prepare_workspace() {
 install_dependencies() {
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
-        if command -v brew &> /dev/null; then
+        if command -v brew &>/dev/null; then
             if [ "${EUID:-$(id -u)}" -eq 0 ]; then
                 # Drop privileges for Homebrew if running as root
                 sudo -u "$REAL_USER" brew install cmake libuv openssl hwloc
@@ -208,21 +211,21 @@ install_dependencies() {
         local install_cmd=""
         local check_cmd=""
 
-        if command -v apt-get &> /dev/null; then
+        if command -v apt-get &>/dev/null; then
             dependencies="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base"
             if [ "$OS_TYPE" == "Linux" ]; then
                 dependencies="$dependencies linux-tools-common"
-                if apt-cache show "linux-tools-$(uname -r)" &> /dev/null; then
+                if apt-cache show "linux-tools-$(uname -r)" &>/dev/null; then
                     dependencies="$dependencies linux-tools-$(uname -r)"
                 fi
             fi
             install_cmd="sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
             check_cmd="dpkg -s"
-        elif command -v dnf &> /dev/null; then
+        elif command -v dnf &>/dev/null; then
             dependencies="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel"
             install_cmd="sudo dnf install -y"
             check_cmd="rpm -q"
-        elif command -v pacman &> /dev/null; then
+        elif command -v pacman &>/dev/null; then
             dependencies="git cmake libuv openssl hwloc gettext base-devel"
             install_cmd="sudo pacman -Sy --noconfirm --needed"
             check_cmd="pacman -Qi"
@@ -233,7 +236,7 @@ install_dependencies() {
 
         local missing_deps=""
         for dep in $dependencies; do
-            if ! command -v "$dep" &> /dev/null && ! $check_cmd "$dep" &> /dev/null; then
+            if ! command -v "$dep" &>/dev/null && ! $check_cmd "$dep" &>/dev/null; then
                 missing_deps="$missing_deps $dep"
             fi
         done
@@ -270,16 +273,16 @@ compile_xmrig() {
         log "Compiling binary (Concurrency: $CORES threads)..."
         mkdir -p xmrig/build && cd xmrig/build
         # macOS often needs explicit OpenSSL root for cmake if installed via brew
-        cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" &> /dev/null
+        cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" &>/dev/null
     else
         sed -i "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
         CORES=$(nproc)
         log "Compiling binary (Concurrency: $CORES threads)..."
         mkdir -p xmrig/build && cd xmrig/build
-        cmake .. -DWITH_HWLOC=ON &> /dev/null
+        cmake .. -DWITH_HWLOC=ON &>/dev/null
     fi
 
-    make -j$CORES &> /dev/null
+    make -j$CORES &>/dev/null
 }
 
 generate_xmrig_config() {
@@ -329,13 +332,13 @@ generate_xmrig_config() {
         HTTP_RESTRICTED="true"
         HTTP_HOST="::"
         JIT="false"
-        
+
         # Generate rx array [-1, -1, ...] based on core count
         CORES=$(sysctl -n hw.ncpu)
         THREADS="["
-        for ((i=0; i<CORES; i++)); do
+        for ((i = 0; i < CORES; i++)); do
             THREADS="${THREADS}-1"
-            if [ $i -lt $((CORES-1)) ]; then THREADS="${THREADS},"; fi
+            if [ $i -lt $((CORES - 1)) ]; then THREADS="${THREADS},"; fi
         done
         THREADS="${THREADS}]"
     fi
@@ -360,13 +363,13 @@ generate_xmrig_config() {
 
         CORES=$(nproc)
         THREADS="["
-        for ((i=0; i<CORES; i++)); do
+        for ((i = 0; i < CORES; i++)); do
             THREADS="${THREADS}$i"
-            if [ $i -lt $((CORES-1)) ]; then THREADS="${THREADS}, "; fi
+            if [ $i -lt $((CORES - 1)) ]; then THREADS="${THREADS}, "; fi
         done
         THREADS="${THREADS}]"
 
-        PREFETCH=1 
+        PREFETCH=1
         WRMSR="true"
         JIT="true"
         INIT_AVX2=1
@@ -377,26 +380,26 @@ generate_xmrig_config() {
 
     # Generate config.json via jq
     jq --arg url "$P2POOL_NODE_ADDRESS:3333" \
-       --arg user "$FULL_USER" \
-       --arg access_token "$ACCESS_TOKEN" \
-       --arg log "$LOG_FILE_PATH" \
-       --argjson yield "$YIELD" \
-       --argjson prio "$PRIORITY" \
-       --argjson numa "$NUMA" \
-       --argjson asm "$ASM" \
-       --argjson rx "$THREADS" \
-       --argjson prefetch "$PREFETCH" \
-       --argjson jit "$JIT" \
-       --argjson wrmsr "$WRMSR" \
-       --argjson rdmsr "$RDMSR" \
-       --argjson huge_pages "$HUGE_PAGES" \
-       --argjson memory_pool "$MEMORY_POOL" \
-       --argjson one_gb_pages "$ONE_GB_PAGES" \
-       --argjson avx2 "$INIT_AVX2" \
-       --argjson restricted "$HTTP_RESTRICTED" \
-       --argjson donation "$DONATION" \
-       --arg host "$HTTP_HOST" \
-       '.pools[0].url = $url | 
+        --arg user "$FULL_USER" \
+        --arg access_token "$ACCESS_TOKEN" \
+        --arg log "$LOG_FILE_PATH" \
+        --argjson yield "$YIELD" \
+        --argjson prio "$PRIORITY" \
+        --argjson numa "$NUMA" \
+        --argjson asm "$ASM" \
+        --argjson rx "$THREADS" \
+        --argjson prefetch "$PREFETCH" \
+        --argjson jit "$JIT" \
+        --argjson wrmsr "$WRMSR" \
+        --argjson rdmsr "$RDMSR" \
+        --argjson huge_pages "$HUGE_PAGES" \
+        --argjson memory_pool "$MEMORY_POOL" \
+        --argjson one_gb_pages "$ONE_GB_PAGES" \
+        --argjson avx2 "$INIT_AVX2" \
+        --argjson restricted "$HTTP_RESTRICTED" \
+        --argjson donation "$DONATION" \
+        --arg host "$HTTP_HOST" \
+        '.pools[0].url = $url | 
         .pools[0].user = $user | 
         .pools[0].enabled = true |
         .pools = [.pools[0]] |
@@ -420,12 +423,12 @@ generate_xmrig_config() {
         (if $access_token != "" then ."http"."access-token" = $access_token else . end) | 
         ."http"."restricted" = $restricted |
         ."http"."host" = $host' \
-       "$TEMPLATE_CONFIG" > config.json
+        "$TEMPLATE_CONFIG" >config.json
 
     if [ "$OS_TYPE" == "Linux" ]; then
         log "Configuring log rotation policy..."
         # Install logrotate configuration
-        sudo tee "$LOGROTATE_DIR/xmrig" > /dev/null <<EOF
+        sudo tee "$LOGROTATE_DIR/xmrig" >/dev/null <<EOF
     $LOG_FILE_PATH {
         daily
         missingok
@@ -449,7 +452,7 @@ install_service() {
         export CPUPOWER_PATH
 
         # Overwrite the existing file
-        envsubst '$BUILD_DIR $CPUPOWER_PATH' < "$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/xmrig.service" > /dev/null
+        envsubst '$BUILD_DIR $CPUPOWER_PATH' <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/xmrig.service" >/dev/null
 
         # Reload systemd daemon
         sudo systemctl daemon-reload
@@ -476,7 +479,7 @@ tune_kernel() {
         log "Enabling MSR module for hardware prefetcher tuning..."
         sudo modprobe msr 2>/dev/null || true
         if [ -d "$MODULES_LOAD_DIR" ]; then
-            echo "msr" | sudo tee "$MODULES_LOAD_DIR/msr.conf" > /dev/null
+            echo "msr" | sudo tee "$MODULES_LOAD_DIR/msr.conf" >/dev/null
         elif [ -f "$MODULES_FILE" ]; then
             append_once "$MODULES_FILE" "msr"
         fi
