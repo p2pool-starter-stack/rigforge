@@ -26,6 +26,11 @@ TEMPLATE_JSON="$SCRIPT_DIR/config.json.template"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 
+# Pinned XMRig release for reproducible / supply-chain-hardened builds.
+# Override via environment if you need a different release.
+XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
+XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
+
 # System paths the script writes to. Overridable so the test suite can redirect them at a sandbox
 # (the defaults are the real locations, so production behaviour is unchanged).
 LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
@@ -256,9 +261,14 @@ install_dependencies() {
 }
 
 compile_xmrig() {
-    log "Cloning and patching XMRig source code..."
-    git clone --quiet https://github.com/xmrig/xmrig.git
-    
+    log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
+    git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git
+
+    # Verify we built the exact commit we pinned (supply-chain hardening).
+    actual="$(git -C xmrig rev-parse HEAD)"
+    [ "$actual" = "$XMRIG_COMMIT" ] || error "XMRig commit mismatch: expected $XMRIG_COMMIT, got $actual"
+    log "Verified XMRig $XMRIG_VERSION at commit $XMRIG_COMMIT"
+
     if [ "$OS_TYPE" == "Darwin" ]; then
         sed -i '' "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
         CORES=$(sysctl -n hw.ncpu)
