@@ -100,5 +100,5 @@ the generated config (e.g. `POOL_HOST`) take effect on the next service restart.
 ## See also
 
 - [Getting Started](getting-started.md) — first-run setup.
-- [Hardware Requirements](hardware.md) — the per-CPU profiles that drive the generated `cpu` section.
+- [Hardware Requirements](hardware.md) — the auto-detected tuning that drives the generated `cpu` section.
 - [Pithead Integration](pithead-integration.md) — the API token and discovery rules.

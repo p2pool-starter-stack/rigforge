@@ -28,6 +28,11 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- Tuning: the generated XMRig config now relies on XMRig's cache-aware auto-detection (thread count,
+  assembly path, MSR preset, NUMA) instead of matching CPU model names — fixing a wrong all-cores
+  thread list on dual-CCD X3D parts (e.g. 7950X3D) — and sets dedicated-miner defaults (`cpu.yield:
+  false`, `cpu.priority: 2`). Removed config keys XMRig silently ignores (the top-level `msr` object
+  and `cpu.msr`); the MSR mod is driven by `randomx.wrmsr` (#43, #44).
 - Generalized the project's language and config for any RandomX/XMRig pool: the pool/stratum host is
   now configured via `POOL_HOST` (the former `P2POOL_NODE_HOSTNAME` key still works as an alias), and
   the docs lead with the generic worker use case rather than P2Pool specifically (#35).

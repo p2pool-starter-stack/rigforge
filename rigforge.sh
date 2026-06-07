@@ -391,12 +391,23 @@ generate_xmrig_config() {
     fi
     LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
 
-    # Default Optimization Profile
-    YIELD="true"
-    PRIORITY="null"
+    # Default optimization profile.
+    #
+    # We deliberately lean on XMRig's own auto-detection rather than matching CPU model names: with
+    # asm=auto, rx=-1 (auto thread count, sized to L3) and wrmsr=true, XMRig picks the right assembly
+    # path, thread layout and per-family MSR preset from the detected topology — and stays correct for
+    # CPUs we'd never enumerate (new Zen/X3D SKUs, Intel hybrid P/E cores, etc.). See issue #44.
+    #
+    # On top of auto-detection we set defaults appropriate for a DEDICATED miner (issue #43):
+    #   - yield=false  : busy-wait for maximum hashrate (we own the whole box)
+    #   - priority=2   : win scheduling vs. background daemons (XMRig warns >2 can hang a desktop)
+    #   - numa=true    : XMRig default; a no-op on single-socket, essential on multi-socket/EPYC
+    #   - init-avx2=-1 : auto — already uses AVX2 for dataset init when the CPU supports it
+    YIELD="false"
+    PRIORITY="2"
     ASM="\"auto\""
     THREADS="-1"
-    NUMA="false"
+    NUMA="true"
     PREFETCH=1
     WRMSR="true"
     RDMSR="true"
@@ -438,36 +449,13 @@ generate_xmrig_config() {
         THREADS="${THREADS}]"
     fi
 
-    # Profile: AMD EPYC (Server)
-    if [[ "$CPU_MODEL" == *"EPYC"* ]]; then
-        log "Hardware Detected: AMD EPYC. Applying NUMA binding and server optimizations."
-        NUMA="true"
-        YIELD="true"
-        ASM="\"auto\""
-        THREADS="-1"
-        WRMSR="true"
-        JIT="true"
-    fi
-
-    # Profile: AMD Ryzen X3D (Desktop)
-    if [[ "$CPU_MODEL" == *"X3D"* ]]; then
-        log "Hardware Detected: AMD Ryzen X3D. Applying 'Golden' prefetch and MSR tuning."
-        YIELD="false"
-        PRIORITY="4"
-        ASM="\"ryzen\""
-
-        CORES=$(nproc)
-        THREADS="["
-        for ((i = 0; i < CORES; i++)); do
-            THREADS="${THREADS}$i"
-            if [ $i -lt $((CORES - 1)) ]; then THREADS="${THREADS}, "; fi
-        done
-        THREADS="${THREADS}]"
-
-        PREFETCH=1
-        WRMSR="true"
-        JIT="true"
-        INIT_AVX2=1
+    # NOTE: we no longer special-case CPUs by model name (the old EPYC / Ryzen-X3D branches). XMRig's
+    # auto-config is cache-aware and updated every release, so it sizes threads and picks asm/MSR/NUMA
+    # better — and correctly — for any CPU, including ones a name table would miss or get wrong (the
+    # old X3D branch pinned threads to ALL cores, which is wrong on dual-CCD parts like the 7950X3D
+    # where only one CCD has the V-cache). See issue #44.
+    if [ "$OS_TYPE" != "Darwin" ]; then
+        log "Detected CPU: ${CPU_MODEL:-unknown} — using XMRig auto-tuning (threads, asm, MSR, NUMA auto-detected)."
     fi
 
     # Construct User ID (Hostname)
@@ -506,7 +494,6 @@ generate_xmrig_config() {
         ."cpu"."huge-pages" = $huge_pages |
         ."cpu"."huge-pages-jit" = $jit |
         ."cpu"."memory-pool" = $memory_pool |
-        ."cpu"."msr" = $wrmsr |
         ."donate-level" = $donation |
         ."donate-over-proxy" = $donation |
         .randomx.numa = $numa |

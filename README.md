@@ -32,8 +32,8 @@ you like to your stack's single endpoint.
 
 - **Automated setup** — installs build dependencies (`cmake`, `libuv`, `hwloc`, …) and compiles a
   pinned, commit-verified XMRig from source.
-- **Hardware-aware tuning** — detects the CPU (e.g. AMD EPYC, Ryzen X3D) and applies a matching
-  performance profile (NUMA binding, ASM, thread layout, MSR registers).
+- **Hardware-aware tuning** — leans on XMRig's cache-aware auto-detection (thread count, assembly
+  path, MSR preset, NUMA) and layers on dedicated-miner defaults for maximum hashrate.
 - **Kernel & system tuning (Linux)** — topology-aware HugePages (1 GB and 2 MB), MSR access for
   hardware-prefetcher control, and `hugetlbfs` mounts + memlock limits.
 - **Service management (Linux)** — runs XMRig as a `systemd` service with a `cpupower` performance
@@ -110,8 +110,8 @@ make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
 every external/privileged command (`git`, `make`, `cmake`, `sudo`, `systemctl`, `modprobe`,
 `apt-get`, …) and all hardware detection (`uname`, `lscpu`, `sysctl`, `nproc`, `hostname`) replaced by
 fakes on `PATH`. Because the hardware is faked, **one run on any machine simulates every supported
-platform** — it asserts the generated XMRig config for the AMD EPYC, Ryzen X3D, generic-Linux and
-macOS profiles, plus config parsing, `DONATION` validation, host resolution, and a full stubbed
+platform** — it asserts the generated XMRig config for EPYC / Ryzen X3D / generic-Linux inputs and the
+macOS path, plus config parsing, `DONATION` validation, host resolution, and a full stubbed
 deployment run (executed twice to prove idempotency).
 
 **What `make test-e2e` adds** — it runs the *real* `rigforge.sh` end-to-end inside a throwaway
