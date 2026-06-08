@@ -106,7 +106,7 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
-    for cmd in make cmake systemctl modprobe mount update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl; do
+    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl; do
         cat >"$bin/$cmd" <<EOF
 #!/usr/bin/env bash
 echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
@@ -312,6 +312,21 @@ F="$SANDBOX/append.txt"
 assert_eq "duplicate line appended once" "$(grep -c '^alpha$' "$F")" "1"
 assert_eq "distinct line also present" "$(grep -c '^beta$' "$F")" "1"
 assert_eq "exactly two lines total" "$(wc -l <"$F" | tr -d ' ')" "2"
+
+# #12: remove_line is the inverse — drops exact-match lines, idempotent, leaves others.
+echo "== unit: remove_line (#12) =="
+R="$SANDBOX/remove.txt"
+printf 'keep me\nalpha\nkeep me too\n' >"$R"
+(
+    source "$SCRIPT"
+    set +e
+    PATH="$STUBS:$PATH"
+    remove_line "$R" "alpha"
+    remove_line "$R" "alpha"     # idempotent — already gone
+    remove_line "$R" "not-there" # no-op
+)
+assert_eq "target line removed" "$(grep -c '^alpha$' "$R")" "0"
+assert_eq "other lines preserved" "$(grep -c 'keep me' "$R")" "2"
 
 # ---------------------------------------------------------------------------
 # Config-generation matrix. Each profile sets STUB_* (the simulated hardware) + globals, runs
@@ -541,6 +556,19 @@ m3="$(
 assert_contains "stale managed param replaced" "$m3" "hugepages=2000"
 assert_absent "old managed param dropped" "$m3" "hugepages=999"
 assert_contains "non-managed param kept" "$m3" "quiet"
+
+# #12: grub_strip_managed is the inverse — drops ONLY the params RigForge added, keeps the rest.
+echo "== unit: grub_strip_managed (#12) =="
+s="$(
+    source "$SCRIPT"
+    grub_strip_managed "quiet splash nomodeset hugepagesz=1G hugepages=3 hugepagesz=2M hugepages=200 default_hugepagesz=2M msr.allow_writes=on"
+)"
+assert_eq "strip keeps only non-managed params" "$s" "quiet splash nomodeset"
+s="$(
+    source "$SCRIPT"
+    grub_strip_managed "quiet splash"
+)"
+assert_eq "strip leaves a clean cmdline untouched" "$s" "quiet splash"
 
 # ---------------------------------------------------------------------------
 # Pinned-build verification (#18): compile_xmrig clones the pinned XMRIG_VERSION and aborts if the
@@ -949,6 +977,51 @@ out="$( (
     PATH="$STUBS:$PATH" doctor 2>&1
 ))"
 assert_contains "doctor: macOS skips checks" "$out" "Linux-only"
+
+# #12: uninstall reverts every system change setup made, idempotently, leaving config.json. The GRUB
+# revert uses GNU `sed -i` so it's exercised in the Docker e2e (real Linux); here we point GRUB_DEFAULT
+# at a nonexistent path so that block is skipped and the test runs on macOS too.
+echo "== black-box: uninstall reverts system changes (#12) =="
+UN="$(mktemp -d "$SANDBOX/uninst.XXXXXX")"
+cp "$SCRIPT" "$UN/rigforge.sh"
+cp "$ROOT/VERSION" "$UN/"
+cp -R "$ROOT/worker-config" "$UN/"
+ME="${SUDO_USER:-${USER:-$(id -un)}}"
+mkdir -p "$UN/etc/systemd/system" "$UN/etc/logrotate.d" "$UN/etc/security" "$UN/etc/modules-load.d" "$UN/dev/hp1g" "$UN/home/worker/xmrig/build"
+: >"$UN/etc/systemd/system/xmrig.service"
+: >"$UN/etc/logrotate.d/xmrig"
+: >"$UN/etc/modules-load.d/msr.conf"
+: >"$UN/home/worker/xmrig/build/xmrig"
+printf 'proc /proc proc defaults 0 0\nhugetlbfs /dev/hugepages hugetlbfs defaults 0 0\nhugetlbfs_1g %s/dev/hp1g hugetlbfs pagesize=1G 0 0\n' "$UN" >"$UN/etc/fstab"
+printf 'root hard nofile 1024\n%s soft memlock unlimited\n%s hard memlock unlimited\n* soft memlock unlimited\n' "$ME" "$ME" >"$UN/etc/security/limits.conf"
+printf 'loop\nmsr\n' >"$UN/etc/modules"
+cat >"$UN/config.json" <<EOF
+{ "HOME_DIR": "$UN/home", "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+un_run() {
+    (cd "$UN" && PATH="$STUBS:$PATH" \
+        SYSTEMD_DIR="$UN/etc/systemd/system" LOGROTATE_DIR="$UN/etc/logrotate.d" \
+        FSTAB="$UN/etc/fstab" LIMITS_CONF="$UN/etc/security/limits.conf" \
+        MODULES_LOAD_DIR="$UN/etc/modules-load.d" MODULES_FILE="$UN/etc/modules" \
+        HUGEPAGES_1G_DIR="$UN/dev/hp1g" GRUB_DEFAULT="$UN/nonexistent-grub" \
+        bash ./rigforge.sh uninstall --yes </dev/null 2>&1)
+}
+out="$(un_run)"
+rc=$?
+assert_rc "uninstall exits 0" "$rc" "0"
+assert_eq "service unit removed" "$([ -f "$UN/etc/systemd/system/xmrig.service" ] && echo y || echo n)" "n"
+assert_eq "logrotate policy removed" "$([ -f "$UN/etc/logrotate.d/xmrig" ] && echo y || echo n)" "n"
+assert_eq "msr.conf removed" "$([ -f "$UN/etc/modules-load.d/msr.conf" ] && echo y || echo n)" "n"
+assert_eq "worker build/logs removed" "$([ -d "$UN/home/worker" ] && echo y || echo n)" "n"
+assert_eq "fstab hugepage lines gone" "$(grep -c 'hugetlbfs' "$UN/etc/fstab")" "0"
+assert_contains "fstab unrelated line kept" "$(cat "$UN/etc/fstab")" "proc /proc proc"
+assert_eq "limits memlock lines gone" "$(grep -c 'memlock unlimited' "$UN/etc/security/limits.conf")" "0"
+assert_contains "limits unrelated line kept" "$(cat "$UN/etc/security/limits.conf")" "root hard nofile 1024"
+assert_eq "modules msr line gone" "$(grep -cx 'msr' "$UN/etc/modules")" "0"
+assert_contains "modules unrelated line kept" "$(cat "$UN/etc/modules")" "loop"
+# Idempotent: a second uninstall is a clean no-op.
+out="$(un_run)"
+assert_rc "second uninstall exits 0" "$?" "0"
 
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"

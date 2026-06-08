@@ -8,6 +8,10 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- `uninstall` command: cleanly reverts every change setup made — removes the systemd service and
+  logrotate policy, strips the HugePage/MSR lines from `fstab`/`limits.conf`/`/etc/modules`, reverts the
+  managed GRUB kernel parameters, unmounts the 1G HugePage filesystem, and removes the worker
+  build/logs (leaving `config.json`). Idempotent; prompts unless `--yes` (#12).
 - Command surface: `apply`, `doctor`, `bench`, `status`, `logs`, `start`, `stop`, `restart`, `enable`,
   `disable`, and `version` subcommands alongside `setup`/`upgrade`/`help`. `doctor` is a read-only
   health check that verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is

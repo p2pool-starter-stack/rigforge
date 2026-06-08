@@ -136,6 +136,23 @@ else
     bad "deploy: config.json stable across runs" "differs or missing"
 fi
 
+# #12: uninstall reverts everything (real Linux, real GNU sed for the GRUB strip).
+echo "== uninstall (clean revert) =="
+out3="$(./rigforge.sh uninstall --yes </dev/null 2>&1)"
+rc3=$?
+assert_rc "uninstall exits 0" "$rc3" "0"
+[ "$rc3" = 0 ] || printf '%s\n' "$out3" | tail -20
+assert_eq "uninstall: service unit removed" "$([ -f /etc/systemd/system/xmrig.service ] && echo y || echo n)" "n"
+assert_eq "uninstall: fstab hugepages reverted" "$(grep -c 'hugetlbfs' /etc/fstab)" "0"
+assert_eq "uninstall: memlock reverted" "$(grep -c 'memlock unlimited' /etc/security/limits.conf)" "0"
+assert_eq "uninstall: msr.conf removed" "$([ -f /etc/modules-load.d/msr.conf ] && echo y || echo n)" "n"
+assert_absent "uninstall: GRUB hugepages stripped" "$(cat /etc/default/grub)" "default_hugepagesz"
+assert_absent "uninstall: GRUB msr param stripped" "$(cat /etc/default/grub)" "msr.allow_writes"
+assert_contains "uninstall: GRUB keeps base params" "$(cat /etc/default/grub)" "quiet splash"
+assert_eq "uninstall: config.json left in place" "$([ -f ./config.json ] && echo y || echo n)" "y"
+./rigforge.sh uninstall --yes </dev/null >/dev/null 2>&1
+assert_rc "uninstall is idempotent" "$?" "0"
+
 echo ""
 printf 'in-container: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then
