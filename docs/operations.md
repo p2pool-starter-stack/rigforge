@@ -102,12 +102,12 @@ If you see MSR errors, see Troubleshooting below.
 | **Low hashrate / few threads** | RandomX is L3-bound (~2 MB per thread). A CPU with little L3 runs fewer effective threads — this is expected. See [Hardware › L3 cache](hardware.md#a-note-on-l3-cache). |
 | **No AVX2** | RandomX still runs but slower. AVX2 is strongly recommended; there's no fix beyond different hardware. |
 | **Dashboard can't read the worker** | The HTTP API token must equal the rig name (or be unset), the API must be on `:8080`, and the worker must be reachable from the stack host. See [Pithead Integration › Troubleshooting](pithead-integration.md#troubleshooting). |
-| **Pool unreachable** | Confirm the worker can reach `POOL_HOST:3333` (firewall, DHCP/static IP). Workers use plain Stratum on the LAN — no Tor. |
+| **Pool unreachable** | Confirm the worker can reach its pool URL (firewall, DHCP/static IP). Workers use plain Stratum on the LAN — no Tor. |
 
 ---
 
 ## See also
 
 - [Getting Started](getting-started.md) — first-run setup and verification.
-- [Configuration](configuration.md) — config keys and the worker template.
+- [Configuration](configuration.md) — config keys and how the XMRig config is generated.
 - [Pithead Integration](pithead-integration.md) — the dashboard contract.

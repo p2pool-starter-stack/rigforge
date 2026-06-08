@@ -132,10 +132,10 @@ parse_and_print() { # <config_file> <script_dir> <var>
         eval "printf '%s' \"\${$var}\""
     )
 }
-# Convenience: the host of the first resolved pool (POOLS_JSON[0].url with the default :3333 stripped),
-# so the host-resolution regression tests can keep asserting a bare host.
+# Convenience: the host of the first resolved pool (POOLS_JSON[0].url with the :port stripped), so the
+# host-resolution regression tests can assert a bare host.
 pool_host0() { # <config_file> <script_dir>
-    parse_and_print "$1" "$2" POOLS_JSON | jq -r '.[0].url | sub(":3333$"; "")'
+    parse_and_print "$1" "$2" POOLS_JSON | jq -r '.[0].url | sub(":[0-9]+$"; "")'
 }
 # Same, but we only care about parse_config's exit code.
 parse_rc() { # <config_file> <script_dir>
@@ -155,137 +155,145 @@ mkconf() { # <name> <json>
     echo "$f"
 }
 
-CFG_TPL='"WORKER_CONFIG_FILE": "./worker-config/example-config.json.template"'
+# A minimal valid pool, for tests that just need *a* pool present.
+POOL='"pools": [{"url": "h:3333"}]'
 
 # ---------------------------------------------------------------------------
-# PR #15 (#14) removed the .local/mDNS appending: the pool host is now used verbatim,
-# whether it's a short name, an FQDN, or an IP. The dotless case is the regression guard that proves
-# the removal — it must NOT come back as "box.local".
-echo "== unit: parse_config — pool address used verbatim (#15) =="
-c="$(mkconf dotless "{ \"POOL_HOST\": \"box\", $CFG_TPL }")"
+# PR #15 (#14) removed the .local/mDNS appending: the pool url's host is used verbatim, whether it's a
+# short name, an FQDN, or an IP. The dotless case is the regression guard — it must NOT become
+# "box.local". (pool_host0 strips the :port so we can assert a bare host.)
+echo "== unit: parse_config — pool url used verbatim (#15) =="
+c="$(mkconf dotless "{ \"pools\": [{\"url\":\"box:3333\"}] }")"
 assert_eq "short host used as-is (no .local)" "$(pool_host0 "$c" "$ROOT")" "box"
-c="$(mkconf fqdn "{ \"POOL_HOST\": \"box.lan\", $CFG_TPL }")"
+c="$(mkconf fqdn "{ \"pools\": [{\"url\":\"box.lan:3333\"}] }")"
 assert_eq "FQDN passed through" "$(pool_host0 "$c" "$ROOT")" "box.lan"
-c="$(mkconf ip "{ \"POOL_HOST\": \"10.0.0.5\", $CFG_TPL }")"
+c="$(mkconf ip "{ \"pools\": [{\"url\":\"10.0.0.5:3333\"}] }")"
 assert_eq "IPv4 host passed through" "$(pool_host0 "$c" "$ROOT")" "10.0.0.5"
 
-# #35: POOL_HOST is the canonical key; P2POOL_NODE_HOSTNAME is a backward-compatible alias.
-echo "== unit: POOL_HOST + legacy alias (#35) =="
-c="$(mkconf poolhost "{ \"POOL_HOST\": \"pool.example\", $CFG_TPL }")"
-assert_eq "POOL_HOST honoured" "$(pool_host0 "$c" "$ROOT")" "pool.example"
-c="$(mkconf legacy "{ \"P2POOL_NODE_HOSTNAME\": \"legacy.example\", $CFG_TPL }")"
-assert_eq "P2POOL_NODE_HOSTNAME alias still works" "$(pool_host0 "$c" "$ROOT")" "legacy.example"
-c="$(mkconf both "{ \"POOL_HOST\": \"new.example\", \"P2POOL_NODE_HOSTNAME\": \"old.example\", $CFG_TPL }")"
-assert_eq "POOL_HOST wins over the alias" "$(pool_host0 "$c" "$ROOT")" "new.example"
-
-echo "== unit: hostname validation (#8) =="
-for h in box box.lan 10.0.0.5 fe80::1 rig-01; do
-    c="$(mkconf hnok "{ \"POOL_HOST\": \"$h\", $CFG_TPL }")"
+# A url is host:port — valid forms accepted; bad chars, the unfilled placeholder, and a MISSING PORT
+# are all rejected (we don't guess a port).
+echo "== unit: pool url validation (#8) =="
+for u in box:3333 box.lan:3333 10.0.0.5:3333 rig-01:5555; do
+    c="$(mkconf hnok "{ \"pools\": [{\"url\":\"$u\"}] }")"
     parse_rc "$c" "$ROOT"
-    assert_rc "host '$h' accepted" "$?" "0"
+    assert_rc "url '$u' accepted" "$?" "0"
 done
-c="$(mkconf hnempty "{ \"POOL_HOST\": \"\", $CFG_TPL }")"
-parse_rc "$c" "$ROOT"
-assert_rc "empty host rejected" "$?" "1"
-c="$(mkconf hnmiss "{ $CFG_TPL }")"
-parse_rc "$c" "$ROOT"
-assert_rc "missing host rejected" "$?" "1"
-for h in 'bad host' 'evil;rm' 'a/b' '<POOL_HOST>'; do
-    c="$(mkconf hnbad "{ \"POOL_HOST\": \"$h\", $CFG_TPL }")"
+for u in 'bad host:3333' 'evil;rm:3333' 'a/b:3333' '<YOUR_POOL_HOST>:3333' 'noport'; do
+    c="$(mkconf hnbad "{ \"pools\": [{\"url\":\"$u\"}] }")"
     parse_rc "$c" "$ROOT"
-    assert_rc "host '$h' rejected" "$?" "1"
+    assert_rc "url '$u' rejected" "$?" "1"
 done
 
-# #21/#42: config.json may set XMRig's native `pools` array directly; blank/missing fields fall back to
-# Pithead-friendly defaults (empty url -> POOL_HOST:3333). With no `pools` array, a single default pool
-# is synthesized from POOL_HOST. Custom port + TLS (#21) and backup pools (#42) are just pool entries.
+# #21/#42: the pool target is XMRig's native `pools` array. Each entry needs a host:port `url`; other
+# fields fall back to Pithead defaults. Multiple entries = failover.
 echo "== unit: native pools array + defaults (#21, #42) =="
 PJ() { parse_and_print "$1" "$ROOT" POOLS_JSON; } # echoes the resolved POOLS_JSON
-# No pools array -> one default pool from POOL_HOST.
-c="$(mkconf p_simple "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
-assert_eq "no pools -> one pool" "$(PJ "$c" | jq -c 'length')" "1"
-assert_eq "default url = host:3333" "$(PJ "$c" | jq -r '.[0].url')" "h:3333"
+# Single pool, only url set -> other fields filled with defaults.
+c="$(mkconf p_simple "{ \"pools\": [{\"url\":\"h:3333\"}] }")"
+assert_eq "one pool" "$(PJ "$c" | jq -c 'length')" "1"
+assert_eq "url passed through" "$(PJ "$c" | jq -r '.[0].url')" "h:3333"
 assert_eq "default pass = x" "$(PJ "$c" | jq -r '.[0].pass')" "x"
 assert_eq "default tls = false" "$(PJ "$c" | jq -c '.[0].tls')" "false"
 assert_eq "default keepalive = true" "$(PJ "$c" | jq -c '.[0].keepalive')" "true"
-# Explicit pools array — full XMRig structure passed through (#21: any url/port + tls).
-c="$(mkconf p_full "{ \"pools\": [{\"url\":\"pool.example:443\",\"tls\":true,\"pass\":\"w\"}], $CFG_TPL }")"
+# Explicit pool — full XMRig structure passed through (#21: any host/port + tls).
+c="$(mkconf p_full "{ \"pools\": [{\"url\":\"pool.example:443\",\"tls\":true,\"pass\":\"w\"}] }")"
 assert_eq "explicit url kept" "$(PJ "$c" | jq -r '.[0].url')" "pool.example:443"
 assert_eq "explicit tls kept" "$(PJ "$c" | jq -c '.[0].tls')" "true"
 assert_eq "explicit pass kept" "$(PJ "$c" | jq -r '.[0].pass')" "w"
-# Blank fields in an explicit pool fall back (empty url -> POOL_HOST:3333; missing pass -> x).
-c="$(mkconf p_blank "{ \"POOL_HOST\": \"stack.lan\", \"pools\": [{\"url\":\"\"}], $CFG_TPL }")"
-assert_eq "blank url -> POOL_HOST:3333" "$(PJ "$c" | jq -r '.[0].url')" "stack.lan:3333"
+# A non-default port is honoured verbatim.
+c="$(mkconf p_port "{ \"pools\": [{\"url\":\"stack.lan:14444\"}] }")"
+assert_eq "non-default port kept" "$(PJ "$c" | jq -r '.[0].url')" "stack.lan:14444"
+# Missing fields in an entry fall back (here only url+tls set -> pass defaults to x).
+c="$(mkconf p_partial "{ \"pools\": [{\"url\":\"x:3333\",\"tls\":true}] }")"
 assert_eq "missing pass -> x" "$(PJ "$c" | jq -r '.[0].pass')" "x"
 # Backup pools (#42) = multiple entries, order preserved.
-c="$(mkconf p_backup "{ \"pools\": [{\"url\":\"a:3333\"},{\"url\":\"b:14444\",\"tls\":true}], $CFG_TPL }")"
+c="$(mkconf p_backup "{ \"pools\": [{\"url\":\"a:3333\"},{\"url\":\"b:14444\",\"tls\":true}] }")"
 assert_eq "two pools" "$(PJ "$c" | jq -c 'length')" "2"
 assert_eq "order preserved" "$(PJ "$c" | jq -c '[.[].url]')" '["a:3333","b:14444"]'
 assert_eq "backup tls kept" "$(PJ "$c" | jq -c '.[1].tls')" "true"
-# Validation: bad url, non-boolean tls, and no-host-anywhere all fail fast.
-c="$(mkconf p_badurl "{ \"pools\": [{\"url\":\"evil;rm\"}], $CFG_TPL }")"
+# Validation: bad url, blank url, missing port, non-boolean tls, no pools key, and an empty pools array
+# all fail fast.
+c="$(mkconf p_badurl "{ \"pools\": [{\"url\":\"evil;rm:3333\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "bad pool url rejected" "$?" "1"
-c="$(mkconf p_badtls "{ \"POOL_HOST\": \"h\", \"pools\": [{\"tls\":\"yes\"}], $CFG_TPL }")"
+c="$(mkconf p_blankurl "{ \"pools\": [{\"url\":\"\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "blank pool url rejected" "$?" "1"
+c="$(mkconf p_noport "{ \"pools\": [{\"url\":\"stack.lan\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "url without a port rejected" "$?" "1"
+c="$(mkconf p_badtls "{ \"pools\": [{\"url\":\"h:3333\",\"tls\":\"yes\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "non-boolean tls rejected" "$?" "1"
-c="$(mkconf p_nohost "{ $CFG_TPL }")"
+c="$(mkconf p_nopools "{ }")"
 parse_rc "$c" "$ROOT"
-assert_rc "no POOL_HOST and no pools rejected" "$?" "1"
+assert_rc "no pools rejected" "$?" "1"
+c="$(mkconf p_emptypools "{ \"pools\": [] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "empty pools array rejected" "$?" "1"
 
 echo "== unit: parse_config — workspace + token + template resolution =="
-c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
+c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", $POOL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
-c="$(mkconf home "{ \"HOME_DIR\": \"/opt/rig\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
+c="$(mkconf home "{ \"HOME_DIR\": \"/opt/rig\", $POOL }")"
 assert_eq "custom HOME_DIR -> HOME/worker" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "/opt/rig/worker"
-c="$(mkconf tok "{ \"ACCESS_TOKEN\": \"tok123\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
+c="$(mkconf tok "{ \"ACCESS_TOKEN\": \"tok123\", $POOL }")"
 assert_eq "ACCESS_TOKEN honoured" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "tok123"
-c="$(mkconf notok "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
-assert_eq "ACCESS_TOKEN falls back to hostname" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rigbox"
+# The XMRig template is internal/bundled now — always the same path, not user-configurable.
+c="$(mkconf tmpl "{ $POOL }")"
+assert_eq "template is the bundled path" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$ROOT/worker-config/example-config.json.template"
 
-# #22: configurable rig label. Defaults to hostname; the token follows the rig name so the Pithead
-# "Bearer <rig name>" contract holds even with a custom name.
-echo "== unit: WORKER_NAME / rig label (#22) =="
-c="$(mkconf wname "{ \"WORKER_NAME\": \"rig-07\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
-assert_eq "WORKER_NAME honoured" "$(parse_and_print "$c" "$ROOT" WORKER_NAME)" "rig-07"
-assert_eq "token defaults to rig name" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rig-07"
-c="$(mkconf wnamedef "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
-assert_eq "WORKER_NAME defaults to hostname" "$(parse_and_print "$c" "$ROOT" WORKER_NAME)" "rigbox"
-c="$(mkconf wnametok "{ \"WORKER_NAME\": \"rig-07\", \"ACCESS_TOKEN\": \"custom\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
-assert_eq "explicit token overrides rig name" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "custom"
-c="$(mkconf wnamebad "{ \"WORKER_NAME\": \"bad name!\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
-parse_rc "$c" "$ROOT"
-assert_rc "invalid WORKER_NAME rejected" "$?" "1"
-c="$(mkconf rel "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
-assert_eq "relative template resolved vs SCRIPT_DIR" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$ROOT/./worker-config/example-config.json.template"
-c="$(mkconf abs "{ \"POOL_HOST\": \"h\", \"WORKER_CONFIG_FILE\": \"$TEMPLATE\" }")"
-assert_eq "absolute template kept as-is" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$TEMPLATE"
+# #22: the rig's label is the pool `user` (folded in from the old WORKER_NAME); blank -> hostname (at
+# config-gen). The HTTP API token follows the rig name (the first pool's user), so the Pithead
+# "Bearer <rig name>" contract holds out of the box; an explicit ACCESS_TOKEN overrides it.
+echo "== unit: rig label = pool user, token follows it (#22) =="
+c="$(mkconf userset "{ \"pools\": [{\"url\":\"h:3333\",\"user\":\"rig-07\"}] }")"
+assert_eq "pool user honoured" "$(parse_and_print "$c" "$ROOT" POOLS_JSON | jq -r '.[0].user')" "rig-07"
+assert_eq "token defaults to the pool user" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rig-07"
+c="$(mkconf userblank "{ $POOL }")"
+assert_eq "token falls back to hostname when user blank" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rigbox"
+c="$(mkconf usertok "{ \"pools\": [{\"url\":\"h:3333\",\"user\":\"rig-07\"}], \"ACCESS_TOKEN\": \"custom\" }")"
+assert_eq "explicit token overrides the rig name" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "custom"
 
 echo "== unit: parse_config — error paths =="
 printf '{ not json ' >"$SANDBOX/bad.json"
 parse_rc "$SANDBOX/bad.json" "$ROOT"
 assert_rc "invalid JSON rejected" "$?" "1"
-# #23: WORKER_CONFIG_FILE is optional — a minimal config.json needs only POOL_HOST.
-c="$(mkconf noworker "{ \"POOL_HOST\": \"h\" }")"
-parse_rc "$c" "$ROOT"
-assert_rc "missing WORKER_CONFIG_FILE uses default" "$?" "0"
-assert_eq "default template resolved" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$ROOT/./worker-config/example-config.json.template"
-c="$(mkconf notmpl "{ \"POOL_HOST\": \"h\", \"WORKER_CONFIG_FILE\": \"./nope/missing.json\" }")"
-parse_rc "$c" "$ROOT"
-assert_rc "missing template file rejected" "$?" "1"
+
+# Interactive first-run: ensure_config_exists prompts (y, then the host:port pool URL) and writes a
+# minimal { "pools": [{ "url": ... }] }. A blank or port-less URL aborts and writes nothing.
+echo "== unit: ensure_config_exists interactive first-run =="
+ecd="$(mktemp -d "$SANDBOX/ec.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ecd/config.json"
+    set +eu
+    printf 'y\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "first-run writes minimal pools config" "$(jq -c '.pools' "$ecd/config.json" 2>/dev/null)" '[{"url":"stack.lan:3333"}]'
+for bad in '' 'stack.lan'; do
+    ecd2="$(mktemp -d "$SANDBOX/ec2.XXXXXX")"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$ecd2/config.json"
+        set +eu
+        printf 'y\n%s\n' "$bad" | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+    )
+    assert_eq "invalid URL '$bad' writes no config" "$([ -f "$ecd2/config.json" ] && echo yes || echo no)" "no"
+done
 
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
-    c="$(mkconf "don$d" "{ \"DONATION\": $d, \"POOL_HOST\": \"h\", $CFG_TPL }")"
+    c="$(mkconf "don$d" "{ \"DONATION\": $d, $POOL }")"
     parse_rc "$c" "$ROOT"
     assert_rc "DONATION $d accepted" "$?" "0"
 done
-c="$(mkconf d0 "{ \"DONATION\": 0, \"POOL_HOST\": \"h\", $CFG_TPL }")"
+c="$(mkconf d0 "{ \"DONATION\": 0, $POOL }")"
 assert_eq "DONATION 0 parsed as 0" "$(parse_and_print "$c" "$ROOT" DONATION)" "0"
-c="$(mkconf dmiss "{ \"POOL_HOST\": \"h\", $CFG_TPL }")"
+c="$(mkconf dmiss "{ $POOL }")"
 assert_eq "DONATION defaults to 1 when absent" "$(parse_and_print "$c" "$ROOT" DONATION)" "1"
 for d in 101 -1 1.5 abc; do
-    c="$(mkconf "donbad" "{ \"DONATION\": \"$d\", \"POOL_HOST\": \"h\", $CFG_TPL }")"
+    c="$(mkconf "donbad" "{ \"DONATION\": \"$d\", $POOL }")"
     parse_rc "$c" "$ROOT"
     assert_rc "DONATION '$d' rejected" "$?" "1"
 done
@@ -325,7 +333,6 @@ gen_config() { # echoes path to the dir containing config.json
             POOLS_JSON="[{\"url\":\"$POOL_ADDRESS:3333\",\"user\":\"\",\"pass\":\"x\",\"keepalive\":true,\"tls\":false,\"enabled\":true}]"
         fi
         ACCESS_TOKEN="${SIM_TOK:-tok123}"
-        WORKER_NAME="${SIM_NAME:-}"
         DONATION="${SIM_DON:-1}"
         LOGROTATE_DIR="$d"
         set +e
@@ -441,14 +448,15 @@ assert_eq "all pools enabled" "$(J "$cfg" '[.pools[].enabled] | all')" "true"
 assert_eq "blank user filled with rig name" "$(JC "$cfg" '[.pools[].user] | unique')" '["rigbox"]'
 unset STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
 
-# #22: a custom rig label flows into the pool user.
-echo "== config-gen: custom rig label (#22) =="
+# #22: a pool entry that sets its own `user` keeps it (the rig label); a blank user gets the hostname
+# (covered by "pool user = hostname" above).
+echo "== config-gen: explicit pool user / rig label (#22) =="
 export STUB_CPU_MODEL="Intel(R) Xeon" STUB_NPROC=8 STUB_HOSTNAME=rigbox
-SIM_OS=Linux SIM_DON=1 SIM_NAME=fancy-rig
+SIM_OS=Linux SIM_DON=1 SIM_POOLS='[{"url":"myrig.local:3333","user":"fancy-rig","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
 d="$(gen_config)"
 cfg="$d/config.json"
-unset SIM_NAME STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
-assert_eq "pool user = WORKER_NAME" "$(J "$cfg" '.pools[0].user')" "fancy-rig"
+unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+assert_eq "explicit pool user kept" "$(J "$cfg" '.pools[0].user')" "fancy-rig"
 
 echo "== config-gen: idempotent (same inputs -> identical output) =="
 export STUB_CPU_MODEL="Intel(R) Xeon(R)" STUB_NPROC=8 STUB_HOSTNAME=rigbox
@@ -697,7 +705,7 @@ mkdir -p "$U/home/worker/xmrig/build"
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 printf 'ABC\n' >"$U/home/worker/xmrig/.rigforge-commit"
 cat >"$U/config.json" <<EOF
-{ "HOME_DIR": "$U/home", "DONATION": 1, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "POOL_HOST": "poolbox.lan" }
+{ "HOME_DIR": "$U/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
 out="$(cd "$U" && PATH="$STUBS:$PATH" XMRIG_COMMIT=ABC bash ./rigforge.sh upgrade </dev/null 2>&1)"
 rc=$?
@@ -751,9 +759,9 @@ e2e_setup() { # echoes the work dir
     printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$W/etc/default/grub"
     printf 'flags : fpu pdpe1gb\n' >"$W/proc/cpuinfo"
     # Use an explicit (dotted) host so this E2E doesn't depend on the .local/mDNS appending that
-    # PR #15 removes — "poolbox.lan" -> "poolbox.lan:3333" holds before and after that change.
+    # Host is used verbatim (#15 removed the .local appending); the url is host:port.
     cat >"$W/config.json" <<EOF
-{ "HOME_DIR": "$W/home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "POOL_HOST": "poolbox.lan" }
+{ "HOME_DIR": "$W/home", "DONATION": 7, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
     echo "$W"
 }
@@ -840,8 +848,13 @@ if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVe
 echo "== unit: config.advanced.example.json (#23) =="
 ADV="$ROOT/config.advanced.example.json"
 if jq -e . "$ADV" >/dev/null 2>&1; then ok "advanced example is valid JSON"; else bad "advanced example is valid JSON" "jq parse failed"; fi
-for k in POOL_HOST pools WORKER_NAME ACCESS_TOKEN DONATION HOME_DIR WORKER_CONFIG_FILE; do
+# The advanced example documents exactly the user-facing keys. The rig label lives in pools[].user and
+# the template is internal, so WORKER_NAME / WORKER_CONFIG_FILE / POOL_HOST must NOT appear.
+for k in pools ACCESS_TOKEN DONATION HOME_DIR; do
     if jq -e --arg k "$k" 'has($k)' "$ADV" >/dev/null 2>&1; then ok "advanced example documents $k"; else bad "advanced example documents $k" "key missing"; fi
+done
+for k in POOL_HOST WORKER_NAME WORKER_CONFIG_FILE; do
+    assert_absent "advanced example has no $k key" "$(cat "$ADV")" "\"$k\""
 done
 
 # ---------------------------------------------------------------------------
