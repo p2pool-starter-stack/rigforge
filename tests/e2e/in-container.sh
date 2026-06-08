@@ -99,9 +99,16 @@ assert_contains "build: verified pinned commit" "$out1" "Verified XMRig"
 assert_eq "deploy: pool url from hostname" "$(jq -r '.pools[0].url' "$BUILD/config.json" 2>/dev/null)" "poolbox.lan:3333"
 assert_eq "deploy: EPYC numa applied" "$(jq -r '.randomx.numa' "$BUILD/config.json" 2>/dev/null)" "true"
 assert_eq "deploy: donate-level = 7" "$(jq -r '.["donate-level"]' "$BUILD/config.json" 2>/dev/null)" "7"
-assert_contains "service rendered by real envsubst" "$(cat /etc/systemd/system/xmrig.service 2>/dev/null)" "$BUILD"
+svc="$(cat /etc/systemd/system/xmrig.service 2>/dev/null)"
+assert_contains "service rendered by real envsubst" "$svc" "$BUILD"
+# #13: hardening directives + ReadWritePaths got WORKER_ROOT expanded by the REAL envsubst.
+assert_contains "service: NoNewPrivileges hardening" "$svc" "NoNewPrivileges=true"
+assert_contains "service: ProtectSystem=full" "$svc" "ProtectSystem=full"
+assert_contains "service: ReadWritePaths -> worker root" "$svc" "ReadWritePaths=$WORK/data-home/worker"
+assert_absent "service: no unexpanded WORKER_ROOT" "$svc" 'ReadWritePaths=$WORKER_ROOT'
 assert_contains "limits: fstab hugepages written" "$(cat /etc/fstab)" "hugetlbfs /dev/hugepages"
 assert_contains "limits: memlock written" "$(cat /etc/security/limits.conf)" "soft memlock unlimited"
+assert_absent "limits: not wildcard memlock" "$(cat /etc/security/limits.conf)" "* soft memlock unlimited"
 assert_contains "grub: hugepages configured" "$(cat /etc/default/grub)" "hugepages"
 assert_contains "grub: preserves existing params" "$(cat /etc/default/grub)" "quiet splash"
 if [ "$ARCH" = x86_64 ]; then

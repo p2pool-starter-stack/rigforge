@@ -37,6 +37,11 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- Hardened the `xmrig` systemd unit with defense-in-depth sandboxing (`NoNewPrivileges`,
+  `ProtectSystem=full`, `PrivateTmp`, `ProtectControlGroups`, `LockPersonality`, `ReadWritePaths`
+  scoped to the worker root) — chosen to not break the MSR mod, RandomX JIT, or HugePages. `memlock`
+  is now scoped to the service (`LimitMEMLOCK=infinity`) and the mining user, instead of granted to
+  every account via `*` (#13).
 - Tuning: the generated XMRig config now relies on XMRig's cache-aware auto-detection (thread count,
   assembly path, MSR preset, NUMA) instead of matching CPU model names — fixing a wrong all-cores
   thread list on dual-CCD X3D parts (e.g. 7950X3D) — and sets dedicated-miner defaults (`cpu.yield:
