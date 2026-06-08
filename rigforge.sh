@@ -205,11 +205,15 @@ parse_config() {
         error "$CONFIG_JSON is not valid JSON."
     fi
 
+    # HOME_DIR becomes a filesystem path we mkdir/cd/write under (with sudo), so validate it: either the
+    # sentinel DYNAMIC_HOME or a clean absolute path (no spaces, metacharacters, or traversal tricks).
     RAW_HOME=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON")
     if [ "$RAW_HOME" == "DYNAMIC_HOME" ]; then
         WORKER_ROOT="$SCRIPT_DIR/data/worker"
-    else
+    elif [[ "$RAW_HOME" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$RAW_HOME" != *..* ]]; then
         WORKER_ROOT="$RAW_HOME/worker"
+    else
+        error "HOME_DIR must be \"DYNAMIC_HOME\" or an absolute path (letters, digits, . _ - /); got: '$RAW_HOME'."
     fi
     DONATION=$(jq -r '.DONATION // 1' "$CONFIG_JSON")
     # donate-level is a percentage; the compile step also seds this into donate.h, so a malformed
@@ -235,22 +239,42 @@ parse_config() {
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # Validate every pool: a `host:port` url (the char regex rejects the unfilled placeholder <...> and
-    # shell/URL metacharacters; the port is required — we don't guess one), and a boolean tls.
-    while IFS=$'\t' read -r _u _t; do
-        if [ -z "$_u" ]; then
-            error "A pool entry has no url — set 'pools[].url' (host:port) in $CONFIG_JSON."
-        fi
-        if ! [[ "$_u" =~ ^[A-Za-z0-9._:-]+$ ]]; then
-            error "Pool url is not valid: '$_u'. Use host:port or ip:port (pools[].url)."
-        fi
+    # Validate every pool field — fail fast with a clear message rather than writing a config XMRig
+    # would choke on. url must be host:port: a valid hostname / IPv4 / bracketed-IPv6 host and a port
+    # in 1-65535; user/pass reject whitespace and shell/control characters; keepalive/tls/enabled
+    # must be booleans.
+    # Iterate one compact JSON object per pool (robust even when a field like user is empty), and read
+    # each field back with jq.
+    while IFS= read -r _pool; do
+        _u=$(jq -r '.url' <<<"$_pool")
+        _user=$(jq -r '.user' <<<"$_pool")
+        _pass=$(jq -r '.pass' <<<"$_pool")
+        [ -n "$_u" ] || error "A pool entry has no url — set 'pools[].url' (host:port) in $CONFIG_JSON."
         if ! [[ "$_u" =~ :[0-9]+$ ]]; then
             error "Pool url '$_u' must include a port, e.g. $_u:3333."
         fi
-        if [ "$_t" != "true" ] && [ "$_t" != "false" ]; then
-            error "Pool tls must be true or false (got: $_t)."
+        _host="${_u%:*}"
+        _port="${_u##*:}"
+        if [ "$_port" -lt 1 ] || [ "$_port" -gt 65535 ]; then
+            error "Pool port must be between 1 and 65535 (got '$_port' in '$_u')."
         fi
-    done < <(jq -r '.[] | [.url, (.tls | tostring)] | @tsv' <<<"$POOLS_JSON")
+        # The host must be a valid hostname / FQDN / IPv4, or a bracketed IPv6 literal. This also
+        # rejects the unfilled template placeholder (<...>), whitespace, and shell/URL metacharacters.
+        case "$_host" in
+        \[*\]) [[ "$_host" =~ ^\[[0-9A-Fa-f:]+\]$ ]] || error "Pool url '$_u' has an invalid IPv6 literal (use [addr]:port)." ;;
+        *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool url host '$_host' is not a valid hostname or IP." ;;
+        esac
+        if [ -n "$_user" ] && ! [[ "$_user" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
+            error "Pool user '$_user' has invalid characters (allowed: letters, digits, . _ - : @ +)."
+        fi
+        if ! [[ "$_pass" =~ ^[[:graph:]]+$ ]]; then
+            error "Pool pass must be non-empty with no spaces or control characters."
+        fi
+        for _f in keepalive tls enabled; do
+            _bv=$(jq -r --arg f "$_f" '.[$f]' <<<"$_pool")
+            case "$_bv" in true | false) ;; *) error "Pool $_f must be true or false (got: $_bv)." ;; esac
+        done
+    done < <(jq -c '.[]' <<<"$POOLS_JSON")
 
     # HTTP API token. The rig's label is the pool `user` (#22; defaults to the hostname — see
     # generate_xmrig_config). The token defaults to that same rig name, so the Pithead contract
@@ -260,6 +284,10 @@ parse_config() {
     if [ -z "$ACCESS_TOKEN" ]; then
         ACCESS_TOKEN=$(jq -r '.[0].user' <<<"$POOLS_JSON")
         [ -n "$ACCESS_TOKEN" ] || ACCESS_TOKEN=$(hostname)
+    fi
+    # The token is sent as an HTTP Authorization header, so keep it to safe, header-clean characters.
+    if ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
+        error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
     fi
 
     # XMRig config template RigForge tunes from. Internal — bundled with the project, not user-facing.
