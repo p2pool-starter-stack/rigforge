@@ -83,6 +83,7 @@ Browse the full index at **[docs/](docs/README.md)**.
 
 ```bash
 sudo ./rigforge.sh              # provision (or re-provision) the worker — idempotent
+sudo ./rigforge.sh apply        # apply config.json edits: regenerate + restart (no rebuild)
 sudo ./rigforge.sh upgrade      # rebuild + restart only if the pinned XMRig changed
 sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service
 sudo ./rigforge.sh status       # service status      (also: logs / start / stop / restart)

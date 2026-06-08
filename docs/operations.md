@@ -137,8 +137,58 @@ RigForge also wraps these so you don't have to remember the unit name —
 The service is enabled at install, so it starts automatically on boot (and after the post-setup
 reboot).
 
-> On **macOS** there is no systemd service; RigForge builds and configures XMRig but you run it
-> yourself. macOS is a development/light-use target — Ubuntu is the supported deployment platform.
+> On **macOS** there is no systemd service — RigForge builds and configures XMRig but you run it
+> yourself. See [Running on macOS](#running-on-macos) below.
+
+---
+
+## Running on macOS
+
+macOS is a **development / light-use** target — Ubuntu is the supported deployment platform. On macOS,
+`sudo ./rigforge.sh` still does the core work: it installs dependencies (via **Homebrew**), compiles
+XMRig from source, and writes a tuned `config.json`. What it **doesn't** do is the Linux-only system
+integration:
+
+- **No kernel tuning, and no reboot.** macOS doesn't expose HugePages or MSRs, so the HugePages, MSR,
+  `hugetlbfs`, and GRUB steps are skipped. The generated config turns those knobs off accordingly
+  (`huge-pages`, `1gb-pages`, `wrmsr`/`rdmsr` are `false`) and binds the API to IPv6 `::`. Because the
+  biggest RandomX levers (HugePages + MSR) are Linux-only, **expect a lower hashrate than a tuned Linux
+  box** — fine for development, not for a production rig.
+- **No service, no auto-start.** Nothing is installed to run, restart, or boot-start the miner. You
+  launch XMRig yourself.
+
+### Start the miner
+
+When setup finishes it prints a ready-to-run command. It launches XMRig in a detached `screen` session
+so it keeps running after you close the terminal:
+
+```bash
+sudo screen -S xmrig <WORKER_ROOT>/xmrig/build/xmrig --config=<WORKER_ROOT>/xmrig/build/config.json
+```
+
+`<WORKER_ROOT>` is `data/worker` inside the repo by default. Re-attach to watch it with
+`screen -r xmrig` (detach again with `Ctrl-a` then `d`); stop it with `screen -X -S xmrig quit`. To run
+it in the foreground instead (Ctrl-C to stop):
+
+```bash
+cd <WORKER_ROOT>/xmrig/build && sudo ./xmrig --config=config.json
+```
+
+### Change a setting
+
+Edit `config.json`, regenerate the live config, then restart the miner yourself (there's no service to
+restart for you):
+
+```bash
+sudo ./rigforge.sh apply        # regenerates config.json; reminds you to restart
+# then stop the screen session above and start it again
+```
+
+### What's Linux-only
+
+`doctor`, `uninstall`, the service verbs (`status` / `logs` / `start` / `stop` / `restart` / `enable` /
+`disable`), `tune --live`, and `autotune` all manage Linux/systemd state and aren't available on macOS.
+`setup`, `apply`, `bench`, the offline `tune`, and `version` work anywhere.
 
 ---
 
@@ -150,8 +200,30 @@ sudo journalctl -u xmrig -f     # live service logs
 
 - **Log file:** `<WORKER_ROOT>/xmrig.log` (e.g. `data/worker/xmrig.log`).
 - **Rotation:** a `logrotate` policy is installed automatically to compress and archive logs.
-- **Build log:** the XMRig compile output is captured to a logfile during setup, so a failed build is
-  diagnosable after the fact.
+- **Build log:** the XMRig compile output is captured to `<WORKER_ROOT>/build.log` (e.g.
+  `data/worker/build.log`) during setup, so a failed build is diagnosable after the fact. On any
+  unexpected failure the script also names the step that failed and prints the last lines of the build
+  log.
+
+---
+
+## Applying configuration changes
+
+After editing `config.json`, apply it in one step:
+
+```bash
+sudo ./rigforge.sh apply
+```
+
+`apply` re-reads `config.json`, regenerates the live XMRig config, and restarts the service — no
+recompile. Use it for a pool change, a new rig label, TLS, or failover pools. Changing `DONATION` is
+the exception: it's compiled into the binary and needs a rebuild — see
+[Configuration › Changing settings later](configuration.md#changing-settings-later).
+
+A full `setup` re-run also regenerates the config, but it's meant for re-provisioning and — so it won't
+interrupt a running miner — does **not** restart an already-built worker on its own. When you just want
+an edit to take effect, use `apply`. (On macOS, `apply` regenerates the config but you restart the
+miner yourself — see [Running on macOS](#running-on-macos).)
 
 ---
 
@@ -199,6 +271,7 @@ If you see MSR errors, see Troubleshooting below.
 
 | Symptom | Likely cause & fix |
 |---|---|
+| **Setup fails during the build** | The script names the step that failed and tails the build log. Read the full error in `<WORKER_ROOT>/build.log` (e.g. `data/worker/build.log`). Common causes: a build dependency you declined to install (re-run and accept), or too little RAM during compilation (the build already caps parallelism by RAM — add swap on very low-memory hosts). Re-run `sudo ./rigforge.sh` once resolved; it resumes without redoing finished work. |
 | **MSR errors in the log** | Secure Boot is blocking the `msr` kernel module. **Disable Secure Boot** in your BIOS/UEFI, then reboot. |
 | **`HugePages_Total` is 0** | The kernel tuning needs a **reboot** to take effect (GRUB change). Reboot, then re-check `grep Huge /proc/meminfo`. |
 | **HugePages still 0 after reboot** | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; RigForge **merges** its kernel parameters into `GRUB_CMDLINE_LINUX_DEFAULT` rather than overwriting, so other params are preserved. |

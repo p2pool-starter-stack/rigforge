@@ -116,7 +116,8 @@ These are why a **reboot** is needed on Linux:
   deduplicated) so re-runs don't accumulate duplicate lines.
 
 macOS doesn't expose HugePages or MSRs, so those stages are skipped there; the macOS path sets
-XMRig accordingly.
+XMRig accordingly (and there's no systemd service — you run the miner yourself). See
+[Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
 

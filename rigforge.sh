@@ -491,7 +491,10 @@ generate_xmrig_config() {
     # macOS Specific Overrides
     if [ "$OS_TYPE" == "Darwin" ]; then
         YIELD="false"
-        PRIORITY="5"
+        # Match the Linux dedicated-miner default (2). XMRig warns a priority above 2 can make the
+        # machine unresponsive, and macOS is a light-use/dev target — don't pin it to the most
+        # aggressive level here.
+        PRIORITY="2"
         ASM="true"
         WRMSR="false"
         RDMSR="false"

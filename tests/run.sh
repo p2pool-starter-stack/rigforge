@@ -491,7 +491,7 @@ cfg="$d/config.json"
 assert_eq "macos: huge-pages off" "$(J "$cfg" '.cpu."huge-pages"')" "false"
 assert_eq "macos: memory-pool off" "$(J "$cfg" '.cpu."memory-pool"')" "false"
 assert_eq "macos: asm boolean true" "$(J "$cfg" '.cpu.asm')" "true"
-assert_eq "macos: priority 5" "$(J "$cfg" '.cpu.priority')" "5"
+assert_eq "macos: priority 2 (matches Linux; XMRig warns >2 is unresponsive)" "$(J "$cfg" '.cpu.priority')" "2"
 assert_eq "macos: rx [-1] per core" "$(JC "$cfg" '.cpu.rx')" "[-1,-1,-1,-1]"
 assert_eq "macos: 1gb-pages off" "$(J "$cfg" '.randomx."1gb-pages"')" "false"
 assert_eq "macos: http host all v6" "$(J "$cfg" '.http.host')" "::"
@@ -1027,6 +1027,26 @@ out="$( (
     PATH="$STUBS:$PATH" doctor 2>&1
 ))"
 assert_contains "doctor: macOS skips checks" "$out" "Linux-only"
+# A worker log that mentions huge pages but is NOT 100% backed -> the "below 100%" WARN branch.
+LOWHP="$DOC/lowhp"
+mkdir -p "$LOWHP/worker"
+printf 'net      use pool ...\n* HUGE PAGES 50%%\n' >"$LOWHP/worker/xmrig.log"
+cat >"$DOC/config_lowhp.json" <<EOF
+{ "HOME_DIR": "$LOWHP", "pools": [{"url": "h:3333"}] }
+EOF
+out="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$DOC/config_lowhp.json"
+    MEMINFO="$DOC/meminfo_ok"
+    MSR_MODULE_DIR="$DOC/msrmod"
+    GOVERNOR_FILE="$DOC/gov_perf"
+    HUGEPAGES_1G_NR="$DOC/nr1g"
+    set +e
+    PATH="$STUBS:$PATH" doctor 2>&1
+))"
+assert_contains "doctor: log HUGE PAGES below 100% WARN" "$out" "below 100%"
 
 # #12: uninstall reverts every system change setup made, idempotently, leaving config.json. The GRUB
 # revert uses GNU `sed -i` so it's exercised in the Docker e2e (real Linux); here we point GRUB_DEFAULT

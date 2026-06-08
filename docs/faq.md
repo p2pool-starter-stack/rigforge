@@ -68,6 +68,16 @@ the `user` field directly, set `pools[].user` to your wallet address.
 
 ---
 
+## How do I change my pool (or another setting) later?
+
+Edit `config.json`, then run `sudo ./rigforge.sh apply`. That regenerates the live XMRig config and
+restarts the worker — no rebuild. `apply` is the everyday command for config edits; `setup` is for
+(re-)provisioning and `upgrade` is for moving to a newer pinned XMRig. See
+[Configuration › Changing settings later](configuration.md#changing-settings-later). (On macOS there's
+no service, so you restart the miner yourself — see [Operations › Running on macOS](operations.md#running-on-macos).)
+
+---
+
 ## Why does it need a reboot?
 
 On Linux, persistent **HugePages** are configured via GRUB, which only takes effect after a reboot —
@@ -103,7 +113,10 @@ no port-forwarding) is a stack-host concern, handled by Pithead — not the mine
 
 macOS works for development and light use — RigForge builds and configures XMRig there — but **Ubuntu
 is the supported deployment target**. The Linux-only tuning (HugePages, MSR, systemd, governor) doesn't
-apply on macOS, which the macOS CPU profile accounts for.
+apply on macOS, which the macOS CPU profile accounts for, so the hashrate is lower than a tuned Linux
+box. There's no service either: setup prints a command to start the miner yourself. Full details —
+what differs, how to run it, and which commands are Linux-only — are in
+[Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
 

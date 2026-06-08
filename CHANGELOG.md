@@ -82,6 +82,14 @@ All notable changes to RigForge are documented here. The format is based on
 - `generate_xmrig_config` now builds the entire XMRig config from scratch with `jq`; the bundled
   `worker-config/example-config.json.template` and its `TEMPLATE_CONFIG` plumbing are gone, and
   `worker-config/` is dropped from the release bundle — one fewer file to keep in sync (#55).
+- The macOS CPU profile now uses `cpu.priority: 2` (matching the Linux dedicated-miner default) instead
+  of `5`. XMRig warns a priority above 2 can make the machine unresponsive, and macOS is a
+  light-use/dev target — pinning it to the most aggressive level was inconsistent.
+- Docs: `apply` is now the documented path for applying a `config.json` edit (regenerate + restart) —
+  a plain `setup` re-run regenerates the config but won't restart an already-built worker, so edits
+  used to silently not take effect. Added a **Running on macOS** guide (what differs, how to launch the
+  miner, which commands are Linux-only), a build-failure troubleshooting entry, and assorted accuracy
+  fixes across the docs.
 
 ### Fixed
 - GRUB configuration now **merges** the HugePage/MSR kernel parameters into the existing
