@@ -293,12 +293,6 @@ parse_config() {
     # Opt-in periodic live auto-tuning (#46): when true, setup installs a systemd timer that runs
     # `autotune` on a schedule.
     AUTOTUNE=$(jq -r '.autotune // false' "$CONFIG_JSON")
-
-    # XMRig config template RigForge tunes from. Internal — bundled with the project, not user-facing.
-    TEMPLATE_CONFIG="$SCRIPT_DIR/worker-config/example-config.json.template"
-    if [ ! -f "$TEMPLATE_CONFIG" ]; then
-        error "Bundled XMRig template not found at: $TEMPLATE_CONFIG (is the RigForge install complete?)."
-    fi
 }
 
 prepare_workspace() {
@@ -451,7 +445,7 @@ compile_xmrig() {
 }
 
 generate_xmrig_config() {
-    log "Generating hardware-optimized configuration using template: $(basename "$TEMPLATE_CONFIG")..."
+    log "Generating hardware-optimized XMRig configuration..."
 
     # Identify CPU Topology
     if [ "$OS_TYPE" == "Darwin" ]; then
@@ -532,8 +526,11 @@ generate_xmrig_config() {
     # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
-    # Generate config.json via jq
-    jq --argjson pools "$POOLS_JSON" \
+    # Build the whole XMRig config from scratch (issue #55). There's no template file to keep in sync:
+    # the tuned parts (pools, donate-level, the http block, the cpu/randomx sections) come from the
+    # variables above, and the few static defaults (autosave, hwloc, randomx mode, opencl/cuda off) are
+    # emitted inline. `jq -n` builds the object from null input; any tuned overrides are merged below.
+    jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
         --arg log "$LOG_FILE_PATH" \
@@ -553,27 +550,44 @@ generate_xmrig_config() {
         --argjson restricted "$HTTP_RESTRICTED" \
         --argjson donation "$DONATION" \
         --arg host "$HTTP_HOST" \
-        '.pools = ($pools | map(.user = (if (.user // "") == "" then $user else .user end))) |
-        ."log-file" = $log |
-        .cpu.yield = $yield | 
-        .cpu.priority = $prio | 
-        .cpu.asm = $asm | 
-        .cpu.rx = $rx |
-        ."cpu"."huge-pages" = $huge_pages |
-        ."cpu"."huge-pages-jit" = $jit |
-        ."cpu"."memory-pool" = $memory_pool |
-        ."donate-level" = $donation |
-        ."donate-over-proxy" = $donation |
-        .randomx.numa = $numa |
-        .randomx."init-avx2" = $avx2 |
-        .randomx.wrmsr = $wrmsr |
-        .randomx.rdmsr = $rdmsr |
-        .randomx."1gb-pages" = $one_gb_pages |
-        .randomx.scratchpad_prefetch_mode = $prefetch |
-        (if $access_token != "" then ."http"."access-token" = $access_token else . end) | 
-        ."http"."restricted" = $restricted |
-        ."http"."host" = $host' \
-        "$TEMPLATE_CONFIG" >config.json
+        '{
+            autosave: true,
+            cpu: {
+                enabled: true,
+                "huge-pages": $huge_pages,
+                "huge-pages-jit": $jit,
+                hwloc: true,
+                "memory-pool": $memory_pool,
+                yield: $yield,
+                priority: $prio,
+                asm: $asm,
+                rx: $rx
+            },
+            randomx: {
+                init: -1,
+                mode: "fast",
+                "1gb-pages": $one_gb_pages,
+                rdmsr: $rdmsr,
+                wrmsr: $wrmsr,
+                cache_qos: false,
+                numa: $numa,
+                scratchpad_prefetch_mode: $prefetch,
+                "init-avx2": $avx2
+            },
+            pools: ($pools | map(.user = (if (.user // "") == "" then $user else .user end))),
+            "donate-level": $donation,
+            "donate-over-proxy": $donation,
+            http: {
+                enabled: true,
+                host: $host,
+                port: 8080,
+                "access-token": (if $access_token == "" then null else $access_token end),
+                restricted: $restricted
+            },
+            opencl: false,
+            cuda: false,
+            "log-file": $log
+        }' >config.json
 
     # Overlay any tuned knobs (#46) on top — kept in a separate file (written by `tune`) so the user's
     # config.json is never touched. A recursive merge lets tuning win for just the keys it sets.

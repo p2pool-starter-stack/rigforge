@@ -18,7 +18,6 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/rigforge.sh"
-TEMPLATE="$ROOT/worker-config/example-config.json.template"
 PASS=0
 FAIL=0
 
@@ -289,16 +288,15 @@ c="$(mkconf at_bad "{ \"ACCESS_TOKEN\": \"bad token\", $POOL }")"
 parse_rc "$c" "$ROOT"
 assert_rc "ACCESS_TOKEN with space rejected" "$?" "1"
 
-echo "== unit: parse_config — workspace + token + template resolution =="
+echo "== unit: parse_config — workspace + token =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", $POOL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
 c="$(mkconf home "{ \"HOME_DIR\": \"/opt/rig\", $POOL }")"
 assert_eq "custom HOME_DIR -> HOME/worker" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "/opt/rig/worker"
 c="$(mkconf tok "{ \"ACCESS_TOKEN\": \"tok123\", $POOL }")"
 assert_eq "ACCESS_TOKEN honoured" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "tok123"
-# The XMRig template is internal/bundled now — always the same path, not user-configurable.
-c="$(mkconf tmpl "{ $POOL }")"
-assert_eq "template is the bundled path" "$(parse_and_print "$c" "$ROOT" TEMPLATE_CONFIG)" "$ROOT/worker-config/example-config.json.template"
+# #55: the XMRig config is built entirely in-script — there's no bundled template file anymore.
+assert_eq "no bundled XMRig template file" "$([ -e "$ROOT/worker-config" ] && echo present || echo gone)" "gone"
 
 # #22: the rig's label is the pool `user` (folded in from the old WORKER_NAME); blank -> hostname (at
 # config-gen). The HTTP API token follows the rig name (the first pool's user), so the Pithead
@@ -397,7 +395,6 @@ gen_config() { # echoes path to the dir containing config.json
         source "$SCRIPT"
         OS_TYPE="$SIM_OS"
         WORKER_ROOT="$d"
-        TEMPLATE_CONFIG="$TEMPLATE"
         POOL_ADDRESS="${SIM_ADDR:-myrig.local}"
         if [ -n "${SIM_POOLS:-}" ]; then
             POOLS_JSON="$SIM_POOLS"
@@ -455,7 +452,6 @@ log_out="$(
     source "$SCRIPT"
     OS_TYPE=Linux
     WORKER_ROOT="$d"
-    TEMPLATE_CONFIG="$TEMPLATE"
     POOL_ADDRESS=myrig.local
     POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
     ACCESS_TOKEN=tok123
@@ -539,7 +535,6 @@ d="$(mktemp -d "$SANDBOX/idem.XXXXXX")"
     source "$SCRIPT"
     OS_TYPE=Linux
     WORKER_ROOT="$d"
-    TEMPLATE_CONFIG="$TEMPLATE"
     POOL_ADDRESS=myrig.local
     POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
     ACCESS_TOKEN=tok123
@@ -554,7 +549,6 @@ cp "$d/config.json" "$d/first.json"
     source "$SCRIPT"
     OS_TYPE=Linux
     WORKER_ROOT="$d"
-    TEMPLATE_CONFIG="$TEMPLATE"
     POOL_ADDRESS=myrig.local
     POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
     ACCESS_TOKEN=tok123
@@ -785,7 +779,6 @@ echo "== black-box: upgrade / help / unknown command (#4) =="
 U="$(mktemp -d "$SANDBOX/upg.XXXXXX")"
 cp "$SCRIPT" "$U/rigforge.sh"
 cp "$ROOT/VERSION" "$U/"
-cp -R "$ROOT/worker-config" "$U/"
 mkdir -p "$U/home/worker/xmrig/build"
 : >"$U/home/worker/xmrig/build/xmrig"
 chmod +x "$U/home/worker/xmrig/build/xmrig"
@@ -887,7 +880,7 @@ e2e_setup() { # echoes the work dir
     local W
     W="$(mktemp -d "$SANDBOX/e2e.XXXXXX")"
     cp "$SCRIPT" "$W/rigforge.sh"
-    cp -R "$ROOT/worker-config" "$ROOT/systemd" "$ROOT/util" "$W/"
+    cp -R "$ROOT/systemd" "$ROOT/util" "$W/"
     mkdir -p "$W/etc/logrotate.d" "$W/etc/modules-load.d" "$W/etc/systemd" \
         "$W/etc/security" "$W/etc/default" "$W/home" "$W/proc" "$W/sys"
     : >"$W/etc/fstab"
@@ -1042,7 +1035,6 @@ echo "== black-box: uninstall reverts system changes (#12) =="
 UN="$(mktemp -d "$SANDBOX/uninst.XXXXXX")"
 cp "$SCRIPT" "$UN/rigforge.sh"
 cp "$ROOT/VERSION" "$UN/"
-cp -R "$ROOT/worker-config" "$UN/"
 ME="${SUDO_USER:-${USER:-$(id -un)}}"
 mkdir -p "$UN/etc/systemd/system" "$UN/etc/logrotate.d" "$UN/etc/security" "$UN/etc/modules-load.d" "$UN/dev/hp1g" "$UN/home/worker/xmrig/build"
 : >"$UN/etc/systemd/system/xmrig.service"
@@ -1091,10 +1083,14 @@ echo "== black-box: tune (iterative hill-climb, multi-knob) (#54) =="
 TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
 cp "$SCRIPT" "$TN/rigforge.sh"
 cp "$ROOT/VERSION" "$TN/"
-cp -R "$ROOT/worker-config" "$TN/"
 BD="$TN/home/worker/xmrig/build"
 mkdir -p "$BD"
-cp "$ROOT/worker-config/example-config.json.template" "$BD/config.json"
+# A built config for `tune` to sweep. Seeded with the knob values the in-script generator emits
+# (#55 removed the worker-config template this used to be copied from), so the hill-climb's "guess"
+# seed reads the same prefetch/yield/1gb-pages/priority starting points it would in production.
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
 # Fake xmrig: hashrate = f(prefetch, yield, threads, 1gb-pages), peak at prefetch=2/yield=false/threads=4.
 # BENCH_LOG records one line per invocation (used to assert no double-benchmarking).
 cat >"$BD/xmrig" <<'EOF'
@@ -1179,10 +1175,12 @@ assert_eq "records all three samples" "$(J "$TLOG" '.results[0].samples | length
 
 # #54: the minimum-delta gate. With min-delta 0.5 (50%) and only the 'auto' seed, no candidate beats the
 # seed by enough, so the search stays put — winner = seed (prefetch=1, yield=false, threads auto).
-# Reset the base config to the pristine template so the 'auto' seed starts from prefetch=1 (an earlier
-# 'apply' rewrote $BD/config.json with the tuned prefetch=2).
+# Reset the base config to a pristine generated-style config so the 'auto' seed starts from prefetch=1
+# (an earlier 'apply' rewrote $BD/config.json with the tuned prefetch=2).
 echo "== black-box: tune min-delta gate (#54) =="
-cp "$ROOT/worker-config/example-config.json.template" "$BD/config.json"
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 cfg=""
@@ -1254,7 +1252,6 @@ assert_contains "tune --live non-Linux message" "$out" "only supported on Linux"
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
 cp "$SCRIPT" "$TN2/rigforge.sh"
 cp "$ROOT/VERSION" "$TN2/"
-cp -R "$ROOT/worker-config" "$TN2/"
 cat >"$TN2/config.json" <<EOF
 { "HOME_DIR": "$TN2/home", "pools": [{"url": "h:3333"}] }
 EOF

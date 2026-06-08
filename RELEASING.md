@@ -31,10 +31,9 @@ That's it — pushing the tag triggers the **release pipeline**
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
 
 - **verifies** the tag matches `VERSION` (the build fails otherwise),
-- packages the deploy bundle (`rigforge.sh`, `util/`, `worker-config/`, `systemd/`,
-  `config.json.template`, `config.advanced.example.json`, `README.md`, `docs/`, `images/`, `LICENSE`,
-  `VERSION`) as `rigforge-vX.Y.Z.zip` **and** `.tar.gz` — `tests/`, `.github/`, and other dev files
-  are excluded,
+- packages the deploy bundle (`rigforge.sh`, `util/`, `systemd/`, `config.json.template`,
+  `config.advanced.example.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`) as
+  `rigforge-vX.Y.Z.zip` **and** `.tar.gz` — `tests/`, `.github/`, and other dev files are excluded,
 - generates `SHA256SUMS` for the artifacts,
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
 - publishes the GitHub Release (0.x tags are marked pre-release).

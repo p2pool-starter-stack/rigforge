@@ -51,10 +51,10 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 
 ## How the generated XMRig config is built
 
-You don't write XMRig's config — RigForge generates it. It starts from a bundled template, then sets
-the parts it manages — your `pools`, `donate-level`, the `http` API block, and the per-CPU
-`cpu`/`randomx` tuning — and writes the result into the worker root as the live `config.json` XMRig
-runs from. The template is internal; there's no config key for it.
+You don't write XMRig's config — RigForge generates the whole thing in-script. It assembles your
+`pools`, `donate-level`, the `http` API block, the per-CPU `cpu`/`randomx` tuning, and a handful of
+static defaults, then writes the result into the worker root as the live `config.json` XMRig runs
+from. There's no template file to keep in sync and no config key for it.
 
 > ⚠️ **Don't put a wallet address in the worker `user` when using Pithead.** The stack handles
 > payouts centrally; the pool `user` is just a rig **label** (it defaults to the hostname so you can

@@ -40,8 +40,8 @@ All notable changes to RigForge are documented here. The format is based on
 - The rig's dashboard label is the pool `user` (defaults to the hostname); the API token follows the
   rig name so the Pithead `Bearer <rig name>` contract still holds. Two-tier config like Pithead: a
   minimal `config.json` (just a `pools` entry — everything else defaults) plus a
-  `config.advanced.example.json` documenting every key and its default. The XMRig template is now
-  internal (no `WORKER_CONFIG_FILE` key) (#22, #23).
+  `config.advanced.example.json` documenting every key and its default. The generated XMRig config is
+  built entirely in-script — no template file and no `WORKER_CONFIG_FILE` key (#22, #23, #55).
 - Dependency-free test suite, Ubuntu end-to-end container harness, and CI (#5).
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
@@ -79,6 +79,9 @@ All notable changes to RigForge are documented here. The format is based on
 - XMRig HTTP API on Linux is now read-only (`restricted: true`) while staying LAN-reachable, so
   Pithead can still read per-rig stats at `:8080` (#17, #7).
 - Removed the `.local` / Avahi mDNS handling — point workers at an IP or DNS-resolvable hostname (#15, #14).
+- `generate_xmrig_config` now builds the entire XMRig config from scratch with `jq`; the bundled
+  `worker-config/example-config.json.template` and its `TEMPLATE_CONFIG` plumbing are gone, and
+  `worker-config/` is dropped from the release bundle — one fewer file to keep in sync (#55).
 
 ### Fixed
 - GRUB configuration now **merges** the HugePage/MSR kernel parameters into the existing
