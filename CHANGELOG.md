@@ -8,6 +8,13 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- Auto-tuning (#46). `tune` benchmarks candidate configs with `xmrig --bench` over several iterations
+  (sweeping the RandomX scratchpad prefetch mode × `cpu.yield`), logs every result to
+  `<WORKER_ROOT>/rigforge-tune.json`, and writes the winning knobs to a separate `tune-overrides.json`
+  that's merged into the generated config — so your `config.json` is never touched. `tune --clear`
+  resets it. Opt-in live tuning: set `autotune: true` in config to install a systemd timer that runs
+  `autotune` periodically (one live trial against the running miner via its API; keeps a change only if
+  it beats the baseline by a margin, else rolls back).
 - `uninstall` command: cleanly reverts every change setup made — removes the systemd service and
   logrotate policy, strips the HugePage/MSR lines from `fstab`/`limits.conf`/`/etc/modules`, reverts the
   managed GRUB kernel parameters, unmounts the 1G HugePage filesystem, and removes the worker

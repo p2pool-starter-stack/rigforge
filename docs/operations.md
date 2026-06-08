@@ -17,6 +17,7 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check: verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is `performance`, the service is active, and (from the XMRig log) that HugePages are 100% backed. Prints actionable hints for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
+| `tune` | Benchmark candidate configs with `xmrig --bench` over several iterations and keep the fastest. Logs every result to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --clear` resets tuning. |
 | `status` | Show the systemd service status. |
 | `logs` | Follow the live service logs (`journalctl -f`). |
 | `start` / `stop` / `restart` | Start, stop, or restart the miner service. |
@@ -37,6 +38,36 @@ sudo ./rigforge.sh doctor
 
 It's the quickest way to catch the common silent failures — HugePages not reserved (needs a reboot) or
 the MSR mod blocked by Secure Boot. See [Troubleshooting](#troubleshooting).
+
+### Auto-tuning
+
+Most of the hashrate-critical settings are already chosen for you (see [How It Works](tuning.md)), but a
+few knobs are genuinely CPU-specific. `tune` measures rather than guesses:
+
+```bash
+sudo ./rigforge.sh tune       # benchmark candidates, save the winning knobs
+sudo ./rigforge.sh apply      # regenerate the config with them + restart
+```
+
+`tune` benchmarks candidate configs with `xmrig --bench` over several iterations — sweeping the RandomX
+**scratchpad prefetch mode** and **`cpu.yield`** (the knobs whose best value varies per CPU) — records
+every result to `<WORKER_ROOT>/rigforge-tune.json`, and writes the winning knobs to a separate
+**`tune-overrides.json`**. That overlay is merged into the generated config, so your `config.json` is
+never touched; `sudo ./rigforge.sh tune --clear` removes it. Run it on an otherwise-idle machine for
+stable numbers. Tunables: `TUNE_ITERS` (default 2), `TUNE_BENCH` (default `1M`).
+
+### Live auto-tuning (opt-in)
+
+Set `"autotune": true` in `config.json` and setup installs a **systemd timer** that periodically runs:
+
+```bash
+sudo ./rigforge.sh autotune
+```
+
+Each run is one **live trial**: it reads the current hashrate from the worker's API, tries the next
+prefetch mode, restarts, measures again, and **keeps the change only if it beats the baseline by a
+margin** (`AUTOTUNE_MARGIN`, default 1%) — otherwise it rolls back. Because live hashrate is noisy this
+is deliberately conservative; for a definitive sweep prefer the offline `tune`.
 
 ---
 

@@ -8,6 +8,7 @@
     "ACCESS_TOKEN": "",
 
     "DONATION": 1,
+    "autotune": false,
 
     "HOME_DIR": "DYNAMIC_HOME"
 }

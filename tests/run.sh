@@ -1080,6 +1080,80 @@ assert_contains "modules unrelated line kept" "$(cat "$UN/etc/modules")" "loop"
 out="$(un_run)"
 assert_rc "second uninstall exits 0" "$?" "0"
 
+# #46: tune sweeps prefetch_mode x yield over N iterations and writes the winner to a SEPARATE
+# tune-overrides.json (merged into the generated config), keeping config.json untouched. A fake xmrig
+# emits a hashrate that depends on both knobs so a clear winner emerges (prefetch=2 + yield=false).
+echo "== black-box: tune (multi-knob, overrides, clear) (#46) =="
+TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
+cp "$SCRIPT" "$TN/rigforge.sh"
+cp "$ROOT/VERSION" "$TN/"
+cp -R "$ROOT/worker-config" "$TN/"
+BD="$TN/home/worker/xmrig/build"
+mkdir -p "$BD"
+cp "$ROOT/worker-config/example-config.json.template" "$BD/config.json"
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+y=$(jq -r '.cpu.yield' "$cfg" 2>/dev/null)
+base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; 0) base=1000 ;; *) base=1050 ;; esac
+[ "$y" = false ] && base=$((base + 20)) # yield off is a touch faster
+echo "miner speed 10s/60s/15m $base.0 n/a n/a H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+cat >"$TN/config.json" <<EOF
+{ "HOME_DIR": "$TN/home", "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 bash ./rigforge.sh tune </dev/null 2>&1)"
+rc=$?
+assert_rc "tune exits 0" "$rc" "0"
+assert_contains "tune logs a candidate" "$out" "prefetch_mode=0 yield=true"
+OVR="$TN/home/worker/tune-overrides.json"
+TLOG="$TN/home/worker/rigforge-tune.json"
+assert_eq "overrides file written" "$([ -f "$OVR" ] && echo y || echo n)" "y"
+assert_eq "config.json NOT touched (no .bak)" "$([ -f "$BD/config.json.bak" ] && echo y || echo n)" "n"
+assert_eq "winning prefetch in overrides" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_eq "winning yield in overrides" "$(J "$OVR" '.cpu.yield')" "false"
+assert_eq "log is valid JSON" "$(jq -e . "$TLOG" >/dev/null 2>&1 && echo y || echo n)" "y"
+assert_eq "log best prefetch" "$(J "$TLOG" '.best.scratchpad_prefetch_mode')" "2"
+assert_eq "log has 8 candidates (4x2)" "$(J "$TLOG" '.results | length')" "8"
+# generate merges the overrides on top: apply regenerates from the template and the tuned knobs win.
+mkdir -p "$TN/logrotate"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" bash ./rigforge.sh apply </dev/null 2>&1)"
+assert_rc "apply after tune exits 0" "$?" "0"
+assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
+# tune --clear removes the tuning state.
+out="$(cd "$TN" && PATH="$STUBS:$PATH" bash ./rigforge.sh tune --clear </dev/null 2>&1)"
+assert_rc "tune --clear exits 0" "$?" "0"
+assert_eq "overrides removed by --clear" "$([ -f "$OVR" ] && echo y || echo n)" "n"
+# tune with no built worker fails clearly.
+TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
+cp "$SCRIPT" "$TN2/rigforge.sh"
+cp "$ROOT/VERSION" "$TN2/"
+cp -R "$ROOT/worker-config" "$TN2/"
+cat >"$TN2/config.json" <<EOF
+{ "HOME_DIR": "$TN2/home", "pools": [{"url": "h:3333"}] }
+EOF
+out="$(cd "$TN2" && PATH="$STUBS:$PATH" bash ./rigforge.sh tune </dev/null 2>&1)"
+rc=$?
+assert_rc "tune without a build fails" "$rc" "1"
+assert_contains "tune build-missing message" "$out" "Run 'setup' first"
+
+# #46: autotune does one live trial — measures via the API (stubbed with API_CMD), tries the next
+# prefetch mode, keeps it only if faster. Here the "new" reading beats the baseline, so it's kept.
+echo "== black-box: autotune live trial (#46) =="
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
+    API_CMD='echo 1500' AUTOTUNE_WARMUP=0 AUTOTUNE_MARGIN=0.01 \
+    bash ./rigforge.sh autotune </dev/null 2>&1)"
+rc=$?
+assert_rc "autotune exits 0" "$rc" "0"
+assert_contains "autotune read a baseline" "$out" "baseline"
+# autotune is Linux-only.
+out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh autotune </dev/null 2>&1)"
+assert_rc "autotune rejected on non-Linux" "$?" "1"
+
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"
 if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVer ($ver)"; else bad "VERSION is SemVer" "got [$ver]"; fi
