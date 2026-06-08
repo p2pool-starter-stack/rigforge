@@ -51,10 +51,24 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 
 ## How the generated XMRig config is built
 
-You don't write XMRig's config — RigForge generates the whole thing in-script. It assembles your
-`pools`, `donate-level`, the `http` API block, the per-CPU `cpu`/`randomx` tuning, and a handful of
-static defaults, then writes the result into the worker root as the live `config.json` XMRig runs
-from. There's no template file to keep in sync and no config key for it.
+You don't write XMRig's config — RigForge generates the whole thing in-script and writes it into the
+worker root as the live `config.json` the service runs from. There's no template file to keep in sync
+and no config key for it. Every run (re-runs included) rebuilds the config from four sources:
+
+1. **Your `config.json`** — the `pools` array (with `user`/`pass`/`keepalive`/`tls` and failover
+   defaults filled in), the `donate-level`, and the `http` API block (bound to the LAN, read-only,
+   token = rig name). These are the keys documented in the [reference table](#configuration-reference).
+2. **Detected hardware** — the per-CPU `cpu`/`randomx` tuning (thread count, `asm`, MSR, NUMA,
+   HugePages). RigForge leans on XMRig's own cache-aware auto-detection rather than a CPU-model table,
+   so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
+3. **Static defaults** — the fixed knobs every worker shares, emitted directly: `autosave`,
+   `cpu.hwloc`, `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
+4. **Tuned overrides** *(if present)* — if you've run [`tune`](operations.md#auto-tuning), its winning
+   knobs in `tune-overrides.json` are merged on top as the final step, so tuning wins for just the keys
+   it sets and your `config.json` is never edited.
+
+Because the config is rebuilt from these sources every time, editing the generated `config.json` by
+hand is pointless — change your repo-root `config.json` (or `tune`) and re-run instead.
 
 > ⚠️ **Don't put a wallet address in the worker `user` when using Pithead.** The stack handles
 > payouts centrally; the pool `user` is just a rig **label** (it defaults to the hostname so you can
