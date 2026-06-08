@@ -8,6 +8,12 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- Command surface: `apply`, `doctor`, `bench`, `status`, `logs`, `start`, `stop`, `restart`, `enable`,
+  `disable`, and `version` subcommands alongside `setup`/`upgrade`/`help`. `doctor` is a read-only
+  health check that verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is
+  `performance`, the service is active, and (from the XMRig log) that HugePages are 100% backed — with
+  actionable hints. `apply` regenerates the config and restarts without rebuilding; `bench` runs a
+  one-off `xmrig --bench` (#11, #45).
 - The pool connection is now XMRig's native **`pools`** array, set directly in `config.json` — any
   port, TLS, and multiple pools for failover. Each entry needs a `host:port` `url`; other fields fall
   back to Pithead-friendly defaults — so the minimal config is a single

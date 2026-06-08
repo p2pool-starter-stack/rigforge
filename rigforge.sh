@@ -59,6 +59,15 @@ MODULES_FILE="${MODULES_FILE:-/etc/modules}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
 
+# Read-only system paths the `doctor` health check inspects (overridable for tests).
+MEMINFO="${MEMINFO:-/proc/meminfo}"
+MSR_MODULE_DIR="${MSR_MODULE_DIR:-/sys/module/msr}"
+GOVERNOR_FILE="${GOVERNOR_FILE:-/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor}"
+HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages}"
+
+# systemd service name for the worker.
+SERVICE_NAME="${SERVICE_NAME:-xmrig}"
+
 # Detect whether we're being sourced (e.g. by the test suite). When sourced we only define
 # functions/constants and skip running main, so functions can be exercised in isolation.
 _RIGFORGE_SOURCED=0
@@ -714,6 +723,165 @@ upgrade() {
     log "Upgraded to XMRig $XMRIG_VERSION."
 }
 
+# --- Command surface (#11) -------------------------------------------------
+
+# Service-control verbs are thin wrappers over systemd and are Linux-only.
+require_linux_service() {
+    if [ "$OS_TYPE" != "Linux" ]; then
+        error "'$1' manages the systemd service and is only supported on Linux."
+    fi
+}
+svc_status() {
+    require_linux_service status
+    sudo systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
+}
+svc_logs() {
+    require_linux_service logs
+    sudo journalctl -u "$SERVICE_NAME" -f || true # follow exits 130 on Ctrl-C
+}
+svc_start() {
+    require_linux_service start
+    sudo systemctl start "$SERVICE_NAME" && log "Started $SERVICE_NAME."
+}
+svc_stop() {
+    require_linux_service stop
+    sudo systemctl stop "$SERVICE_NAME" && log "Stopped $SERVICE_NAME."
+}
+svc_restart() {
+    require_linux_service restart
+    sudo systemctl restart "$SERVICE_NAME" && log "Restarted $SERVICE_NAME."
+}
+svc_enable() {
+    require_linux_service enable
+    sudo systemctl enable "$SERVICE_NAME" && log "Enabled $SERVICE_NAME (starts on boot)."
+}
+svc_disable() {
+    require_linux_service disable
+    sudo systemctl disable "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
+}
+cmd_version() {
+    local v="unknown"
+    if [ -f "$SCRIPT_DIR/VERSION" ]; then v="$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")"; fi
+    echo "RigForge $v"
+}
+
+# Extract the peak "<N> H/s" hashrate from xmrig output (empty if none). Robust to format variations:
+# it just takes the largest H/s number printed. Shared by `bench` and `tune`.
+_parse_hashrate() {
+    grep -oiE '[0-9]+(\.[0-9]+)?[[:space:]]*H/s' | grep -oE '[0-9]+(\.[0-9]+)?' | sort -nr | head -n1
+}
+
+# apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
+# recompiling. The fast path after editing config.json.
+apply() {
+    parse_config
+    local build="$WORKER_ROOT/xmrig/build"
+    [ -d "$build" ] || error "No built worker at $build. Run 'setup' first."
+    (cd "$build" && generate_xmrig_config)
+    if [ "$OS_TYPE" == "Linux" ]; then
+        sudo systemctl restart "$SERVICE_NAME" && log "Applied config and restarted $SERVICE_NAME."
+    else
+        log "Config regenerated. Restart the miner to apply."
+    fi
+}
+
+# bench (#11): run a one-off xmrig --bench and report the hashrate. A quick perf/health check.
+bench() {
+    parse_config
+    local bin="$WORKER_ROOT/xmrig/build/xmrig" cfg="$WORKER_ROOT/xmrig/build/config.json"
+    [ -x "$bin" ] || error "No built worker at $bin. Run 'setup' first."
+    local b="${BENCH:-1M}" out hr
+    log "Running 'xmrig --bench=$b' (this takes a few seconds)..."
+    out=$("$bin" --bench="$b" ${cfg:+--config="$cfg"} 2>&1 || true)
+    hr=$(printf '%s' "$out" | _parse_hashrate)
+    [ -n "$hr" ] || error "Could not read a hashrate from the benchmark output."
+    log "Benchmark hashrate: $hr H/s"
+}
+
+# doctor (#45): verify the optimizations actually took effect. Read-only and best-effort — it never
+# changes the system, just reports PASS/WARN with actionable hints. Linux-only checks.
+_ck_ok() { echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
+_ck_warn() { echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
+doctor() {
+    cmd_version
+    if [ "$OS_TYPE" != "Linux" ]; then
+        warn "doctor's health checks are Linux-only (this host is $OS_TYPE)."
+        return 0
+    fi
+    log "Checking the worker (read-only)..."
+    local issues=0
+
+    # Service active?
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        _ck_ok "service '$SERVICE_NAME' is active"
+    else
+        _ck_warn "service '$SERVICE_NAME' is not active — start it with: sudo $0 start"
+        issues=$((issues + 1))
+    fi
+
+    # HugePages reserved? (the single biggest lever; needs a reboot after setup)
+    local hp
+    hp=$(awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null)
+    if [ -n "$hp" ] && [ "$hp" -gt 0 ] 2>/dev/null; then
+        _ck_ok "HugePages reserved (HugePages_Total=$hp)"
+    else
+        _ck_warn "HugePages not reserved — reboot after setup (the GRUB change needs a reboot)"
+        issues=$((issues + 1))
+    fi
+
+    # 1GB HugePages (optional bonus)
+    local g=0
+    [ -f "$HUGEPAGES_1G_NR" ] && g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
+    if [ "${g:-0}" -gt 0 ] 2>/dev/null; then
+        _ck_ok "1GB HugePages reserved ($g)"
+    else
+        _ck_warn "1GB HugePages not reserved (optional; needs a pdpe1gb CPU + reboot)"
+    fi
+
+    # MSR module loaded? (required for the MSR mod's ~10-15% hashrate)
+    if [ -d "$MSR_MODULE_DIR" ]; then
+        _ck_ok "msr kernel module loaded"
+    else
+        _ck_warn "msr module not loaded — the MSR mod won't apply; if it persists, disable Secure Boot"
+        issues=$((issues + 1))
+    fi
+
+    # CPU governor
+    local gov
+    gov=$(cat "$GOVERNOR_FILE" 2>/dev/null || echo "")
+    if [ "$gov" = "performance" ]; then
+        _ck_ok "CPU governor = performance"
+    else
+        _ck_warn "CPU governor is '${gov:-unknown}' (expected 'performance')"
+    fi
+
+    # XMRig's own startup report, if a log exists (HUGE PAGES 100% means the dataset is fully backed).
+    local raw_home wr log_file
+    if [ -f "$CONFIG_JSON" ]; then
+        raw_home=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON" 2>/dev/null)
+        if [ "$raw_home" = "DYNAMIC_HOME" ] || [ -z "$raw_home" ] || [ "$raw_home" = "null" ]; then
+            wr="$SCRIPT_DIR/data/worker"
+        else
+            wr="$raw_home/worker"
+        fi
+        log_file="$wr/xmrig.log"
+        if [ -f "$log_file" ]; then
+            if grep -qiE 'huge pages.*100%' "$log_file"; then
+                _ck_ok "XMRig log reports HUGE PAGES 100%"
+            elif grep -qi 'huge pages' "$log_file"; then
+                _ck_warn "XMRig log shows HUGE PAGES below 100% — not all threads are backed"
+            fi
+        fi
+    fi
+
+    echo ""
+    if [ "$issues" -eq 0 ]; then
+        log "doctor: all critical checks passed."
+    else
+        warn "doctor: $issues issue(s) found — see the hints above."
+    fi
+}
+
 usage() {
     cat <<USAGE
 RigForge — provision and maintain an XMRig mining worker.
@@ -722,6 +890,17 @@ Usage: $0 [command]
 
   setup      (default) provision the worker: dependencies, build, kernel tuning, service
   upgrade    rebuild + restart only if the pinned XMRig version/commit changed
+  apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild)
+  doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
+  bench      run a one-off 'xmrig --bench' and report the hashrate
+  status     show the systemd service status
+  logs       follow the live service logs
+  start      start the miner service
+  stop       stop the miner service
+  restart    restart the miner service
+  enable     start the miner service on boot
+  disable    don't start the miner service on boot
+  version    print the RigForge version
   help       show this help
 
 Re-running 'setup' is idempotent: it skips the recompile when the pinned XMRig is already built.
@@ -732,7 +911,18 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     case "${1:-setup}" in
     setup) main ;;
     upgrade) upgrade ;;
+    doctor) doctor ;;
+    status) svc_status ;;
+    logs) svc_logs ;;
+    start | up) svc_start ;;
+    stop | down) svc_stop ;;
+    restart) svc_restart ;;
+    enable) svc_enable ;;
+    disable) svc_disable ;;
+    apply) apply ;;
+    bench) bench ;;
+    version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup (default), upgrade, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, doctor, bench, status, logs, start, stop, restart, enable, disable, version, help." ;;
     esac
 fi

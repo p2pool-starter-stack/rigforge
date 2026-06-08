@@ -106,7 +106,7 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
-    for cmd in make cmake systemctl modprobe mount update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower; do
+    for cmd in make cmake systemctl modprobe mount update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl; do
         cat >"$bin/$cmd" <<EOF
 #!/usr/bin/env bash
 echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
@@ -699,6 +699,7 @@ assert_eq "records the built commit" "$(cat "$r/xmrig/.rigforge-commit" 2>/dev/n
 echo "== black-box: upgrade / help / unknown command (#4) =="
 U="$(mktemp -d "$SANDBOX/upg.XXXXXX")"
 cp "$SCRIPT" "$U/rigforge.sh"
+cp "$ROOT/VERSION" "$U/"
 cp -R "$ROOT/worker-config" "$U/"
 mkdir -p "$U/home/worker/xmrig/build"
 : >"$U/home/worker/xmrig/build/xmrig"
@@ -720,6 +721,56 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh frobnicate 2>&1)"
 rc=$?
 assert_rc "unknown command fails" "$rc" "1"
 assert_contains "unknown command message" "$out" "Unknown command"
+
+# #11: command surface — version, the service verbs, and help listing them.
+echo "== black-box: command surface (#11) =="
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh version 2>&1)"
+rc=$?
+assert_rc "version exits 0" "$rc" "0"
+assert_contains "version prints RigForge + semver" "$out" "RigForge $(tr -d '[:space:]' <"$ROOT/VERSION")"
+for verb in status start stop restart enable disable; do
+    out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh "$verb" </dev/null 2>&1)"
+    rc=$?
+    assert_rc "$verb exits 0 (Linux + stubbed systemd)" "$rc" "0"
+done
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh help 2>&1)"
+assert_contains "help lists doctor" "$out" "doctor"
+assert_contains "help lists status" "$out" "status"
+assert_contains "help lists apply" "$out" "apply"
+assert_contains "help lists enable" "$out" "enable"
+assert_contains "help lists bench" "$out" "bench"
+# Service verbs are Linux-only: on a non-Linux uname they fail with a clear message.
+out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh status 2>&1)"
+rc=$?
+assert_rc "status rejected on non-Linux" "$rc" "1"
+assert_contains "non-Linux service message" "$out" "only supported on Linux"
+
+# #11: `apply` regenerates the live config + restarts without rebuilding. The $U sandbox already has a
+# built worker (build dir + binary) and a config.json pointing at HOME_DIR=$U/home.
+echo "== black-box: apply / bench (#11) =="
+mkdir -p "$U/logrotate"
+out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" bash ./rigforge.sh apply </dev/null 2>&1)"
+rc=$?
+assert_rc "apply exits 0" "$rc" "0"
+assert_eq "apply regenerated config" "$(J "$U/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
+# `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
+cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+EOF
+chmod +x "$U/home/worker/xmrig/build/xmrig"
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh bench </dev/null 2>&1)"
+rc=$?
+assert_rc "bench exits 0" "$rc" "0"
+assert_contains "bench reports hashrate" "$out" "1234.5 H/s"
+
+# #11/#46: the shared hashrate parser picks the peak H/s figure.
+echo "== unit: _parse_hashrate (#11) =="
+hr="$(printf 'starting\nminer 1100.0 H/s max 1180.5 H/s\n' | (
+    source "$SCRIPT"
+    _parse_hashrate
+))"
+assert_eq "parses peak H/s" "$hr" "1180.5"
 
 # ---------------------------------------------------------------------------
 # The manual-run hint must point at the config where it's actually generated — the build dir
@@ -848,6 +899,57 @@ fi
 
 # ---------------------------------------------------------------------------
 # Release metadata (#3): VERSION must be valid SemVer so it stays in lock-step with tags/CHANGELOG.
+# #45: doctor inspects read-only system state (overridable paths) and reports PASS/WARN.
+echo "== unit: doctor health checks (#45) =="
+DOC="$(mktemp -d "$SANDBOX/doc.XXXXXX")"
+printf 'HugePages_Total:    2048\n' >"$DOC/meminfo_ok"
+printf 'HugePages_Total:    0\n' >"$DOC/meminfo_zero"
+mkdir -p "$DOC/msrmod"
+printf 'performance\n' >"$DOC/gov_perf"
+printf 'powersave\n' >"$DOC/gov_ps"
+printf '3\n' >"$DOC/nr1g"
+printf '0\n' >"$DOC/nr1g_zero"
+mkdir -p "$DOC/home/worker"
+printf 'net      use pool ...\n* HUGE PAGES 100%%\n' >"$DOC/home/worker/xmrig.log"
+cat >"$DOC/config.json" <<EOF
+{ "HOME_DIR": "$DOC/home", "pools": [{"url": "h:3333"}] }
+EOF
+run_doctor() { # <meminfo> <msr_dir> <governor_file> <nr1g_file>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$DOC/config.json"
+        MEMINFO="$1"
+        MSR_MODULE_DIR="$2"
+        GOVERNOR_FILE="$3"
+        HUGEPAGES_1G_NR="$4"
+        set +e
+        PATH="$STUBS:$PATH" doctor 2>&1
+    )
+}
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: prints version" "$out" "RigForge "
+assert_contains "doctor: HugePages OK" "$out" "HugePages reserved"
+assert_contains "doctor: 1GB pages OK" "$out" "1GB HugePages reserved"
+assert_contains "doctor: msr module OK" "$out" "msr kernel module loaded"
+assert_contains "doctor: governor OK" "$out" "governor = performance"
+assert_contains "doctor: log HUGE PAGES 100%" "$out" "HUGE PAGES 100%"
+assert_contains "doctor: all passed" "$out" "all critical checks passed"
+out="$(run_doctor "$DOC/meminfo_zero" "$DOC/nope-missing" "$DOC/gov_ps" "$DOC/nr1g_zero")"
+assert_contains "doctor: HugePages WARN" "$out" "HugePages not reserved"
+assert_contains "doctor: msr module WARN" "$out" "msr module not loaded"
+assert_contains "doctor: governor WARN" "$out" "governor is 'powersave'"
+assert_contains "doctor: reports issues" "$out" "issue(s) found"
+out="$( (
+    source "$SCRIPT"
+    OS_TYPE=Darwin
+    SCRIPT_DIR="$ROOT"
+    set +e
+    PATH="$STUBS:$PATH" doctor 2>&1
+))"
+assert_contains "doctor: macOS skips checks" "$out" "Linux-only"
+
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"
 if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVer ($ver)"; else bad "VERSION is SemVer" "got [$ver]"; fi
