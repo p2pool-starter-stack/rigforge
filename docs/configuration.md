@@ -8,6 +8,10 @@ On first run, if there's no `config.json`, `setup` creates a minimal one interac
 your pool URL). You can also pre-create one from
 [`config.json.template`](../config.json.template).
 
+Every field is **validated** when setup parses the config — a malformed pool URL, an out-of-range port,
+a bad hostname, a non-boolean flag, or an unsafe `HOME_DIR` stops setup with a clear message rather than
+producing a config the miner would reject.
+
 ---
 
 ## Minimal config

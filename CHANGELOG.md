@@ -38,8 +38,10 @@ All notable changes to RigForge are documented here. The format is based on
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
   when the pinned XMRig is already built; old build archives are pruned so re-runs don't leak disk (#4).
-- Config-input validation before building: `DONATION` (integer 0–100) and the pool host
-  (hostname / FQDN / IP, no metacharacters) fail fast with a clear message (#8).
+- Every `config.json` field is validated before building, failing fast with a clear message: the pool
+  `url` host (valid hostname / FQDN / IPv4 / bracketed-IPv6, no placeholders or metacharacters) and
+  port (1–65535), `user`/`pass`/`ACCESS_TOKEN` character sets, the `keepalive`/`tls`/`enabled`
+  booleans, `DONATION` (integer 0–100), and `HOME_DIR` (a clean absolute path) (#8).
 - Build robustness: build output is captured to a logfile, an ERR trap names the failed step, and
   `make -j` is capped by available RAM to avoid OOM on low-memory hosts (#9).
 - Pinned, checksum-verified `shellcheck` + `shfmt` formatting check in CI, plus a `make fmt` target (#6).

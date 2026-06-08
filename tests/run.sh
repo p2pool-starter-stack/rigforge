@@ -232,6 +232,63 @@ c="$(mkconf p_emptypools "{ \"pools\": [] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "empty pools array rejected" "$?" "1"
 
+# Every config field is validated — bad input fails fast with a clear message rather than producing a
+# config XMRig would choke on.
+echo "== unit: config field sanitization =="
+# Invalid hostnames in the url (the char-/host-shape checks).
+for u in '-bad:3333' '.bad:3333' 'ba d:3333' 'a;b:3333' 'a/b:3333' 'http://h:3333' '<host>:3333'; do
+    c="$(mkconf badhost "{ \"pools\": [{\"url\":\"$u\"}] }")"
+    parse_rc "$c" "$ROOT"
+    assert_rc "invalid host '$u' rejected" "$?" "1"
+done
+# Valid hostname / IPv4 / bracketed-IPv6 accepted.
+for u in 'good-host.lan:3333' '10.0.0.5:3333' '[2001:db8::1]:3333'; do
+    c="$(mkconf okhost "{ \"pools\": [{\"url\":\"$u\"}] }")"
+    parse_rc "$c" "$ROOT"
+    assert_rc "valid host '$u' accepted" "$?" "0"
+done
+# Port range.
+c="$(mkconf p_port0 "{ \"pools\": [{\"url\":\"h:0\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "port 0 rejected" "$?" "1"
+c="$(mkconf p_porthi "{ \"pools\": [{\"url\":\"h:99999\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "port > 65535 rejected" "$?" "1"
+# Pool user / pass.
+c="$(mkconf p_baduser "{ \"pools\": [{\"url\":\"h:3333\",\"user\":\"bad user\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "user with space rejected" "$?" "1"
+c="$(mkconf p_okuser "{ \"pools\": [{\"url\":\"h:3333\",\"user\":\"rig.01_a-b\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "valid user accepted" "$?" "0"
+c="$(mkconf p_badpass "{ \"pools\": [{\"url\":\"h:3333\",\"pass\":\"bad pass\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "pass with space rejected" "$?" "1"
+# Non-boolean keepalive / enabled (tls covered above).
+c="$(mkconf p_badka "{ \"pools\": [{\"url\":\"h:3333\",\"keepalive\":\"yes\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "non-boolean keepalive rejected" "$?" "1"
+c="$(mkconf p_baden "{ \"pools\": [{\"url\":\"h:3333\",\"enabled\":1}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "non-boolean enabled rejected" "$?" "1"
+# HOME_DIR must be DYNAMIC_HOME or a clean absolute path.
+c="$(mkconf hd_rel "{ \"HOME_DIR\": \"relative/path\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "relative HOME_DIR rejected" "$?" "1"
+c="$(mkconf hd_trav "{ \"HOME_DIR\": \"/opt/../etc\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "HOME_DIR with .. rejected" "$?" "1"
+c="$(mkconf hd_meta "{ \"HOME_DIR\": \"/opt/rig;rm\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "HOME_DIR with metachar rejected" "$?" "1"
+c="$(mkconf hd_ok "{ \"HOME_DIR\": \"/opt/rig\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "clean absolute HOME_DIR accepted" "$?" "0"
+# ACCESS_TOKEN character set.
+c="$(mkconf at_bad "{ \"ACCESS_TOKEN\": \"bad token\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "ACCESS_TOKEN with space rejected" "$?" "1"
+
 echo "== unit: parse_config — workspace + token + template resolution =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", $POOL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
