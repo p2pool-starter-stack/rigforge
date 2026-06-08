@@ -69,6 +69,36 @@ auto-detection and adds dedicated-miner defaults:
 
 ---
 
+## Measured tuning: the `tune` search
+
+The defaults above are good, but a handful of knobs (the RandomX prefetch mode, `cpu.yield`, the exact
+thread count, `1gb-pages`) have a best value that genuinely varies per CPU. The `tune` command
+**measures** rather than guesses. It's an iterative, noise-aware **coordinate hill-climb**:
+
+1. **Seed.** Start from two candidate configurations — XMRig's auto baseline and an educated guess — so
+   the search can escape a local optimum one seed happens to land in.
+2. **Climb.** Sweep one knob at a time; for each, benchmark its candidate values (holding the others
+   fixed) and adopt the best — but only if it beats the current best by a minimum relative margin, so
+   benchmark noise can't masquerade as a win.
+3. **Repeat until plateau.** Run passes over all knobs until a full pass yields no improvement, or a
+   round cap is hit.
+
+Two design choices keep it honest and cheap on jittery RandomX hardware:
+
+- **Median, not max.** Each candidate is measured as the median of several `xmrig --bench` runs, so one
+  lucky spike doesn't crown a worse config.
+- **Memoized.** Because a coordinate climb keeps revisiting the current point, every measured
+  combination is cached — a combo is never benchmarked twice.
+
+Reboot-bound knobs are handled explicitly: `1gb-pages` only matters once 1G HugePages are reserved (a
+GRUB change + reboot), so the search sweeps it only when they're actually present and otherwise skips it
+with a note. The winning knobs are written to a separate overlay file (`tune-overrides.json`) that's
+merged into the generated config — your `config.json` is never edited. For the full command reference,
+the tunable env vars, power/efficiency recording, and the live (`--live`) variant, see
+[Operations › Auto-tuning](operations.md#auto-tuning).
+
+---
+
 ## Kernel & system tuning (Linux only)
 
 These are why a **reboot** is needed on Linux:

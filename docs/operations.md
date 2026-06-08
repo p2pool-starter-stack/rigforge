@@ -17,7 +17,7 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check: verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is `performance`, the service is active, and (from the XMRig log) that HugePages are 100% backed. Prints actionable hints for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
-| `tune` | Benchmark candidate configs with `xmrig --bench` over several iterations and keep the fastest. Logs every result to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --clear` resets tuning. |
+| `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --clear` resets tuning. |
 | `status` | Show the systemd service status. |
 | `logs` | Follow the live service logs (`journalctl -f`). |
 | `start` / `stop` / `restart` | Start, stop, or restart the miner service. |
@@ -45,16 +45,65 @@ Most of the hashrate-critical settings are already chosen for you (see [How It W
 few knobs are genuinely CPU-specific. `tune` measures rather than guesses:
 
 ```bash
-sudo ./rigforge.sh tune       # benchmark candidates, save the winning knobs
+sudo ./rigforge.sh tune       # search for the fastest knobs, save the winners
 sudo ./rigforge.sh apply      # regenerate the config with them + restart
 ```
 
-`tune` benchmarks candidate configs with `xmrig --bench` over several iterations — sweeping the RandomX
-**scratchpad prefetch mode** and **`cpu.yield`** (the knobs whose best value varies per CPU) — records
-every result to `<WORKER_ROOT>/rigforge-tune.json`, and writes the winning knobs to a separate
-**`tune-overrides.json`**. That overlay is merged into the generated config, so your `config.json` is
-never touched; `sudo ./rigforge.sh tune --clear` removes it. Run it on an otherwise-idle machine for
-stable numbers. Tunables: `TUNE_ITERS` (default 2), `TUNE_BENCH` (default `1M`).
+`tune` runs an **iterative, noise-aware search** rather than a single fixed sweep. It:
+
+- **Sweeps the knobs whose best value varies per CPU** — the RandomX **scratchpad prefetch mode**,
+  **`cpu.yield`**, the RandomX **thread count** (`cpu.rx`, tried around the L3 ÷ 2 MB sweet spot), and —
+  *only when 1G HugePages are actually reserved* — **`1gb-pages`**. (1G pages are reboot-bound: they need
+  a GRUB change + reboot, done by `setup`, so flipping them mid-run is meaningless and the knob is
+  skipped with a note if they aren't present.)
+- **Hill-climbs from two seeds** — XMRig's auto baseline and an educated guess — adopting a knob change
+  only when it beats the current best by at least `TUNE_MIN_DELTA`, and **stops at a plateau** (a full
+  pass with no improvement). It never benchmarks the same combination twice.
+- **Handles noise** by measuring each candidate as the **median** of `TUNE_ITERS` benchmark runs
+  (RandomX hashrate is jittery).
+
+Every candidate — its samples, median, and any recorded power/temperature — is written to
+`<WORKER_ROOT>/rigforge-tune.json`, and the winning knobs go to a separate **`tune-overrides.json`**.
+That overlay is merged into the generated config, so your `config.json` is never touched;
+`sudo ./rigforge.sh tune --clear` removes it. Run it on an otherwise-idle machine for stable numbers.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `TUNE_ITERS` | `3` | Benchmark runs per candidate; the median is used. |
+| `TUNE_BENCH` | `1M` | `xmrig --bench` size (e.g. `10M` for a longer, steadier run). |
+| `TUNE_MIN_DELTA` | `0.01` | Minimum *relative* gain (1%) needed to adopt a change. |
+| `TUNE_MAX_ROUNDS` | `3` | Cap on hill-climb passes per seed. |
+| `TUNE_SEEDS` | `auto guess` | Starting points to climb from. |
+| `TUNE_PREFETCH_MODES` | `0 1 2 3` | Prefetch-mode candidates. |
+| `TUNE_YIELDS` | `true false` | `cpu.yield` candidates. |
+| `TUNE_PRIORITIES` | `2` | `cpu.priority` candidates (single value ⇒ knob off; set e.g. `1 2 3 4 5` to sweep). |
+| `TUNE_POWER_CMD` | _(unset)_ | Optional shell command that echoes watts, sampled per candidate for a hashrate-per-watt view. |
+| `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
+
+**Power & efficiency (optional).** RandomX hashrate isn't free — wire `TUNE_POWER_CMD` to a wattage
+source (a RAPL sampler, an IPMI reading, or a smart-plug script) and `tune` records watts per candidate
+and reports the best **hashrate-per-watt** observed, so you can trade a little speed for efficiency:
+
+```bash
+sudo TUNE_POWER_CMD='cat /run/my-rapl-watts' ./rigforge.sh tune
+```
+
+#### Live tuning (`tune --live`)
+
+By default `tune` benchmarks offline with `xmrig --bench`. To tune under **real-world** conditions
+against your actual pool instead, use `--live` (Linux only):
+
+```bash
+sudo ./rigforge.sh tune --live
+```
+
+Each candidate is applied to the running miner, a warmup window is discarded, and the steady-state
+hashrate is read from the worker's API over a few samples (median). This restarts the service once per
+candidate, so it's much slower than `--bench` — narrow the search (e.g. `TUNE_SEEDS=auto`, a smaller
+`TUNE_PREFETCH_MODES`) for a quicker live pass. Windows are controlled by `TUNE_LIVE_WARMUP` (default
+60s), `TUNE_LIVE_SAMPLES` (default 3), and `TUNE_LIVE_INTERVAL` (default 30s). The winning config is
+applied automatically when the search finishes. For a hands-off periodic version, see
+[Live auto-tuning](#live-auto-tuning-opt-in) below.
 
 ### Live auto-tuning (opt-in)
 
