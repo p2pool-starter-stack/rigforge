@@ -5,23 +5,31 @@ script can't infer — everything else (CPU profile, thread count, HugePage sizi
 applied for you.
 
 On first run, if there's no `config.json`, `setup` creates a minimal one interactively (it asks for
-your pool host). You can also pre-create one from
+your pool URL). You can also pre-create one from
 [`config.json.template`](../config.json.template).
 
 ---
 
 ## Minimal config
 
+The only thing you must set is the **pool** — RigForge uses XMRig's native `pools` array, and a pool
+only needs its `url` (a `host:port`). Everything else falls back to a sensible default:
+
 ```json
 {
-    "HOME_DIR": "DYNAMIC_HOME",
-    "DONATION": 1,
-    "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template",
-    "POOL_HOST": "YOUR_POOL_HOST_OR_IP"
+    "pools": [
+        { "url": "<YOUR_POOL_HOST>:3333" }
+    ]
 }
 ```
 
-`POOL_HOST` is the only field you must set. The rest have sensible defaults.
+That's a complete config — replace `<YOUR_POOL_HOST>:3333` with your pool's host and port (Pithead's
+proxy listens on `3333`). The interactive first-run setup writes exactly this minimal shape.
+
+> **Two-tier config (like Pithead).** Keep `config.json` minimal and only add the keys you actually
+> want to change. [`config.advanced.example.json`](../config.advanced.example.json) is a reference that
+> lists **every** key with its default — copy in only what you need; anything you omit keeps the
+> default. The reference table below documents each key.
 
 ---
 
@@ -29,52 +37,67 @@ your pool host). You can also pre-create one from
 
 | Key | Default | What it does |
 |---|---|---|
-| `POOL_HOST` | _(required)_ | Your pool / stratum host or IP. Goes straight into the XMRig pool URL as `POOL_HOST:3333`. Must be a hostname, FQDN, or IP — it's validated before the build (the unfilled template placeholder and shell/URL metacharacters are rejected). |
-| `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
+| `pools` | _(required)_ | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
+| `ACCESS_TOKEN` | the rig name (first pool's `user`) | The XMRig HTTP API bearer token. Leave it unset so it defaults to the rig name — **Pithead authenticates as `Bearer <rig name>`**, so the token must equal the rig name (or be unset). See [Pithead Integration](pithead-integration.md). |
 | `DONATION` | `1` | XMRig donate level, an integer **0–100** (percent). Patched into the build (`donate.h`) **and** written to the generated config, so it must be a valid integer or setup fails fast. |
-| `WORKER_CONFIG_FILE` | `./worker-config/example-config.json.template` | The XMRig config **template** RigForge tunes from. Relative paths resolve against the repo; absolute paths are used as-is. The default suits most setups. |
-| `ACCESS_TOKEN` | the machine's `hostname` | The XMRig HTTP API bearer token. Leave it unset so it defaults to the hostname — **Pithead authenticates as `Bearer <rig name>`**, so the token must equal the rig name (or be unset). See [Pithead Integration](pithead-integration.md). |
-
-### Backward compatibility
-
-The former `P2POOL_NODE_HOSTNAME` key is still accepted as an **alias** for `POOL_HOST`, so existing
-configs keep working untouched. If both are present, `POOL_HOST` wins. New configs should use
-`POOL_HOST`.
+| `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
 
 ---
 
-## The XMRig worker template
+## How the generated XMRig config is built
 
-`WORKER_CONFIG_FILE` points at an XMRig config **template** (default:
-[`worker-config/example-config.json.template`](../worker-config/)). RigForge reads it, then overwrites
-the parts it manages — the `pools` list (collapsed to a single `POOL_HOST:3333` entry), `donate-level`,
-the `http` API block, and the per-CPU `cpu`/`randomx` sections — and writes the result into the worker
-root as the live `config.json` XMRig runs from.
+You don't write XMRig's config — RigForge generates it. It starts from a bundled template, then sets
+the parts it manages — your `pools`, `donate-level`, the `http` API block, and the per-CPU
+`cpu`/`randomx` tuning — and writes the result into the worker root as the live `config.json` XMRig
+runs from. The template is internal; there's no config key for it.
 
-Anything in the template that RigForge **doesn't** manage is passed through. If you need to customize
-XMRig beyond what RigForge sets (extra pool fallbacks, logging tweaks, etc.), edit the template — but
-note that the managed sections will be regenerated on every run, so don't hand-edit those.
-
-> ⚠️ **Don't put a wallet address in the worker config when using Pithead.** The stack handles
-> payouts centrally; the `user` field is just a rig **label** (it defaults to the hostname so you can
+> ⚠️ **Don't put a wallet address in the worker `user` when using Pithead.** The stack handles
+> payouts centrally; the pool `user` is just a rig **label** (it defaults to the hostname so you can
 > tell workers apart on the dashboard).
 
 ---
 
-## Connecting to a pool or stack
+## Pools (full control)
 
-RigForge points XMRig at a single **Stratum endpoint**, `POOL_HOST:3333`:
+The pool target is XMRig's native **`pools`** array, passed straight through to XMRig — you can use any
+field XMRig supports. **Only `url` matters; everything else falls back to a Pithead-friendly default**,
+so you specify only what you care about:
 
-- **With [Pithead](https://github.com/p2pool-starter-stack/pithead)** — set `POOL_HOST` to the stack
-  host. The stack's `xmrig-proxy` listens on `3333` and handles pool selection, payouts, and the
-  P2Pool/XvB split centrally, so the worker config stays minimal. See
+| Field | Default if blank/omitted |
+|---|---|
+| `url` | _(required)_ — `host:port` (e.g. `your-stack:3333`; Pithead's proxy listens on `3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
+| `user` | the machine hostname — this is the rig's **label** on the dashboard; set it to name the rig |
+| `pass` | `"x"` |
+| `keepalive` | `true` |
+| `tls` | `false` |
+| `enabled` | `true` |
+
+- **With [Pithead](https://github.com/p2pool-starter-stack/pithead)** — point `url` at the stack host
+  and its proxy port (e.g. `"stack.lan:3333"`); the stack handles pool selection, payouts, and the
+  P2Pool/XvB split centrally, so you never put a wallet address in the worker. See
   [Pithead Integration](pithead-integration.md).
-- **With any other RandomX pool** — set `POOL_HOST` to the pool's stratum host. RigForge builds stock
-  upstream XMRig, which speaks standard Stratum, so it works against any RandomX pool that listens on
-  `3333`.
+- **With any other RandomX pool** — point `url` at that pool's stratum endpoint (with its port and
+  `tls` as needed). RigForge builds stock upstream XMRig, so it speaks standard Stratum to any pool.
 
 The host must be an IP or DNS-resolvable hostname; for a stable LAN address, set a DHCP reservation or
-a static IP. If the host has a firewall, allow the Stratum port (3333) on the LAN.
+a static IP, and allow the Stratum port through any firewall.
+
+### Backup pools (failover)
+
+List multiple entries — XMRig tries them **in order** and fails over to the next if one is unreachable,
+handy for a primary stack with a public-pool fallback:
+
+```json
+{
+    "pools": [
+        { "url": "stack.lan:3333" },
+        { "url": "pool.supportxmr.com:443", "tls": true }
+    ]
+}
+```
+
+Here the worker mines to `stack.lan:3333` and falls back to `pool.supportxmr.com:443` over TLS, with
+`user`/`pass`/`keepalive` filled in for both.
 
 ---
 
@@ -88,7 +111,7 @@ sudo ./rigforge.sh
 
 Re-runs are idempotent — setup regenerates the managed XMRig config and re-applies system tuning
 without duplicating anything, and skips the recompile if the pinned XMRig is already built. Changes to
-the generated config (e.g. `POOL_HOST`) take effect on the next service restart.
+the generated config (e.g. a `pools` change) take effect on the next service restart.
 
 > **Note on `DONATION`:** the donate level is also compiled into the XMRig binary at build time. Since
 > re-running setup skips the recompile when XMRig is already built, changing `DONATION` afterwards

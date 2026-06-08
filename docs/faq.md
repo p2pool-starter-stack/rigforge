@@ -54,9 +54,9 @@ are in [Hardware Requirements](hardware.md). Hashrate scales with cores **and L3
 
 ## Do I have to use Pithead?
 
-No. RigForge points XMRig at any RandomX Stratum pool — set `POOL_HOST` to that pool's host. Pithead is
-the **flagship integration** (the API and discovery contract is wired up out of the box), but it's not
-required. See [Configuration › Connecting to a pool or stack](configuration.md#connecting-to-a-pool-or-stack).
+No. RigForge points XMRig at any RandomX Stratum pool — set that pool's endpoint as a `pools[].url`.
+Pithead is the **flagship integration** (the API and discovery contract is wired up out of the box),
+but it's not required. See [Configuration › Pools](configuration.md#pools-full-control).
 
 ---
 
@@ -64,7 +64,7 @@ required. See [Configuration › Connecting to a pool or stack](configuration.md
 
 **Not with Pithead** — the stack handles payouts centrally, so the worker only needs the pool host. The
 XMRig `user` field is just a rig label. If you point RigForge at a pool that expects a wallet address in
-the `user` field directly, edit the XMRig template (`WORKER_CONFIG_FILE`) accordingly.
+the `user` field directly, set `pools[].user` to your wallet address.
 
 ---
 

@@ -8,6 +8,15 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- The pool connection is now XMRig's native **`pools`** array, set directly in `config.json` — any
+  port, TLS, and multiple pools for failover. Each entry needs a `host:port` `url`; other fields fall
+  back to Pithead-friendly defaults — so the minimal config is a single
+  `pools: [{ "url": "host:port" }]` (#21, #42).
+- The rig's dashboard label is the pool `user` (defaults to the hostname); the API token follows the
+  rig name so the Pithead `Bearer <rig name>` contract still holds. Two-tier config like Pithead: a
+  minimal `config.json` (just a `pools` entry — everything else defaults) plus a
+  `config.advanced.example.json` documenting every key and its default. The XMRig template is now
+  internal (no `WORKER_CONFIG_FILE` key) (#22, #23).
 - Dependency-free test suite, Ubuntu end-to-end container harness, and CI (#5).
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
@@ -33,9 +42,8 @@ All notable changes to RigForge are documented here. The format is based on
   thread list on dual-CCD X3D parts (e.g. 7950X3D) — and sets dedicated-miner defaults (`cpu.yield:
   false`, `cpu.priority: 2`). Removed config keys XMRig silently ignores (the top-level `msr` object
   and `cpu.msr`); the MSR mod is driven by `randomx.wrmsr` (#43, #44).
-- Generalized the project's language and config for any RandomX/XMRig pool: the pool/stratum host is
-  now configured via `POOL_HOST` (the former `P2POOL_NODE_HOSTNAME` key still works as an alias), and
-  the docs lead with the generic worker use case rather than P2Pool specifically (#35).
+- Generalized the project's language and config for any RandomX/XMRig pool: the docs and config lead
+  with the generic worker use case rather than P2Pool specifically (#35).
 - XMRig HTTP API on Linux is now read-only (`restricted: true`) while staying LAN-reachable, so
   Pithead can still read per-rig stats at `:8080` (#17, #7).
 - Removed the `.local` / Avahi mDNS handling — point workers at an IP or DNS-resolvable hostname (#15, #14).

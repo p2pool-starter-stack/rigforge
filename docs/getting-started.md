@@ -10,7 +10,7 @@ driven by a single script — `rigforge.sh` — and most of it is automated.
 > chmod +x rigforge.sh
 > sudo ./rigforge.sh
 > ```
-> Answer one prompt (your pool/stack host), let it build, and — on Linux — reboot once to apply the
+> Answer one prompt (your pool URL), let it build, and — on Linux — reboot once to apply the
 > kernel tuning. The `xmrig` service starts automatically after the reboot.
 
 ---
@@ -42,9 +42,9 @@ cd rigforge
 chmod +x rigforge.sh
 ```
 
-Have your **pool / stack host or IP** ready — for a Pithead stack, that's the stack machine's
-address (the worker connects to its proxy on port `3333`). You do **not** need a wallet address: with
-Pithead the stack handles payouts centrally.
+Have your **pool URL** ready — a `host:port`. For a Pithead stack that's the stack machine's address
+and its proxy port `3333` (e.g. `stack.lan:3333`). You do **not** need a wallet address: with Pithead
+the stack handles payouts centrally.
 
 ---
 
@@ -58,7 +58,7 @@ sudo ./rigforge.sh
 
 1. **Dependencies.** Installs the build toolchain and runtime libraries for your OS.
 2. **First-run config.** If there's no `config.json`, it asks for the one thing it needs — your
-   **pool / stratum host or IP** — and writes a minimal config. (You can also pre-create one; see
+   **pool URL** — and writes a minimal config. (You can also pre-create one; see
    [Configuration](configuration.md).)
 3. **Build.** Clones and compiles XMRig from source, pinned to a known version/commit and patched to
    your `DONATION` level. Build output is captured to a logfile.
@@ -109,6 +109,6 @@ grep -i msr <WORKER_ROOT>/xmrig.log             # MSR mod applied (no errors)
 
 ## Next steps
 
-- [Configuration](configuration.md) — every config key, and the XMRig worker template.
+- [Configuration](configuration.md) — every config key, and how the XMRig config is generated.
 - [Operations & Maintenance](operations.md) — the command reference, logs, upgrades, troubleshooting.
 - [Pithead Integration](pithead-integration.md) — how the dashboard discovers and reads each worker.

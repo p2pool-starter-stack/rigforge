@@ -82,7 +82,7 @@ export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit000000000000000000000000000
 # 5. Seed config.json (writable HOME_DIR; DONATION 7). Use an explicit (dotted) host so this doesn't
 #    depend on the .local/mDNS appending that PR #15 removes.
 cat >"$WORK/config.json" <<EOF
-{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template", "POOL_HOST": "poolbox.lan" }
+{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
 
 BUILD="$WORK/data-home/worker/xmrig/build"

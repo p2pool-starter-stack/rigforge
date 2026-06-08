@@ -1,6 +1,5 @@
 {
-    "HOME_DIR": "DYNAMIC_HOME",
-    "DONATION": 1,
-    "WORKER_CONFIG_FILE": "./worker-config/example-config.json.template",
-    "POOL_HOST": "<YOUR_POOL_HOST_OR_IP>"
+    "pools": [
+        { "url": "<YOUR_POOL_HOST>:3333" }
+    ]
 }

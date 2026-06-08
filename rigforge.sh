@@ -37,7 +37,6 @@ OS_TYPE="$(uname -s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
-TEMPLATE_JSON="$SCRIPT_DIR/config.json.template"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 
@@ -146,31 +145,20 @@ ensure_config_exists() {
         if [[ "$CREATE_CONF" =~ ^[Yy] ]]; then
             log "Starting interactive setup..."
 
-            # Load defaults from template if available
-            local default_home="DYNAMIC_HOME"
-            local default_donation=1
-            local default_config_file="./worker-config/example-config.json.template"
+            # We only need the pool URL — every other key has a sensible default (see
+            # config.advanced.example.json for the full list). The URL is host:port (Pithead's proxy
+            # listens on 3333).
+            read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL
 
-            if [ -f "$TEMPLATE_JSON" ]; then
-                default_home=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$TEMPLATE_JSON")
-                default_donation=$(jq -r '.DONATION // 1' "$TEMPLATE_JSON")
-                default_config_file=$(jq -r '.WORKER_CONFIG_FILE // "./worker-config/example-config.json.template"' "$TEMPLATE_JSON")
+            if [ -z "$IN_URL" ]; then
+                error "A pool URL is required. Aborting."
+            fi
+            if ! [[ "$IN_URL" =~ :[0-9]+$ ]]; then
+                error "Pool URL must include a port, e.g. $IN_URL:3333. Aborting."
             fi
 
-            read -r -p "Enter your pool / stratum host or IP: " IN_HOST
-
-            if [ -z "$IN_HOST" ]; then
-                error "A pool host is required. Aborting."
-            fi
-
-            cat <<EOF >"$CONFIG_JSON"
-{
-    "HOME_DIR": "$default_home",
-    "DONATION": $default_donation,
-    "WORKER_CONFIG_FILE": "$default_config_file",
-    "POOL_HOST": "$IN_HOST"
-}
-EOF
+            # Minimal config: just the native pools array. jq writes it so the URL is safely quoted.
+            jq -n --arg url "$IN_URL" '{pools: [{url: $url}]}' >"$CONFIG_JSON"
             log "Created $CONFIG_JSON successfully."
         else
             error "Configuration file required to proceed."
@@ -196,38 +184,55 @@ parse_config() {
     if ! [[ "$DONATION" =~ ^[0-9]+$ ]] || [ "$DONATION" -gt 100 ]; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
-    WORKER_CONFIG_FILE=$(jq -r .WORKER_CONFIG_FILE "$CONFIG_JSON")
-    if [ "$WORKER_CONFIG_FILE" == "null" ] || [ -z "$WORKER_CONFIG_FILE" ]; then
-        error "WORKER_CONFIG_FILE is not defined in $CONFIG_JSON."
+    # Pool(s). The pool target is XMRig's native `pools` array — the same structure XMRig uses
+    # ({"url","user","pass","keepalive","tls",...}). Each entry needs a `url` of the form `host:port`;
+    # every other field falls back to a Pithead-friendly default. List multiple entries for failover.
+    # The pool `user` is left blank here and filled with the rig name in generate_xmrig_config.
+    if ! jq -e '.pools | type == "array" and length > 0' "$CONFIG_JSON" >/dev/null 2>&1; then
+        error "No pools configured. Set a 'pools' array in $CONFIG_JSON — e.g. {\"pools\": [{\"url\": \"your-pool-host:3333\"}]}."
     fi
-    # Pool/stratum host. POOL_HOST is the canonical key; P2POOL_NODE_HOSTNAME is accepted as a
-    # backward-compatible alias (#35) so existing configs keep working.
-    POOL_HOST=$(jq -r '.POOL_HOST // .P2POOL_NODE_HOSTNAME // empty' "$CONFIG_JSON")
-    # The host goes straight into the XMRig pool URL, so validate it before building: it must be set
-    # and look like a hostname/FQDN or an IPv4/IPv6 literal. This also rejects the unfilled template
-    # placeholder (<...>) and any shell/URL metacharacters.
-    if [ -z "$POOL_HOST" ]; then
-        error "POOL_HOST is required in $CONFIG_JSON (your pool / stratum host or IP)."
-    fi
-    if ! [[ "$POOL_HOST" =~ ^[A-Za-z0-9._:-]+$ ]]; then
-        error "POOL_HOST is not a valid host/IP: '$POOL_HOST'. Use a hostname, FQDN, or IP address."
-    fi
+    POOLS_JSON=$(jq -c '
+        .pools | map({
+            url: (.url // ""),
+            user: (.user // ""),
+            pass: (.pass // "x"),
+            keepalive: (.keepalive // true),
+            tls: (.tls // false),
+            enabled: (.enabled // true)
+        })
+    ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+
+    # Validate every pool: a `host:port` url (the char regex rejects the unfilled placeholder <...> and
+    # shell/URL metacharacters; the port is required — we don't guess one), and a boolean tls.
+    while IFS=$'\t' read -r _u _t; do
+        if [ -z "$_u" ]; then
+            error "A pool entry has no url — set 'pools[].url' (host:port) in $CONFIG_JSON."
+        fi
+        if ! [[ "$_u" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+            error "Pool url is not valid: '$_u'. Use host:port or ip:port (pools[].url)."
+        fi
+        if ! [[ "$_u" =~ :[0-9]+$ ]]; then
+            error "Pool url '$_u' must include a port, e.g. $_u:3333."
+        fi
+        if [ "$_t" != "true" ] && [ "$_t" != "false" ]; then
+            error "Pool tls must be true or false (got: $_t)."
+        fi
+    done < <(jq -r '.[] | [.url, (.tls | tostring)] | @tsv' <<<"$POOLS_JSON")
+
+    # HTTP API token. The rig's label is the pool `user` (#22; defaults to the hostname — see
+    # generate_xmrig_config). The token defaults to that same rig name, so the Pithead contract
+    # (the dashboard authenticates as `Bearer <rig name>`) holds out of the box. An explicit
+    # ACCESS_TOKEN overrides it.
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
     if [ -z "$ACCESS_TOKEN" ]; then
-        ACCESS_TOKEN=$(hostname)
+        ACCESS_TOKEN=$(jq -r '.[0].user' <<<"$POOLS_JSON")
+        [ -n "$ACCESS_TOKEN" ] || ACCESS_TOKEN=$(hostname)
     fi
 
-    POOL_ADDRESS="$POOL_HOST"
-
-    # Resolve Template Path (Handle absolute vs relative paths)
-    if [[ "$WORKER_CONFIG_FILE" = /* ]]; then
-        TEMPLATE_CONFIG="$WORKER_CONFIG_FILE"
-    else
-        TEMPLATE_CONFIG="$SCRIPT_DIR/$WORKER_CONFIG_FILE"
-    fi
-
+    # XMRig config template RigForge tunes from. Internal — bundled with the project, not user-facing.
+    TEMPLATE_CONFIG="$SCRIPT_DIR/worker-config/example-config.json.template"
     if [ ! -f "$TEMPLATE_CONFIG" ]; then
-        error "XMRig configuration template not found at: $TEMPLATE_CONFIG\nPlease ensure 'WORKER_CONFIG_FILE' in $CONFIG_JSON points to a valid file."
+        error "Bundled XMRig template not found at: $TEMPLATE_CONFIG (is the RigForge install complete?)."
     fi
 }
 
@@ -458,11 +463,12 @@ generate_xmrig_config() {
         log "Detected CPU: ${CPU_MODEL:-unknown} — using XMRig auto-tuning (threads, asm, MSR, NUMA auto-detected)."
     fi
 
-    # Construct User ID (Hostname)
+    # Rig label for the pool `user` field (#22): any pool entry that didn't set its own `user` gets the
+    # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
     # Generate config.json via jq
-    jq --arg url "$POOL_ADDRESS:3333" \
+    jq --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
         --arg log "$LOG_FILE_PATH" \
@@ -482,11 +488,8 @@ generate_xmrig_config() {
         --argjson restricted "$HTTP_RESTRICTED" \
         --argjson donation "$DONATION" \
         --arg host "$HTTP_HOST" \
-        '.pools[0].url = $url | 
-        .pools[0].user = $user | 
-        .pools[0].enabled = true |
-        .pools = [.pools[0]] |
-        ."log-file" = $log | 
+        '.pools = ($pools | map(.user = (if (.user // "") == "" then $user else .user end))) |
+        ."log-file" = $log |
         .cpu.yield = $yield | 
         .cpu.priority = $prio | 
         .cpu.asm = $asm | 

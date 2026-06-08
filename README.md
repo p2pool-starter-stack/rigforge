@@ -38,8 +38,7 @@ you like to your stack's single endpoint.
   hardware-prefetcher control, and `hugetlbfs` mounts + memlock limits.
 - **Service management (Linux)** — runs XMRig as a `systemd` service with a `cpupower` performance
   governor and automatic log rotation.
-- **Interactive config** — if no config exists, it asks for the one thing it needs: your pool /
-  stack host or IP.
+- **Interactive config** — if no config exists, it asks for the one thing it needs: your pool URL.
 - **Idempotent** — re-running skips the recompile when the pinned XMRig is already built and never
   double-applies system tuning.
 
@@ -56,8 +55,8 @@ chmod +x rigforge.sh
 sudo ./rigforge.sh
 ```
 
-The script needs root to install packages and tune the system. On first run it asks for your pool /
-stack host and writes a minimal `config.json`. On **Linux**, reboot once afterwards to apply the
+The script needs root to install packages and tune the system. On first run it asks for your pool URL
+and writes a minimal `config.json`. On **Linux**, reboot once afterwards to apply the
 HugePages tuning — the `xmrig` service then starts automatically.
 
 ➡️ **Full walkthrough:** [docs/getting-started.md](docs/getting-started.md)
@@ -70,7 +69,7 @@ HugePages tuning — the `xmrig` service then starts automatically.
 |---|---|
 | **[Getting Started](docs/getting-started.md)** | Prerequisites, install, first-run setup, the Linux reboot, and verification. |
 | **[Hardware Requirements](docs/hardware.md)** | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles. |
-| **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and the XMRig worker template. |
+| **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | **[How It Works](docs/tuning.md)** | What the script actually does — compile, HugePages, MSR, NUMA, governor, service. |
 | **[Pithead Integration](docs/pithead-integration.md)** | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080`, and the token rules. |
