@@ -55,7 +55,7 @@ All notable changes to RigForge are documented here. The format is based on
 - Pinned, checksum-verified `shellcheck` + `shfmt` formatting check in CI, plus a `make fmt` target (#6).
 - Documented the Pithead worker-API contract (port 8080, read-only, token = rig name) in the docs (#24).
 - Community-health files: SECURITY policy, CONTRIBUTING guide, issue/PR templates (#16).
-- A `docs/` set (getting-started, hardware, configuration, operations, how-it-works, Pithead
+- A `docs/` set (getting-started, hardware, configuration, operations, how-it-works (`tuning.md`), Pithead
   integration, FAQ) mirroring Pithead's structure; the README is slimmed to a quick-start that links
   out to it, and the release bundle now ships `docs/` (#25).
 - Branded README header: a flame logo (`images/rigforge-mark.svg`, shared with the project website)
@@ -85,6 +85,12 @@ All notable changes to RigForge are documented here. The format is based on
 - The macOS CPU profile now uses `cpu.priority: 2` (matching the Linux dedicated-miner default) instead
   of `5`. XMRig warns a priority above 2 can make the machine unresponsive, and macOS is a
   light-use/dev target — pinning it to the most aggressive level was inconsistent.
+- The generated config now leaves `cpu.huge-pages-jit` at XMRig's upstream default (`false`) instead of
+  forcing it on. XMRig documents the knob as only a "very small Ryzen boost" with "unstable hashrate" —
+  not worth the jitter on a production rig (and it added noise to the `tune` search).
+- Dropped `cpu.hwloc` from the generated config: it is **not** a recognized XMRig `cpu` JSON key (hwloc
+  is enabled at build time via `WITH_HWLOC=ON` and used automatically), so emitting it was a silent
+  no-op. No behaviour change — just a cleaner, fully-valid config.
 - Docs: `apply` is now the documented path for applying a `config.json` edit (regenerate + restart) —
   a plain `setup` re-run regenerates the config but won't restart an already-built worker, so edits
   used to silently not take effect. Added a **Running on macOS** guide (what differs, how to launch the

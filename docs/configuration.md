@@ -62,7 +62,7 @@ and no config key for it. Every run (re-runs included) rebuilds the config from 
    HugePages). RigForge leans on XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
 3. **Static defaults** — the fixed knobs every worker shares, emitted directly: `autosave`,
-   `cpu.hwloc`, `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
+   `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
 4. **Tuned overrides** *(if present)* — if you've run [`tune`](operations.md#auto-tuning), its winning
    knobs in `tune-overrides.json` are merged on top as the final step, so tuning wins for just the keys
    it sets and your `config.json` is never edited.

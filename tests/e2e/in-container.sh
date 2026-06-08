@@ -105,7 +105,8 @@ assert_eq "deploy: donate-level = 7" "$(jq -r '.["donate-level"]' "$BUILD/config
 # the template file (so a missing/empty template can never silently drop them again).
 assert_eq "deploy: config.json is valid JSON" "$(jq -e . "$BUILD/config.json" >/dev/null 2>&1 && echo y || echo n)" "y"
 assert_eq "in-script default: autosave on" "$(jq -r '.autosave' "$BUILD/config.json" 2>/dev/null)" "true"
-assert_eq "in-script default: cpu.hwloc on" "$(jq -r '.cpu.hwloc' "$BUILD/config.json" 2>/dev/null)" "true"
+assert_eq "in-script: no dead cpu.hwloc key" "$(jq -r '.cpu.hwloc' "$BUILD/config.json" 2>/dev/null)" "null"
+assert_eq "in-script: huge-pages-jit off (XMRig default)" "$(jq -r '.cpu."huge-pages-jit"' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "in-script default: randomx.mode fast" "$(jq -r '.randomx.mode' "$BUILD/config.json" 2>/dev/null)" "fast"
 assert_eq "in-script default: http.port 8080" "$(jq -r '.http.port' "$BUILD/config.json" 2>/dev/null)" "8080"
 assert_eq "in-script default: opencl off" "$(jq -r '.opencl' "$BUILD/config.json" 2>/dev/null)" "false"

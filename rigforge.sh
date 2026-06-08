@@ -478,7 +478,10 @@ generate_xmrig_config() {
     HUGE_PAGES="true"
     MEMORY_POOL="true"
     ONE_GB_PAGES="true"
-    JIT="true"
+    # cpu.huge-pages-jit: false, matching XMRig's upstream default. XMRig documents it as only a "very
+    # small boost on Ryzen, but hashrate is unstable" — not worth the jitter on a production rig (and it
+    # would add noise to the `tune` search). $JIT maps to cpu.huge-pages-jit in the config below.
+    JIT="false"
     INIT_AVX2="-1"
     # Lock down the HTTP API to READ-ONLY (restricted) so it can't be used to *control* the miner
     # remotely. Keep it bound to all interfaces, NOT localhost: Pithead reads per-rig stats from the
@@ -504,7 +507,6 @@ generate_xmrig_config() {
         NUMA="true"
         HTTP_RESTRICTED="true"
         HTTP_HOST="::"
-        JIT="false"
 
         # Generate rx array [-1, -1, ...] based on core count
         CORES=$(sysctl -n hw.ncpu)
@@ -531,7 +533,7 @@ generate_xmrig_config() {
 
     # Build the whole XMRig config from scratch (issue #55). There's no template file to keep in sync:
     # the tuned parts (pools, donate-level, the http block, the cpu/randomx sections) come from the
-    # variables above, and the few static defaults (autosave, hwloc, randomx mode, opencl/cuda off) are
+    # variables above, and the few static defaults (autosave, randomx mode, opencl/cuda off) are
     # emitted inline. `jq -n` builds the object from null input; any tuned overrides are merged below.
     jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
@@ -559,7 +561,6 @@ generate_xmrig_config() {
                 enabled: true,
                 "huge-pages": $huge_pages,
                 "huge-pages-jit": $jit,
-                hwloc: true,
                 "memory-pool": $memory_pool,
                 yield: $yield,
                 priority: $prio,
@@ -1397,7 +1398,9 @@ autotune() {
 }
 
 # Read the current total hashrate from the worker's HTTP API (empty if unreachable). Overridable for
-# tests via API_CMD.
+# tests via API_CMD. This is RigForge's own local reader (loopback) used by tune/autotune; it uses the
+# `/2/summary` endpoint. Pithead's dashboard separately reads `/1/summary` from the stack host — both
+# are valid XMRig endpoints, the divergence is intentional.
 _read_api_hashrate() {
     local url="http://127.0.0.1:8080/2/summary"
     if [ -n "${API_CMD:-}" ]; then

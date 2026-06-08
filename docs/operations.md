@@ -15,9 +15,10 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. |
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
-| `doctor` | Read-only health check: verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is `performance`, the service is active, and (from the XMRig log) that HugePages are 100% backed. Prints actionable hints for anything off. |
+| `doctor` | Read-only health check: verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is `performance`, the service is active, 1 GB HugePages are reserved (optional bonus), and (from the XMRig log) that HugePages are 100% backed. Prints actionable hints for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
 | `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --clear` resets tuning. |
+| `autotune` | One live trial against the running miner. **Enable periodic runs** by setting `"autotune": true` in `config.json` (setup installs a systemd timer). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `status` | Show the systemd service status. |
 | `logs` | Follow the live service logs (`journalctl -f`). |
 | `start` / `stop` / `restart` | Start, stop, or restart the miner service. |

@@ -427,6 +427,10 @@ assert_eq "generic: priority 2" "$(J "$cfg" '.cpu.priority')" "2"
 assert_eq "generic: randomx.wrmsr on (real MSR control)" "$(J "$cfg" '.randomx.wrmsr')" "true"
 assert_eq "generic: no dead cpu.msr key" "$(J "$cfg" '.cpu.msr')" "null"
 assert_eq "generic: no dead msr object" "$(J "$cfg" '.msr')" "null"
+# cpu.hwloc is NOT a valid XMRig cpu JSON key (hwloc is auto-on when built WITH_HWLOC=ON); it must not
+# be emitted. huge-pages-jit defaults OFF, matching XMRig upstream (which warns it makes hashrate unstable).
+assert_eq "generic: no dead cpu.hwloc key" "$(J "$cfg" '.cpu.hwloc')" "null"
+assert_eq "generic: huge-pages-jit off (matches XMRig default)" "$(J "$cfg" '.cpu."huge-pages-jit"')" "false"
 # HTTP API locked down on Linux (#7 / #17): made READ-ONLY (restricted) so it can't control the
 # miner remotely. It stays bound to 0.0.0.0 (NOT localhost) on purpose: Pithead reads per-rig stats
 # from the stack host at http://<rig>:8080 (read-only, token = rig name) — localhost would break that
