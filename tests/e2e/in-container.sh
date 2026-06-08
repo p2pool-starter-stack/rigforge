@@ -19,6 +19,7 @@ bad() {
 assert_rc() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected rc $3, got $2"; fi; }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3], got [$2]"; fi; }
 assert_contains() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "[$2] missing [$3]" ;; esac }
+assert_absent() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contains [$3]" ;; *) ok "$1" ;; esac }
 
 # 1. Real prerequisites: jq + envsubst (gettext). Installed with the REAL apt before stubs go on
 #    PATH, so the script's own dependency step is the only thing we stub out.
@@ -99,6 +100,17 @@ assert_contains "build: verified pinned commit" "$out1" "Verified XMRig"
 assert_eq "deploy: pool url from hostname" "$(jq -r '.pools[0].url' "$BUILD/config.json" 2>/dev/null)" "poolbox.lan:3333"
 assert_eq "deploy: EPYC numa applied" "$(jq -r '.randomx.numa' "$BUILD/config.json" 2>/dev/null)" "true"
 assert_eq "deploy: donate-level = 7" "$(jq -r '.["donate-level"]' "$BUILD/config.json" 2>/dev/null)" "7"
+# #55: the config is built entirely in-script — there is no bundled template. Prove, with the REAL jq
+# in the container, that the result is valid JSON and carries the static defaults that used to live in
+# the template file (so a missing/empty template can never silently drop them again).
+assert_eq "deploy: config.json is valid JSON" "$(jq -e . "$BUILD/config.json" >/dev/null 2>&1 && echo y || echo n)" "y"
+assert_eq "in-script default: autosave on" "$(jq -r '.autosave' "$BUILD/config.json" 2>/dev/null)" "true"
+assert_eq "in-script default: cpu.hwloc on" "$(jq -r '.cpu.hwloc' "$BUILD/config.json" 2>/dev/null)" "true"
+assert_eq "in-script default: randomx.mode fast" "$(jq -r '.randomx.mode' "$BUILD/config.json" 2>/dev/null)" "fast"
+assert_eq "in-script default: http.port 8080" "$(jq -r '.http.port' "$BUILD/config.json" 2>/dev/null)" "8080"
+assert_eq "in-script default: opencl off" "$(jq -r '.opencl' "$BUILD/config.json" 2>/dev/null)" "false"
+assert_eq "in-script default: cuda off" "$(jq -r '.cuda' "$BUILD/config.json" 2>/dev/null)" "false"
+assert_eq "no bundled template shipped" "$([ -e "$WORK/worker-config" ] && echo present || echo gone)" "gone"
 svc="$(cat /etc/systemd/system/xmrig.service 2>/dev/null)"
 assert_contains "service rendered by real envsubst" "$svc" "$BUILD"
 # #13: hardening directives + ReadWritePaths got WORKER_ROOT expanded by the REAL envsubst.
