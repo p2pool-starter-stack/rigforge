@@ -8,13 +8,21 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- Auto-tuning (#46). `tune` benchmarks candidate configs with `xmrig --bench` over several iterations
-  (sweeping the RandomX scratchpad prefetch mode × `cpu.yield`), logs every result to
-  `<WORKER_ROOT>/rigforge-tune.json`, and writes the winning knobs to a separate `tune-overrides.json`
-  that's merged into the generated config — so your `config.json` is never touched. `tune --clear`
-  resets it. Opt-in live tuning: set `autotune: true` in config to install a systemd timer that runs
-  `autotune` periodically (one live trial against the running miner via its API; keeps a change only if
-  it beats the baseline by a margin, else rolls back).
+- Auto-tuning (#46, #54). `tune` searches for the fastest XMRig knobs for your CPU with an iterative,
+  noise-aware coordinate hill-climb: starting from two seeds (XMRig's auto baseline and an educated
+  guess) it sweeps the RandomX scratchpad prefetch mode, `cpu.yield`, and the RandomX thread count
+  (`cpu.rx`, around L3 ÷ 2 MB), measures each candidate as the **median** of several `xmrig --bench`
+  runs, adopts a change only when it beats the current best by a minimum margin (`TUNE_MIN_DELTA`), and
+  stops when a full pass makes no gain (plateau). Every measured candidate is memoized so a combination
+  is never benchmarked twice. The reboot-bound `1gb-pages` knob is swept only when 1G HugePages are
+  actually reserved (otherwise skipped with a note). Results — every candidate with its samples, median,
+  and optional watts/temperature for a hashrate-per-watt view — are logged to
+  `<WORKER_ROOT>/rigforge-tune.json`; the winning knobs go to a separate `tune-overrides.json` that's
+  merged into the generated config, so your `config.json` is never touched. `tune --live` measures
+  against the running miner over steady-state API windows instead of `--bench`; `tune --clear` resets.
+  Opt-in periodic live tuning: set `autotune: true` in config to install a systemd timer that runs
+  `autotune` (one live trial against the running miner via its API; keeps a change only if it beats the
+  baseline by a margin, else rolls back).
 - `uninstall` command: cleanly reverts every change setup made — removes the systemd service and
   logrotate policy, strips the HugePage/MSR lines from `fstab`/`limits.conf`/`/etc/modules`, reverts the
   managed GRUB kernel parameters, unmounts the 1G HugePage filesystem, and removes the worker

@@ -1080,10 +1080,14 @@ assert_contains "modules unrelated line kept" "$(cat "$UN/etc/modules")" "loop"
 out="$(un_run)"
 assert_rc "second uninstall exits 0" "$?" "0"
 
-# #46: tune sweeps prefetch_mode x yield over N iterations and writes the winner to a SEPARATE
-# tune-overrides.json (merged into the generated config), keeping config.json untouched. A fake xmrig
-# emits a hashrate that depends on both knobs so a clear winner emerges (prefetch=2 + yield=false).
-echo "== black-box: tune (multi-knob, overrides, clear) (#46) =="
+# #54: tune is an iterative, noise-aware, multi-knob hill-climb. It sweeps prefetch_mode, cpu.yield and
+# the RandomX thread count (cpu.rx, around L3/2 MB), measures each candidate as the MEDIAN of N runs,
+# memoizes so a combo is never benchmarked twice, climbs from two seeds (auto + educated guess), and
+# writes the winner to a SEPARATE tune-overrides.json (merged into the config) — config.json untouched.
+# A fake xmrig emits a hashrate that depends on all three knobs so a clear global optimum exists:
+# prefetch=2, yield=false, threads=4 (the L3=8 MiB center; nproc=4). The fake also logs every call so we
+# can prove memoization (no candidate benchmarked twice).
+echo "== black-box: tune (iterative hill-climb, multi-knob) (#54) =="
 TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
 cp "$SCRIPT" "$TN/rigforge.sh"
 cp "$ROOT/VERSION" "$TN/"
@@ -1091,43 +1095,161 @@ cp -R "$ROOT/worker-config" "$TN/"
 BD="$TN/home/worker/xmrig/build"
 mkdir -p "$BD"
 cp "$ROOT/worker-config/example-config.json.template" "$BD/config.json"
+# Fake xmrig: hashrate = f(prefetch, yield, threads, 1gb-pages), peak at prefetch=2/yield=false/threads=4.
+# BENCH_LOG records one line per invocation (used to assert no double-benchmarking).
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 cfg=""
 for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+[ -n "${BENCH_LOG:-}" ] && echo call >>"$BENCH_LOG"
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 y=$(jq -r '.cpu.yield' "$cfg" 2>/dev/null)
+t=$(jq -r '.cpu.rx' "$cfg" 2>/dev/null)
+g=$(jq -r '.randomx."1gb-pages"' "$cfg" 2>/dev/null)
 base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; 0) base=1000 ;; *) base=1050 ;; esac
-[ "$y" = false ] && base=$((base + 20)) # yield off is a touch faster
+[ "$y" = false ] && base=$((base + 20))             # yield off is a touch faster
+[ "$g" = true ] && base=$((base + 5))               # 1G pages help (only swept when reserved)
+tt="$t"; [ "$tt" = "-1" ] && tt=3                    # XMRig auto lands slightly off the L3 center
+pen=$(((tt > 4 ? tt - 4 : 4 - tt) * 30)); base=$((base - pen))   # RandomX peaks at threads=4
 echo "miner speed 10s/60s/15m $base.0 n/a n/a H/s max $base.0 H/s"
 EOF
 chmod +x "$BD/xmrig"
 cat >"$TN/config.json" <<EOF
 { "HOME_DIR": "$TN/home", "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
-out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 bash ./rigforge.sh tune </dev/null 2>&1)"
+BENCHLOG="$TN/bench.log"
+: >"$BENCHLOG"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 BENCH_LOG="$BENCHLOG" bash ./rigforge.sh tune </dev/null 2>&1)"
 rc=$?
 assert_rc "tune exits 0" "$rc" "0"
-assert_contains "tune logs a candidate" "$out" "prefetch_mode=0 yield=true"
+assert_contains "tune climbs (logs a candidate trial)" "$out" "try prefetch="
+assert_contains "tune reports the winner" "$out" "Best: prefetch_mode=2 yield=false threads=4"
+assert_contains "tune stops on a plateau" "$out" "plateau"
 OVR="$TN/home/worker/tune-overrides.json"
 TLOG="$TN/home/worker/rigforge-tune.json"
 assert_eq "overrides file written" "$([ -f "$OVR" ] && echo y || echo n)" "y"
 assert_eq "config.json NOT touched (no .bak)" "$([ -f "$BD/config.json.bak" ] && echo y || echo n)" "n"
 assert_eq "winning prefetch in overrides" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "winning yield in overrides" "$(J "$OVR" '.cpu.yield')" "false"
+assert_eq "winning thread count in overrides" "$(J "$OVR" '.cpu.rx')" "4"
+# 1gb-pages was NOT swept here (no 1G pages reserved on the test host), so it isn't pinned in overrides.
+assert_eq "1gb-pages not pinned when unreserved" "$(J "$OVR" '.randomx["1gb-pages"] // "absent"')" "absent"
+assert_contains "tune notes the reboot-bound 1gb-pages skip" "$out" "skipping the 1gb-pages knob"
 assert_eq "log is valid JSON" "$(jq -e . "$TLOG" >/dev/null 2>&1 && echo y || echo n)" "y"
 assert_eq "log best prefetch" "$(J "$TLOG" '.best.scratchpad_prefetch_mode')" "2"
-assert_eq "log has 8 candidates (4x2)" "$(J "$TLOG" '.results | length')" "8"
+assert_eq "log best threads" "$(J "$TLOG" '.best.threads')" "4"
+assert_eq "log records the mode" "$(J "$TLOG" '.mode')" "bench"
+assert_eq "log records both seeds" "$(JC "$TLOG" '.seeds')" '["auto","guess"]'
+# Memoization: with TUNE_ITERS=1, one bench call per DISTINCT candidate. The bench-call count must equal
+# the number of logged (distinct) candidates — proving no combination was ever benchmarked twice.
+NCAND="$(J "$TLOG" '.results | length')"
+NCALLS="$(grep -c call "$BENCHLOG" 2>/dev/null || echo 0)"
+assert_eq "no candidate benchmarked twice (memoized)" "$NCALLS" "$NCAND"
+assert_eq "search explored more than one candidate" "$([ "$NCAND" -gt 1 ] && echo y || echo n)" "y"
 # generate merges the overrides on top: apply regenerates from the template and the tuned knobs win.
 mkdir -p "$TN/logrotate"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" bash ./rigforge.sh apply </dev/null 2>&1)"
 assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
+assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
 # tune --clear removes the tuning state.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" bash ./rigforge.sh tune --clear </dev/null 2>&1)"
 assert_rc "tune --clear exits 0" "$?" "0"
 assert_eq "overrides removed by --clear" "$([ -f "$OVR" ] && echo y || echo n)" "n"
+
+# #54: median noise-handling. With a single (inactive) candidate and a fake whose three readings are
+# base-10, base, base+10, the recorded hashrate must be the MEDIAN (base), not the max.
+echo "== black-box: tune median-of-N noise handling (#54) =="
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+c="${JITTER_CTR:-/tmp/jit}"; n=0; [ -f "$c" ] && n=$(cat "$c"); echo $((n + 1)) >"$c"
+case $((n % 3)) in 0) d=-10 ;; 1) d=0 ;; *) d=10 ;; esac
+echo "speed $((1100 + d)).0 H/s max $((1100 + d)).0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=3 JITTER_CTR="$TN/jit" \
+    TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "median tune exits 0" "$?" "0"
+assert_eq "single candidate measured" "$(J "$TLOG" '.results | length')" "1"
+# Numeric compare (jq 1.7 preserves "1100.0"; older jq prints "1100") — median of 1090/1100/1110 is 1100.
+assert_eq "records the median, not the max" "$(J "$TLOG" '.results[0].hashrate == 1100')" "true"
+assert_eq "records all three samples" "$(J "$TLOG" '.results[0].samples | length')" "3"
+
+# #54: the minimum-delta gate. With min-delta 0.5 (50%) and only the 'auto' seed, no candidate beats the
+# seed by enough, so the search stays put — winner = seed (prefetch=1, yield=false, threads auto).
+# Reset the base config to the pristine template so the 'auto' seed starts from prefetch=1 (an earlier
+# 'apply' rewrote $BD/config.json with the tuned prefetch=2).
+echo "== black-box: tune min-delta gate (#54) =="
+cp "$ROOT/worker-config/example-config.json.template" "$BD/config.json"
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+base=1000; case "$m" in 2) base=1100 ;; 1) base=1080 ;; *) base=1050 ;; esac
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_MIN_DELTA=0.5 \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "min-delta tune exits 0" "$?" "0"
+assert_eq "min-delta keeps the seed prefetch" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
+assert_eq "min-delta leaves threads at auto (rx unpinned)" "$(J "$OVR" '.cpu.rx // "absent"')" "absent"
+
+# #54: when 1G HugePages ARE reserved, the 1gb-pages knob is swept and pinned in the overrides. Point
+# HUGEPAGES_1G_NR at a fake sysfs node reporting reserved pages; the fake xmrig rewards 1gb-pages=true.
+echo "== black-box: tune 1gb-pages knob when reserved (#54) =="
+printf '4\n' >"$TN/nr_1g"
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+g=$(jq -r '.randomx."1gb-pages"' "$cfg" 2>/dev/null)
+base=1000; [ "$g" = true ] && base=1100
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
+    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 HUGEPAGES_1G_NR="$TN/nr_1g" \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "1gb tune exits 0" "$?" "0"
+assert_absent "no skip note when 1G reserved" "$out" "skipping the 1gb-pages knob"
+assert_eq "1gb-pages swept and pinned true" "$(J "$OVR" '.randomx["1gb-pages"]')" "true"
+
+# #54: optional power/temperature recording for a hashrate-per-watt view (best-effort, via hooks).
+echo "== black-box: tune power/temp recording (#54) =="
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "speed 1200.0 H/s max 1200.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
+    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
+    TUNE_POWER_CMD='echo 100' TUNE_TEMP_CMD='echo 55' \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "power/temp tune exits 0" "$?" "0"
+assert_eq "records watts" "$(J "$TLOG" '.results[0].watts')" "100"
+assert_eq "records temperature" "$(J "$TLOG" '.results[0].temp_c')" "55"
+assert_eq "computes hashrate-per-watt" "$(J "$TLOG" '.results[0].hs_per_watt')" "12"
+assert_contains "reports best efficiency" "$out" "H/s per watt"
+
+# #54: live tuning measures the running miner via the API instead of --bench, then applies the winner.
+# API is stubbed to a constant so no knob wins; the search stays at the seed and the winner is applied.
+echo "== black-box: tune --live (API-measured) (#54) =="
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
+    API_CMD='echo 1500' TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
+    TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+    bash ./rigforge.sh tune --live </dev/null 2>&1)"
+assert_rc "tune --live exits 0" "$?" "0"
+assert_eq "live log records mode=live" "$(J "$TLOG" '.mode')" "live"
+assert_contains "live tune applies the winner" "$out" "Applied the winning config to the live miner"
+# tune --live is Linux-only.
+out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh tune --live </dev/null 2>&1)"
+assert_rc "tune --live rejected on non-Linux" "$?" "1"
+assert_contains "tune --live non-Linux message" "$out" "only supported on Linux"
+
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
 cp "$SCRIPT" "$TN2/rigforge.sh"
@@ -1140,6 +1262,10 @@ out="$(cd "$TN2" && PATH="$STUBS:$PATH" bash ./rigforge.sh tune </dev/null 2>&1)
 rc=$?
 assert_rc "tune without a build fails" "$rc" "1"
 assert_contains "tune build-missing message" "$out" "Run 'setup' first"
+# An unknown tune flag is rejected.
+out="$(cd "$TN" && PATH="$STUBS:$PATH" bash ./rigforge.sh tune --bogus </dev/null 2>&1)"
+assert_rc "unknown tune flag fails" "$?" "1"
+assert_contains "unknown tune flag message" "$out" "Unknown tune option"
 
 # #46: autotune does one live trial — measures via the API (stubbed with API_CMD), tries the next
 # prefetch mode, keeps it only if faster. Here the "new" reading beats the baseline, so it's kept.

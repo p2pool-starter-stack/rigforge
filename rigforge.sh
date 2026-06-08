@@ -926,79 +926,414 @@ uninstall() {
     fi
 }
 
-# --- Auto-tuning (#46) -----------------------------------------------------
+# --- Auto-tuning (#46, #54) ------------------------------------------------
+#
+# `tune` finds the fastest XMRig knob settings for THIS CPU and records the winner in a separate
+# overrides file that generate_xmrig_config merges on top of the generated config — so your own
+# config.json is never touched. Two state files live under the worker root:
+#   tune-overrides.json — the winning knobs, merged into every generated config.
+#   rigforge-tune.json  — the full search log (every candidate, its samples + median, the path taken).
+#
+# The search (#54) is an iterative, noise-aware coordinate hill-climb. Starting from one or more
+# *seeds* it sweeps each knob in turn, measures each candidate as the MEDIAN of several runs (RandomX
+# hashrate is jittery), and adopts a change only when it beats the current best by a minimum relative
+# margin (TUNE_MIN_DELTA). It repeats until a full pass makes no improvement (plateau) or TUNE_MAX_ROUNDS
+# is hit, memoizing every measured candidate so a combination is never benchmarked twice. The knobs are
+# the ones whose best value genuinely varies per CPU: the RandomX scratchpad prefetch mode, `cpu.yield`,
+# the RandomX thread count (`cpu.rx`, swept around L3/2 MB), and — only when the host actually has them
+# reserved — `1gb-pages`. `cpu.priority` is available but off by default (it barely moves a dedicated-box
+# benchmark; set TUNE_PRIORITIES to include it).
 
-# Paths for the tuning state (relative to the worker root, resolved by parse_config).
-#   tune-overrides.json — the winning knobs, merged on top of every generated config (so your own
-#                         config.json is never touched; generate_xmrig_config applies it).
-#   rigforge-tune.json  — the full benchmark log of every candidate tried (auditable / reusable).
+# The tuning session's shared state. Set by tune() and read by its helpers (kept as globals rather than
+# threaded through every call, matching the rest of this script). S_* hold the current candidate.
+TUNE_TMP=""
+TUNE_BASE=""
+TUNE_BIN=""
+TUNE_OVERRIDES=""
+MEMO_FILE=""
+RESULTS_FILE=""
+TUNE_MODE=""
+S_p=""
+S_y=""
+S_t=""
+S_g=""
+S_pr=""
+HILL_BEST="" # set by _hillclimb (its result is returned via this global, not stdout — see below)
 
-# tune (#46): benchmark candidate configs with `xmrig --bench` over several iterations and keep the
-# fastest. Sweeps the knobs whose best value genuinely varies per CPU — the RandomX scratchpad prefetch
-# mode and `cpu.yield` — benchmarking each combo TUNE_ITERS times and keeping its best run, then writes
-# the winning knobs to tune-overrides.json. `tune --clear` removes the tuning state. Run it on an
-# otherwise-idle machine for stable numbers.
+# Median of the numbers passed as arguments (empty if none). RandomX hashrate is noisy, so we report
+# the median of several runs per candidate rather than a single (or best) reading.
+_median() {
+    printf '%s\n' "$@" | sort -n | awk '
+        {a[NR]=$1}
+        END{ if(NR==0) exit; print (NR%2) ? a[(NR+1)/2] : (a[NR/2]+a[NR/2+1])/2 }'
+}
+
+# Tiny file-backed memo (bash 3.2 has no associative arrays). Keyed by the candidate tuple so the
+# hill-climb — which revisits the current point as it sweeps each knob — never re-benchmarks a combo.
+_memo_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_FILE" 2>/dev/null; }
+_memo_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_FILE"; }
+
+# Best-effort temperature (°C) and power (W) for a hashrate-per-watt view (#54). Both are optional:
+# temp defaults to the standard Linux thermal zone, power is opt-in via TUNE_POWER_CMD (reliable
+# wattage needs a method the operator chooses — RAPL sampler, smart plug, IPMI). Either may be empty.
+_read_temp() {
+    if [ -n "${TUNE_TEMP_CMD:-}" ]; then
+        eval "$TUNE_TEMP_CMD"
+        return 0
+    fi
+    [ "$OS_TYPE" = "Linux" ] || return 0
+    local z="${THERMAL_ZONE:-/sys/class/thermal/thermal_zone0/temp}"
+    [ -r "$z" ] && awk '{printf "%.1f", $1/1000}' "$z" 2>/dev/null
+    return 0
+}
+_read_watts() {
+    [ -n "${TUNE_POWER_CMD:-}" ] && eval "$TUNE_POWER_CMD"
+    return 0
+}
+
+# A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
+_tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority>
+    jq -cn --argjson p "$1" --argjson y "$2" --arg t "$3" --argjson g "$4" --argjson pr "$5" '
+        { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g },
+          cpu: { yield: $y, priority: $pr, rx: (if $t == "-1" then -1 else ($t|tonumber) end) } }'
+}
+
+# Materialize a full candidate config by merging the knob snippet over the base config.
+_tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
+    local out="$1"
+    shift
+    _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out"
+}
+
+# One offline benchmark of a config file → peak H/s (empty on failure). `|| true` keeps a non-zero
+# xmrig exit from tripping pipefail; the parser yields nothing and the caller treats it as 0.
+_bench_once() {
+    local out
+    out=$("$TUNE_BIN" --bench="${TUNE_BENCH:-1M}" --config="$1" 2>&1 || true)
+    printf '%s' "$out" | _parse_hashrate
+}
+
+# Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
+# few API samples over steady state and return their median. Heavier than --bench (it restarts the
+# service per candidate) but reflects real-world conditions. Linux-only; reuses _read_api_hashrate.
+_measure_live() { # <prefetch> <yield> <threads> <onegb> <priority>
+    local tmp
+    tmp=$(mktemp)
+    _tune_knobs_json "$@" >"$tmp" && sudo cp "$tmp" "$TUNE_OVERRIDES"
+    rm -f "$tmp"
+    apply >/dev/null 2>&1 || true
+    sleep "${TUNE_LIVE_WARMUP:-60}"
+    local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
+    for i in $(seq 1 "$n"); do
+        s=$(_read_api_hashrate)
+        [ -n "$s" ] || s=0
+        samples+=("$s")
+        [ "$i" -lt "$n" ] && sleep "${TUNE_LIVE_INTERVAL:-30}"
+    done
+    _median "${samples[@]}"
+}
+
+# Measure one candidate (memoized): median over TUNE_ITERS bench runs, or one live window. On a cache
+# miss it also records the candidate — samples, median, and any temp/watts — to the results log.
+_measure() { # <prefetch> <yield> <threads> <onegb> <priority> -> echoes median H/s
+    local p="$1" y="$2" t="$3" g="$4" pr="$5" key="$1|$2|$3|$4|$5" cached
+    cached=$(_memo_get "$key")
+    if [ -n "$cached" ]; then
+        printf '%s' "$cached"
+        return 0
+    fi
+
+    local med samples=() s i cfg
+    if [ "$TUNE_MODE" = live ]; then
+        med=$(_measure_live "$p" "$y" "$t" "$g" "$pr")
+        [ -n "$med" ] || med=0
+        samples=("$med")
+    else
+        cfg="$TUNE_TMP/cand.json"
+        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr"
+        for i in $(seq 1 "${TUNE_ITERS:-3}"); do
+            s=$(_bench_once "$cfg")
+            [ -n "$s" ] || s=0
+            samples+=("$s")
+        done
+        med=$(_median "${samples[@]}")
+        [ -n "$med" ] || med=0
+    fi
+
+    local watts temp
+    watts=$(_read_watts)
+    temp=$(_read_temp)
+    jq -cn --argjson p "$p" --argjson y "$y" --arg t "$t" --argjson g "$g" --argjson pr "$pr" \
+        --argjson med "$med" --arg samples "${samples[*]}" --arg watts "${watts:-}" --arg temp "${temp:-}" '
+        { prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g, priority: $pr,
+          hashrate: $med, samples: ($samples|split(" ")|map(tonumber)),
+          watts: (if $watts=="" then null else ($watts|tonumber) end),
+          temp_c: (if $temp=="" then null else ($temp|tonumber) end),
+          hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
+        >>"$RESULTS_FILE"
+    _memo_put "$key" "$med"
+    printf '%s' "$med"
+}
+
+# Knob registry: the candidate values for each knob, and get/set of the current state (S_*). Encapsulates
+# the bash-3.2-friendly indirection so the hill-climb loop stays generic over knob names.
+_knob_values() {
+    case "$1" in
+    prefetch) echo "$TUNE_PREFETCH_MODES" ;;
+    yield) echo "$TUNE_YIELDS" ;;
+    threads) echo "$TUNE_THREADS" ;;
+    onegb) echo "$TUNE_ONEGB" ;;
+    priority) echo "$TUNE_PRIORITIES" ;;
+    esac
+}
+_knob_get() {
+    case "$1" in
+    prefetch) echo "$S_p" ;; yield) echo "$S_y" ;; threads) echo "$S_t" ;;
+    onegb) echo "$S_g" ;; priority) echo "$S_pr" ;;
+    esac
+}
+_knob_set() {
+    case "$1" in
+    prefetch) S_p="$2" ;; yield) S_y="$2" ;; threads) S_t="$2" ;;
+    onegb) S_g="$2" ;; priority) S_pr="$2" ;;
+    esac
+}
+_measure_state() { _measure "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr"; }
+
+# A sensible RandomX thread count for this CPU (~one thread per 2 MB of L3, clamped to the core count),
+# or empty if it can't be determined. RandomX peaks near L3/2 MB; more threads thrash the cache.
+_l3_thread_center() {
+    [ "$OS_TYPE" = "Linux" ] || return 0
+    local l3 mb cores c
+    l3=$(lscpu 2>/dev/null | awk -F: '/L3 cache/ {gsub(/^[ \t]+/,"",$2); print $2; exit}') || true
+    [ -n "$l3" ] || return 0
+    mb=$(printf '%s' "$l3" | awk '{ v=$1; u=$2;
+        if (u ~ /Ki/) v=v/1024; else if (u ~ /Gi/) v=v*1024; else if (v>100000) v=v/1024/1024;
+        printf "%d", v }') || true
+    [ -n "$mb" ] && [ "$mb" -gt 0 ] 2>/dev/null || return 0
+    cores=$(nproc 2>/dev/null || echo 0)
+    c=$((mb / 2))
+    [ "$c" -lt 1 ] && c=1
+    [ "$cores" -gt 0 ] && [ "$c" -gt "$cores" ] && c="$cores"
+    echo "$c"
+}
+
+# Thread-count candidates: "-1" (XMRig auto) plus center-1, center, center+1, clamped to [1, cores].
+_thread_candidates() { # <center>
+    local c="$1" cores list="-1" d v
+    cores=$(nproc 2>/dev/null || echo 0)
+    for d in -1 0 1; do
+        v=$((c + d))
+        [ "$v" -lt 1 ] && continue
+        [ "$cores" -gt 0 ] && [ "$v" -gt "$cores" ] && continue
+        case " $list " in *" $v "*) ;; *) list="$list $v" ;; esac
+    done
+    echo "$list"
+}
+
+# Coordinate hill-climb from the current S_* state: sweep each active knob, adopt the best value that
+# beats the running best by TUNE_MIN_DELTA, and repeat rounds until a pass makes no gain (plateau).
+# Echoes the best hashrate reached; leaves S_* at the winning combination.
+_hillclimb() {
+    # Returns its result in the HILL_BEST global and leaves S_* at the winning combination. It must be
+    # called DIRECTLY (not via $(...)), because a command-substitution subshell would discard the S_*
+    # mutations; the memo and results survive regardless because they are file-backed. Progress is
+    # logged to stderr to keep stdout clean.
+    local best round=0 improved knob cur best_v best_here v cand
+    best=$(_measure_state)
+    while [ "$round" -lt "${TUNE_MAX_ROUNDS:-3}" ]; do
+        round=$((round + 1))
+        improved=0
+        for knob in $ACTIVE_KNOBS; do
+            cur=$(_knob_get "$knob")
+            best_v="$cur"
+            best_here="$best"
+            for v in $(_knob_values "$knob"); do
+                [ "$v" = "$cur" ] && continue
+                _knob_set "$knob" "$v"
+                cand=$(_measure_state)
+                _knob_set "$knob" "$cur"
+                log "    try $knob=$v -> $cand H/s" >&2
+                if awk "BEGIN{exit !($cand > $best_here * (1 + ${TUNE_MIN_DELTA:-0.01}))}"; then
+                    best_here="$cand"
+                    best_v="$v"
+                fi
+            done
+            if [ "$best_v" != "$cur" ]; then
+                _knob_set "$knob" "$best_v"
+                best="$best_here"
+                improved=1
+                log "  adopt $knob=$best_v ($best H/s)" >&2
+            fi
+        done
+        [ "$improved" -eq 0 ] && {
+            log "  plateau after round $round." >&2
+            break
+        }
+    done
+    HILL_BEST="$best"
+}
+
+# Seed the state with XMRig's auto baseline (the generated config's own values; threads left to auto).
+_seed_auto() {
+    S_p=$(jq -r '.randomx.scratchpad_prefetch_mode // 1' "$TUNE_BASE")
+    S_y=$(jq -r '.cpu.yield // false' "$TUNE_BASE")
+    S_g=$(jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE")
+    S_pr=$(jq -r '.cpu.priority // 2' "$TUNE_BASE")
+    S_t="-1"
+}
+# Seed the state with an educated guess (a different starting point so the climb can escape a local
+# optimum the auto seed lands in): prefetch=2, yield off, threads sized to L3/2 MB.
+_seed_guess() {
+    S_p="${TUNE_GUESS_PREFETCH:-2}"
+    S_y=false
+    S_pr=2
+    S_g=$(jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE")
+    S_t="${TUNE_GUESS_THREADS:-${THREAD_CENTER:--1}}"
+    [ -n "$S_t" ] || S_t="-1"
+}
+
 tune() {
-    parse_config # resolves WORKER_ROOT (and validates the config)
-    local overrides="$WORKER_ROOT/tune-overrides.json" logf="$WORKER_ROOT/rigforge-tune.json"
+    local clear=0
+    TUNE_MODE="${TUNE_MODE:-bench}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        --clear) clear=1 ;;
+        --live) TUNE_MODE=live ;;
+        --bench) TUNE_MODE=bench ;;
+        *) error "Unknown tune option: $1 (use --live, --bench, or --clear)." ;;
+        esac
+        shift
+    done
 
-    if [ "${1:-}" == "--clear" ]; then
-        sudo rm -f "$overrides" "$logf"
+    parse_config # resolves WORKER_ROOT (and validates the config)
+    TUNE_OVERRIDES="$WORKER_ROOT/tune-overrides.json"
+    local logf="$WORKER_ROOT/rigforge-tune.json"
+
+    if [ "$clear" = 1 ]; then
+        sudo rm -f "$TUNE_OVERRIDES" "$logf"
         log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config."
         return 0
     fi
 
-    local build="$WORKER_ROOT/xmrig/build" bin base
-    bin="$build/xmrig"
-    base="$build/config.json"
-    [ -x "$bin" ] && [ -f "$base" ] || error "No built worker at $build. Run 'setup' first, then 'tune'."
+    if [ "$TUNE_MODE" = live ] && [ "$OS_TYPE" != "Linux" ]; then
+        error "tune --live drives the running systemd service and is only supported on Linux."
+    fi
 
-    local bench="${TUNE_BENCH:-1M}" iters="${TUNE_ITERS:-2}"
-    local prefetch_modes="${TUNE_PREFETCH_MODES:-0 1 2 3}" yields="${TUNE_YIELDS:-true false}"
-    log "Auto-tuning via 'xmrig --bench=$bench' x$iters — prefetch_mode={$prefetch_modes}, yield={$yields}"
+    local build="$WORKER_ROOT/xmrig/build"
+    TUNE_BIN="$build/xmrig"
+    TUNE_BASE="$build/config.json"
+    [ -x "$TUNE_BIN" ] && [ -f "$TUNE_BASE" ] || error "No built worker at $build. Run 'setup' first, then 'tune'."
 
-    local tmp results first=1 best_hr="-1" best_p="" best_y="" p y i out hr cand
-    tmp=$(mktemp)
-    results="["
-    for p in $prefetch_modes; do
-        for y in $yields; do
-            cand="-1"
-            for i in $(seq 1 "$iters"); do
-                jq --argjson p "$p" --argjson y "$y" \
-                    '.randomx.scratchpad_prefetch_mode = $p | .cpu.yield = $y' "$base" >"$tmp"
-                out=$("$bin" --bench="$bench" --config="$tmp" 2>&1 || true)
-                hr=$(printf '%s' "$out" | _parse_hashrate)
-                [ -n "$hr" ] || hr=0
-                awk "BEGIN{exit !($hr > $cand)}" && cand="$hr"
-            done
-            log "  prefetch_mode=$p yield=$y -> $cand H/s (best of $iters)"
-            [ "$first" = 1 ] || results="$results,"
-            first=0
-            results="$results{\"prefetch_mode\":$p,\"yield\":$y,\"hashrate\":$cand}"
-            if awk "BEGIN{exit !($cand > $best_hr)}"; then
-                best_hr="$cand"
-                best_p="$p"
-                best_y="$y"
-            fi
-        done
+    TUNE_BENCH="${TUNE_BENCH:-1M}"
+    TUNE_ITERS="${TUNE_ITERS:-3}"
+    TUNE_MIN_DELTA="${TUNE_MIN_DELTA:-0.01}"
+    TUNE_MAX_ROUNDS="${TUNE_MAX_ROUNDS:-3}"
+    TUNE_SEEDS="${TUNE_SEEDS:-auto guess}"
+    TUNE_PREFETCH_MODES="${TUNE_PREFETCH_MODES:-0 1 2 3}"
+    TUNE_YIELDS="${TUNE_YIELDS:-true false}"
+    TUNE_PRIORITIES="${TUNE_PRIORITIES:-2}" # single value => knob off by default
+
+    # Thread-count knob: candidates around the L3-derived center (none if L3 can't be read, e.g. macOS).
+    THREAD_CENTER=$(_l3_thread_center)
+    if [ -n "$THREAD_CENTER" ]; then
+        TUNE_THREADS="${TUNE_THREADS:-$(_thread_candidates "$THREAD_CENTER")}"
+    else
+        TUNE_THREADS="${TUNE_THREADS:--1}"
+    fi
+
+    # 1gb-pages is reboot-bound (#54): flipping it only matters if the host actually has 1G HugePages
+    # reserved (a GRUB change + reboot, done by `setup`). Sweep it only when they're present; otherwise
+    # leave it at the base value and say so, rather than benchmarking a no-op.
+    local nr=0
+    [ -r "$HUGEPAGES_1G_NR" ] && nr=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
+    if [ "${nr:-0}" -gt 0 ] 2>/dev/null; then
+        TUNE_ONEGB="${TUNE_ONEGB:-true false}"
+    else
+        TUNE_ONEGB="$(jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE")"
+        log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
+    fi
+
+    # Active knobs = those with more than one candidate value (the rest are fixed, not searched).
+    ACTIVE_KNOBS=""
+    local k n
+    for k in prefetch yield threads onegb priority; do
+        n=$(_knob_values "$k" | wc -w | tr -d ' ')
+        [ "$n" -gt 1 ] && ACTIVE_KNOBS="$ACTIVE_KNOBS $k"
     done
-    results="$results]"
 
-    if [ -z "$best_p" ] || awk "BEGIN{exit !($best_hr <= 0)}"; then
-        rm -f "$tmp"
+    TUNE_TMP=$(mktemp -d)
+    MEMO_FILE="$TUNE_TMP/memo"
+    RESULTS_FILE="$TUNE_TMP/results.jsonl"
+    : >"$MEMO_FILE"
+    : >"$RESULTS_FILE"
+
+    if [ "$TUNE_MODE" = live ]; then
+        log "Auto-tuning LIVE against the running miner (warmup ${TUNE_LIVE_WARMUP:-60}s, ${TUNE_LIVE_SAMPLES:-3} samples) — seeds={$TUNE_SEEDS}, knobs={$ACTIVE_KNOBS}."
+    else
+        log "Auto-tuning via 'xmrig --bench=$TUNE_BENCH' (median of $TUNE_ITERS) — seeds={$TUNE_SEEDS}, knobs={$ACTIVE_KNOBS}, min-delta=$TUNE_MIN_DELTA."
+    fi
+
+    local G_best="-1" G_p="" G_y="" G_t="" G_g="" G_pr="" seed seed_hr
+    for seed in $TUNE_SEEDS; do
+        case "$seed" in
+        auto) _seed_auto ;;
+        guess) _seed_guess ;;
+        *)
+            warn "Unknown tune seed '$seed' — skipping."
+            continue
+            ;;
+        esac
+        log "Seed '$seed': prefetch=$S_p yield=$S_y threads=$S_t 1gb=$S_g priority=$S_pr"
+        _hillclimb # sets HILL_BEST and leaves S_* at this seed's winner (must NOT run in a subshell)
+        seed_hr="$HILL_BEST"
+        log "Seed '$seed' best: prefetch=$S_p yield=$S_y threads=$S_t ($seed_hr H/s)"
+        if awk "BEGIN{exit !($seed_hr > $G_best)}"; then
+            G_best="$seed_hr"
+            G_p="$S_p"
+            G_y="$S_y"
+            G_t="$S_t"
+            G_g="$S_g"
+            G_pr="$S_pr"
+        fi
+    done
+
+    if [ -z "$G_p" ] || awk "BEGIN{exit !($G_best <= 0)}"; then
+        rm -rf "$TUNE_TMP"
         error "Benchmarks produced no hashrate — check that the worker is built correctly."
     fi
 
-    printf '%s\n' "$results" | jq --argjson p "$best_p" --argjson y "$best_y" \
-        '{best: {scratchpad_prefetch_mode: $p, yield: $y}, results: .}' >"$tmp.log" &&
-        sudo cp "$tmp.log" "$logf" && rm -f "$tmp.log"
-    jq -n --argjson p "$best_p" --argjson y "$best_y" \
-        '{randomx: {scratchpad_prefetch_mode: $p}, cpu: {yield: $y}}' >"$tmp.ovr" &&
-        sudo cp "$tmp.ovr" "$overrides" && rm -f "$tmp.ovr"
-    rm -f "$tmp"
+    # Build the overrides snippet from the winning state. Always pin prefetch + yield; pin threads only
+    # if a concrete count won (not auto), and priority / 1gb-pages only if they were actually swept — so
+    # we never freeze a knob the search didn't explore.
+    local ovr
+    ovr=$(jq -n --argjson p "$G_p" --argjson y "$G_y" '{randomx:{scratchpad_prefetch_mode:$p}, cpu:{yield:$y}}')
+    [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = $t')
+    case " $ACTIVE_KNOBS " in *" priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
+    case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
+    printf '%s\n' "$ovr" >"$TUNE_TMP/ovr.json" && sudo cp "$TUNE_TMP/ovr.json" "$TUNE_OVERRIDES"
 
-    log "Best: prefetch_mode=$best_p yield=$best_y ($best_hr H/s). Saved to $overrides (log: $logf)."
-    log "Apply it: sudo $0 apply    (reset anytime with: sudo $0 tune --clear)"
+    # Assemble the full search log: the winner, the search parameters, and every measured candidate.
+    jq -s --argjson p "$G_p" --argjson y "$G_y" --arg t "$G_t" --argjson g "$G_g" --argjson pr "$G_pr" \
+        --argjson hr "$G_best" --arg mode "$TUNE_MODE" --arg seeds "$TUNE_SEEDS" \
+        --argjson iters "$TUNE_ITERS" --argjson delta "$TUNE_MIN_DELTA" '
+        { best: { scratchpad_prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g,
+                  priority: $pr, hashrate: $hr },
+          mode: $mode, seeds: ($seeds|split(" ")), iterations: $iters, min_delta: $delta,
+          results: . }' "$RESULTS_FILE" >"$TUNE_TMP/log.json" && sudo cp "$TUNE_TMP/log.json" "$logf"
+
+    local hpw=""
+    hpw=$(jq -r '[.results[].hs_per_watt // empty] | if length>0 then max else empty end' "$logf" 2>/dev/null || true)
+    rm -rf "$TUNE_TMP"
+
+    log "Best: prefetch_mode=$G_p yield=$G_y threads=$G_t ($G_best H/s). Saved to $TUNE_OVERRIDES (log: $logf)."
+    [ -n "$hpw" ] && log "Best efficiency observed: $hpw H/s per watt."
+    if [ "$TUNE_MODE" = live ]; then
+        apply >/dev/null 2>&1 || true
+        log "Applied the winning config to the live miner."
+    else
+        log "Apply it: sudo $0 apply    (reset anytime with: sudo $0 tune --clear)"
+    fi
 }
 
 # autotune (#46): one LIVE trial against the running miner. Reads the current hashrate from the worker's
@@ -1228,7 +1563,8 @@ Usage: $0 [command]
   uninstall  remove the service and revert all system changes (add --yes to skip the prompt)
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   bench      run a one-off 'xmrig --bench' and report the hashrate
-  tune       benchmark candidate configs over N iterations and keep the fastest ('tune --clear' resets)
+  tune       iteratively search the XMRig knobs (prefetch, yield, threads, 1gb-pages) and keep the
+             fastest; '--live' tunes against the running miner, 'tune --clear' resets
   autotune   one live trial against the running miner (enable periodic runs with autotune:true in config)
   status     show the systemd service status
   logs       follow the live service logs
@@ -1249,7 +1585,10 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     setup) main ;;
     upgrade) upgrade ;;
     uninstall) uninstall "${2:-}" ;;
-    tune) tune "${2:-}" ;;
+    tune)
+        shift
+        tune "$@"
+        ;;
     autotune) autotune ;;
     doctor) doctor ;;
     status) svc_status ;;
