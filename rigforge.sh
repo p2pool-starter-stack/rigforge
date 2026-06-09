@@ -1053,11 +1053,39 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out"
 }
 
-# One offline benchmark of a config file → peak H/s (empty on failure). `|| true` keeps a non-zero
-# xmrig exit from tripping pipefail; the parser yields nothing and the caller treats it as 0.
+# Run `xmrig --bench=<size>` headlessly and echo its full output. XMRig's `--bench` prints the result and
+# then waits for Ctrl+C instead of exiting (#75). It block-buffers stdout to a non-TTY, but flushes its
+# `--log-file` per line — so we point that at a temp file and poll it for the 'benchmark finished' line
+# (which carries the hashrate), then stop xmrig. We also keep stdout (a fake xmrig in the tests writes
+# there and exits — process-gone ends the loop too). `http`/`pools`/`log-file`/`background` are stripped
+# from the config so xmrig doesn't serve the API, mine, or daemonize. `BENCH_TIMEOUT` bounds a stuck run.
+_xmrig_bench() { # <bin> <bench-size> <config|"">
+    local bin="$1" size="$2" cfg="${3:-}" bcfg="" tmpcfg="" out logf xpid deadline
+    out="$(mktemp 2>/dev/null || echo "/tmp/rf-bo-$$")"
+    logf="$(mktemp 2>/dev/null || echo "/tmp/rf-bl-$$")"
+    if [ -n "$cfg" ] && [ -f "$cfg" ] && command -v jq >/dev/null 2>&1; then
+        tmpcfg="$(mktemp 2>/dev/null || true)"
+        if [ -n "$tmpcfg" ] && jq 'del(.http, .pools, ."log-file", .background)' "$cfg" >"$tmpcfg" 2>/dev/null; then bcfg="$tmpcfg"; fi
+    fi
+    # shellcheck disable=SC2086 # the :+ expansion is an intentional optional word
+    "$bin" --bench="$size" ${bcfg:+--config="$bcfg"} --log-file="$logf" >"$out" 2>&1 &
+    xpid=$!
+    deadline=$(($(date +%s) + ${BENCH_TIMEOUT:-1800}))
+    while kill -0 "$xpid" 2>/dev/null; do
+        grep -qs 'benchmark finished' "$logf" "$out" && break
+        [ "$(date +%s)" -ge "$deadline" ] && break
+        sleep 0.2
+    done
+    kill "$xpid" 2>/dev/null
+    wait "$xpid" 2>/dev/null || true
+    cat "$logf" "$out" 2>/dev/null
+    rm -f "$out" "$logf" "$tmpcfg" 2>/dev/null || true
+}
+
+# One offline benchmark of a config file → peak H/s (empty on failure).
 _bench_once() {
     local out
-    out=$("$TUNE_BIN" --bench="${TUNE_BENCH:-10M}" --config="$1" 2>&1 || true)
+    out=$(_xmrig_bench "$TUNE_BIN" "${TUNE_BENCH:-10M}" "$1")
     printf '%s' "$out" | _parse_hashrate
 }
 
@@ -1889,8 +1917,8 @@ bench() {
     local bin="$WORKER_ROOT/xmrig/build/xmrig" cfg="$WORKER_ROOT/xmrig/build/config.json"
     [ -x "$bin" ] || error "No built worker at $bin. Run 'setup' first."
     local b="${BENCH:-1M}" out hr
-    log "Running 'xmrig --bench=$b' (this takes a few seconds)..."
-    out=$("$bin" --bench="$b" ${cfg:+--config="$cfg"} 2>&1 || true)
+    log "Running 'xmrig --bench=$b' (this can take a minute or two)..."
+    out=$(_xmrig_bench "$bin" "$b" "$cfg")             # strips the API/pool/log-file and stops xmrig once done (#75)
     hr=$(printf '%s' "$out" | _parse_hashrate) || true # empty when nothing hashed; handled below
     # A healthy bench must (a) report a hashrate — proving the build ran, the config parsed and the
     # RandomX dataset initialised — and (b) not have hit a fatal allocation/config error (XMRig's

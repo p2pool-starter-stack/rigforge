@@ -882,6 +882,28 @@ rc=$?
 assert_rc "bench exits 0" "$rc" "0"
 assert_contains "bench reports hashrate" "$out" "1234.5 H/s"
 
+# #75: bench must strip `http`, `pools` and `log-file` from the config it hands to `xmrig --bench`. On
+# real hardware `log-file` sends the result off stdout (we capture nothing), `pools` makes XMRig mine
+# after the benchmark, and `http` keeps the API alive — so it never exits and the capture hangs. The
+# generated build config has all three; this fake fails if it still sees any, so a passing bench proves
+# the strip.
+assert_eq "build config has pools + http (precondition)" "$(J "$U/home/worker/xmrig/build/config.json" '(.pools != null) and (.http != null)')" "true"
+cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+if [ -n "$cfg" ] && grep -qE '"(http|pools|log-file)"' "$cfg" 2>/dev/null; then
+    echo "FAIL: bench config still has http/pools/log-file (real xmrig would hang or write elsewhere)"
+    exit 7
+fi
+echo "miner speed 10s/60s/15m 4242.0 n/a n/a H/s max 4242.0 H/s"
+EOF
+chmod +x "$U/home/worker/xmrig/build/xmrig"
+out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
+rc=$?
+assert_rc "bench strips http/pools/log-file (#75)" "$rc" "0"
+assert_contains "bench (stripped) reports hashrate" "$out" "4242.0 H/s"
+
 # #61: the smoke check relies on `bench` failing loudly on a dirty run (so a broken build/config is
 # caught before tagging) and surfacing the XMRig output for diagnosis.
 # (a) XMRig hit MEMORY ALLOC FAILED (dataset/HugePages/memlock) — even with a hashrate present, fail.

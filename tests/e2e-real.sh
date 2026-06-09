@@ -93,7 +93,9 @@ verify() {
 
     [ "$(hugepages_total)" -gt 0 ] && ok "HugePages reserved (HugePages_Total=$(hugepages_total))" ||
         bad "HugePages NOT reserved — did you reboot after provision?"
-    lsmod 2>/dev/null | grep -qw msr && ok "msr kernel module loaded" || bad "msr module not loaded"
+    # msr can be a loadable module OR built into the kernel; either way it shows under /sys/module
+    # (lsmod only lists loadable modules, so a built-in msr would be a false negative) — match doctor.
+    [ -d /sys/module/msr ] && ok "msr available (/sys/module/msr)" || bad "msr not available"
     [ "$(cat "$GOVERNOR_FILE" 2>/dev/null)" = "performance" ] && ok "CPU governor = performance" ||
         bad "governor is '$(cat "$GOVERNOR_FILE" 2>/dev/null || echo unknown)' (expected performance)"
     systemctl is-active --quiet xmrig && ok "service 'xmrig' is active" || bad "service 'xmrig' not active"
