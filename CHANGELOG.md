@@ -74,6 +74,12 @@ All notable changes to RigForge are documented here. The format is based on
   XMRig and so can't prove the shipped binary actually starts and hashes; this does. `bench` now also
   fails loudly — surfacing the XMRig output — on `MEMORY ALLOC FAILED` or a config-parse error, not
   just on a missing hashrate. Documented as a required step in RELEASING.md; kept out of CI by design.
+- Full real-hardware release e2e (`tests/e2e-real.sh` / `make e2e-real`), generalizing the bench smoke
+  check: a phased pre-tag gate that runs the genuine deploy on a real Linux rig and asserts each step —
+  `provision` (real deps + XMRig build + tuning + kernel tuning + service) → reboot → `verify` (doctor
+  confirms HugePages/MSR/governor/service, `bench` produces a real hashrate, a short `tune` runs end to
+  end) → `teardown` (`uninstall` + assert a clean revert). This is the "CI does all it can; the release
+  gate does the rest for real" layer — it exercises everything the suites stub. Out of CI by design.
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
   when the pinned XMRig is already built; old build archives are pruned so re-runs don't leak disk (#4).
