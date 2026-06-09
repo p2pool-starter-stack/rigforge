@@ -842,6 +842,8 @@ assert_contains "help lists status" "$out" "status"
 assert_contains "help lists apply" "$out" "apply"
 assert_contains "help lists enable" "$out" "enable"
 assert_contains "help lists bench" "$out" "bench"
+assert_contains "help lists backup" "$out" "backup"
+assert_contains "help lists restore" "$out" "restore"
 # Service verbs are Linux-only: on a non-Linux uname they fail with a clear message.
 out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh status 2>&1)"
 rc=$?
@@ -1421,6 +1423,50 @@ assert_contains "candidates include XMRig auto (-1)" " $cands " " -1 "
 assert_contains "candidates include physical-core count (SMT off)" " $cands " " 8 "
 assert_contains "candidates include logical-core count (SMT on)" " $cands " " 16 "
 assert_contains "candidates include the L3 window" " $cands " " 14 "
+
+# backup snapshots config.json + tuning into ./backups; restore puts them back — on this machine after
+# data loss, or onto another identical machine (tune once, roll out to a fleet). Round-trip across two
+# sandboxes proves it's portable (DYNAMIC_HOME paths resolve per-machine).
+echo "== black-box: backup / restore round-trip =="
+BK="$(mktemp -d "$SANDBOX/bk.XXXXXX")"
+cp "$SCRIPT" "$BK/rigforge.sh"
+cp "$ROOT/VERSION" "$BK/"
+cat >"$BK/config.json" <<'EOF'
+{ "DONATION": 7, "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+mkdir -p "$BK/data/worker"
+printf '{ "randomx": { "scratchpad_prefetch_mode": 2 }, "cpu": { "rx": 4 } }\n' >"$BK/data/worker/tune-overrides.json"
+out="$(cd "$BK" && PATH="$STUBS:$PATH" bash ./rigforge.sh backup </dev/null 2>&1)"
+assert_rc "backup exits 0" "$?" "0"
+ARCHIVE="$(ls "$BK"/backups/rigforge-backup-*.tar.gz 2>/dev/null | head -n1)"
+assert_eq "backup created an archive" "$([ -f "$ARCHIVE" ] && echo y || echo n)" "y"
+contents="$(tar -tzf "$ARCHIVE" 2>/dev/null)"
+assert_contains "archive holds config.json" "$contents" "config.json"
+assert_contains "archive holds the tuning" "$contents" "tune-overrides.json"
+# Restore onto a FRESH machine (different sandbox); DYNAMIC_HOME keeps the paths portable.
+FR="$(mktemp -d "$SANDBOX/fr.XXXXXX")"
+cp "$SCRIPT" "$FR/rigforge.sh"
+cp "$ROOT/VERSION" "$FR/"
+out="$(cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore -y "$ARCHIVE" </dev/null 2>&1)"
+assert_rc "restore exits 0" "$?" "0"
+assert_eq "restore brought back config.json" "$(J "$FR/config.json" '.DONATION')" "7"
+assert_eq "restore brought back the tuning" "$(J "$FR/data/worker/tune-overrides.json" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_contains "restore warns tuning is CPU-specific" "$out" "CPU-specific"
+# Validation + safety.
+out="$(cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore -y </dev/null 2>&1)"
+assert_rc "restore without an archive fails" "$?" "1"
+out="$(cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore -y "$BK/nope.tar.gz" </dev/null 2>&1)"
+assert_rc "restore of a missing archive fails" "$?" "1"
+out="$(printf 'n\n' | (cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore "$ARCHIVE" 2>&1))"
+assert_rc "restore cancels cleanly on 'n'" "$?" "0"
+assert_contains "restore cancel message" "$out" "cancelled"
+# backup needs a config to snapshot.
+NOC="$(mktemp -d "$SANDBOX/noc.XXXXXX")"
+cp "$SCRIPT" "$NOC/rigforge.sh"
+cp "$ROOT/VERSION" "$NOC/"
+out="$(cd "$NOC" && PATH="$STUBS:$PATH" bash ./rigforge.sh backup </dev/null 2>&1)"
+assert_rc "backup without a config fails" "$?" "1"
+assert_contains "backup no-config message" "$out" "No config.json"
 
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"

@@ -102,6 +102,17 @@ version changes, use [`upgrade`](operations.md#upgrading-xmrig).
 
 ---
 
+## If I lose the disk (or have many machines), do I have to set up and tune each one again?
+
+No — that's what `backup`/`restore` are for. `sudo ./rigforge.sh backup` snapshots the only
+expensive-to-recreate state — your `config.json` and the tuning result — into `./backups`. After data
+loss, `restore` it and re-run `setup` instead of re-tuning from scratch. For a **fleet**, tune one
+machine, back it up, and `restore` the archive on each identical machine so they all share the same
+config and tuning. Tuning is CPU-specific, so only reuse it between **identical** CPUs. See
+[Operations › Backup & restore](operations.md#backup--restore).
+
+---
+
 ## Does the worker need Tor?
 
 No. Workers talk to the pool/stack over plain Stratum on your **local network**. Tor (for privacy and

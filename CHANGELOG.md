@@ -34,6 +34,12 @@ All notable changes to RigForge are documented here. The format is based on
   that it measures Monero's rx/0 and points other RandomX variants at `--live`; a pinned thread count
   carries a HugePages-resizing reminder; and `upgrade` nudges you to re-tune when saved tuning carries
   over to a new XMRig build.
+- `backup` / `restore` commands (mirroring Pithead). `backup` snapshots the expensive, hard-to-recreate
+  state — `config.json` + the tuning files (`tune-overrides.json`, `rigforge-tune.json`) — into a
+  timestamped, owner-only `tar.gz` under `./backups`; `restore [-y] <archive>` puts it back (prompting
+  before it overwrites). Recovers a worker after data loss without re-tuning, and rolls one machine's
+  config + tuning across a fleet of identical machines. Tuning is CPU-specific, so it's only portable
+  between identical CPUs.
 - `uninstall` command: cleanly reverts every change setup made — removes the systemd service and
   logrotate policy, strips the HugePage/MSR lines from `fstab`/`limits.conf`/`/etc/modules`, reverts the
   managed GRUB kernel parameters, unmounts the 1G HugePage filesystem, and removes the worker
