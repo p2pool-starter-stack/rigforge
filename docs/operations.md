@@ -50,6 +50,12 @@ sudo ./rigforge.sh tune       # search for the fastest knobs, save the winners
 sudo ./rigforge.sh apply      # regenerate the config with them + restart
 ```
 
+> **Tune once, run for months.** Tuning is a one-time, measurement-heavy step — a thorough run can take
+> hours (longer with `grid` or a large `TUNE_BENCH`), and that's fine: the result is kept for the life of
+> the rig. Offline `--bench` measures **Monero's RandomX (rx/0)**; for a different RandomX variant, use
+> `tune --live` so it measures your actual pool's algorithm. After an `upgrade` bumps XMRig, it reminds
+> you to re-tune, since the fastest knobs can shift between versions.
+
 `tune` runs an **iterative, noise-aware search** rather than a single fixed sweep. It:
 
 - **Sweeps the knobs whose best value varies per CPU** — the RandomX **scratchpad prefetch mode**,
@@ -80,7 +86,7 @@ to itself; still, run it when the box is otherwise idle for the steadiest number
 |---|---|---|
 | `TUNE_SEARCH` | `climb` | `climb` (hill-climb, fast) or `grid` (exhaustive over all knob combos, robust but slower). |
 | `TUNE_ITERS` | `5` | Benchmark runs per candidate; the median is used. |
-| `TUNE_BENCH` | `1M` | `xmrig --bench` size (e.g. `10M` for a longer, steadier run). |
+| `TUNE_BENCH` | `10M` | `xmrig --bench` size. Longer = steadier and closer to sustained load; set `1M` for a quick pass. |
 | `TUNE_MIN_DELTA` | `0.01` | Minimum *relative* gain (1%) needed to adopt a change. |
 | `TUNE_MAX_ROUNDS` | `3` | Cap on hill-climb passes per seed. |
 | `TUNE_SEEDS` | `auto guess` | Starting points to climb from. |

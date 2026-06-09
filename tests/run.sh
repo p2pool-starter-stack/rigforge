@@ -794,6 +794,27 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" XMRIG_COMMIT=ABC bash ./rigforge.sh upgrad
 rc=$?
 assert_rc "upgrade exits 0 when up-to-date" "$rc" "0"
 assert_contains "upgrade no-op when version unchanged" "$out" "nothing to upgrade"
+# #10: a rebuild (pinned commit changed) nudges to re-tune when saved tuning exists. compile_xmrig's
+# `sed` differs by OS, so we run the host's real OS path (like the compile-verification + e2e tests). We
+# derive the host OS from bash's built-in $OSTYPE — immune to the stubbed `uname` on PATH.
+case "${OSTYPE:-}" in darwin*) UPG_OS=Darwin ;; *) UPG_OS=Linux ;; esac
+UPG="$(mktemp -d "$SANDBOX/upg2.XXXXXX")"
+cp "$SCRIPT" "$UPG/rigforge.sh"
+cp "$ROOT/VERSION" "$UPG/"
+cp -R "$ROOT/systemd" "$UPG/"
+mkdir -p "$UPG/home/worker/xmrig/build" "$UPG/logrotate" "$UPG/etc-systemd"
+printf 'OLDCOMMIT\n' >"$UPG/home/worker/xmrig/.rigforge-commit" # built at a different commit -> rebuild
+printf '{ "randomx": { "scratchpad_prefetch_mode": 2 } }\n' >"$UPG/home/worker/tune-overrides.json"
+cat >"$UPG/config.json" <<EOF
+{ "HOME_DIR": "$UPG/home", "DONATION": 1, "pools": [{"url": "h:3333"}] }
+EOF
+out="$(cd "$UPG" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$UPG/logrotate" SYSTEMD_DIR="$UPG/etc-systemd" \
+    STUB_UNAME_S="$UPG_OS" XMRIG_VERSION=vNEW XMRIG_COMMIT=NEWCOMMIT \
+    bash ./rigforge.sh upgrade </dev/null 2>&1)"
+rc=$?
+assert_rc "upgrade rebuild exits 0" "$rc" "0"
+assert_contains "upgrade rebuilds on a changed pin" "$out" "Upgraded to XMRig vNEW"
+assert_contains "upgrade nudges to re-tune when overrides exist (#10)" "$out" "consider re-running 'sudo"
 out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh help 2>&1)"
 rc=$?
 assert_rc "help exits 0" "$rc" "0"
@@ -1149,6 +1170,10 @@ assert_contains "tune stops on a plateau" "$out" "plateau"
 # stub systemctl reports 'active', so this path fires).
 assert_contains "bench tune stops the service (#2)" "$out" "Stopping the 'xmrig' service"
 assert_contains "bench tune restarts the service after (#2)" "$out" "Restarting the 'xmrig' service"
+# --bench measures Monero's rx/0; tune says so and points non-Monero pools at --live.
+assert_contains "bench notes it measures rx/0" "$out" "measures Monero's RandomX"
+# A pinned thread count carries a HugePages-sizing reminder (the reservation is set at setup time).
+assert_contains "pinned threads -> hugepages re-size hint" "$out" "re-run 'sudo"
 OVR="$TN/home/worker/tune-overrides.json"
 TLOG="$TN/home/worker/rigforge-tune.json"
 assert_eq "overrides file written" "$([ -f "$OVR" ] && echo y || echo n)" "y"
@@ -1274,6 +1299,8 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
 assert_rc "tune --live exits 0" "$?" "0"
 assert_eq "live log records mode=live" "$(J "$TLOG" '.mode')" "live"
 assert_contains "live tune applies the winner" "$out" "Applied the winning config to the live miner"
+# --live measures the real pool algorithm, so it must NOT print the rx/0-only bench caveat.
+assert_absent "live mode omits the rx/0 bench note" "$out" "measures Monero's RandomX"
 # tune --live is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh tune --live </dev/null 2>&1)"
 assert_rc "tune --live rejected on non-Linux" "$?" "1"

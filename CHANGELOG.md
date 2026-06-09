@@ -29,7 +29,11 @@ All notable changes to RigForge are documented here. The format is based on
   exhaustive, local-optimum-proof search; `cpu.huge-pages-jit` and `randomx.cache_qos` are opt-in
   tunable knobs (`TUNE_HPJIT` / `TUNE_CACHEQOS`); and the default measurement is a steadier median of 5.
   `autotune` now compares a **median** of API samples and **merges** its prefetch change into existing
-  overrides instead of overwriting them, so a prior `tune`'s thread count and `cpu.yield` survive.
+  overrides instead of overwriting them, so a prior `tune`'s thread count and `cpu.yield` survive. The
+  default `TUNE_BENCH` is now `10M` (steadier, closer to sustained load — you tune once); `--bench` notes
+  that it measures Monero's rx/0 and points other RandomX variants at `--live`; a pinned thread count
+  carries a HugePages-resizing reminder; and `upgrade` nudges you to re-tune when saved tuning carries
+  over to a new XMRig build.
 - `uninstall` command: cleanly reverts every change setup made — removes the systemd service and
   logrotate policy, strips the HugePage/MSR lines from `fstab`/`limits.conf`/`/etc/modules`, reverts the
   managed GRUB kernel parameters, unmounts the 1G HugePage filesystem, and removes the worker

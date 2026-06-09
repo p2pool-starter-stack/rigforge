@@ -849,6 +849,9 @@ upgrade() {
     generate_xmrig_config
     install_service
     log "Upgraded to XMRig $XMRIG_VERSION."
+    if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
+        warn "Saved tuning (tune-overrides.json) carried over from the previous build. The fastest knobs can shift between XMRig versions — consider re-running 'sudo $0 tune' (or 'tune --clear' to discard)."
+    fi
 }
 
 # Cleanly revert everything setup changed (#12): the service, logrotate, fstab/limits/modules edits, the
@@ -1043,7 +1046,7 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
 # xmrig exit from tripping pipefail; the parser yields nothing and the caller treats it as 0.
 _bench_once() {
     local out
-    out=$("$TUNE_BIN" --bench="${TUNE_BENCH:-1M}" --config="$1" 2>&1 || true)
+    out=$("$TUNE_BIN" --bench="${TUNE_BENCH:-10M}" --config="$1" 2>&1 || true)
     printf '%s' "$out" | _parse_hashrate
 }
 
@@ -1323,7 +1326,8 @@ tune() {
     TUNE_BASE="$build/config.json"
     [ -x "$TUNE_BIN" ] && [ -f "$TUNE_BASE" ] || error "No built worker at $build. Run 'setup' first, then 'tune'."
 
-    TUNE_BENCH="${TUNE_BENCH:-1M}"
+    TUNE_BENCH="${TUNE_BENCH:-10M}" # longer = steadier and closer to sustained load. You tune once and
+    # run for months, so the default favors thoroughness over speed; set TUNE_BENCH=1M for a quick pass.
     TUNE_ITERS="${TUNE_ITERS:-5}" # median of 5 short benches: steadier than 3 against RandomX jitter (#3)
     TUNE_MIN_DELTA="${TUNE_MIN_DELTA:-0.01}"
     TUNE_MAX_ROUNDS="${TUNE_MAX_ROUNDS:-3}"
@@ -1376,6 +1380,7 @@ tune() {
         log "Auto-tuning LIVE against the running miner (warmup ${TUNE_LIVE_WARMUP:-60}s, ${TUNE_LIVE_SAMPLES:-3} samples) — search=$TUNE_SEARCH, knobs={$ACTIVE_KNOBS}."
     else
         log "Auto-tuning via 'xmrig --bench=$TUNE_BENCH' (median of $TUNE_ITERS) — search=$TUNE_SEARCH, knobs={$ACTIVE_KNOBS}, min-delta=$TUNE_MIN_DELTA."
+        log "Note: '--bench' measures Monero's RandomX (rx/0). For a different RandomX variant (e.g. rx/wow), use 'tune --live' so it measures your actual pool's algorithm."
     fi
 
     # In offline --bench mode, stop the running miner so the benchmark has the whole machine — CPU and the
@@ -1455,6 +1460,9 @@ tune() {
 
     log "Best: prefetch_mode=$G_p yield=$G_y threads=$G_t ($G_best H/s). Saved to $TUNE_OVERRIDES (log: $logf)."
     [ -n "$hpw" ] && log "Best efficiency observed: $hpw H/s per watt."
+    if [ "$G_t" != "-1" ] && [ "$OS_TYPE" = Linux ]; then
+        log "Note: cpu.rx is pinned to $G_t threads. HugePages are sized by 'setup'; if 'doctor' later reports HugePages below 100%, re-run 'sudo $0 setup' (reboot) to resize the reservation for this thread count."
+    fi
     if [ "$TUNE_MODE" = live ]; then
         apply >/dev/null 2>&1 || true
         log "Applied the winning config to the live miner."
