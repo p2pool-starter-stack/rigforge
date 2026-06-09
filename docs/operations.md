@@ -15,9 +15,12 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. |
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
-| `doctor` | Read-only health check: verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is `performance`, the service is active, and (from the XMRig log) that HugePages are 100% backed. Prints actionable hints for anything off. |
+| `doctor` | Read-only health check: verifies HugePages are reserved, the `msr` module is loaded, the CPU governor is `performance`, the service is active, 1 GB HugePages are reserved (optional bonus), and (from the XMRig log) that HugePages are 100% backed. Prints actionable hints for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
 | `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --clear` resets tuning. |
+| `autotune` | One live trial against the running miner. **Enable periodic runs** by setting `"autotune": true` in `config.json` (setup installs a systemd timer). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
+| `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
+| `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
 | `status` | Show the systemd service status. |
 | `logs` | Follow the live service logs (`journalctl -f`). |
 | `start` / `stop` / `restart` | Start, stop, or restart the miner service. |
@@ -26,7 +29,9 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `help` (`-h`, `--help`) | Show usage. |
 
 `setup` is the default, so `sudo ./rigforge.sh` with no argument provisions (or re-provisions) the
-worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`) and `doctor` are Linux-only.
+worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
+and macOS — systemd on Linux, a launchd login agent on macOS (`enable`/`disable`). `doctor`,
+`tune --live`, and `autotune` are Linux-only. See [Running on macOS](#running-on-macos).
 
 ### Health check
 
@@ -49,34 +54,52 @@ sudo ./rigforge.sh tune       # search for the fastest knobs, save the winners
 sudo ./rigforge.sh apply      # regenerate the config with them + restart
 ```
 
+> **Tune once, run for months.** Tuning is a one-time, measurement-heavy step — a thorough run can take
+> hours (longer with `grid` or a large `TUNE_BENCH`), and that's fine: the result is kept for the life of
+> the rig. Offline `--bench` measures **Monero's RandomX (rx/0)**; for a different RandomX variant, use
+> `tune --live` so it measures your actual pool's algorithm. After an `upgrade` bumps XMRig, it reminds
+> you to re-tune, since the fastest knobs can shift between versions.
+
 `tune` runs an **iterative, noise-aware search** rather than a single fixed sweep. It:
 
 - **Sweeps the knobs whose best value varies per CPU** — the RandomX **scratchpad prefetch mode**,
-  **`cpu.yield`**, the RandomX **thread count** (`cpu.rx`, tried around the L3 ÷ 2 MB sweet spot), and —
-  *only when 1G HugePages are actually reserved* — **`1gb-pages`**. (1G pages are reboot-bound: they need
-  a GRUB change + reboot, done by `setup`, so flipping them mid-run is meaningless and the knob is
-  skipped with a note if they aren't present.)
+  **`cpu.yield`**, and the RandomX **thread count** (`cpu.rx`). The thread search is **SMT-aware**: it
+  tries XMRig's auto value, the **physical-core** and **logical-core** counts (one thread per physical
+  core vs. hyperthreaded — RandomX often prefers the former), and a window around the L3 ÷ 2 MB sweet
+  spot. **`1gb-pages`** is swept *only when 1G HugePages are actually reserved* (they're reboot-bound — a
+  GRUB change + reboot done by `setup` — so flipping them mid-run is meaningless; the knob is skipped
+  with a note if absent). Two more knobs are **off by default** and searched only when you opt in:
+  `cpu.huge-pages-jit` (`TUNE_HPJIT="false true"` — XMRig warns it can make hashrate unstable) and
+  `randomx.cache_qos` (`TUNE_CACHEQOS="false true"`, an Intel L3-CAT lever).
 - **Hill-climbs from two seeds** — XMRig's auto baseline and an educated guess — adopting a knob change
   only when it beats the current best by at least `TUNE_MIN_DELTA`, and **stops at a plateau** (a full
-  pass with no improvement). It never benchmarks the same combination twice.
+  pass with no improvement). It never benchmarks the same combination twice. Set **`TUNE_SEARCH=grid`**
+  for an **exhaustive** search of every knob combination instead — slower, but immune to local optima.
 - **Handles noise** by measuring each candidate as the **median** of `TUNE_ITERS` benchmark runs
-  (RandomX hashrate is jittery).
+  (RandomX hashrate is jittery), and — in `--bench` mode — by **stopping the miner service** for the run
+  (see below) so nothing competes for the CPU or huge pages.
 
 Every candidate — its samples, median, and any recorded power/temperature — is written to
 `<WORKER_ROOT>/rigforge-tune.json`, and the winning knobs go to a separate **`tune-overrides.json`**.
 That overlay is merged into the generated config, so your `config.json` is never touched;
-`sudo ./rigforge.sh tune --clear` removes it. Run it on an otherwise-idle machine for stable numbers.
+`sudo ./rigforge.sh tune --clear` removes it. In `--bench` mode `tune` **stops the `xmrig` service for
+the duration and restarts it afterwards** (even if interrupted), so the benchmark has the whole machine
+to itself; still, run it when the box is otherwise idle for the steadiest numbers.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `TUNE_ITERS` | `3` | Benchmark runs per candidate; the median is used. |
-| `TUNE_BENCH` | `1M` | `xmrig --bench` size (e.g. `10M` for a longer, steadier run). |
+| `TUNE_SEARCH` | `climb` | `climb` (hill-climb, fast) or `grid` (exhaustive over all knob combos, robust but slower). |
+| `TUNE_ITERS` | `5` | Benchmark runs per candidate; the median is used. |
+| `TUNE_BENCH` | `10M` | `xmrig --bench` size. Longer = steadier and closer to sustained load; set `1M` for a quick pass. |
 | `TUNE_MIN_DELTA` | `0.01` | Minimum *relative* gain (1%) needed to adopt a change. |
 | `TUNE_MAX_ROUNDS` | `3` | Cap on hill-climb passes per seed. |
 | `TUNE_SEEDS` | `auto guess` | Starting points to climb from. |
 | `TUNE_PREFETCH_MODES` | `0 1 2 3` | Prefetch-mode candidates. |
 | `TUNE_YIELDS` | `true false` | `cpu.yield` candidates. |
+| `TUNE_THREADS` | _(auto: SMT-aware set)_ | `cpu.rx` thread-count candidates. Defaults to auto + physical/logical cores + an L3 window; override with an explicit list. |
 | `TUNE_PRIORITIES` | `2` | `cpu.priority` candidates (single value ⇒ knob off; set e.g. `1 2 3 4 5` to sweep). |
+| `TUNE_HPJIT` | _(off)_ | Set `false true` to sweep `cpu.huge-pages-jit` (XMRig: small Ryzen boost, unstable hashrate). |
+| `TUNE_CACHEQOS` | _(off)_ | Set `false true` to sweep `randomx.cache_qos` (Intel L3 Cache Allocation Technology). |
 | `TUNE_POWER_CMD` | _(unset)_ | Optional shell command that echoes watts, sampled per candidate for a hashrate-per-watt view. |
 | `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
 
@@ -113,10 +136,13 @@ Set `"autotune": true` in `config.json` and setup installs a **systemd timer** t
 sudo ./rigforge.sh autotune
 ```
 
-Each run is one **live trial**: it reads the current hashrate from the worker's API, tries the next
-prefetch mode, restarts, measures again, and **keeps the change only if it beats the baseline by a
-margin** (`AUTOTUNE_MARGIN`, default 1%) — otherwise it rolls back. Because live hashrate is noisy this
-is deliberately conservative; for a definitive sweep prefer the offline `tune`.
+Each run is one **live trial**: it reads the current hashrate from the worker's API (the **median** of
+`AUTOTUNE_SAMPLES` readings, default 3, taken `AUTOTUNE_INTERVAL`s apart), tries the next prefetch mode,
+restarts, measures again, and **keeps the change only if it beats the baseline by a margin**
+(`AUTOTUNE_MARGIN`, default 1%) — otherwise it rolls back. The prefetch change is **merged into** any
+`tune-overrides.json` a prior offline `tune` wrote, so your tuned thread count and `cpu.yield` are kept.
+Because live hashrate is noisy this is deliberately conservative; for a definitive sweep prefer the
+offline `tune`.
 
 ---
 
@@ -137,8 +163,77 @@ RigForge also wraps these so you don't have to remember the unit name —
 The service is enabled at install, so it starts automatically on boot (and after the post-setup
 reboot).
 
-> On **macOS** there is no systemd service; RigForge builds and configures XMRig but you run it
-> yourself. macOS is a development/light-use target — Ubuntu is the supported deployment platform.
+> On **macOS** there is no systemd service — RigForge builds and configures XMRig but you run it
+> yourself. See [Running on macOS](#running-on-macos) below.
+
+---
+
+## Running on macOS
+
+macOS is a **development / light-use** target — Ubuntu is the supported deployment platform. On macOS,
+`sudo ./rigforge.sh` still does the core work: it installs dependencies (via **Homebrew**), compiles
+XMRig from source, and writes a tuned `config.json`. What it **doesn't** do is the Linux-only system
+integration:
+
+- **No kernel tuning, and no reboot.** macOS doesn't expose HugePages or MSRs, so the HugePages, MSR,
+  `hugetlbfs`, and GRUB steps are skipped. The generated config turns those knobs off accordingly
+  (`huge-pages`, `1gb-pages`, `wrmsr`/`rdmsr` are `false`) and binds the API to IPv6 `::`. Because the
+  biggest RandomX levers (HugePages + MSR) are Linux-only, **expect a lower hashrate than a tuned Linux
+  box** — fine for development, not for a production rig.
+- **No systemd service / no auto-start on boot.** There's no service to install, and the miner doesn't
+  start at boot. But `setup` doesn't leave you to hand-roll a launch command — the same `start` / `stop`
+  / `restart` / `status` / `logs` verbs work on macOS too (see below); on macOS they manage XMRig as a
+  background process tracked by a PID file under the worker root, instead of via systemd.
+
+### Run the miner
+
+`setup` doesn't start the miner on macOS, so launch it yourself when ready — with the same command you'd
+use on Linux:
+
+```bash
+./rigforge.sh start         # background the miner (records a PID file)
+./rigforge.sh status        # is it running?
+./rigforge.sh logs          # follow the live log (Ctrl-C to stop following)
+./rigforge.sh stop          # stop it
+./rigforge.sh restart       # stop + start
+```
+
+No `sudo` is needed on macOS (the HugePages/MSR steps that need root are Linux-only). `start` runs the
+binary from the worker build dir with the generated config; the log is at `<WORKER_ROOT>/xmrig.log`
+(`data/worker/xmrig.log` by default).
+
+### Start automatically (at login)
+
+To have the miner start on its own, `enable` installs a per-user **launchd LaunchAgent** — macOS's
+analogue of the systemd boot-start:
+
+```bash
+./rigforge.sh enable        # start the miner now and at every login
+./rigforge.sh disable       # remove the login agent
+```
+
+The agent lives at `~/Library/LaunchAgents/com.rigforge.xmrig.plist`, restarts the miner if it crashes,
+and starts it at each login. **Once enabled, launchd owns the miner** — `start` / `stop` / `restart` /
+`status` then drive the agent (via `launchctl`) instead of an ad-hoc process, so you never end up with
+two miners. (`enable` starts it immediately too, unlike systemd's `enable`. A *headless, always-on* Mac
+would want a system `LaunchDaemon` instead of a per-user agent — that's beyond this dev/light-use
+target; run as a LaunchDaemon by hand if you need it.)
+
+### Change a setting
+
+Edit `config.json`, regenerate the live config, then restart:
+
+```bash
+sudo ./rigforge.sh apply        # regenerates the config
+./rigforge.sh restart           # pick up the new config
+```
+
+### What's Linux-only
+
+`doctor`, `uninstall`, `tune --live`, and `autotune` need systemd / Linux and aren't available on macOS.
+Everything else works anywhere — `setup`, `apply`, `bench`, the offline `tune`, `backup` / `restore`,
+`version`, and the full service surface `start` / `stop` / `restart` / `status` / `logs` / `enable` /
+`disable` (which uses systemd on Linux and a launchd login agent on macOS).
 
 ---
 
@@ -150,8 +245,30 @@ sudo journalctl -u xmrig -f     # live service logs
 
 - **Log file:** `<WORKER_ROOT>/xmrig.log` (e.g. `data/worker/xmrig.log`).
 - **Rotation:** a `logrotate` policy is installed automatically to compress and archive logs.
-- **Build log:** the XMRig compile output is captured to a logfile during setup, so a failed build is
-  diagnosable after the fact.
+- **Build log:** the XMRig compile output is captured to `<WORKER_ROOT>/build.log` (e.g.
+  `data/worker/build.log`) during setup, so a failed build is diagnosable after the fact. On any
+  unexpected failure the script also names the step that failed and prints the last lines of the build
+  log.
+
+---
+
+## Applying configuration changes
+
+After editing `config.json`, apply it in one step:
+
+```bash
+sudo ./rigforge.sh apply
+```
+
+`apply` re-reads `config.json`, regenerates the live XMRig config, and restarts the service — no
+recompile. Use it for a pool change, a new rig label, TLS, or failover pools. Changing `DONATION` is
+the exception: it's compiled into the binary and needs a rebuild — see
+[Configuration › Changing settings later](configuration.md#changing-settings-later).
+
+A full `setup` re-run also regenerates the config, but it's meant for re-provisioning and — so it won't
+interrupt a running miner — does **not** restart an already-built worker on its own. When you just want
+an edit to take effect, use `apply`. (On macOS, `apply` regenerates the config but you restart the
+miner yourself — see [Running on macOS](#running-on-macos).)
 
 ---
 
@@ -169,6 +286,44 @@ sudo ./rigforge.sh upgrade      # rebuild + restart only if the pin changed
 path.
 
 > Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk.
+
+---
+
+## Backup & restore
+
+A worker's **expensive, hard-to-recreate state** is small: your `config.json` and the **tuning** result
+(`tune-overrides.json` — which can take hours to produce). The XMRig build and the system tuning are
+regenerated by `setup`, so they're not worth saving. `backup` snapshots just that valuable state into a
+portable archive:
+
+```bash
+sudo ./rigforge.sh backup           # -> ./backups/rigforge-backup-YYYYMMDD-HHMMSS.tar.gz
+```
+
+The archive is owner-only (`chmod 600`) and includes `config.json`, the tuning files, and a small
+manifest (RigForge version + source host). Back up after first-run setup and again after each `tune`.
+
+**Restore** puts it back — point it at an archive:
+
+```bash
+sudo ./rigforge.sh restore ./backups/rigforge-backup-20260101-120000.tar.gz   # prompts; -y to skip
+sudo ./rigforge.sh setup            # rebuild + apply (or 'apply' if XMRig is already built)
+```
+
+Restore overwrites `config.json` and the tuning on the current machine (so it prompts first), then tells
+you to run `setup`/`apply` to put the restored config into effect.
+
+### Two reasons to use it
+
+- **Recover from data loss.** A wiped disk would otherwise mean re-doing setup *and* re-tuning. With a
+  backup it's `restore` + `setup`.
+- **Roll a tune across a fleet.** Tune one machine, `backup`, then `restore` on each identical machine —
+  they all get the same config and the same tuning without re-running the (slow) search.
+
+> ⚠️ **Tuning is CPU-specific.** Only reuse `tune-overrides.json` between **identical** CPUs. On
+> different hardware, restore the config but re-run `tune` (or `tune --clear` to drop the inherited
+> tuning). Backups made with the default `HOME_DIR` (`DYNAMIC_HOME`) are fully portable; an absolute
+> `HOME_DIR` carries that machine's path.
 
 ---
 
@@ -199,6 +354,7 @@ If you see MSR errors, see Troubleshooting below.
 
 | Symptom | Likely cause & fix |
 |---|---|
+| **Setup fails during the build** | The script names the step that failed and tails the build log. Read the full error in `<WORKER_ROOT>/build.log` (e.g. `data/worker/build.log`). Common causes: a build dependency you declined to install (re-run and accept), or too little RAM during compilation (the build already caps parallelism by RAM — add swap on very low-memory hosts). Re-run `sudo ./rigforge.sh` once resolved; it resumes without redoing finished work. |
 | **MSR errors in the log** | Secure Boot is blocking the `msr` kernel module. **Disable Secure Boot** in your BIOS/UEFI, then reboot. |
 | **`HugePages_Total` is 0** | The kernel tuning needs a **reboot** to take effect (GRUB change). Reboot, then re-check `grep Huge /proc/meminfo`. |
 | **HugePages still 0 after reboot** | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; RigForge **merges** its kernel parameters into `GRUB_CMDLINE_LINUX_DEFAULT` rather than overwriting, so other params are preserved. |

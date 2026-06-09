@@ -62,7 +62,7 @@ and no config key for it. Every run (re-runs included) rebuilds the config from 
    HugePages). RigForge leans on XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
 3. **Static defaults** — the fixed knobs every worker shares, emitted directly: `autosave`,
-   `cpu.hwloc`, `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
+   `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
 4. **Tuned overrides** *(if present)* — if you've run [`tune`](operations.md#auto-tuning), its winning
    knobs in `tune-overrides.json` are merged on top as the final step, so tuning wins for just the keys
    it sets and your `config.json` is never edited.
@@ -122,20 +122,28 @@ Here the worker mines to `stack.lan:3333` and falls back to `pool.supportxmr.com
 
 ## Changing settings later
 
-Edit `config.json`, then re-run setup:
+Edit `config.json`, then apply it in one step:
 
 ```bash
-sudo ./rigforge.sh
+sudo ./rigforge.sh apply
 ```
 
-Re-runs are idempotent — setup regenerates the managed XMRig config and re-applies system tuning
-without duplicating anything, and skips the recompile if the pinned XMRig is already built. Changes to
-the generated config (e.g. a `pools` change) take effect on the next service restart.
+`apply` re-reads `config.json`, regenerates the live XMRig config, and **restarts the service** — no
+recompile. It's the fast, purpose-built path for a `pools` change, a new rig label, TLS, failover
+pools, and the like. (On macOS there's no service, so `apply` regenerates the config and you restart
+the miner yourself — see [Operations › Running on macOS](operations.md#running-on-macos).)
 
-> **Note on `DONATION`:** the donate level is also compiled into the XMRig binary at build time. Since
-> re-running setup skips the recompile when XMRig is already built, changing `DONATION` afterwards
-> updates the runtime config but **not** the binary's built-in level. To re-patch the binary, force a
-> rebuild — remove `<WORKER_ROOT>/xmrig` (or bump the pinned XMRig) and run setup again.
+You can also re-run full setup (`sudo ./rigforge.sh`), but that's meant for **re-provisioning** the
+whole worker (dependencies, build, kernel tuning, service). To avoid interrupting a running miner, a
+setup re-run on an already-built worker regenerates the config **without restarting** — so the new
+config only takes effect on the next restart. When you just want to apply an edit, reach for `apply`;
+it does the restart for you. Both are idempotent and skip the recompile when the pinned XMRig is
+already built.
+
+> **Note on `DONATION`:** the donate level is also compiled into the XMRig binary at build time, so on
+> an already-built worker neither `apply` nor a setup re-run changes it — both update only the runtime
+> config. To re-patch the binary, force a rebuild: remove `<WORKER_ROOT>/xmrig` (or bump the pinned
+> XMRig) and run setup, or run [`upgrade`](operations.md#upgrading-xmrig) after bumping the pin.
 
 ---
 

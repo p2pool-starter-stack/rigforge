@@ -112,6 +112,20 @@ echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
 exit 0
 EOF
     done
+    # launchctl stub (macOS): records calls; `list <label>` emits a plist dict with a PID when
+    # STUB_LAUNCHD_PID is set (so `status` can be exercised), else a dict without one.
+    cat >"$bin/launchctl" <<'EOF'
+#!/usr/bin/env bash
+echo "[launchctl] $*" >> "${CALL_LOG:-/dev/null}"
+if [ "$1" = list ] && [ -n "$2" ]; then
+    if [ -n "${STUB_LAUNCHD_PID:-}" ]; then
+        printf '{\n\t"PID" = %s;\n\t"Label" = "%s";\n}\n' "$STUB_LAUNCHD_PID" "$2"
+    else
+        printf '{\n\t"Label" = "%s";\n}\n' "$2"
+    fi
+fi
+exit 0
+EOF
 
     chmod +x "$bin"/*
 }
@@ -427,6 +441,10 @@ assert_eq "generic: priority 2" "$(J "$cfg" '.cpu.priority')" "2"
 assert_eq "generic: randomx.wrmsr on (real MSR control)" "$(J "$cfg" '.randomx.wrmsr')" "true"
 assert_eq "generic: no dead cpu.msr key" "$(J "$cfg" '.cpu.msr')" "null"
 assert_eq "generic: no dead msr object" "$(J "$cfg" '.msr')" "null"
+# cpu.hwloc is NOT a valid XMRig cpu JSON key (hwloc is auto-on when built WITH_HWLOC=ON); it must not
+# be emitted. huge-pages-jit defaults OFF, matching XMRig upstream (which warns it makes hashrate unstable).
+assert_eq "generic: no dead cpu.hwloc key" "$(J "$cfg" '.cpu.hwloc')" "null"
+assert_eq "generic: huge-pages-jit off (matches XMRig default)" "$(J "$cfg" '.cpu."huge-pages-jit"')" "false"
 # HTTP API locked down on Linux (#7 / #17): made READ-ONLY (restricted) so it can't control the
 # miner remotely. It stays bound to 0.0.0.0 (NOT localhost) on purpose: Pithead reads per-rig stats
 # from the stack host at http://<rig>:8080 (read-only, token = rig name) — localhost would break that
@@ -491,7 +509,7 @@ cfg="$d/config.json"
 assert_eq "macos: huge-pages off" "$(J "$cfg" '.cpu."huge-pages"')" "false"
 assert_eq "macos: memory-pool off" "$(J "$cfg" '.cpu."memory-pool"')" "false"
 assert_eq "macos: asm boolean true" "$(J "$cfg" '.cpu.asm')" "true"
-assert_eq "macos: priority 5" "$(J "$cfg" '.cpu.priority')" "5"
+assert_eq "macos: priority 2 (matches Linux; XMRig warns >2 is unresponsive)" "$(J "$cfg" '.cpu.priority')" "2"
 assert_eq "macos: rx [-1] per core" "$(JC "$cfg" '.cpu.rx')" "[-1,-1,-1,-1]"
 assert_eq "macos: 1gb-pages off" "$(J "$cfg" '.randomx."1gb-pages"')" "false"
 assert_eq "macos: http host all v6" "$(J "$cfg" '.http.host')" "::"
@@ -790,6 +808,27 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" XMRIG_COMMIT=ABC bash ./rigforge.sh upgrad
 rc=$?
 assert_rc "upgrade exits 0 when up-to-date" "$rc" "0"
 assert_contains "upgrade no-op when version unchanged" "$out" "nothing to upgrade"
+# #10: a rebuild (pinned commit changed) nudges to re-tune when saved tuning exists. compile_xmrig's
+# `sed` differs by OS, so we run the host's real OS path (like the compile-verification + e2e tests). We
+# derive the host OS from bash's built-in $OSTYPE — immune to the stubbed `uname` on PATH.
+case "${OSTYPE:-}" in darwin*) UPG_OS=Darwin ;; *) UPG_OS=Linux ;; esac
+UPG="$(mktemp -d "$SANDBOX/upg2.XXXXXX")"
+cp "$SCRIPT" "$UPG/rigforge.sh"
+cp "$ROOT/VERSION" "$UPG/"
+cp -R "$ROOT/systemd" "$UPG/"
+mkdir -p "$UPG/home/worker/xmrig/build" "$UPG/logrotate" "$UPG/etc-systemd"
+printf 'OLDCOMMIT\n' >"$UPG/home/worker/xmrig/.rigforge-commit" # built at a different commit -> rebuild
+printf '{ "randomx": { "scratchpad_prefetch_mode": 2 } }\n' >"$UPG/home/worker/tune-overrides.json"
+cat >"$UPG/config.json" <<EOF
+{ "HOME_DIR": "$UPG/home", "DONATION": 1, "pools": [{"url": "h:3333"}] }
+EOF
+out="$(cd "$UPG" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$UPG/logrotate" SYSTEMD_DIR="$UPG/etc-systemd" \
+    STUB_UNAME_S="$UPG_OS" XMRIG_VERSION=vNEW XMRIG_COMMIT=NEWCOMMIT \
+    bash ./rigforge.sh upgrade </dev/null 2>&1)"
+rc=$?
+assert_rc "upgrade rebuild exits 0" "$rc" "0"
+assert_contains "upgrade rebuilds on a changed pin" "$out" "Upgraded to XMRig vNEW"
+assert_contains "upgrade nudges to re-tune when overrides exist (#10)" "$out" "consider re-running 'sudo"
 out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh help 2>&1)"
 rc=$?
 assert_rc "help exits 0" "$rc" "0"
@@ -817,11 +856,14 @@ assert_contains "help lists status" "$out" "status"
 assert_contains "help lists apply" "$out" "apply"
 assert_contains "help lists enable" "$out" "enable"
 assert_contains "help lists bench" "$out" "bench"
-# Service verbs are Linux-only: on a non-Linux uname they fail with a clear message.
-out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh status 2>&1)"
-rc=$?
-assert_rc "status rejected on non-Linux" "$rc" "1"
-assert_contains "non-Linux service message" "$out" "only supported on Linux"
+assert_contains "help lists backup" "$out" "backup"
+assert_contains "help lists restore" "$out" "restore"
+# All the run verbs (start/stop/restart/status/logs) AND enable/disable work on macOS too — covered by
+# the dedicated macOS tests below (which sandbox $HOME so the launchd plist never touches the real home).
+# Here just sanity-check that `status` runs on a non-Linux host (HOME sandboxed to $U).
+out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$U" bash ./rigforge.sh status </dev/null 2>&1)"
+assert_rc "status works on macOS" "$?" "0"
+assert_contains "macOS status reports miner state" "$out" "Miner is"
 
 # #11: `apply` regenerates the live config + restarts without rebuilding. The $U sandbox already has a
 # built worker (build dir + binary) and a config.json pointing at HOME_DIR=$U/home.
@@ -851,9 +893,10 @@ hr="$(printf 'starting\nminer 1100.0 H/s max 1180.5 H/s\n' | (
 assert_eq "parses peak H/s" "$hr" "1180.5"
 
 # ---------------------------------------------------------------------------
-# The manual-run hint must point at the config where it's actually generated — the build dir
-# ($WORKER_ROOT/xmrig/build/config.json), the same path the systemd unit uses — not $WORKER_ROOT (#20).
-echo "== unit: finish_deployment manual-run hint (#20) =="
+# When no service was installed (macOS), finish_deployment points the user at 'start' — not a raw
+# screen/xmrig command (the build-dir config #20 guaranteed is now handled inside mac_start, asserted
+# in the macOS process-control test below).
+echo "== unit: finish_deployment points at 'start' =="
 hint="$(
     source "$SCRIPT"
     WORKER_ROOT=/opt/rig/worker
@@ -862,9 +905,73 @@ hint="$(
     set +e
     finish_deployment 2>&1
 )"
-assert_contains "hint runs the built binary" "$hint" "/opt/rig/worker/xmrig/build/xmrig"
-assert_contains "hint config points at build dir" "$hint" "--config=/opt/rig/worker/xmrig/build/config.json"
-assert_absent "hint not the stale top-level path" "$hint" "--config=/opt/rig/worker/config.json"
+assert_contains "hint tells you to run 'start'" "$hint" "start"
+assert_absent "hint no longer prints a raw screen command" "$hint" "screen -S xmrig"
+
+# macOS process control: with no systemd, start/status/stop manage XMRig as a background process via a
+# PID file. The fake miner records its args (proving start uses the BUILD-dir config) and sleeps so the
+# PID stays alive; stop kills it.
+echo "== black-box: macOS process control (start/status/stop) =="
+MC="$(mktemp -d "$SANDBOX/mac.XXXXXX")"
+cp "$SCRIPT" "$MC/rigforge.sh"
+cp "$ROOT/VERSION" "$MC/"
+MCB="$MC/home/worker/xmrig/build"
+mkdir -p "$MCB"
+cat >"$MCB/xmrig" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$MC/home/worker/xmrig.args"
+exec sleep 30
+EOF
+chmod +x "$MCB/xmrig"
+printf '{}\n' >"$MCB/config.json"
+cat >"$MC/config.json" <<EOF
+{ "HOME_DIR": "$MC/home", "pools": [{"url": "h:3333"}] }
+EOF
+mac_run() { (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" bash ./rigforge.sh "$@" </dev/null 2>&1); }
+PIDF="$MC/home/worker/xmrig.pid"
+out="$(mac_run start)"
+assert_rc "macOS start exits 0" "$?" "0"
+assert_contains "macOS start reports a pid" "$out" "Started the miner"
+assert_eq "macOS start wrote a PID file" "$([ -f "$PIDF" ] && echo y || echo n)" "y"
+sleep 0.5 # let the backgrounded fake record its args
+out="$(mac_run status)"
+assert_contains "macOS status shows running" "$out" "is running"
+assert_contains "macOS start used the build-dir config" "$(cat "$MC/home/worker/xmrig.args" 2>/dev/null)" "--config=$MCB/config.json"
+out="$(mac_run start)"
+assert_contains "macOS start is idempotent" "$out" "already running"
+out="$(mac_run stop)"
+assert_rc "macOS stop exits 0" "$?" "0"
+assert_contains "macOS stop reports stopped" "$out" "Stopped the miner"
+out="$(mac_run status)"
+assert_contains "macOS status shows stopped after stop" "$out" "not running"
+[ -f "$PIDF" ] && kill "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
+rm -f "$PIDF"
+
+# macOS login auto-start: enable installs a launchd LaunchAgent ($HOME sandboxed to $MC so the plist
+# never touches the real ~/Library/LaunchAgents). With it installed, launchd owns the miner and
+# start/stop/status delegate to launchctl (the stub records calls + reports a PID via STUB_LAUNCHD_PID).
+echo "== black-box: macOS login agent (enable/disable via launchd) =="
+PLIST="$MC/Library/LaunchAgents/com.rigforge.xmrig.plist"
+LCL="$MC/launchctl.log"
+mac_lr() { (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" CALL_LOG="$LCL" "$@" </dev/null 2>&1); }
+: >"$LCL"
+out="$(mac_lr bash ./rigforge.sh enable)"
+assert_rc "macOS enable exits 0" "$?" "0"
+assert_eq "enable wrote the LaunchAgent plist" "$([ -f "$PLIST" ] && echo y || echo n)" "y"
+assert_contains "plist has the agent label" "$(cat "$PLIST")" "com.rigforge.xmrig"
+assert_contains "plist runs the binary with the build config" "$(cat "$PLIST")" "--config=$MCB/config.json"
+assert_contains "plist runs at load" "$(cat "$PLIST")" "<key>RunAtLoad</key><true/>"
+assert_contains "enable loaded the agent" "$(cat "$LCL")" "[launchctl] load"
+: >"$LCL"
+out="$(mac_lr bash ./rigforge.sh start)"
+assert_contains "start delegates to launchctl when enabled" "$(cat "$LCL")" "[launchctl] start"
+assert_contains "start reports login-agent control" "$out" "login agent"
+out="$( (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" CALL_LOG="$LCL" STUB_LAUNCHD_PID=4321 bash ./rigforge.sh status </dev/null 2>&1))"
+assert_contains "status reads the launchd PID" "$out" "pid 4321"
+out="$(mac_lr bash ./rigforge.sh disable)"
+assert_rc "macOS disable exits 0" "$?" "0"
+assert_eq "disable removed the plist" "$([ -f "$PLIST" ] && echo y || echo n)" "n"
+assert_contains "disable unloaded the agent" "$(cat "$LCL")" "[launchctl] unload"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
@@ -1027,6 +1134,26 @@ out="$( (
     PATH="$STUBS:$PATH" doctor 2>&1
 ))"
 assert_contains "doctor: macOS skips checks" "$out" "Linux-only"
+# A worker log that mentions huge pages but is NOT 100% backed -> the "below 100%" WARN branch.
+LOWHP="$DOC/lowhp"
+mkdir -p "$LOWHP/worker"
+printf 'net      use pool ...\n* HUGE PAGES 50%%\n' >"$LOWHP/worker/xmrig.log"
+cat >"$DOC/config_lowhp.json" <<EOF
+{ "HOME_DIR": "$LOWHP", "pools": [{"url": "h:3333"}] }
+EOF
+out="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$DOC/config_lowhp.json"
+    MEMINFO="$DOC/meminfo_ok"
+    MSR_MODULE_DIR="$DOC/msrmod"
+    GOVERNOR_FILE="$DOC/gov_perf"
+    HUGEPAGES_1G_NR="$DOC/nr1g"
+    set +e
+    PATH="$STUBS:$PATH" doctor 2>&1
+))"
+assert_contains "doctor: log HUGE PAGES below 100% WARN" "$out" "below 100%"
 
 # #12: uninstall reverts every system change setup made, idempotently, leaving config.json. The GRUB
 # revert uses GNU `sed -i` so it's exercised in the Docker e2e (real Linux); here we point GRUB_DEFAULT
@@ -1121,6 +1248,14 @@ assert_rc "tune exits 0" "$rc" "0"
 assert_contains "tune climbs (logs a candidate trial)" "$out" "try prefetch="
 assert_contains "tune reports the winner" "$out" "Best: prefetch_mode=2 yield=false threads=4"
 assert_contains "tune stops on a plateau" "$out" "plateau"
+# #2: --bench mode stops the live service so the benchmark isn't contended, then restarts it after (the
+# stub systemctl reports 'active', so this path fires).
+assert_contains "bench tune stops the service (#2)" "$out" "Stopping the 'xmrig' service"
+assert_contains "bench tune restarts the service after (#2)" "$out" "Restarting the 'xmrig' service"
+# --bench measures Monero's rx/0; tune says so and points non-Monero pools at --live.
+assert_contains "bench notes it measures rx/0" "$out" "measures Monero's RandomX"
+# A pinned thread count carries a HugePages-sizing reminder (the reservation is set at setup time).
+assert_contains "pinned threads -> hugepages re-size hint" "$out" "re-run 'sudo"
 OVR="$TN/home/worker/tune-overrides.json"
 TLOG="$TN/home/worker/rigforge-tune.json"
 assert_eq "overrides file written" "$([ -f "$OVR" ] && echo y || echo n)" "y"
@@ -1131,6 +1266,9 @@ assert_eq "winning thread count in overrides" "$(J "$OVR" '.cpu.rx')" "4"
 # 1gb-pages was NOT swept here (no 1G pages reserved on the test host), so it isn't pinned in overrides.
 assert_eq "1gb-pages not pinned when unreserved" "$(J "$OVR" '.randomx["1gb-pages"] // "absent"')" "absent"
 assert_contains "tune notes the reboot-bound 1gb-pages skip" "$out" "skipping the 1gb-pages knob"
+# The off-by-default knobs must NOT leak into the overrides when they weren't swept (#7).
+assert_eq "huge-pages-jit not pinned when inactive" "$(J "$OVR" '.cpu["huge-pages-jit"] // "absent"')" "absent"
+assert_eq "cache_qos not pinned when inactive" "$(J "$OVR" '.randomx.cache_qos // "absent"')" "absent"
 assert_eq "log is valid JSON" "$(jq -e . "$TLOG" >/dev/null 2>&1 && echo y || echo n)" "y"
 assert_eq "log best prefetch" "$(J "$TLOG" '.best.scratchpad_prefetch_mode')" "2"
 assert_eq "log best threads" "$(J "$TLOG" '.best.threads')" "4"
@@ -1243,6 +1381,8 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
 assert_rc "tune --live exits 0" "$?" "0"
 assert_eq "live log records mode=live" "$(J "$TLOG" '.mode')" "live"
 assert_contains "live tune applies the winner" "$out" "Applied the winning config to the live miner"
+# --live measures the real pool algorithm, so it must NOT print the rx/0-only bench caveat.
+assert_absent "live mode omits the rx/0 bench note" "$out" "measures Monero's RandomX"
 # tune --live is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh tune --live </dev/null 2>&1)"
 assert_rc "tune --live rejected on non-Linux" "$?" "1"
@@ -1264,18 +1404,149 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" bash ./rigforge.sh tune --bogus </dev/nul
 assert_rc "unknown tune flag fails" "$?" "1"
 assert_contains "unknown tune flag message" "$out" "Unknown tune option"
 
-# #46: autotune does one live trial — measures via the API (stubbed with API_CMD), tries the next
-# prefetch mode, keeps it only if faster. Here the "new" reading beats the baseline, so it's kept.
-echo "== black-box: autotune live trial (#46) =="
+# #46: autotune does one live trial — reads the API (median of N samples), tries the next prefetch mode,
+# keeps it only if faster. Crucially it MERGES the change into any existing overrides (#46 fix): a prior
+# offline `tune` pinned threads + yield here, and they must survive an autotune run.
+echo "== black-box: autotune live trial + merge (#46) =="
+cat >"$OVR" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "rx": 4, "yield": false } }
+EOF
+# Fake API: hashrate depends on the OVERRIDES' prefetch, so the candidate (prefetch=2) beats the baseline
+# (prefetch=1) and is kept. Median sampling with no sleeps (SAMPLES=1, INTERVAL=0).
+ATAPI='jq -r "if (.randomx.scratchpad_prefetch_mode // 1) == 2 then 1300 else 1200 end" "$WORKER_ROOT/tune-overrides.json" 2>/dev/null'
 out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
-    API_CMD='echo 1500' AUTOTUNE_WARMUP=0 AUTOTUNE_MARGIN=0.01 \
+    API_CMD="$ATAPI" AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 AUTOTUNE_MARGIN=0.01 \
     bash ./rigforge.sh autotune </dev/null 2>&1)"
 rc=$?
 assert_rc "autotune exits 0" "$rc" "0"
-assert_contains "autotune read a baseline" "$out" "baseline"
+assert_contains "autotune reads a median baseline" "$out" "median of 1"
+assert_contains "autotune keeps the faster candidate" "$out" "keeping it"
+assert_eq "autotune updated prefetch to next" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_eq "autotune PRESERVED tuned threads (#46 merge)" "$(J "$OVR" '.cpu.rx')" "4"
+assert_eq "autotune PRESERVED tuned yield (#46 merge)" "$(J "$OVR" '.cpu.yield')" "false"
 # autotune is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh autotune </dev/null 2>&1)"
 assert_rc "autotune rejected on non-Linux" "$?" "1"
+
+# #6: grid search exhaustively tries every knob combination (TUNE_SEARCH=grid). Reset the base + a
+# prefetch-rewarding fake; only prefetch is active (4 values), so grid measures 4 combos and finds 2.
+echo "== black-box: tune grid search (#6) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; *) base=1000 ;; esac
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEARCH=grid \
+    TUNE_PREFETCH_MODES="0 1 2 3" TUNE_YIELDS=false TUNE_THREADS=-1 \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "grid tune exits 0" "$?" "0"
+assert_contains "grid search announced" "$out" "Grid search"
+assert_contains "grid logs candidate combinations" "$out" "grid prefetch="
+assert_eq "grid found the best prefetch" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_eq "log records search=grid" "$(J "$TLOG" '.search')" "grid"
+
+# #7: huge-pages-jit is an off-by-default knob; enabling it (TUNE_HPJIT="false true") makes tune sweep
+# and pin it when it wins. Fake rewards huge-pages-jit=true.
+echo "== black-box: tune huge-pages-jit knob (#7) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "yield": false, "priority": 2, "huge-pages-jit": false } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+hj=$(jq -r '.cpu."huge-pages-jit"' "$cfg" 2>/dev/null)
+base=1000; [ "$hj" = true ] && base=1100
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
+    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_HPJIT="false true" \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "hpjit tune exits 0" "$?" "0"
+assert_contains "hpjit knob is swept" "$out" "try hpjit="
+assert_eq "huge-pages-jit pinned true when it wins" "$(J "$OVR" '.cpu["huge-pages-jit"]')" "true"
+
+# #4: the thread-count search is SMT-aware — it includes the physical-core count and the logical-core
+# count, not just a window around L3/2 MB. A richer fake lscpu exposes cores-per-socket so _physical_cores
+# can resolve. (8 physical cores, 16 logical, 32 MiB L3 -> center 16.)
+echo "== unit: _thread_candidates is SMT-aware (#4) =="
+TC="$(mktemp -d "$SANDBOX/tc.XXXXXX")"
+cat >"$TC/lscpu" <<'EOF'
+#!/usr/bin/env bash
+echo "Model name:            Test CPU"
+echo "L3 cache:              32 MiB"
+echo "Socket(s):             1"
+echo "Core(s) per socket:    8"
+EOF
+printf '#!/usr/bin/env bash\necho 16\n' >"$TC/nproc"
+chmod +x "$TC/lscpu" "$TC/nproc"
+phys="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    PATH="$TC:$STUBS:$PATH" _physical_cores
+)"
+assert_eq "physical cores = cores-per-socket x sockets" "$phys" "8"
+cands="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    PATH="$TC:$STUBS:$PATH" _thread_candidates 16
+)"
+assert_contains "candidates include XMRig auto (-1)" " $cands " " -1 "
+assert_contains "candidates include physical-core count (SMT off)" " $cands " " 8 "
+assert_contains "candidates include logical-core count (SMT on)" " $cands " " 16 "
+assert_contains "candidates include the L3 window" " $cands " " 14 "
+
+# backup snapshots config.json + tuning into ./backups; restore puts them back — on this machine after
+# data loss, or onto another identical machine (tune once, roll out to a fleet). Round-trip across two
+# sandboxes proves it's portable (DYNAMIC_HOME paths resolve per-machine).
+echo "== black-box: backup / restore round-trip =="
+BK="$(mktemp -d "$SANDBOX/bk.XXXXXX")"
+cp "$SCRIPT" "$BK/rigforge.sh"
+cp "$ROOT/VERSION" "$BK/"
+cat >"$BK/config.json" <<'EOF'
+{ "DONATION": 7, "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+mkdir -p "$BK/data/worker"
+printf '{ "randomx": { "scratchpad_prefetch_mode": 2 }, "cpu": { "rx": 4 } }\n' >"$BK/data/worker/tune-overrides.json"
+out="$(cd "$BK" && PATH="$STUBS:$PATH" bash ./rigforge.sh backup </dev/null 2>&1)"
+assert_rc "backup exits 0" "$?" "0"
+ARCHIVE="$(ls "$BK"/backups/rigforge-backup-*.tar.gz 2>/dev/null | head -n1)"
+assert_eq "backup created an archive" "$([ -f "$ARCHIVE" ] && echo y || echo n)" "y"
+contents="$(tar -tzf "$ARCHIVE" 2>/dev/null)"
+assert_contains "archive holds config.json" "$contents" "config.json"
+assert_contains "archive holds the tuning" "$contents" "tune-overrides.json"
+# Restore onto a FRESH machine (different sandbox); DYNAMIC_HOME keeps the paths portable.
+FR="$(mktemp -d "$SANDBOX/fr.XXXXXX")"
+cp "$SCRIPT" "$FR/rigforge.sh"
+cp "$ROOT/VERSION" "$FR/"
+out="$(cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore -y "$ARCHIVE" </dev/null 2>&1)"
+assert_rc "restore exits 0" "$?" "0"
+assert_eq "restore brought back config.json" "$(J "$FR/config.json" '.DONATION')" "7"
+assert_eq "restore brought back the tuning" "$(J "$FR/data/worker/tune-overrides.json" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_contains "restore warns tuning is CPU-specific" "$out" "CPU-specific"
+# Validation + safety.
+out="$(cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore -y </dev/null 2>&1)"
+assert_rc "restore without an archive fails" "$?" "1"
+out="$(cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore -y "$BK/nope.tar.gz" </dev/null 2>&1)"
+assert_rc "restore of a missing archive fails" "$?" "1"
+out="$(printf 'n\n' | (cd "$FR" && PATH="$STUBS:$PATH" bash ./rigforge.sh restore "$ARCHIVE" 2>&1))"
+assert_rc "restore cancels cleanly on 'n'" "$?" "0"
+assert_contains "restore cancel message" "$out" "cancelled"
+# backup needs a config to snapshot.
+NOC="$(mktemp -d "$SANDBOX/noc.XXXXXX")"
+cp "$SCRIPT" "$NOC/rigforge.sh"
+cp "$ROOT/VERSION" "$NOC/"
+out="$(cd "$NOC" && PATH="$STUBS:$PATH" bash ./rigforge.sh backup </dev/null 2>&1)"
+assert_rc "backup without a config fails" "$?" "1"
+assert_contains "backup no-config message" "$out" "No config.json"
 
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"

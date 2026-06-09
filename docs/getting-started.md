@@ -70,8 +70,9 @@ sudo ./rigforge.sh
    governor and log rotation.
 
 Re-running `setup` is **idempotent**: it skips the (slow) recompile when the pinned XMRig is already
-built, and it won't duplicate the kernel/limits edits. To rebuild only when the pinned version
-changed, use [`upgrade`](operations.md#commands).
+built, and it won't duplicate the kernel/limits edits. Later on, to apply a `config.json` edit use
+[`apply`](operations.md#applying-configuration-changes); to rebuild only when the pinned version
+changed, use [`upgrade`](operations.md#upgrading-xmrig).
 
 ---
 
@@ -104,6 +105,10 @@ grep -i msr <WORKER_ROOT>/xmrig.log             # MSR mod applied (no errors)
 
 `<WORKER_ROOT>` is `data/worker` inside the repo by default. If you see MSR errors, you may need to
 **disable Secure Boot** in your BIOS/UEFI — see [Operations › Troubleshooting](operations.md#troubleshooting).
+
+> **On macOS** the steps above (the `systemd` service and the HugePages/MSR checks) don't apply —
+> there's no service and no kernel tuning. Start the miner yourself with `./rigforge.sh start` (then
+> `status` / `logs` / `stop`); see [Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
 

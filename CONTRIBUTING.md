@@ -20,13 +20,15 @@ RigForge is portable Bash that has to run on Ubuntu/Debian and macOS, so:
 
 - Keep it **portable bash** — avoid GNU-only flags and other Linux-isms where a
   POSIX-friendly alternative exists, and guard platform-specific code paths.
-- Run **ShellCheck** before you push and fix any warnings:
+- Run **`make lint`** before you push and fix any warnings — it runs ShellCheck and `shfmt` over the
+  script, utilities, **and** the test scripts, exactly as CI does:
 
   ```bash
-  shellcheck rigforge.sh util/proposed-grub.sh
+  make lint    # or: make test  (lint + the full dependency-free suite)
   ```
 
-  CI runs the same check, so a clean local run keeps your PR green.
+  CI runs the same checks, so a clean local run keeps your PR green. (`make fmt` auto-applies the
+  `shfmt` formatting.)
 - Update the README or other docs when you change behaviour or add options.
 
 ## Submitting a pull request

@@ -44,5 +44,5 @@ To verify a downloaded bundle: `sha256sum -c SHA256SUMS`.
 
 - Keep `VERSION` and the latest `CHANGELOG.md` heading in lock-step — the test suite checks `VERSION`
   is valid SemVer.
-- Surfacing the version at runtime (e.g. a `rigforge.sh --version` / `version` subcommand) is tracked
-  separately under the command-surface work (#11).
+- `VERSION` is also surfaced at runtime: `rigforge.sh version` (or `--version` / `-v`) reads it, so a
+  release tag, the changelog heading, and what the script reports all stay in agreement.

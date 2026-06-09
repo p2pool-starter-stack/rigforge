@@ -23,6 +23,23 @@ All notable changes to RigForge are documented here. The format is based on
   Opt-in periodic live tuning: set `autotune: true` in config to install a systemd timer that runs
   `autotune` (one live trial against the running miner via its API; keeps a change only if it beats the
   baseline by a margin, else rolls back).
+- Auto-tuning robustness: `tune --bench` now **stops the miner service for the benchmark run** (and
+  restarts it after, even on error) so readings aren't contended; the thread search is **SMT-aware**
+  (tries the physical- and logical-core counts, not just an L3 ± window); `TUNE_SEARCH=grid` adds an
+  exhaustive, local-optimum-proof search; `cpu.huge-pages-jit` and `randomx.cache_qos` are opt-in
+  tunable knobs (`TUNE_HPJIT` / `TUNE_CACHEQOS`); and the default measurement is a steadier median of 5.
+  `autotune` now compares a **median** of API samples and **merges** its prefetch change into existing
+  overrides instead of overwriting them, so a prior `tune`'s thread count and `cpu.yield` survive. The
+  default `TUNE_BENCH` is now `10M` (steadier, closer to sustained load — you tune once); `--bench` notes
+  that it measures Monero's rx/0 and points other RandomX variants at `--live`; a pinned thread count
+  carries a HugePages-resizing reminder; and `upgrade` nudges you to re-tune when saved tuning carries
+  over to a new XMRig build.
+- `backup` / `restore` commands (mirroring Pithead). `backup` snapshots the expensive, hard-to-recreate
+  state — `config.json` + the tuning files (`tune-overrides.json`, `rigforge-tune.json`) — into a
+  timestamped, owner-only `tar.gz` under `./backups`; `restore [-y] <archive>` puts it back (prompting
+  before it overwrites). Recovers a worker after data loss without re-tuning, and rolls one machine's
+  config + tuning across a fleet of identical machines. Tuning is CPU-specific, so it's only portable
+  between identical CPUs.
 - `uninstall` command: cleanly reverts every change setup made — removes the systemd service and
   logrotate policy, strips the HugePage/MSR lines from `fstab`/`limits.conf`/`/etc/modules`, reverts the
   managed GRUB kernel parameters, unmounts the 1G HugePage filesystem, and removes the worker
@@ -55,7 +72,7 @@ All notable changes to RigForge are documented here. The format is based on
 - Pinned, checksum-verified `shellcheck` + `shfmt` formatting check in CI, plus a `make fmt` target (#6).
 - Documented the Pithead worker-API contract (port 8080, read-only, token = rig name) in the docs (#24).
 - Community-health files: SECURITY policy, CONTRIBUTING guide, issue/PR templates (#16).
-- A `docs/` set (getting-started, hardware, configuration, operations, how-it-works, Pithead
+- A `docs/` set (getting-started, hardware, configuration, operations, how-it-works (`tuning.md`), Pithead
   integration, FAQ) mirroring Pithead's structure; the README is slimmed to a quick-start that links
   out to it, and the release bundle now ships `docs/` (#25).
 - Branded README header: a flame logo (`images/rigforge-mark.svg`, shared with the project website)
@@ -82,6 +99,27 @@ All notable changes to RigForge are documented here. The format is based on
 - `generate_xmrig_config` now builds the entire XMRig config from scratch with `jq`; the bundled
   `worker-config/example-config.json.template` and its `TEMPLATE_CONFIG` plumbing are gone, and
   `worker-config/` is dropped from the release bundle — one fewer file to keep in sync (#55).
+- The full service surface — `start` / `stop` / `restart` / `status` / `logs` / `enable` / `disable` —
+  now works on **macOS** (previously Linux-only). With no systemd there, `start`/`stop`/`status` manage
+  XMRig as a background process tracked by a PID file; `enable`/`disable` install/remove a per-user
+  **launchd LaunchAgent** (`~/Library/LaunchAgents/com.rigforge.xmrig.plist`) so the miner starts at
+  login and restarts on crash. Once enabled, launchd owns the miner and the run verbs delegate to
+  `launchctl`, so there's no competing process. After setup, macOS now points you at
+  `./rigforge.sh start` instead of a raw `screen`/`xmrig` command.
+- The macOS CPU profile now uses `cpu.priority: 2` (matching the Linux dedicated-miner default) instead
+  of `5`. XMRig warns a priority above 2 can make the machine unresponsive, and macOS is a
+  light-use/dev target — pinning it to the most aggressive level was inconsistent.
+- The generated config now leaves `cpu.huge-pages-jit` at XMRig's upstream default (`false`) instead of
+  forcing it on. XMRig documents the knob as only a "very small Ryzen boost" with "unstable hashrate" —
+  not worth the jitter on a production rig (and it added noise to the `tune` search).
+- Dropped `cpu.hwloc` from the generated config: it is **not** a recognized XMRig `cpu` JSON key (hwloc
+  is enabled at build time via `WITH_HWLOC=ON` and used automatically), so emitting it was a silent
+  no-op. No behaviour change — just a cleaner, fully-valid config.
+- Docs: `apply` is now the documented path for applying a `config.json` edit (regenerate + restart) —
+  a plain `setup` re-run regenerates the config but won't restart an already-built worker, so edits
+  used to silently not take effect. Added a **Running on macOS** guide (what differs, how to launch the
+  miner, which commands are Linux-only), a build-failure troubleshooting entry, and assorted accuracy
+  fixes across the docs.
 
 ### Fixed
 - GRUB configuration now **merges** the HugePage/MSR kernel parameters into the existing
