@@ -10,5 +10,9 @@ config.json
 # Backup archives (rigforge backup)
 /backups/
 
+# Coverage output + cache (make coverage / CI coverage job)
+/coverage/
+/.coverage-cache/
+
 # OS
 .DS_Store

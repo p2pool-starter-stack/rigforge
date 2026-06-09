@@ -103,6 +103,7 @@ CI jobs, so `make test` locally is what CI checks.
 make lint        # shellcheck + shfmt the script, utilities, and test scripts
 make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
+make coverage    # measure rigforge.sh + util coverage via kcov, enforce the floor (needs Docker)
 make smoke       # release pre-tag gate: real xmrig --bench proves the built worker hashes (manual)
 ```
 
@@ -122,6 +123,14 @@ heavy XMRig compile and the package install are stubbed. It skips cleanly if Doc
 
 No XMRig binary is compiled by the tests — the heavy native build is stubbed; the suite asserts the
 *orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
+
+**`make coverage`** measures line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running the
+suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned container, since kcov is
+Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`,
+so both the sourced functions and the command-dispatch paths are credited. CI enforces two gates: a
+committed **total floor** ([`tests/coverage-floor.txt`](tests/coverage-floor.txt), ratcheted up over
+time) and, the important lever, **patch coverage** — new/changed lines must be tested (`diff-cover`
+against `main`). Neither needs an external service.
 
 **`make smoke`** closes that gap at release time. Because the suites never compile or run XMRig, they
 can't prove the shipped binary actually starts and hashes. `make smoke` benches a real worker

@@ -36,10 +36,10 @@ jobs:
           echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -
           sudo install shfmt /usr/local/bin/shfmt
           shfmt --version
-      - name: Run ShellCheck
-        run: shellcheck --severity=warning rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/run.sh tests/e2e/in-container.sh
-      - name: Run shfmt (format check)
-        run: shfmt -i 4 -d rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/run.sh tests/e2e/in-container.sh
+      # Lint via `make lint` so the file list lives in one place (the Makefile's SHELL_FILES) and CI
+      # can't drift out of sync with local `make lint` — e.g. a newly added tests/*.sh going unchecked.
+      - name: Run shellcheck + shfmt (make lint)
+        run: make lint
 
   test:
     name: Test suite
@@ -61,3 +61,27 @@ jobs:
       # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
       - name: Run end-to-end suite
         run: bash tests/e2e/run.sh
+
+  coverage:
+    name: Coverage (kcov + diff-cover)
+    runs-on: ubuntu-24.04
+    env:
+      # Pin diff-cover (the patch-coverage gate); kcov + jq are pinned inside tests/coverage.sh.
+      DIFF_COVER_VERSION: "9.7.2"
+      PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # diff-cover needs history to diff the PR against origin/main
+      - name: Fetch base branch for diff-cover
+        run: git fetch --no-tags origin main
+      # Runs tests/run.sh under a digest-pinned kcov image, reports rigforge.sh + util/proposed-grub.sh
+      # coverage, and fails if the total drops below the committed floor (tests/coverage-floor.txt).
+      - name: Measure coverage (kcov) + enforce the total floor
+        run: bash tests/coverage.sh
+      # Patch coverage is the real lever: it requires NEW/CHANGED lines to be tested, which is what keeps
+      # coverage from rotting. Self-contained (no Codecov) — reads the Cobertura report from kcov.
+      - name: Install pinned diff-cover
+        run: pipx install "diff-cover==${DIFF_COVER_VERSION}"
+      - name: Enforce patch coverage on changed lines
+        run: diff-cover coverage/cobertura.xml --compare-branch=origin/main --fail-under="${PATCH_COVERAGE_MIN}"
