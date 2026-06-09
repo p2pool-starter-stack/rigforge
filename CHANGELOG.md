@@ -23,6 +23,13 @@ All notable changes to RigForge are documented here. The format is based on
   Opt-in periodic live tuning: set `autotune: true` in config to install a systemd timer that runs
   `autotune` (one live trial against the running miner via its API; keeps a change only if it beats the
   baseline by a margin, else rolls back).
+- Auto-tuning robustness: `tune --bench` now **stops the miner service for the benchmark run** (and
+  restarts it after, even on error) so readings aren't contended; the thread search is **SMT-aware**
+  (tries the physical- and logical-core counts, not just an L3 ± window); `TUNE_SEARCH=grid` adds an
+  exhaustive, local-optimum-proof search; `cpu.huge-pages-jit` and `randomx.cache_qos` are opt-in
+  tunable knobs (`TUNE_HPJIT` / `TUNE_CACHEQOS`); and the default measurement is a steadier median of 5.
+  `autotune` now compares a **median** of API samples and **merges** its prefetch change into existing
+  overrides instead of overwriting them, so a prior `tune`'s thread count and `cpu.yield` survive.
 - `uninstall` command: cleanly reverts every change setup made — removes the systemd service and
   logrotate policy, strips the HugePage/MSR lines from `fstab`/`limits.conf`/`/etc/modules`, reverts the
   managed GRUB kernel parameters, unmounts the 1G HugePage filesystem, and removes the worker

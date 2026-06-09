@@ -1145,6 +1145,10 @@ assert_rc "tune exits 0" "$rc" "0"
 assert_contains "tune climbs (logs a candidate trial)" "$out" "try prefetch="
 assert_contains "tune reports the winner" "$out" "Best: prefetch_mode=2 yield=false threads=4"
 assert_contains "tune stops on a plateau" "$out" "plateau"
+# #2: --bench mode stops the live service so the benchmark isn't contended, then restarts it after (the
+# stub systemctl reports 'active', so this path fires).
+assert_contains "bench tune stops the service (#2)" "$out" "Stopping the 'xmrig' service"
+assert_contains "bench tune restarts the service after (#2)" "$out" "Restarting the 'xmrig' service"
 OVR="$TN/home/worker/tune-overrides.json"
 TLOG="$TN/home/worker/rigforge-tune.json"
 assert_eq "overrides file written" "$([ -f "$OVR" ] && echo y || echo n)" "y"
@@ -1155,6 +1159,9 @@ assert_eq "winning thread count in overrides" "$(J "$OVR" '.cpu.rx')" "4"
 # 1gb-pages was NOT swept here (no 1G pages reserved on the test host), so it isn't pinned in overrides.
 assert_eq "1gb-pages not pinned when unreserved" "$(J "$OVR" '.randomx["1gb-pages"] // "absent"')" "absent"
 assert_contains "tune notes the reboot-bound 1gb-pages skip" "$out" "skipping the 1gb-pages knob"
+# The off-by-default knobs must NOT leak into the overrides when they weren't swept (#7).
+assert_eq "huge-pages-jit not pinned when inactive" "$(J "$OVR" '.cpu["huge-pages-jit"] // "absent"')" "absent"
+assert_eq "cache_qos not pinned when inactive" "$(J "$OVR" '.randomx.cache_qos // "absent"')" "absent"
 assert_eq "log is valid JSON" "$(jq -e . "$TLOG" >/dev/null 2>&1 && echo y || echo n)" "y"
 assert_eq "log best prefetch" "$(J "$TLOG" '.best.scratchpad_prefetch_mode')" "2"
 assert_eq "log best threads" "$(J "$TLOG" '.best.threads')" "4"
@@ -1288,18 +1295,105 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" bash ./rigforge.sh tune --bogus </dev/nul
 assert_rc "unknown tune flag fails" "$?" "1"
 assert_contains "unknown tune flag message" "$out" "Unknown tune option"
 
-# #46: autotune does one live trial — measures via the API (stubbed with API_CMD), tries the next
-# prefetch mode, keeps it only if faster. Here the "new" reading beats the baseline, so it's kept.
-echo "== black-box: autotune live trial (#46) =="
+# #46: autotune does one live trial — reads the API (median of N samples), tries the next prefetch mode,
+# keeps it only if faster. Crucially it MERGES the change into any existing overrides (#46 fix): a prior
+# offline `tune` pinned threads + yield here, and they must survive an autotune run.
+echo "== black-box: autotune live trial + merge (#46) =="
+cat >"$OVR" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "rx": 4, "yield": false } }
+EOF
+# Fake API: hashrate depends on the OVERRIDES' prefetch, so the candidate (prefetch=2) beats the baseline
+# (prefetch=1) and is kept. Median sampling with no sleeps (SAMPLES=1, INTERVAL=0).
+ATAPI='jq -r "if (.randomx.scratchpad_prefetch_mode // 1) == 2 then 1300 else 1200 end" "$WORKER_ROOT/tune-overrides.json" 2>/dev/null'
 out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
-    API_CMD='echo 1500' AUTOTUNE_WARMUP=0 AUTOTUNE_MARGIN=0.01 \
+    API_CMD="$ATAPI" AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 AUTOTUNE_MARGIN=0.01 \
     bash ./rigforge.sh autotune </dev/null 2>&1)"
 rc=$?
 assert_rc "autotune exits 0" "$rc" "0"
-assert_contains "autotune read a baseline" "$out" "baseline"
+assert_contains "autotune reads a median baseline" "$out" "median of 1"
+assert_contains "autotune keeps the faster candidate" "$out" "keeping it"
+assert_eq "autotune updated prefetch to next" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_eq "autotune PRESERVED tuned threads (#46 merge)" "$(J "$OVR" '.cpu.rx')" "4"
+assert_eq "autotune PRESERVED tuned yield (#46 merge)" "$(J "$OVR" '.cpu.yield')" "false"
 # autotune is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh autotune </dev/null 2>&1)"
 assert_rc "autotune rejected on non-Linux" "$?" "1"
+
+# #6: grid search exhaustively tries every knob combination (TUNE_SEARCH=grid). Reset the base + a
+# prefetch-rewarding fake; only prefetch is active (4 values), so grid measures 4 combos and finds 2.
+echo "== black-box: tune grid search (#6) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; *) base=1000 ;; esac
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEARCH=grid \
+    TUNE_PREFETCH_MODES="0 1 2 3" TUNE_YIELDS=false TUNE_THREADS=-1 \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "grid tune exits 0" "$?" "0"
+assert_contains "grid search announced" "$out" "Grid search"
+assert_contains "grid logs candidate combinations" "$out" "grid prefetch="
+assert_eq "grid found the best prefetch" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_eq "log records search=grid" "$(J "$TLOG" '.search')" "grid"
+
+# #7: huge-pages-jit is an off-by-default knob; enabling it (TUNE_HPJIT="false true") makes tune sweep
+# and pin it when it wins. Fake rewards huge-pages-jit=true.
+echo "== black-box: tune huge-pages-jit knob (#7) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "yield": false, "priority": 2, "huge-pages-jit": false } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+hj=$(jq -r '.cpu."huge-pages-jit"' "$cfg" 2>/dev/null)
+base=1000; [ "$hj" = true ] && base=1100
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
+    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_HPJIT="false true" \
+    bash ./rigforge.sh tune </dev/null 2>&1)"
+assert_rc "hpjit tune exits 0" "$?" "0"
+assert_contains "hpjit knob is swept" "$out" "try hpjit="
+assert_eq "huge-pages-jit pinned true when it wins" "$(J "$OVR" '.cpu["huge-pages-jit"]')" "true"
+
+# #4: the thread-count search is SMT-aware — it includes the physical-core count and the logical-core
+# count, not just a window around L3/2 MB. A richer fake lscpu exposes cores-per-socket so _physical_cores
+# can resolve. (8 physical cores, 16 logical, 32 MiB L3 -> center 16.)
+echo "== unit: _thread_candidates is SMT-aware (#4) =="
+TC="$(mktemp -d "$SANDBOX/tc.XXXXXX")"
+cat >"$TC/lscpu" <<'EOF'
+#!/usr/bin/env bash
+echo "Model name:            Test CPU"
+echo "L3 cache:              32 MiB"
+echo "Socket(s):             1"
+echo "Core(s) per socket:    8"
+EOF
+printf '#!/usr/bin/env bash\necho 16\n' >"$TC/nproc"
+chmod +x "$TC/lscpu" "$TC/nproc"
+phys="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    PATH="$TC:$STUBS:$PATH" _physical_cores
+)"
+assert_eq "physical cores = cores-per-socket x sockets" "$phys" "8"
+cands="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    PATH="$TC:$STUBS:$PATH" _thread_candidates 16
+)"
+assert_contains "candidates include XMRig auto (-1)" " $cands " " -1 "
+assert_contains "candidates include physical-core count (SMT off)" " $cands " " 8 "
+assert_contains "candidates include logical-core count (SMT on)" " $cands " " 16 "
+assert_contains "candidates include the L3 window" " $cands " " 14 "
 
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"

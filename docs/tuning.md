@@ -71,9 +71,10 @@ auto-detection and adds dedicated-miner defaults:
 
 ## Measured tuning: the `tune` search
 
-The defaults above are good, but a handful of knobs (the RandomX prefetch mode, `cpu.yield`, the exact
-thread count, `1gb-pages`) have a best value that genuinely varies per CPU. The `tune` command
-**measures** rather than guesses. It's an iterative, noise-aware **coordinate hill-climb**:
+The defaults above are good, but a handful of knobs have a best value that genuinely varies per CPU: the
+RandomX prefetch mode, `cpu.yield`, the **thread count and placement** (`cpu.rx`), `1gb-pages`, and — opt
+in — `cpu.huge-pages-jit` and `randomx.cache_qos`. The `tune` command **measures** rather than guesses.
+By default it's an iterative, noise-aware **coordinate hill-climb**:
 
 1. **Seed.** Start from two candidate configurations — XMRig's auto baseline and an educated guess — so
    the search can escape a local optimum one seed happens to land in.
@@ -83,10 +84,20 @@ thread count, `1gb-pages`) have a best value that genuinely varies per CPU. The 
 3. **Repeat until plateau.** Run passes over all knobs until a full pass yields no improvement, or a
    round cap is hit.
 
-Two design choices keep it honest and cheap on jittery RandomX hardware:
+For a small knob space where you'd rather not risk a local optimum at all, `TUNE_SEARCH=grid` switches to
+an **exhaustive** search of every combination — slower, but guaranteed to find the global best.
+
+The thread search is **SMT-aware**: rather than only nudging ±1 around the L3 ÷ 2 MB estimate, it also
+tries XMRig's own auto value and the **physical-** and **logical-core** counts, because RandomX often
+peaks at one thread per physical core (SMT siblings share the L2/L3 each thread needs).
+
+A few design choices keep it honest and cheap on jittery RandomX hardware:
 
 - **Median, not max.** Each candidate is measured as the median of several `xmrig --bench` runs, so one
   lucky spike doesn't crown a worse config.
+- **Contention-free.** In `--bench` mode `tune` stops the miner service for the run (restarting it
+  after, even if interrupted), so the benchmark isn't fighting a live miner for cores and huge pages —
+  the single biggest source of bogus readings.
 - **Memoized.** Because a coordinate climb keeps revisiting the current point, every measured
   combination is cached — a combo is never benchmarked twice.
 
