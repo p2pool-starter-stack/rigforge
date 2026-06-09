@@ -29,9 +29,9 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `help` (`-h`, `--help`) | Show usage. |
 
 `setup` is the default, so `sudo ./rigforge.sh` with no argument provisions (or re-provisions) the
-worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`) work on Linux and macOS; `doctor`,
-`enable`/`disable` (boot autostart), `tune --live`, and `autotune` are Linux-only. See
-[Running on macOS](#running-on-macos).
+worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
+and macOS — systemd on Linux, a launchd login agent on macOS (`enable`/`disable`). `doctor`,
+`tune --live`, and `autotune` are Linux-only. See [Running on macOS](#running-on-macos).
 
 ### Health check
 
@@ -202,6 +202,23 @@ No `sudo` is needed on macOS (the HugePages/MSR steps that need root are Linux-o
 binary from the worker build dir with the generated config; the log is at `<WORKER_ROOT>/xmrig.log`
 (`data/worker/xmrig.log` by default).
 
+### Start automatically (at login)
+
+To have the miner start on its own, `enable` installs a per-user **launchd LaunchAgent** — macOS's
+analogue of the systemd boot-start:
+
+```bash
+./rigforge.sh enable        # start the miner now and at every login
+./rigforge.sh disable       # remove the login agent
+```
+
+The agent lives at `~/Library/LaunchAgents/com.rigforge.xmrig.plist`, restarts the miner if it crashes,
+and starts it at each login. **Once enabled, launchd owns the miner** — `start` / `stop` / `restart` /
+`status` then drive the agent (via `launchctl`) instead of an ad-hoc process, so you never end up with
+two miners. (`enable` starts it immediately too, unlike systemd's `enable`. A *headless, always-on* Mac
+would want a system `LaunchDaemon` instead of a per-user agent — that's beyond this dev/light-use
+target; run as a LaunchDaemon by hand if you need it.)
+
 ### Change a setting
 
 Edit `config.json`, regenerate the live config, then restart:
@@ -213,9 +230,10 @@ sudo ./rigforge.sh apply        # regenerates the config
 
 ### What's Linux-only
 
-`doctor`, `uninstall`, `enable` / `disable` (boot autostart), `tune --live`, and `autotune` need
-systemd and aren't available on macOS. Everything else — `setup`, `apply`, `bench`, the offline `tune`,
-`start` / `stop` / `restart` / `status` / `logs`, `backup` / `restore`, and `version` — works anywhere.
+`doctor`, `uninstall`, `tune --live`, and `autotune` need systemd / Linux and aren't available on macOS.
+Everything else works anywhere — `setup`, `apply`, `bench`, the offline `tune`, `backup` / `restore`,
+`version`, and the full service surface `start` / `stop` / `restart` / `status` / `logs` / `enable` /
+`disable` (which uses systemd on Linux and a launchd login agent on macOS).
 
 ---
 

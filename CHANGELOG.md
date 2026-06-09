@@ -99,11 +99,13 @@ All notable changes to RigForge are documented here. The format is based on
 - `generate_xmrig_config` now builds the entire XMRig config from scratch with `jq`; the bundled
   `worker-config/example-config.json.template` and its `TEMPLATE_CONFIG` plumbing are gone, and
   `worker-config/` is dropped from the release bundle — one fewer file to keep in sync (#55).
-- The `start` / `stop` / `restart` / `status` / `logs` verbs now work on **macOS** (previously
-  Linux-only). With no systemd there, they manage XMRig as a background process tracked by a PID file
-  under the worker root, so the same commands work on both platforms. After setup, macOS now points you
-  at `./rigforge.sh start` instead of a raw `screen`/`xmrig` command. `enable`/`disable` (boot
-  autostart) stay Linux-only.
+- The full service surface — `start` / `stop` / `restart` / `status` / `logs` / `enable` / `disable` —
+  now works on **macOS** (previously Linux-only). With no systemd there, `start`/`stop`/`status` manage
+  XMRig as a background process tracked by a PID file; `enable`/`disable` install/remove a per-user
+  **launchd LaunchAgent** (`~/Library/LaunchAgents/com.rigforge.xmrig.plist`) so the miner starts at
+  login and restarts on crash. Once enabled, launchd owns the miner and the run verbs delegate to
+  `launchctl`, so there's no competing process. After setup, macOS now points you at
+  `./rigforge.sh start` instead of a raw `screen`/`xmrig` command.
 - The macOS CPU profile now uses `cpu.priority: 2` (matching the Linux dedicated-miner default) instead
   of `5`. XMRig warns a priority above 2 can make the machine unresponsive, and macOS is a
   light-use/dev target — pinning it to the most aggressive level was inconsistent.

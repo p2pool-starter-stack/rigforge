@@ -112,6 +112,20 @@ echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
 exit 0
 EOF
     done
+    # launchctl stub (macOS): records calls; `list <label>` emits a plist dict with a PID when
+    # STUB_LAUNCHD_PID is set (so `status` can be exercised), else a dict without one.
+    cat >"$bin/launchctl" <<'EOF'
+#!/usr/bin/env bash
+echo "[launchctl] $*" >> "${CALL_LOG:-/dev/null}"
+if [ "$1" = list ] && [ -n "$2" ]; then
+    if [ -n "${STUB_LAUNCHD_PID:-}" ]; then
+        printf '{\n\t"PID" = %s;\n\t"Label" = "%s";\n}\n' "$STUB_LAUNCHD_PID" "$2"
+    else
+        printf '{\n\t"Label" = "%s";\n}\n' "$2"
+    fi
+fi
+exit 0
+EOF
 
     chmod +x "$bin"/*
 }
@@ -844,14 +858,11 @@ assert_contains "help lists enable" "$out" "enable"
 assert_contains "help lists bench" "$out" "bench"
 assert_contains "help lists backup" "$out" "backup"
 assert_contains "help lists restore" "$out" "restore"
-# enable/disable are boot autostart (systemd) and stay Linux-only; start/stop/restart/status/logs work
-# on macOS too (process-managed — see the dedicated macOS test below).
-out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh enable 2>&1)"
-rc=$?
-assert_rc "enable rejected on non-Linux" "$rc" "1"
-assert_contains "non-Linux enable message" "$out" "only supported on Linux"
-out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh status </dev/null 2>&1)"
-assert_rc "status works on macOS (process-managed)" "$?" "0"
+# All the run verbs (start/stop/restart/status/logs) AND enable/disable work on macOS too — covered by
+# the dedicated macOS tests below (which sandbox $HOME so the launchd plist never touches the real home).
+# Here just sanity-check that `status` runs on a non-Linux host (HOME sandboxed to $U).
+out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$U" bash ./rigforge.sh status </dev/null 2>&1)"
+assert_rc "status works on macOS" "$?" "0"
 assert_contains "macOS status reports miner state" "$out" "Miner is"
 
 # #11: `apply` regenerates the live config + restarts without rebuilding. The $U sandbox already has a
@@ -916,7 +927,7 @@ printf '{}\n' >"$MCB/config.json"
 cat >"$MC/config.json" <<EOF
 { "HOME_DIR": "$MC/home", "pools": [{"url": "h:3333"}] }
 EOF
-mac_run() { (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh "$@" </dev/null 2>&1); }
+mac_run() { (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" bash ./rigforge.sh "$@" </dev/null 2>&1); }
 PIDF="$MC/home/worker/xmrig.pid"
 out="$(mac_run start)"
 assert_rc "macOS start exits 0" "$?" "0"
@@ -935,6 +946,32 @@ out="$(mac_run status)"
 assert_contains "macOS status shows stopped after stop" "$out" "not running"
 [ -f "$PIDF" ] && kill "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
 rm -f "$PIDF"
+
+# macOS login auto-start: enable installs a launchd LaunchAgent ($HOME sandboxed to $MC so the plist
+# never touches the real ~/Library/LaunchAgents). With it installed, launchd owns the miner and
+# start/stop/status delegate to launchctl (the stub records calls + reports a PID via STUB_LAUNCHD_PID).
+echo "== black-box: macOS login agent (enable/disable via launchd) =="
+PLIST="$MC/Library/LaunchAgents/com.rigforge.xmrig.plist"
+LCL="$MC/launchctl.log"
+mac_lr() { (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" CALL_LOG="$LCL" "$@" </dev/null 2>&1); }
+: >"$LCL"
+out="$(mac_lr bash ./rigforge.sh enable)"
+assert_rc "macOS enable exits 0" "$?" "0"
+assert_eq "enable wrote the LaunchAgent plist" "$([ -f "$PLIST" ] && echo y || echo n)" "y"
+assert_contains "plist has the agent label" "$(cat "$PLIST")" "com.rigforge.xmrig"
+assert_contains "plist runs the binary with the build config" "$(cat "$PLIST")" "--config=$MCB/config.json"
+assert_contains "plist runs at load" "$(cat "$PLIST")" "<key>RunAtLoad</key><true/>"
+assert_contains "enable loaded the agent" "$(cat "$LCL")" "[launchctl] load"
+: >"$LCL"
+out="$(mac_lr bash ./rigforge.sh start)"
+assert_contains "start delegates to launchctl when enabled" "$(cat "$LCL")" "[launchctl] start"
+assert_contains "start reports login-agent control" "$out" "login agent"
+out="$( (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" CALL_LOG="$LCL" STUB_LAUNCHD_PID=4321 bash ./rigforge.sh status </dev/null 2>&1))"
+assert_contains "status reads the launchd PID" "$out" "pid 4321"
+out="$(mac_lr bash ./rigforge.sh disable)"
+assert_rc "macOS disable exits 0" "$?" "0"
+assert_eq "disable removed the plist" "$([ -f "$PLIST" ] && echo y || echo n)" "n"
+assert_contains "disable unloaded the agent" "$(cat "$LCL")" "[launchctl] unload"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.

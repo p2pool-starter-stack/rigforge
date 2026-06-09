@@ -1669,31 +1669,39 @@ restore() {
 # --- Command surface (#11) -------------------------------------------------
 
 # Service-control verbs. On Linux they wrap the systemd unit; on macOS (no systemd) start/stop/restart/
-# status/logs manage XMRig as a background process tracked by a PID file under the worker root, so the
-# same commands work on both. enable/disable are boot-autostart and need systemd, so they stay Linux-only.
-require_linux_service() {
-    if [ "$OS_TYPE" != "Linux" ]; then
-        error "'$1' is boot autostart via systemd and is only supported on Linux (macOS has no service to enable; use '$0 start')."
-    fi
-}
+# status/logs manage XMRig directly, so the same commands work on both. `enable`/`disable` install/remove
+# a per-user launchd LaunchAgent (macOS's analogue of boot-start — it runs the miner at login). When the
+# agent is installed launchd OWNS the miner, so the run verbs delegate to launchctl; otherwise they
+# manage an ad-hoc background process tracked by a PID file. (A headless always-on Mac would instead want
+# a /Library/LaunchDaemons unit — out of scope for this dev/light-use target.)
 
-# macOS / non-systemd process control. Paths come from config.json (no parse_config needed).
+# macOS paths/state. Resolved from config.json (no parse_config needed).
 _mac_paths() { # sets MAC_WR / MAC_BIN / MAC_CFG / MAC_PID
     MAC_WR=$(_worker_root_from_config)
     MAC_BIN="$MAC_WR/xmrig/build/xmrig"
     MAC_CFG="$MAC_WR/xmrig/build/config.json"
     MAC_PID="$MAC_WR/xmrig.pid"
 }
-_mac_pid() { # echo the live miner PID (empty if not running)
+_mac_pid() { # echo the live ad-hoc miner PID (empty if not running)
     local pid
     [ -f "$MAC_PID" ] || return 0
     pid=$(cat "$MAC_PID" 2>/dev/null)
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
 }
+_mac_label() { echo "com.rigforge.$SERVICE_NAME"; }
+_mac_plist() { echo "${HOME:-/tmp}/Library/LaunchAgents/$(_mac_label).plist"; }
+_mac_enabled() { [ -f "$(_mac_plist)" ]; } # the login agent is installed => launchd owns the miner
+_mac_agent_pid() { launchctl list "$(_mac_label)" 2>/dev/null | awk -F'= ' '/"PID"/{gsub(/[^0-9]/,"",$2); print $2; exit}'; }
+
 mac_start() {
     _mac_paths
     [ -x "$MAC_BIN" ] || error "No built worker at $MAC_BIN. Run 'setup' first."
     [ -f "$MAC_CFG" ] || error "No generated config at $MAC_CFG. Run 'setup' first."
+    if _mac_enabled; then
+        launchctl start "$(_mac_label)" 2>/dev/null || true
+        log "Started the miner (login agent)."
+        return 0
+    fi
     local pid
     pid=$(_mac_pid)
     [ -n "$pid" ] && {
@@ -1709,6 +1717,11 @@ mac_start() {
 }
 mac_stop() {
     _mac_paths
+    if _mac_enabled; then
+        launchctl stop "$(_mac_label)" 2>/dev/null || true
+        log "Stopped the miner (login agent). It starts again at login or '$0 start'; remove it with '$0 disable'."
+        return 0
+    fi
     local pid
     pid=$(_mac_pid)
     [ -n "$pid" ] || {
@@ -1722,6 +1735,12 @@ mac_stop() {
 }
 mac_status() {
     _mac_paths
+    if _mac_enabled; then
+        local apid
+        apid=$(_mac_agent_pid)
+        if [ -n "$apid" ]; then log "Miner is running (login agent, pid $apid)."; else log "Miner is enabled (login agent) but not running."; fi
+        return 0
+    fi
     local pid
     pid=$(_mac_pid)
     if [ -n "$pid" ]; then log "Miner is running (pid $pid)."; else log "Miner is not running."; fi
@@ -1731,6 +1750,56 @@ mac_logs() {
     local lf="$MAC_WR/xmrig.log"
     [ -f "$lf" ] || error "No log yet at $lf — start the miner first ('$0 start')."
     tail -f "$lf"
+}
+mac_enable() {
+    _mac_paths
+    [ -x "$MAC_BIN" ] || error "No built worker at $MAC_BIN. Run 'setup' first."
+    [ -f "$MAC_CFG" ] || error "No generated config at $MAC_CFG. Run 'setup' first."
+    # Hand ownership to launchd: stop any ad-hoc miner so there's no competing process.
+    local pid
+    pid=$(_mac_pid)
+    [ -n "$pid" ] && {
+        kill "$pid" 2>/dev/null || true
+        rm -f "$MAC_PID"
+    }
+    local plist
+    plist=$(_mac_plist)
+    mkdir -p "$(dirname "$plist")"
+    # KeepAlive=SuccessfulExit:false -> launchd restarts the miner if it crashes, but NOT after a clean
+    # `stop` (XMRig exits 0 on SIGTERM); RunAtLoad starts it now and at every login.
+    cat >"$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$(_mac_label)</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$MAC_BIN</string>
+        <string>--config=$MAC_CFG</string>
+    </array>
+    <key>WorkingDirectory</key><string>$MAC_WR/xmrig/build</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+    <key>StandardOutPath</key><string>$MAC_WR/xmrig.launchd.log</string>
+    <key>StandardErrorPath</key><string>$MAC_WR/xmrig.launchd.log</string>
+</dict>
+</plist>
+PLIST
+    launchctl unload "$plist" 2>/dev/null || true
+    launchctl load -w "$plist" 2>/dev/null || error "launchctl could not load $plist."
+    log "Enabled: the miner starts at login (and is starting now). Manage it with '$0 start/stop/status'; remove with '$0 disable'."
+}
+mac_disable() {
+    local plist
+    plist=$(_mac_plist)
+    if [ -f "$plist" ]; then
+        launchctl unload "$plist" 2>/dev/null || true
+        rm -f "$plist"
+        log "Disabled: removed the login agent (miner stopped; won't start at login)."
+    else
+        log "No login agent is installed."
+    fi
 }
 
 svc_status() {
@@ -1770,11 +1839,17 @@ svc_restart() {
     sudo systemctl restart "$SERVICE_NAME" && log "Restarted $SERVICE_NAME."
 }
 svc_enable() {
-    require_linux_service enable
+    [ "$OS_TYPE" = "Linux" ] || {
+        mac_enable
+        return
+    }
     sudo systemctl enable "$SERVICE_NAME" && log "Enabled $SERVICE_NAME (starts on boot)."
 }
 svc_disable() {
-    require_linux_service disable
+    [ "$OS_TYPE" = "Linux" ] || {
+        mac_disable
+        return
+    }
     sudo systemctl disable "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
 }
 cmd_version() {
@@ -1917,8 +1992,8 @@ Usage: $0 [command]
   start      start the miner (systemd on Linux, a background process on macOS)
   stop       stop the miner
   restart    restart the miner
-  enable     start the miner on boot (Linux only)
-  disable    don't start the miner on boot (Linux only)
+  enable     start the miner automatically (boot on Linux, login on macOS)
+  disable    don't start the miner automatically
   version    print the RigForge version
   help       show this help
 
