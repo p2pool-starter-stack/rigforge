@@ -60,6 +60,14 @@ All notable changes to RigForge are documented here. The format is based on
   `config.advanced.example.json` documenting every key and its default. The generated XMRig config is
   built entirely in-script — no template file and no `WORKER_CONFIG_FILE` key (#22, #23, #55).
 - Dependency-free test suite, Ubuntu end-to-end container harness, and CI (#5).
+- Test coverage gate (#68): `make coverage` measures line coverage of `rigforge.sh` +
+  `util/proposed-grub.sh` via kcov (in a digest-pinned container, with a pinned static `jq`), and CI
+  enforces both a committed **total floor** (`tests/coverage-floor.txt`, ratcheted up over time) and
+  **patch coverage** of new/changed lines (`diff-cover` vs `main`) — self-contained, no external
+  service. To credit black-box runs (not just sourced functions), the script's base directory is now
+  overridable via `RIGFORGE_HOME` (defaults to the script's own dir, so a normal deploy is unchanged),
+  letting the suite run the *real* `rigforge.sh` against a per-test sandbox instead of a copy. The CI
+  `lint` job now runs `make lint` so its file list can't drift from the Makefile.
 - Release smoke check (#61): `make smoke` (or `SMOKE_RUN_SETUP=1 make smoke`) runs the real worker
   through `xmrig --bench` — fully offline (no pool, wallet, or network) — as a manual, real-hardware
   pre-tag gate, passing only if a hashrate is reported and the run is clean. The unit/e2e suites stub

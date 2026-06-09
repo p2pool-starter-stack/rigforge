@@ -34,7 +34,12 @@ on_err() {
 
 # --- Global Variables ---
 OS_TYPE="$(uname -s)"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+# Base directory for the script's bundled assets (VERSION, systemd/, util/) and its runtime state
+# (config.json, data/, backups/). Defaults to the directory the script lives in — so a normal deploy
+# is unchanged. Overridable via RIGFORGE_HOME so the test suite can run THIS file against a throwaway
+# sandbox (keeping per-test state isolated) instead of a copy of it, which lets coverage credit the
+# real script for black-box runs too (#68).
+SCRIPT_DIR="${RIGFORGE_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)}"
 REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 REBOOT_REQUIRED=false
