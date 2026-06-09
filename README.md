@@ -103,6 +103,7 @@ CI jobs, so `make test` locally is what CI checks.
 make lint        # shellcheck + shfmt the script, utilities, and test scripts
 make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
+make smoke       # release pre-tag gate: real xmrig --bench proves the built worker hashes (manual)
 ```
 
 **What `make test` covers** — it sources `rigforge.sh` and exercises its functions in isolation, with
@@ -121,6 +122,12 @@ heavy XMRig compile and the package install are stubbed. It skips cleanly if Doc
 
 No XMRig binary is compiled by the tests — the heavy native build is stubbed; the suite asserts the
 *orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
+
+**`make smoke`** closes that gap at release time. Because the suites never compile or run XMRig, they
+can't prove the shipped binary actually starts and hashes. `make smoke` benches a real worker
+(`xmrig --bench`, fully offline) on a real rig and passes only if a hashrate is reported and the run is
+clean — it's a manual, Linux-only-for-full-effect pre-tag gate, not a CI job. See
+[RELEASING.md](./RELEASING.md).
 
 For how RigForge is versioned and released, see [RELEASING.md](./RELEASING.md) and
 [CHANGELOG.md](./CHANGELOG.md).

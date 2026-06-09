@@ -1886,8 +1886,20 @@ bench() {
     local b="${BENCH:-1M}" out hr
     log "Running 'xmrig --bench=$b' (this takes a few seconds)..."
     out=$("$bin" --bench="$b" ${cfg:+--config="$cfg"} 2>&1 || true)
-    hr=$(printf '%s' "$out" | _parse_hashrate)
-    [ -n "$hr" ] || error "Could not read a hashrate from the benchmark output."
+    hr=$(printf '%s' "$out" | _parse_hashrate) || true # empty when nothing hashed; handled below
+    # A healthy bench must (a) report a hashrate — proving the build ran, the config parsed and the
+    # RandomX dataset initialised — and (b) not have hit a fatal allocation/config error (XMRig's
+    # "MEMORY ALLOC FAILED" covers a failed dataset / HugePages / memlock allocation). On failure, echo
+    # the raw XMRig output so a broken build/config is diagnosable — this is what the release smoke
+    # check (tests/smoke.sh, #61) gates on.
+    if printf '%s' "$out" | grep -qiE 'MEMORY ALLOC FAILED|unable to (open|parse) config|error parsing config'; then
+        printf '%s\n' "$out" >&2
+        error "Benchmark hit a fatal memory/config error — see the XMRig output above."
+    fi
+    if [ -z "$hr" ]; then
+        printf '%s\n' "$out" >&2
+        error "Could not read a hashrate from the benchmark output — see the XMRig output above."
+    fi
     log "Benchmark hashrate: $hr H/s"
 }
 

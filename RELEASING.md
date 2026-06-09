@@ -14,14 +14,24 @@ Pre-1.0 (`0.x`), minor versions may include breaking changes while the interface
 ## Cutting a release
 
 1. Ensure `main` is green: `make test` (and `make test-e2e` if Docker is available).
-2. In [`CHANGELOG.md`](./CHANGELOG.md), move the `## [Unreleased]` entries under a new
+2. **Bench smoke check (real hardware).** On a **real Linux rig**, run `make smoke` (or
+   `SMOKE_RUN_SETUP=1 make smoke` to build first). This runs the actual worker through `xmrig --bench`
+   — fully offline (no pool, no wallet, no network) — and gates the release on the **binary actually
+   starting and hashing** without a memory/config error. The regular suites stub XMRig, so they can't
+   catch a broken build, a dataset/HugePages/MSR allocation failure, or a malformed generated
+   `config.json`; this is the only step that does. It must report `SMOKE CHECK: PASS`.
+   - **Linux-only for full effect:** macOS builds and configures but does no kernel tuning, so a mac
+     bench validates build → config → hash but won't exercise HugePages/MSR.
+   - Kept **out of CI** on purpose (a real build + HugePages are flaky-by-nature and live mining is
+     against Actions' ToS) — it's a manual pre-tag gate the releaser runs.
+3. In [`CHANGELOG.md`](./CHANGELOG.md), move the `## [Unreleased]` entries under a new
    `## [X.Y.Z] - YYYY-MM-DD` heading, then leave a fresh empty `## [Unreleased]` above it.
-3. Bump [`VERSION`](./VERSION) to `X.Y.Z`.
-4. Commit the two together:
+4. Bump [`VERSION`](./VERSION) to `X.Y.Z`.
+5. Commit the two together:
    ```bash
    git commit -am "release: vX.Y.Z"
    ```
-5. Tag and push (annotated tag, **matching `VERSION`**):
+6. Tag and push (annotated tag, **matching `VERSION`**):
    ```bash
    git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
    git push origin main --follow-tags
