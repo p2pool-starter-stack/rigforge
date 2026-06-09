@@ -368,7 +368,9 @@ install_dependencies() {
                     dependencies="$dependencies linux-tools-$(uname -r)"
                 fi
             fi
-            install_cmd="sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
+            # DPkg::Lock::Timeout waits for the apt/dpkg lock instead of failing — fresh boots often have
+            # unattended-upgrades holding it for a minute or two (#74).
+            install_cmd="sudo apt-get update -qq -o DPkg::Lock::Timeout=300 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300 -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
             check_cmd="dpkg -s"
         elif command -v dnf &>/dev/null; then
             dependencies="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel"
@@ -391,16 +393,12 @@ install_dependencies() {
         done
 
         if [ -n "$missing_deps" ]; then
-            log "The following system dependencies are required:"
+            # `setup` is an automated provisioner (often run headless / over the release e2e), so install
+            # the build dependencies non-interactively rather than prompting — an interactive `read` here
+            # hit EOF and aborted the whole run under `set -e` on a non-tty stdin (#74).
+            log "Installing required system dependencies:"
             echo -e "  ${C_YELLOW}$missing_deps${C_RESET}"
-
-            read -r -p "Install these dependencies now? (y/N): " CONFIRM
-            if [[ "$CONFIRM" =~ ^[Yy] ]]; then
-                log "Installing dependencies..."
-                eval "$install_cmd $missing_deps"
-            else
-                warn "Dependency installation skipped. Proceeding at your own risk."
-            fi
+            eval "$install_cmd $missing_deps"
         else
             log "All system dependencies are already installed."
         fi

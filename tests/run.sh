@@ -944,6 +944,34 @@ hr="$(printf 'starting\nminer 1100.0 H/s max 1180.5 H/s\n' | (
 ))"
 assert_eq "parses peak H/s" "$hr" "1180.5"
 
+# #74: `setup` runs headless (release e2e / over ssh), so install_dependencies must auto-install missing
+# packages — an interactive `read` prompt hit EOF on a non-tty stdin and aborted under set -e — and must
+# pass the apt lock-timeout so a fresh-boot unattended-upgrades lock doesn't fail the install.
+echo "== unit: install_dependencies non-interactive auto-install (#74) =="
+DEPT="$(mktemp -d "$SANDBOX/dep.XXXXXX")"
+cat >"$DEPT/dpkg" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in *build-essential*) exit 1 ;; *) exit 0 ;; esac   # build-essential "missing", rest present
+EOF
+cat >"$DEPT/apt-get" <<'EOF'
+#!/usr/bin/env bash
+echo "apt-get $*" >>"$APT_LOG"
+EOF
+printf '#!/usr/bin/env bash\nexit 1\n' >"$DEPT/apt-cache"
+printf '#!/usr/bin/env bash\nexec env "$@"\n' >"$DEPT/sudo" # `env` handles the `sudo VAR=x cmd` prefix
+chmod +x "$DEPT"/*
+APT_LOG="$DEPT/apt.log"
+: >"$APT_LOG"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux REAL_USER=test
+    PATH="$DEPT:$PATH" APT_LOG="$APT_LOG" install_dependencies </dev/null
+) >/dev/null 2>&1
+rc=$?
+assert_rc "install_dependencies exits 0 on a non-tty stdin (#74)" "$rc" "0"
+assert_contains "auto-installs the missing dep (#74)" "$(cat "$APT_LOG")" "build-essential"
+assert_contains "apt waits for the lock, not fail (#74)" "$(cat "$APT_LOG")" "DPkg::Lock::Timeout=300"
+
 # ---------------------------------------------------------------------------
 # When no service was installed (macOS), finish_deployment points the user at 'start' — not a raw
 # screen/xmrig command (the build-dir config #20 guaranteed is now handled inside mac_start, asserted
