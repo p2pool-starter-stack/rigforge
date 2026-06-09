@@ -29,7 +29,9 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `help` (`-h`, `--help`) | Show usage. |
 
 `setup` is the default, so `sudo ./rigforge.sh` with no argument provisions (or re-provisions) the
-worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`) and `doctor` are Linux-only.
+worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`) work on Linux and macOS; `doctor`,
+`enable`/`disable` (boot autostart), `tune --live`, and `autotune` are Linux-only. See
+[Running on macOS](#running-on-macos).
 
 ### Health check
 
@@ -178,41 +180,42 @@ integration:
   (`huge-pages`, `1gb-pages`, `wrmsr`/`rdmsr` are `false`) and binds the API to IPv6 `::`. Because the
   biggest RandomX levers (HugePages + MSR) are Linux-only, **expect a lower hashrate than a tuned Linux
   box** — fine for development, not for a production rig.
-- **No service, no auto-start.** Nothing is installed to run, restart, or boot-start the miner. You
-  launch XMRig yourself.
+- **No systemd service / no auto-start on boot.** There's no service to install, and the miner doesn't
+  start at boot. But `setup` doesn't leave you to hand-roll a launch command — the same `start` / `stop`
+  / `restart` / `status` / `logs` verbs work on macOS too (see below); on macOS they manage XMRig as a
+  background process tracked by a PID file under the worker root, instead of via systemd.
 
-### Start the miner
+### Run the miner
 
-When setup finishes it prints a ready-to-run command. It launches XMRig in a detached `screen` session
-so it keeps running after you close the terminal:
-
-```bash
-sudo screen -S xmrig <WORKER_ROOT>/xmrig/build/xmrig --config=<WORKER_ROOT>/xmrig/build/config.json
-```
-
-`<WORKER_ROOT>` is `data/worker` inside the repo by default. Re-attach to watch it with
-`screen -r xmrig` (detach again with `Ctrl-a` then `d`); stop it with `screen -X -S xmrig quit`. To run
-it in the foreground instead (Ctrl-C to stop):
+`setup` doesn't start the miner on macOS, so launch it yourself when ready — with the same command you'd
+use on Linux:
 
 ```bash
-cd <WORKER_ROOT>/xmrig/build && sudo ./xmrig --config=config.json
+./rigforge.sh start         # background the miner (records a PID file)
+./rigforge.sh status        # is it running?
+./rigforge.sh logs          # follow the live log (Ctrl-C to stop following)
+./rigforge.sh stop          # stop it
+./rigforge.sh restart       # stop + start
 ```
+
+No `sudo` is needed on macOS (the HugePages/MSR steps that need root are Linux-only). `start` runs the
+binary from the worker build dir with the generated config; the log is at `<WORKER_ROOT>/xmrig.log`
+(`data/worker/xmrig.log` by default).
 
 ### Change a setting
 
-Edit `config.json`, regenerate the live config, then restart the miner yourself (there's no service to
-restart for you):
+Edit `config.json`, regenerate the live config, then restart:
 
 ```bash
-sudo ./rigforge.sh apply        # regenerates config.json; reminds you to restart
-# then stop the screen session above and start it again
+sudo ./rigforge.sh apply        # regenerates the config
+./rigforge.sh restart           # pick up the new config
 ```
 
 ### What's Linux-only
 
-`doctor`, `uninstall`, the service verbs (`status` / `logs` / `start` / `stop` / `restart` / `enable` /
-`disable`), `tune --live`, and `autotune` all manage Linux/systemd state and aren't available on macOS.
-`setup`, `apply`, `bench`, the offline `tune`, and `version` work anywhere.
+`doctor`, `uninstall`, `enable` / `disable` (boot autostart), `tune --live`, and `autotune` need
+systemd and aren't available on macOS. Everything else — `setup`, `apply`, `bench`, the offline `tune`,
+`start` / `stop` / `restart` / `status` / `logs`, `backup` / `restore`, and `version` — works anywhere.
 
 ---
 

@@ -788,8 +788,8 @@ finish_deployment() {
     if [ "$SERVICE_INSTALLED" = true ]; then
         log "Service created. xmrig running in background."
     else
-        log "You can run the miner manually:"
-        echo "sudo screen -S xmrig $WORKER_ROOT/xmrig/build/xmrig --config=$WORKER_ROOT/xmrig/build/config.json"
+        log "Start the miner with:"
+        echo "  $0 start          # then: $0 status / logs / stop"
     fi
 }
 
@@ -1668,30 +1668,105 @@ restore() {
 
 # --- Command surface (#11) -------------------------------------------------
 
-# Service-control verbs are thin wrappers over systemd and are Linux-only.
+# Service-control verbs. On Linux they wrap the systemd unit; on macOS (no systemd) start/stop/restart/
+# status/logs manage XMRig as a background process tracked by a PID file under the worker root, so the
+# same commands work on both. enable/disable are boot-autostart and need systemd, so they stay Linux-only.
 require_linux_service() {
     if [ "$OS_TYPE" != "Linux" ]; then
-        error "'$1' manages the systemd service and is only supported on Linux."
+        error "'$1' is boot autostart via systemd and is only supported on Linux (macOS has no service to enable; use '$0 start')."
     fi
 }
+
+# macOS / non-systemd process control. Paths come from config.json (no parse_config needed).
+_mac_paths() { # sets MAC_WR / MAC_BIN / MAC_CFG / MAC_PID
+    MAC_WR=$(_worker_root_from_config)
+    MAC_BIN="$MAC_WR/xmrig/build/xmrig"
+    MAC_CFG="$MAC_WR/xmrig/build/config.json"
+    MAC_PID="$MAC_WR/xmrig.pid"
+}
+_mac_pid() { # echo the live miner PID (empty if not running)
+    local pid
+    [ -f "$MAC_PID" ] || return 0
+    pid=$(cat "$MAC_PID" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+mac_start() {
+    _mac_paths
+    [ -x "$MAC_BIN" ] || error "No built worker at $MAC_BIN. Run 'setup' first."
+    [ -f "$MAC_CFG" ] || error "No generated config at $MAC_CFG. Run 'setup' first."
+    local pid
+    pid=$(_mac_pid)
+    [ -n "$pid" ] && {
+        log "Miner already running (pid $pid)."
+        return 0
+    }
+    # Background it from the build dir (XMRig writes its own log-file per the config); record the PID.
+    (cd "$MAC_WR/xmrig/build" && {
+        nohup "$MAC_BIN" --config="$MAC_CFG" >/dev/null 2>&1 &
+        echo $! >"$MAC_PID"
+    })
+    log "Started the miner (pid $(cat "$MAC_PID" 2>/dev/null)). Follow it with '$0 logs'; stop with '$0 stop'."
+}
+mac_stop() {
+    _mac_paths
+    local pid
+    pid=$(_mac_pid)
+    [ -n "$pid" ] || {
+        log "Miner is not running."
+        rm -f "$MAC_PID" 2>/dev/null
+        return 0
+    }
+    kill "$pid" 2>/dev/null || true
+    rm -f "$MAC_PID" 2>/dev/null
+    log "Stopped the miner (pid $pid)."
+}
+mac_status() {
+    _mac_paths
+    local pid
+    pid=$(_mac_pid)
+    if [ -n "$pid" ]; then log "Miner is running (pid $pid)."; else log "Miner is not running."; fi
+}
+mac_logs() {
+    _mac_paths
+    local lf="$MAC_WR/xmrig.log"
+    [ -f "$lf" ] || error "No log yet at $lf — start the miner first ('$0 start')."
+    tail -f "$lf"
+}
+
 svc_status() {
-    require_linux_service status
+    [ "$OS_TYPE" = "Linux" ] || {
+        mac_status
+        return
+    }
     sudo systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
 }
 svc_logs() {
-    require_linux_service logs
+    [ "$OS_TYPE" = "Linux" ] || {
+        mac_logs
+        return
+    }
     sudo journalctl -u "$SERVICE_NAME" -f || true # follow exits 130 on Ctrl-C
 }
 svc_start() {
-    require_linux_service start
+    [ "$OS_TYPE" = "Linux" ] || {
+        mac_start
+        return
+    }
     sudo systemctl start "$SERVICE_NAME" && log "Started $SERVICE_NAME."
 }
 svc_stop() {
-    require_linux_service stop
+    [ "$OS_TYPE" = "Linux" ] || {
+        mac_stop
+        return
+    }
     sudo systemctl stop "$SERVICE_NAME" && log "Stopped $SERVICE_NAME."
 }
 svc_restart() {
-    require_linux_service restart
+    [ "$OS_TYPE" = "Linux" ] || {
+        mac_stop
+        mac_start
+        return
+    }
     sudo systemctl restart "$SERVICE_NAME" && log "Restarted $SERVICE_NAME."
 }
 svc_enable() {
@@ -1837,13 +1912,13 @@ Usage: $0 [command]
   autotune   one live trial against the running miner (enable periodic runs with autotune:true in config)
   backup     save config.json + tuning to a timestamped archive in ./backups
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
-  status     show the systemd service status
-  logs       follow the live service logs
-  start      start the miner service
-  stop       stop the miner service
-  restart    restart the miner service
-  enable     start the miner service on boot
-  disable    don't start the miner service on boot
+  status     show whether the miner is running
+  logs       follow the live miner logs
+  start      start the miner (systemd on Linux, a background process on macOS)
+  stop       stop the miner
+  restart    restart the miner
+  enable     start the miner on boot (Linux only)
+  disable    don't start the miner on boot (Linux only)
   version    print the RigForge version
   help       show this help
 

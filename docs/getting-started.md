@@ -107,8 +107,8 @@ grep -i msr <WORKER_ROOT>/xmrig.log             # MSR mod applied (no errors)
 **disable Secure Boot** in your BIOS/UEFI — see [Operations › Troubleshooting](operations.md#troubleshooting).
 
 > **On macOS** the steps above (the `systemd` service and the HugePages/MSR checks) don't apply —
-> there's no service and no kernel tuning. Setup prints a command to start the miner yourself; see
-> [Operations › Running on macOS](operations.md#running-on-macos).
+> there's no service and no kernel tuning. Start the miner yourself with `./rigforge.sh start` (then
+> `status` / `logs` / `stop`); see [Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
 

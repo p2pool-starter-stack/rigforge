@@ -844,11 +844,15 @@ assert_contains "help lists enable" "$out" "enable"
 assert_contains "help lists bench" "$out" "bench"
 assert_contains "help lists backup" "$out" "backup"
 assert_contains "help lists restore" "$out" "restore"
-# Service verbs are Linux-only: on a non-Linux uname they fail with a clear message.
-out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh status 2>&1)"
+# enable/disable are boot autostart (systemd) and stay Linux-only; start/stop/restart/status/logs work
+# on macOS too (process-managed — see the dedicated macOS test below).
+out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh enable 2>&1)"
 rc=$?
-assert_rc "status rejected on non-Linux" "$rc" "1"
-assert_contains "non-Linux service message" "$out" "only supported on Linux"
+assert_rc "enable rejected on non-Linux" "$rc" "1"
+assert_contains "non-Linux enable message" "$out" "only supported on Linux"
+out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh status </dev/null 2>&1)"
+assert_rc "status works on macOS (process-managed)" "$?" "0"
+assert_contains "macOS status reports miner state" "$out" "Miner is"
 
 # #11: `apply` regenerates the live config + restarts without rebuilding. The $U sandbox already has a
 # built worker (build dir + binary) and a config.json pointing at HOME_DIR=$U/home.
@@ -878,9 +882,10 @@ hr="$(printf 'starting\nminer 1100.0 H/s max 1180.5 H/s\n' | (
 assert_eq "parses peak H/s" "$hr" "1180.5"
 
 # ---------------------------------------------------------------------------
-# The manual-run hint must point at the config where it's actually generated — the build dir
-# ($WORKER_ROOT/xmrig/build/config.json), the same path the systemd unit uses — not $WORKER_ROOT (#20).
-echo "== unit: finish_deployment manual-run hint (#20) =="
+# When no service was installed (macOS), finish_deployment points the user at 'start' — not a raw
+# screen/xmrig command (the build-dir config #20 guaranteed is now handled inside mac_start, asserted
+# in the macOS process-control test below).
+echo "== unit: finish_deployment points at 'start' =="
 hint="$(
     source "$SCRIPT"
     WORKER_ROOT=/opt/rig/worker
@@ -889,9 +894,47 @@ hint="$(
     set +e
     finish_deployment 2>&1
 )"
-assert_contains "hint runs the built binary" "$hint" "/opt/rig/worker/xmrig/build/xmrig"
-assert_contains "hint config points at build dir" "$hint" "--config=/opt/rig/worker/xmrig/build/config.json"
-assert_absent "hint not the stale top-level path" "$hint" "--config=/opt/rig/worker/config.json"
+assert_contains "hint tells you to run 'start'" "$hint" "start"
+assert_absent "hint no longer prints a raw screen command" "$hint" "screen -S xmrig"
+
+# macOS process control: with no systemd, start/status/stop manage XMRig as a background process via a
+# PID file. The fake miner records its args (proving start uses the BUILD-dir config) and sleeps so the
+# PID stays alive; stop kills it.
+echo "== black-box: macOS process control (start/status/stop) =="
+MC="$(mktemp -d "$SANDBOX/mac.XXXXXX")"
+cp "$SCRIPT" "$MC/rigforge.sh"
+cp "$ROOT/VERSION" "$MC/"
+MCB="$MC/home/worker/xmrig/build"
+mkdir -p "$MCB"
+cat >"$MCB/xmrig" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$MC/home/worker/xmrig.args"
+exec sleep 30
+EOF
+chmod +x "$MCB/xmrig"
+printf '{}\n' >"$MCB/config.json"
+cat >"$MC/config.json" <<EOF
+{ "HOME_DIR": "$MC/home", "pools": [{"url": "h:3333"}] }
+EOF
+mac_run() { (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin bash ./rigforge.sh "$@" </dev/null 2>&1); }
+PIDF="$MC/home/worker/xmrig.pid"
+out="$(mac_run start)"
+assert_rc "macOS start exits 0" "$?" "0"
+assert_contains "macOS start reports a pid" "$out" "Started the miner"
+assert_eq "macOS start wrote a PID file" "$([ -f "$PIDF" ] && echo y || echo n)" "y"
+sleep 0.5 # let the backgrounded fake record its args
+out="$(mac_run status)"
+assert_contains "macOS status shows running" "$out" "is running"
+assert_contains "macOS start used the build-dir config" "$(cat "$MC/home/worker/xmrig.args" 2>/dev/null)" "--config=$MCB/config.json"
+out="$(mac_run start)"
+assert_contains "macOS start is idempotent" "$out" "already running"
+out="$(mac_run stop)"
+assert_rc "macOS stop exits 0" "$?" "0"
+assert_contains "macOS stop reports stopped" "$out" "Stopped the miner"
+out="$(mac_run status)"
+assert_contains "macOS status shows stopped after stop" "$out" "not running"
+[ -f "$PIDF" ] && kill "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
+rm -f "$PIDF"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
