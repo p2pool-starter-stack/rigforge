@@ -884,6 +884,38 @@ rc=$?
 assert_rc "bench exits 0" "$rc" "0"
 assert_contains "bench reports hashrate" "$out" "1234.5 H/s"
 
+# #61: the smoke check relies on `bench` failing loudly on a dirty run (so a broken build/config is
+# caught before tagging) and surfacing the XMRig output for diagnosis.
+# (a) XMRig hit MEMORY ALLOC FAILED (dataset/HugePages/memlock) — even with a hashrate present, fail.
+cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "MEMORY ALLOC FAILED: mmap failed"
+echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+EOF
+chmod +x "$U/home/worker/xmrig/build/xmrig"
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh bench </dev/null 2>&1)"
+rc=$?
+assert_rc "bench fails on MEMORY ALLOC FAILED" "$rc" "1"
+assert_contains "bench surfaces the fatal XMRig output" "$out" "MEMORY ALLOC FAILED"
+# (b) No hashrate at all and no fatal marker (e.g. the binary aborted early) — still fail, not abort
+# silently via set -e, and surface the output. Guards the `hr=$(...) || true` no-hashrate path.
+cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "xmrig: aborted before producing a hashrate"
+exit 1
+EOF
+chmod +x "$U/home/worker/xmrig/build/xmrig"
+out="$(cd "$U" && PATH="$STUBS:$PATH" bash ./rigforge.sh bench </dev/null 2>&1)"
+rc=$?
+assert_rc "bench fails when no hashrate is produced" "$rc" "1"
+assert_contains "bench surfaces the no-hashrate XMRig output" "$out" "aborted before producing a hashrate"
+# Restore the healthy fake bench binary for any later tests that assume a working worker.
+cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+EOF
+chmod +x "$U/home/worker/xmrig/build/xmrig"
+
 # #11/#46: the shared hashrate parser picks the peak H/s figure.
 echo "== unit: _parse_hashrate (#11) =="
 hr="$(printf 'starting\nminer 1100.0 H/s max 1180.5 H/s\n' | (

@@ -60,6 +60,12 @@ All notable changes to RigForge are documented here. The format is based on
   `config.advanced.example.json` documenting every key and its default. The generated XMRig config is
   built entirely in-script — no template file and no `WORKER_CONFIG_FILE` key (#22, #23, #55).
 - Dependency-free test suite, Ubuntu end-to-end container harness, and CI (#5).
+- Release smoke check (#61): `make smoke` (or `SMOKE_RUN_SETUP=1 make smoke`) runs the real worker
+  through `xmrig --bench` — fully offline (no pool, wallet, or network) — as a manual, real-hardware
+  pre-tag gate, passing only if a hashrate is reported and the run is clean. The unit/e2e suites stub
+  XMRig and so can't prove the shipped binary actually starts and hashes; this does. `bench` now also
+  fails loudly — surfacing the XMRig output — on `MEMORY ALLOC FAILED` or a config-parse error, not
+  just on a missing hashrate. Documented as a required step in RELEASING.md; kept out of CI by design.
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
   when the pinned XMRig is already built; old build archives are pruned so re-runs don't leak disk (#4).
