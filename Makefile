@@ -1,7 +1,7 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
-.PHONY: test test-stack test-e2e smoke coverage e2e-real lint fmt
+.PHONY: test test-stack test-e2e test-e2e-macos smoke coverage e2e-real lint fmt
 
-SHELL_FILES = rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/run.sh tests/e2e/in-container.sh tests/smoke.sh tests/coverage.sh tests/e2e-real.sh
+SHELL_FILES = rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/run.sh tests/e2e/in-container.sh tests/e2e/macos.sh tests/smoke.sh tests/coverage.sh tests/e2e-real.sh
 
 test: lint test-stack ## Lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 
@@ -10,6 +10,9 @@ test-stack: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/run.sh
+
+test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) — BSD sed, launchd, nohup (macOS only)
+	bash tests/e2e/macos.sh
 
 smoke: ## Release pre-tag gate (quick): real xmrig --bench proves the built worker hashes (manual, Linux-only)
 	bash tests/smoke.sh

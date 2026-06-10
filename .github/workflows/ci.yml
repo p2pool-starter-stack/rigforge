@@ -68,6 +68,11 @@ jobs:
         run: bash tests/run.sh
       - name: Run test suite under Apple's bash 3.2
         run: /bin/bash tests/run.sh
+      # Native macOS e2e (#69 layer 2): the REAL rigforge.sh end to end with only brew/git/cmake/make
+      # stubbed — real BSD sed, the macOS config profile, real nohup/PID control, real launchctl
+      # enable/disable (headless-tolerant), and BSD tar/date backup/restore.
+      - name: Run native macOS e2e
+        run: bash tests/e2e/macos.sh
 
   e2e:
     name: End-to-end (Docker)
