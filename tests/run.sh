@@ -1331,6 +1331,13 @@ TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
 cp "$ROOT/VERSION" "$TN/"
 BD="$TN/home/worker/xmrig/build"
 mkdir -p "$BD"
+# #62: give every tune run in this block a controlled, HEALTHY clock source. The fake xmrig isn't a real
+# load, so real sysfs (e.g. an idle CI runner) would read a low clock and falsely flag every candidate as
+# throttled. Export a fake ~96%-of-max sysfs; the #62 throttle test overrides these to simulate a throttle.
+mkdir -p "$TN/cpuok/cpu0/cpufreq"
+printf '5000000\n' >"$TN/cpu_max"
+printf '4800000\n' >"$TN/cpuok/cpu0/cpufreq/scaling_cur_freq"
+export CPUFREQ_MAX="$TN/cpu_max" CPU_SYSFS="$TN/cpuok"
 # A built config for `tune` to sweep. Seeded with the knob values the in-script generator emits
 # (#55 removed the worker-config template this used to be copied from), so the hill-climb's "guess"
 # seed reads the same prefetch/yield/1gb-pages/priority starting points it would in production.
@@ -1453,6 +1460,42 @@ assert_rc "min-delta tune exits 0" "$?" "0"
 assert_eq "min-delta keeps the seed prefetch" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
 assert_eq "min-delta leaves threads at auto (rx unpinned)" "$(J "$OVR" '.cpu.rx // "absent"')" "absent"
 
+# #63: variance-aware acceptance. A noisy fake returns 5 samples per candidate spread ±10 (median 100 for
+# prefetch=1, 102 for prefetch=2) — a 2% median "win" that clears the 1% TUNE_MIN_DELTA floor but sits
+# WITHIN the sample-noise band (combined sd ≈ 10). With the band ON it must be rejected (no phantom
+# adoption); with TUNE_SIGMA=0 the same win is adopted — proving the band is what rejected it.
+echo "== black-box: tune variance-aware acceptance gate (#63) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+ctr="$CTRDIR/$m"
+i=$(cat "$ctr" 2>/dev/null || echo 0)
+i=$((i + 1))
+echo "$i" >"$ctr"
+case "$m" in 2) c=102 ;; 1) c=100 ;; *) c=98 ;; esac
+case "$i" in 1) v=$((c - 10)) ;; 2) v=$((c - 5)) ;; 3) v=$c ;; 4) v=$((c + 5)) ;; 5) v=$((c + 10)) ;; *) v=$c ;; esac
+echo "speed $v.0 H/s max $v.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+CTRDIR="$TN/ctr"
+mkdir -p "$CTRDIR"
+tune_variance() { # <sigma>; resets the per-candidate counters and runs a fixed prefetch sweep
+    rm -f "$CTRDIR"/* 2>/dev/null
+    (cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=5 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" \
+        TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MIN_DELTA=0.01 TUNE_SIGMA="$1" CTRDIR="$CTRDIR" \
+        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)
+}
+out="$(tune_variance 1)"
+assert_rc "variance tune exits 0" "$?" "0"
+assert_eq "variance gate rejects a within-noise win (#63)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
+out="$(tune_variance 0)"
+assert_eq "TUNE_SIGMA=0 lets the same win through (#63 control)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+
 # #54: when 1G HugePages ARE reserved, the 1gb-pages knob is swept and pinned in the overrides. Point
 # HUGEPAGES_1G_NR at a fake sysfs node reporting reserved pages; the fake xmrig rewards 1gb-pages=true.
 echo "== black-box: tune 1gb-pages knob when reserved (#54) =="
@@ -1506,6 +1549,76 @@ assert_absent "live mode omits the rx/0 bench note" "$out" "measures Monero's Ra
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_rc "tune --live rejected on non-Linux" "$?" "1"
 assert_contains "tune --live non-Linux message" "$out" "only supported on Linux"
+
+# #64: --confirm A/B-checks the bench winner against the previous config on the live miner, keeping it
+# only if it genuinely wins live (else reverting). The bench search picks the winner (prefetch=2); a fake
+# API then drives the live A/B — a counter returns the winner window first, the previous-config window
+# second. The build config seeds prefetch=1, the fake bench rewards prefetch=2.
+echo "== black-box: tune --confirm live A/B (#64) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+base=1000
+case "$m" in 2) base=1100 ;; 1) base=1050 ;; *) base=1000 ;; esac
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+ACTR="$TN/actr"
+confirm_run() { # <api_cmd>; fresh overrides + counter each run
+    rm -f "$OVR" "$ACTR" 2>/dev/null
+    (cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" API_CMD="$1" ACTR="$ACTR" \
+        TUNE_ITERS=1 TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 TUNE_SEEDS=auto \
+        TUNE_PREFETCH_MODES='1 2' TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --confirm </dev/null 2>&1)
+}
+# Winner wins live (1st API reading high, 2nd low) -> kept.
+out="$(confirm_run 'c=$(cat "$ACTR" 2>/dev/null||echo 0);c=$((c+1));echo $c>"$ACTR";[ "$c" = 1 ]&&echo 1200||echo 1000')"
+assert_rc "tune --confirm exits 0" "$?" "0"
+assert_contains "confirm keeps a real live win (#64)" "$out" "Confirmed:"
+assert_eq "confirm kept the tuned prefetch (#64)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+# Winner loses live (1st low, 2nd high) -> reverted; no prior overrides existed, so the file is removed.
+out="$(confirm_run 'c=$(cat "$ACTR" 2>/dev/null||echo 0);c=$((c+1));echo $c>"$ACTR";[ "$c" = 1 ]&&echo 1000||echo 1200')"
+assert_contains "confirm reverts a live regression (#64)" "$out" "Reverted:"
+assert_eq "reverted -> previous (none) restored (#64)" "$([ -f "$OVR" ] && echo present || echo gone)" "gone"
+
+# #62: thermal-throttle rejection. A LOW clock source makes every candidate's window "throttled" — a
+# faster-but-throttled candidate must NOT be adopted (its number reflects the throttle, not the config),
+# and the throttle must be recorded in the log. With TUNE_MIN_FREQ_MHZ=0 the skip is disabled.
+echo "== black-box: tune thermal-throttle rejection (#62) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+base=1000
+case "$m" in 2) base=1100 ;; 1) base=1000 ;; *) base=950 ;; esac
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+mkdir -p "$TN/cpulow/cpu0/cpufreq"
+printf '3000000\n' >"$TN/cpulow/cpu0/cpufreq/scaling_cur_freq" # 3.0 GHz vs 5.0 GHz max = 60% -> throttled
+throttle_run() {                                               # <min_freq_mhz: 4000 trips on the 3 GHz reading, 0 disables>
+    rm -f "$OVR" 2>/dev/null
+    (cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpulow" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ="$1" \
+        TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)
+}
+# Throttle ON (min 4000 MHz vs the 3 GHz reading): the faster prefetch=2 throttled -> skipped.
+out="$(throttle_run 4000)"
+assert_rc "throttle tune exits 0" "$?" "0"
+assert_eq "throttle recorded in the log (#62)" "$(J "$TLOG" '[.results[]|select(.throttled)]|length>0')" "true"
+assert_eq "throttled faster candidate not adopted (#62)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
+# Throttle OFF: the same faster candidate IS adopted.
+out="$(throttle_run 0)"
+assert_eq "TUNE_MIN_FREQ_MHZ=0 disables the throttle skip (#62 control)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
 
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
