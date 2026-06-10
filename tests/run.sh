@@ -881,10 +881,25 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" versio
 rc=$?
 assert_rc "version exits 0" "$rc" "0"
 assert_contains "version prints RigForge + semver" "$out" "RigForge $(tr -d '[:space:]' <"$ROOT/VERSION")"
-for verb in status start stop restart enable disable; do
-    out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" "$verb" </dev/null 2>&1)"
-    rc=$?
-    assert_rc "$verb exits 0 (Linux + stubbed systemd)" "$rc" "0"
+# #audit A2/A4: assert the verbs not only exit 0 but print their success message (which is `&&`-gated on
+# systemctl SUCCEEDING — an empty stub-passing function would not print it) AND record the matching
+# systemctl/journalctl call. Previously these asserted rc only, so a no-op `return 0` would have passed.
+for verb in start stop restart enable disable status logs; do
+    clog="$U/svc-$verb.calls"
+    : >"$clog"
+    out="$(cd "$U" && PATH="$STUBS:$PATH" CALL_LOG="$clog" RIGFORGE_HOME="$PWD" bash "$SCRIPT" "$verb" </dev/null 2>&1)"
+    assert_rc "$verb exits 0 (Linux + stubbed systemd)" "$?" "0"
+    case "$verb" in
+    start) assert_contains "start prints its message" "$out" "Started xmrig" ;;
+    stop) assert_contains "stop prints its message" "$out" "Stopped xmrig" ;;
+    restart) assert_contains "restart prints its message" "$out" "Restarted xmrig" ;;
+    enable) assert_contains "enable prints its message" "$out" "Enabled xmrig (starts on boot)" ;;
+    disable) assert_contains "disable prints its message" "$out" "Disabled xmrig (won't start on boot)" ;;
+    esac
+    case "$verb" in
+    logs) assert_contains "logs invokes journalctl" "$(cat "$clog")" "journalctl] -u xmrig -f" ;;
+    *) assert_contains "$verb invokes systemctl $verb" "$(cat "$clog")" "systemctl] $verb" ;;
+    esac
 done
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" help 2>&1)"
 assert_contains "help lists doctor" "$out" "doctor"
@@ -1414,6 +1429,65 @@ assert_contains "doctor: still prints the firmware context line (#78)" "$out" "B
 out="$(DMI_DIR="/nonexistent-dmi" SMT_CONTROL="/nonexistent-smt" DMIDECODE="$DOC/dmidecode_xmpon" \
     run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_absent "doctor: no firmware context when DMI unreadable (#78)" "$out" "Firmware:"
+
+# #audit A3: doctor's "service is not active" WARN + issue branch, and the gating of the clock-under-load
+# check on a RUNNING service. Every other doctor test uses the shared systemctl stub, which is always
+# "active", so these paths were never exercised. A stub variant reports inactive (is-active -> exit 3).
+echo "== unit: doctor service-inactive branch (#audit) =="
+mkdir -p "$DOC/svc_inactive"
+cat >"$DOC/svc_inactive/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in *is-active*) exit 3 ;; *) exit 0 ;; esac
+EOF
+chmod +x "$DOC/svc_inactive/systemctl"
+out="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$DOC/config.json"
+    MEMINFO="$DOC/meminfo_ok"
+    MSR_MODULE_DIR="$DOC/msrmod"
+    GOVERNOR_FILE="$DOC/gov_perf"
+    HUGEPAGES_1G_NR="$DOC/nr1g"
+    CPUFREQ_MAX="$DOC/cpufreq_max"
+    CPU_SYSFS="$DOC/cpu_ok"
+    set +e
+    PATH="$DOC/svc_inactive:$STUBS:$PATH" doctor 2>&1
+))"
+assert_contains "doctor: inactive service -> WARN (#audit)" "$out" "is not active"
+assert_contains "doctor: inactive service counts as an issue (#audit)" "$out" "issue(s) found"
+assert_absent "doctor: clock-under-load check is skipped when the service is inactive (#audit)" "$out" "CPU clock under load"
+
+# #audit: _reown_worker hands the files setup/tune/apply wrote as root back to the operator (so they can
+# edit config.json + re-run without sudo). As root it chowns WORKER_ROOT + config.json to REAL_USER; not
+# root, it's a no-op. (sudo is a passthrough stub, so the chown stub records the real call.)
+echo "== unit: _reown_worker reconciles file ownership (#audit) =="
+RW="$(mktemp -d "$SANDBOX/reown.XXXXXX")"
+mkdir -p "$RW/worker" "$RW/asroot" "$RW/asuser"
+printf '{}' >"$RW/config.json"
+printf '#!/usr/bin/env bash\necho 0\n' >"$RW/asroot/id"
+printf '#!/usr/bin/env bash\necho 1000\n' >"$RW/asuser/id"
+printf '#!/usr/bin/env bash\necho "[chown] $*" >>"$CHOWN_LOG"\n' >"$RW/asroot/chown"
+cp "$RW/asroot/chown" "$RW/asuser/chown"
+chmod +x "$RW/asroot/id" "$RW/asuser/id" "$RW/asroot/chown" "$RW/asuser/chown"
+reown() { # <asroot|asuser>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        REAL_USER=rfop
+        WORKER_ROOT="$RW/worker"
+        CONFIG_JSON="$RW/config.json"
+        export CHOWN_LOG="$RW/chown-$1.log"
+        : >"$CHOWN_LOG"
+        set +e
+        PATH="$RW/$1:$STUBS:$PATH" _reown_worker
+        cat "$CHOWN_LOG"
+    )
+}
+out="$(reown asroot)"
+assert_contains "reown (root): chowns the worker root to the operator (#audit)" "$out" "[chown] -R rfop:rfop $RW/worker"
+assert_contains "reown (root): chowns config.json to the operator (#audit)" "$out" "[chown] rfop:rfop $RW/config.json"
+assert_eq "reown (non-root): no-op, nothing chowned (#audit)" "$(reown asuser)" ""
 
 # #66: doctor verifies the MSR mod ACTUALLY applied — XMRig's log line confirms the write, and (when
 # rdmsr/msr-tools is present AND doctor runs as root) a register read-back catches a write a

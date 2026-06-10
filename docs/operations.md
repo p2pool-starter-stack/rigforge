@@ -17,13 +17,13 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). **Critical** findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the **MSR mod actually applied** — confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). **Advisory** findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), **hashrate-capping hardware** RigForge can't fix but you can — single-channel or slow RAM (via `dmidecode`) and a power/boost-capped CPU clock — and **BIOS/firmware** recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
-| `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --clear` resets tuning. |
+| `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --confirm` A/B-checks the tuned winner live and reverts it if it doesn't actually beat the previous config; `tune --efficiency` optimizes hashrate-per-watt instead of raw H/s; `tune --clear` resets tuning. |
 | `autotune` | One live trial against the running miner. **Enable periodic runs** by setting `"autotune": true` in `config.json` (setup installs a systemd timer). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
 | `status` | Show the systemd service status. |
 | `logs` | Follow the live service logs (`journalctl -f`). |
-| `start` / `stop` / `restart` | Start, stop, or restart the miner service. |
+| `start` / `stop` / `restart` | Start, stop, or restart the miner service. (`up` / `down` are aliases for `start` / `stop`.) |
 | `enable` / `disable` | Start the service on boot, or not. |
 | `version` (`-v`, `--version`) | Print the RigForge version. |
 | `help` (`-h`, `--help`) | Show usage. |
@@ -43,6 +43,10 @@ sudo ./rigforge.sh doctor
 
 It's the quickest way to catch the common silent failures — HugePages not reserved (needs a reboot) or
 the MSR mod blocked by Secure Boot. See [Troubleshooting](#troubleshooting).
+
+> On a fresh install `setup` **enables** the service but doesn't start it until you reboot (HugePages
+> aren't reserved before then), so a `doctor` run between `setup` and the reboot will report "service is
+> not active" — that's expected; it starts automatically after you reboot.
 
 ### Auto-tuning
 
@@ -282,7 +286,7 @@ target; run as a LaunchDaemon by hand if you need it.)
 Edit `config.json`, regenerate the live config, then restart:
 
 ```bash
-sudo ./rigforge.sh apply        # regenerates the config
+./rigforge.sh apply             # regenerates the config (no sudo on macOS)
 ./rigforge.sh restart           # pick up the new config
 ```
 

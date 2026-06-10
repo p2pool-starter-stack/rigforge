@@ -206,6 +206,16 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`sudo` runs no longer leave root-owned files behind.** `setup`/`upgrade`/`tune`/`apply`/`restore`
+  wrote the build, generated config, logs, and tuning files as root (and the first-run `config.json` was
+  created root-owned), so an operator following the documented "edit `config.json` → `apply`" loop hit
+  permission-denied and a non-`sudo` re-`setup`/`git clean` failed. Each command now hands the worker tree
+  and `config.json` back to the invoking operator on completion.
+- **A fresh `setup` no longer starts the miner before the mandatory reboot.** HugePages aren't reserved
+  until the GRUB change takes effect on reboot, so the service is now **enabled** (not started) on a first
+  install — it starts automatically after the reboot, instead of running degraded until then.
+- `apply`/`tune` before `setup` now give a clear "no config — run setup first" message instead of
+  "is not valid JSON"; the first-run prompt no longer aborts on a non-interactive stdin.
 - **`tune` hashrate-per-watt was measured at idle (#81).** In `--bench` mode, watts were read *after* the
   benchmark finished and every `xmrig` child was killed — i.e. while the machine coasted back to idle —
   so `hs_per_watt` divided a loaded hashrate by idle power and couldn't rank candidates. Power is now
