@@ -195,6 +195,14 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`tune` hashrate-per-watt was measured at idle (#81).** In `--bench` mode, watts were read *after* the
+  benchmark finished and every `xmrig` child was killed — i.e. while the machine coasted back to idle —
+  so `hs_per_watt` divided a loaded hashrate by idle power and couldn't rank candidates. Power is now
+  sampled **under load and averaged over the window** (in both `--bench` and `--live`). Added a **built-in
+  RAPL** reader (the CPU-package energy-counter delta — works on Linux as root with no `TUNE_POWER_CMD`),
+  with `TUNE_POWER_CMD` kept as the instantaneous-watts override for IPMI / smart-plug / wall-AC sources;
+  a single counter wrap is corrected. Documented that `hs_per_watt` is **relative within one method and
+  machine** (RAPL = CPU package only; a smart plug = whole-wall AC), not an absolute or cross-rig figure.
 - **Fail-closed worker-root resolution:** `uninstall`/`backup`/`restore` resolved `HOME_DIR` without the
   validation `parse_config` enforces, so a malformed or hostile `HOME_DIR` could flow into a privileged
   `sudo rm -rf`. The validation is now shared, and every consumer refuses an invalid `HOME_DIR`.

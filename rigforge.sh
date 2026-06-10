@@ -1093,9 +1093,8 @@ _accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
         'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
 }
 
-# Best-effort temperature (°C) and power (W) for a hashrate-per-watt view (#54). Both are optional:
-# temp defaults to the standard Linux thermal zone, power is opt-in via TUNE_POWER_CMD (reliable
-# wattage needs a method the operator chooses — RAPL sampler, smart plug, IPMI). Either may be empty.
+# Best-effort temperature (°C) for the hashrate-per-watt view (#54). Defaults to the standard Linux
+# thermal zone; TUNE_TEMP_CMD overrides. Read right after the loaded window (the cores are still hot).
 _read_temp() {
     if [ -n "${TUNE_TEMP_CMD:-}" ]; then
         eval "$TUNE_TEMP_CMD"
@@ -1106,10 +1105,59 @@ _read_temp() {
     [ -r "$z" ] && awk '{printf "%.1f", $1/1000}' "$z" 2>/dev/null
     return 0
 }
-_read_watts() {
+
+# Power measurement (#81). hashrate-per-watt only means something if watts are sampled UNDER LOAD and
+# averaged across the measurement window — the old code read once AFTER the bench (idle), collapsing the
+# metric onto raw H/s. Two sources, both sampled during the load window:
+#   - built-in RAPL: the CPU-package energy-counter delta over the window (Linux, root, no config);
+#   - TUNE_POWER_CMD: an instantaneous-watts override (IPMI / smart plug / wall AC), polled + averaged.
+# hs_per_watt is therefore RELATIVE within one method/machine — RAPL is CPU-package only, a smart plug is
+# whole-wall AC — not an absolute or cross-rig figure. See docs/tuning.md.
+
+# An instantaneous watts reading from the operator's override (empty if none).
+_read_watts_now() {
     [ -n "${TUNE_POWER_CMD:-}" ] && eval "$TUNE_POWER_CMD"
     return 0
 }
+
+# Sum a RAPL sysfs metric (energy_uj or max_energy_range_uj) across the PACKAGE domains only — the
+# top-level intel-rapl:N zones named "package-*" (AMD Zen + Intel both expose these here). DRAM/core
+# subzones (intel-rapl:N:M) and psys are skipped so nothing is double-counted. RAPL_DIR is overridable
+# for tests. Empty when RAPL isn't present/readable (needs root) — power then falls back to TUNE_POWER_CMD.
+_rapl_sum() { # <energy_uj|max_energy_range_uj>
+    [ "$OS_TYPE" = Linux ] || return 0
+    local base="${RAPL_DIR:-/sys/class/powercap}" d v sum=0 got=0
+    for d in "$base"/intel-rapl:*; do
+        [ -r "$d/$1" ] || continue
+        case "$(cat "$d/name" 2>/dev/null)" in package-*) ;; *) continue ;; esac
+        v=$(cat "$d/$1" 2>/dev/null) || continue
+        case "$v" in '' | *[!0-9]*) continue ;; esac
+        sum=$((sum + v))
+        got=1
+    done
+    [ "$got" = 1 ] && echo "$sum"
+}
+
+# Average watts from a package-energy delta: <e0_uj> <e1_uj> <max_total_uj> <elapsed_s>. Corrects a single
+# counter wrap (e1<e0 -> + max). Empty (never errors under set -e) when inputs are missing or elapsed<=0.
+_watts_from_energy() {
+    awk -v e0="$1" -v e1="$2" -v mx="$3" -v secs="$4" 'BEGIN {
+        if (e0 == "" || e1 == "" || secs + 0 <= 0) exit
+        d = e1 - e0
+        if (d < 0 && mx + 0 > 0) d += mx
+        if (d < 0) exit
+        printf "%.2f", (d / 1e6) / secs
+    }'
+}
+
+# Mean of the numeric args (empty if none) — averages instantaneous power samples over the window.
+_mean() {
+    [ "$#" -gt 0 ] || return 0
+    printf '%s\n' "$@" | awk '{ s += $1; n++ } END { if (n > 0) printf "%.2f", s / n }'
+}
+
+# Wall-clock seconds with sub-second precision (GNU date) for timing the RAPL energy window (Linux path).
+_now_s() { date +%s.%N 2>/dev/null; }
 
 # A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
@@ -1135,6 +1183,7 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
 # from the config so xmrig doesn't serve the API, mine, or daemonize. `BENCH_TIMEOUT` bounds a stuck run.
 _xmrig_bench() { # <bin> <bench-size> <config|"">
     local bin="$1" size="$2" cfg="${3:-}" bcfg="" tmpcfg="" out logf xpid deadline freqs="" f
+    local wsamples="" pe0="" pt0="" pmax="" w # #81: power-window state
     out="$(mktemp 2>/dev/null || echo "/tmp/rf-bo-$$")"
     logf="$(mktemp 2>/dev/null || echo "/tmp/rf-bl-$$")"
     if [ -n "$cfg" ] && [ -f "$cfg" ] && command -v jq >/dev/null 2>&1; then
@@ -1151,6 +1200,19 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
         f=$(_cpu_eff_khz)
         [ -n "$f" ] && freqs="$f"
     fi
+    # #81: bracket the same loaded window for power. With TUNE_POWER_CMD we poll instantaneous watts in the
+    # loop; otherwise we read the RAPL package energy counter now and at the end and divide by the elapsed
+    # time. Averaged into BENCH_WATTS_FILE, so hs_per_watt reflects LOAD power, not the old idle reading.
+    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
+        if [ -n "${TUNE_POWER_CMD:-}" ]; then
+            w=$(_read_watts_now)
+            case "$w" in '') ;; *) wsamples="$w" ;; esac
+        else
+            pe0=$(_rapl_sum energy_uj)
+            pt0=$(_now_s)
+            pmax=$(_rapl_sum max_energy_range_uj)
+        fi
+    fi
     deadline=$(($(date +%s) + ${BENCH_TIMEOUT:-1800}))
     while kill -0 "$xpid" 2>/dev/null; do
         grep -qs 'benchmark finished' "$logf" "$out" && break
@@ -1159,8 +1221,26 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
             f=$(_cpu_eff_khz)
             [ -n "$f" ] && freqs="$freqs $f"
         fi
+        if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -n "${TUNE_POWER_CMD:-}" ]; then
+            w=$(_read_watts_now)
+            case "$w" in '') ;; *) wsamples="$wsamples $w" ;; esac
+        fi
         sleep 0.2
     done
+    # #81: read the end-of-window energy BEFORE killing xmrig (still loaded), then average over the window.
+    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
+        local pe1="" pt1="" secs="" wout=""
+        if [ -n "${TUNE_POWER_CMD:-}" ]; then
+            # shellcheck disable=SC2086 # intentional word-split of the sample list
+            wout=$(_mean $wsamples)
+        elif [ -n "$pe0" ]; then
+            pe1=$(_rapl_sum energy_uj)
+            pt1=$(_now_s)
+            secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
+            wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
+        fi
+        printf '%s' "$wout" >"$BENCH_WATTS_FILE"
+    fi
     kill "$xpid" 2>/dev/null
     wait "$xpid" 2>/dev/null || true
     # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
@@ -1189,12 +1269,37 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     apply >/dev/null 2>&1 || true
     sleep "${TUNE_LIVE_WARMUP:-60}"
     local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
+    # #81: bracket the steady-state window for power — RAPL energy delta over the window, or the mean of
+    # instantaneous TUNE_POWER_CMD samples taken alongside the hashrate samples. Written to BENCH_WATTS_FILE.
+    local wsamples="" pe0="" pt0="" pmax="" w
+    if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -z "${TUNE_POWER_CMD:-}" ]; then
+        pe0=$(_rapl_sum energy_uj)
+        pt0=$(_now_s)
+        pmax=$(_rapl_sum max_energy_range_uj)
+    fi
     for i in $(seq 1 "$n"); do
         s=$(_read_api_hashrate)
         [ -n "$s" ] || s=0
         samples+=("$s")
+        if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -n "${TUNE_POWER_CMD:-}" ]; then
+            w=$(_read_watts_now)
+            case "$w" in '') ;; *) wsamples="$wsamples $w" ;; esac
+        fi
         [ "$i" -lt "$n" ] && sleep "${TUNE_LIVE_INTERVAL:-30}"
     done
+    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
+        local pe1="" pt1="" secs="" wout=""
+        if [ -n "${TUNE_POWER_CMD:-}" ]; then
+            # shellcheck disable=SC2086 # intentional word-split of the sample list
+            wout=$(_mean $wsamples)
+        elif [ -n "$pe0" ]; then
+            pe1=$(_rapl_sum energy_uj)
+            pt1=$(_now_s)
+            secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
+            wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
+        fi
+        printf '%s' "$wout" >"$BENCH_WATTS_FILE"
+    fi
     _median "${samples[@]}"
 }
 
@@ -1208,24 +1313,30 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         return 0
     fi
 
-    local med samples=() s i cfg minfk="" bf
+    local med samples=() s i cfg minfk="" bf watts="" wsamps=() wv
     if [ "$TUNE_MODE" = live ]; then
-        med=$(_measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
+        : >"$TUNE_TMP/watts" # #81: _measure_live writes the under-load average watts here
+        med=$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
         [ -n "$med" ] || med=0
         samples=("$med")
+        watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
         _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr"
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
-            : >"$TUNE_TMP/freq" # #62: _xmrig_bench writes the min effective clock seen during this run
-            s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" _bench_once "$cfg")
+            : >"$TUNE_TMP/freq"  # #62: _xmrig_bench writes the effective clock seen during this run
+            : >"$TUNE_TMP/watts" # #81: ... and the average watts under load
+            s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" BENCH_WATTS_FILE="$TUNE_TMP/watts" _bench_once "$cfg")
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
+            wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
+            case "$wv" in '' | *[!0-9.]*) ;; *) wsamps+=("$wv") ;; esac
         done
         med=$(_median "${samples[@]}")
         [ -n "$med" ] || med=0
+        [ "${#wsamps[@]}" -gt 0 ] && watts=$(_median "${wsamps[@]}") # median load watts across the iters
     fi
 
     # #62: a candidate whose sustained clock fell below TUNE_MIN_FREQ_MHZ thermally throttled — its number
@@ -1242,9 +1353,10 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     local hpcapped=false
     if [ -n "${HP_CAP_THREADS:-}" ] && [ "$t" != "-1" ] && [ "$t" -gt "$HP_CAP_THREADS" ] 2>/dev/null; then hpcapped=true; fi
 
-    local sd watts temp
+    local sd temp
     sd=$(_stddev "${samples[@]}") # sample spread, for the variance-aware acceptance gate (#63)
-    watts=$(_read_watts)
+    # #81: watts is the median UNDER-LOAD reading collected during the window above (no longer a post-bench
+    # idle sample), so hs_per_watt below ranks candidates by real load efficiency.
     temp=$(_read_temp)
     jq -cn --argjson p "$p" --argjson y "$y" --arg t "$t" --argjson g "$g" --argjson pr "$pr" \
         --argjson hj "$hj" --argjson cq "$cq" --argjson wr "$wr" --argjson med "$med" --arg samples "${samples[*]}" \

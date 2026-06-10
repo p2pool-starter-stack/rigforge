@@ -1719,10 +1719,69 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
     TUNE_POWER_CMD='echo 100' TUNE_TEMP_CMD='echo 55' \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
 assert_rc "power/temp tune exits 0" "$?" "0"
-assert_eq "records watts" "$(J "$TLOG" '.results[0].watts')" "100"
+# watts is now an under-load average (a float, e.g. 100.00), so compare numerically — jq 1.7 would
+# otherwise preserve the literal "100.00". #81 samples it DURING the window, not at idle afterwards.
+assert_eq "records watts" "$(J "$TLOG" '.results[0].watts == 100')" "true"
 assert_eq "records temperature" "$(J "$TLOG" '.results[0].temp_c')" "55"
-assert_eq "computes hashrate-per-watt" "$(J "$TLOG" '.results[0].hs_per_watt')" "12"
+assert_eq "computes hashrate-per-watt" "$(J "$TLOG" '.results[0].hs_per_watt == 12')" "true"
 assert_contains "reports best efficiency" "$out" "H/s per watt"
+
+# #81: the built-in RAPL reader + the watts-from-energy arithmetic (the default power source, no
+# TUNE_POWER_CMD). Pure helpers, tested directly with a fake powercap tree + fixed energy deltas.
+echo "== unit: power measurement helpers (#81) =="
+PWR="$(mktemp -d "$SANDBOX/pwr.XXXXXX")"
+mkdir -p "$PWR/intel-rapl:0" "$PWR/intel-rapl:0:0" "$PWR/intel-rapl:1"
+printf package-0 >"$PWR/intel-rapl:0/name"
+printf 1000000 >"$PWR/intel-rapl:0/energy_uj"
+printf 9000000 >"$PWR/intel-rapl:0/max_energy_range_uj"
+printf core >"$PWR/intel-rapl:0:0/name" # a subzone that must NOT be counted
+printf 500000 >"$PWR/intel-rapl:0:0/energy_uj"
+printf package-1 >"$PWR/intel-rapl:1/name"
+printf 2000000 >"$PWR/intel-rapl:1/energy_uj"
+printf 9000000 >"$PWR/intel-rapl:1/max_energy_range_uj"
+rapl() { (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    RAPL_DIR="$PWR"
+    _rapl_sum "$1"
+); }
+wfe() { (
+    source "$SCRIPT"
+    _watts_from_energy "$@"
+); }
+mean() { (
+    source "$SCRIPT"
+    _mean "$@"
+); }
+assert_eq "RAPL sums PACKAGE energy only, ignoring the core subzone (#81)" "$(rapl energy_uj)" "3000000"
+assert_eq "RAPL sums the package wrap ranges (#81)" "$(rapl max_energy_range_uj)" "18000000"
+assert_eq "watts = energy delta / time (1.00 W) (#81)" "$(wfe 1000000 4000000 18000000 3)" "1.00"
+assert_eq "watts corrects a single counter wrap (#81)" "$(wfe 17000000 1000000 18000000 2)" "1.00"
+assert_eq "watts empty on elapsed<=0 (no divide-by-zero) (#81)" "$(wfe 1 2 9 0)" ""
+assert_eq "mean averages the samples (#81)" "$(mean 80 100 120)" "100.00"
+
+# #81: the BUG this fixes — watts must be sampled UNDER LOAD, not at idle after the bench. A fake xmrig
+# stays alive for the poll window and marks DONE only on exit; TUNE_POWER_CMD returns 200 W while running,
+# 50 W once DONE. The old code (read after the kill) recorded ~50; the fix records 200.
+echo "== black-box: tune samples power under load, not idle (#81) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+trap 'touch "$PWR_DONE"' EXIT       # idle is marked only AFTER the run ends
+echo "speed 1500.0 H/s max 1500.0 H/s"
+sleep "${PWR_SLEEP:-0.6}"           # stay loaded long enough for the poll loop to sample power
+EOF
+chmod +x "$BD/xmrig"
+rm -f "$OVR" "$TN/pwr_done"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false \
+    TUNE_THREADS=-1 PWR_DONE="$TN/pwr_done" PWR_SLEEP=0.6 \
+    TUNE_POWER_CMD='[ -f "$PWR_DONE" ] && echo 50 || echo 200' \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+assert_rc "power-under-load tune exits 0 (#81)" "$?" "0"
+assert_eq "watts sampled under load (200), not idle (50) (#81)" "$(J "$TLOG" '.results[0].watts == 200')" "true"
+assert_eq "hs_per_watt uses the load watts: 1500/200 = 7.5 (#81)" "$(J "$TLOG" '.results[0].hs_per_watt == 7.5')" "true"
 
 # #54: live tuning measures the running miner via the API instead of --bench, then applies the winner.
 # API is stubbed to a constant so no knob wins; the search stays at the seed and the winner is applied.

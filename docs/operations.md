@@ -102,16 +102,23 @@ to itself; still, run it when the box is otherwise idle for the steadiest number
 | `TUNE_HPJIT` | _(off)_ | Set `false true` to sweep `cpu.huge-pages-jit` (XMRig: small Ryzen boost, unstable hashrate). |
 | `TUNE_CACHEQOS` | _(off)_ | Set `false true` to sweep `randomx.cache_qos` (Intel L3 Cache Allocation Technology). |
 | `TUNE_WRMSR` | _(off)_ | Sweep the `randomx.wrmsr` MSR preset, e.g. `true false` (or a preset number). Rarely needed — XMRig auto-picks the right preset; set this only to confirm it on unusual hardware. Applied per-bench, no reboot. |
-| `TUNE_POWER_CMD` | _(unset)_ | Optional shell command that echoes watts, sampled per candidate for a hashrate-per-watt view. |
+| `TUNE_POWER_CMD` | _(RAPL)_ | Override the power source with a shell command that echoes **instantaneous watts** (IPMI, a smart plug, wall-AC). Without it, the built-in CPU-package RAPL reader is used on Linux. |
 | `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
 
-**Power & efficiency (optional).** RandomX hashrate isn't free — wire `TUNE_POWER_CMD` to a wattage
-source (a RAPL sampler, an IPMI reading, or a smart-plug script) and `tune` records watts per candidate
-and reports the best **hashrate-per-watt** observed, so you can trade a little speed for efficiency:
+**Power & efficiency.** RandomX hashrate isn't free, so `tune` records **watts per candidate** and reports
+the best **hashrate-per-watt**. On Linux it reads the CPU-package energy counter (RAPL) automatically — no
+configuration needed (run as root). Watts are sampled **under load and averaged over the measurement
+window**, so the figure reflects real mining power, and the metric can rank candidates by efficiency
+rather than collapsing onto raw H/s. To measure something other than the CPU package — e.g. whole-system
+wall power — point `TUNE_POWER_CMD` at a source that echoes instantaneous watts:
 
 ```bash
-sudo TUNE_POWER_CMD='cat /run/my-rapl-watts' ./rigforge.sh tune
+sudo TUNE_POWER_CMD='my-smart-plug-watts' ./rigforge.sh tune   # else: built-in RAPL, no setup
 ```
+
+> **`hs_per_watt` is relative, not absolute.** It only compares candidates measured by the **same method on
+> the same machine**. Built-in RAPL counts the **CPU package only** (not RAM, board, PSU loss); a smart
+> plug counts **whole-wall AC**. Don't compare the number across methods or across rigs.
 
 #### Live tuning (`tune --live`)
 

@@ -176,6 +176,16 @@ verify() {
             # (false here, since setup sized the reservation to fit; the field's presence proves the wiring).
             [ "$(jq -r '[.results[]|select(has("hugepages_capped"))]|length>0' "$tj" 2>/dev/null)" = true ] &&
                 ok "tune records the reservation-cap status (#65)" || bad "tune didn't record hugepages_capped (#65)"
+            # #81: with NO TUNE_POWER_CMD, the built-in RAPL reader measured CPU-package power UNDER LOAD —
+            # a real mining draw (tens of watts), not the old ~idle reading or a null. Proves the energy
+            # delta path works on real hardware. (Skipped if RAPL isn't readable, e.g. a locked-down host.)
+            if [ -r /sys/class/powercap/intel-rapl:0/energy_uj ]; then
+                [ "$(jq -r '[.results[]|select(.watts!=null and .watts>20)]|length>0' "$tj" 2>/dev/null)" = true ] &&
+                    ok "tune measured under-load power via built-in RAPL (#81: $(jq -r '[.results[].watts]|max') W peak)" ||
+                    bad "tune recorded no plausible under-load watts via RAPL (#81)"
+            else
+                ok "RAPL not readable here — skipping the #81 built-in-power check"
+            fi
         else
             bad "tune left no result file"
         fi
