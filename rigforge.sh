@@ -69,6 +69,12 @@ MEMINFO="${MEMINFO:-/proc/meminfo}"
 MSR_MODULE_DIR="${MSR_MODULE_DIR:-/sys/module/msr}"
 GOVERNOR_FILE="${GOVERNOR_FILE:-/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor}"
 HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages}"
+# Hashrate-capping-hardware diagnostics (#67): RAM layout (dmidecode) + effective CPU clock under load.
+DMIDECODE="${DMIDECODE:-dmidecode}"
+CPUFREQ_MAX="${CPUFREQ_MAX:-/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq}"
+CPU_SYSFS="${CPU_SYSFS:-/sys/devices/system/cpu}"
+MIN_RAM_MTS="${MIN_RAM_MTS:-2666}"   # warn below this configured RAM speed (MT/s)
+MIN_CLOCK_PCT="${MIN_CLOCK_PCT:-75}" # warn when the loaded clock is below this % of max boost
 
 # systemd service name for the worker.
 SERVICE_NAME="${SERVICE_NAME:-xmrig}"
@@ -1938,6 +1944,27 @@ bench() {
 # changes the system, just reports PASS/WARN with actionable hints. Linux-only checks.
 _ck_ok() { echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
 _ck_warn() { echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
+
+# #67 helpers. _mem_summary parses `dmidecode -t memory` into "<populated-DIMMs> <channels> <min MT/s>"
+# (channels from the Bank Locator; speed prefers the running "Configured Memory Speed"). _cpu_eff_khz
+# averages the per-core scaling_cur_freq — the effective clock under load.
+_mem_summary() {
+    # One-line awk (kcov can't see coverage of a multi-line program inside a string): for each Memory
+    # Device, count populated DIMMs, distinct channels (Bank Locator) and the min running speed.
+    "$DMIDECODE" -t memory 2>/dev/null | awk 'function flush(){if(sz~/[0-9]+ *[GMgm][Bb]/){pop++;if(ch!="")chans[ch]=1;if(sp+0>0&&(mins==0||sp+0<mins))mins=sp+0};sz="";ch="";sp=""} /^Memory Device/{flush();next} /^[ \t]*Size:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);sz=v} /Bank Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);ch=v} /^[ \t]*Speed:/{if(sp==""&&match($0,/[0-9]+/))sp=substr($0,RSTART,RLENGTH)} /Configured Memory Speed:/{if(match($0,/[0-9]+/))sp=substr($0,RSTART,RLENGTH)} END{flush();nc=0;for(c in chans)nc++;printf "%d %d %d",pop+0,nc+0,mins+0}'
+}
+_cpu_eff_khz() {
+    local f v sum=0 n=0
+    for f in "$CPU_SYSFS"/cpu[0-9]*/cpufreq/scaling_cur_freq; do
+        [ -r "$f" ] || continue
+        v=$(cat "$f" 2>/dev/null)
+        case "$v" in '' | *[!0-9]*) continue ;; esac
+        sum=$((sum + v))
+        n=$((n + 1))
+    done
+    [ "$n" -gt 0 ] && echo $((sum / n))
+}
+
 doctor() {
     cmd_version
     if [ "$OS_TYPE" != "Linux" ]; then
@@ -1989,6 +2016,46 @@ doctor() {
         _ck_ok "CPU governor = performance"
     else
         _ck_warn "CPU governor is '${gov:-unknown}' (expected 'performance')"
+    fi
+
+    # Hashrate-capping HARDWARE (advisory; #67). RandomX fast-mode is dataset-latency bound, so a
+    # single memory channel, slow RAM, or a power/boost cap silently leaves performance on the table.
+    # doctor can't change these — it only flags them. Best-effort, gated on tool/data availability.
+    if command -v "$DMIDECODE" >/dev/null 2>&1; then
+        local mem pop nch spd
+        mem=$(_mem_summary)
+        read -r pop nch spd <<<"${mem:-0 0 0}"
+        if [ "${pop:-0}" -eq 0 ] 2>/dev/null; then
+            _ck_warn "RAM layout not readable — run 'doctor' as root so dmidecode can check channels/speed"
+        else
+            if [ "${nch:-0}" -le 1 ]; then
+                _ck_warn "RAM is single-channel ($pop module(s), 1 channel) — RandomX wants ≥2 channels; move a stick to the other channel for a large gain"
+            else
+                _ck_ok "RAM: $pop modules across $nch channels (dual+ channel)"
+            fi
+            if [ "${spd:-0}" -gt 0 ] 2>/dev/null && [ "$spd" -lt "$MIN_RAM_MTS" ]; then
+                _ck_warn "RAM speed ${spd} MT/s is low — enable XMP/EXPO or fit faster RAM (RandomX is memory-latency bound)"
+            elif [ "${spd:-0}" -gt 0 ] 2>/dev/null; then
+                _ck_ok "RAM speed: ${spd} MT/s"
+            fi
+        fi
+    else
+        _ck_warn "dmidecode not found — install it for the RAM channels/speed check (advisory only)"
+    fi
+
+    # Effective CPU clock under load — only meaningful while the miner is running (else the cores idle).
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        local maxk effk pct
+        maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null)
+        effk=$(_cpu_eff_khz)
+        if [ -n "$effk" ] && [ "${maxk:-0}" -gt 0 ] 2>/dev/null; then
+            pct=$((effk * 100 / maxk))
+            if [ "$pct" -lt "$MIN_CLOCK_PCT" ]; then
+                _ck_warn "CPU at $((effk / 1000)) MHz — only ${pct}% of the $((maxk / 1000)) MHz max boost; check PBO/cTDP power limits + cooling (likely throttling)"
+            else
+                _ck_ok "CPU clock under load: $((effk / 1000)) MHz (${pct}% of max boost)"
+            fi
+        fi
     fi
 
     # XMRig's own startup report, if a log exists (HUGE PAGES 100% means the dataset is fully backed).
