@@ -113,6 +113,10 @@ verify() {
     [ "$(cat "$GOVERNOR_FILE" 2>/dev/null)" = "performance" ] && ok "CPU governor = performance" ||
         bad "governor is '$(cat "$GOVERNOR_FILE" 2>/dev/null || echo unknown)' (expected performance)"
     systemctl is-active --quiet xmrig && ok "service 'xmrig' is active" || bad "service 'xmrig' not active"
+    # #78: the BIOS/firmware advisory reads the board/BIOS identity from /sys/class/dmi/id on real hardware.
+    printf '%s' "$doc" | grep -q "Firmware:" &&
+        ok "doctor prints the BIOS/firmware context (#78: $(printf '%s' "$doc" | grep -oE 'BIOS [^ ]+' | head -1))" ||
+        bad "doctor printed no firmware context line (#78) — is /sys/class/dmi/id readable?"
 
     phase "verify — live pool (the worker actually connects and submits a share)"
     systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
@@ -192,6 +196,20 @@ verify() {
     else
         bad "tune failed (see /tmp/e2e-tune.log):"
         tail -5 /tmp/e2e-tune.log >&2
+    fi
+
+    phase "verify — efficiency-target tune (#79)"
+    # With the built-in RAPL source available, 'tune --efficiency' optimizes hashrate-per-watt and records
+    # the target. Proves the efficiency path runs on real hardware (no fall-back to perf).
+    if TUNE_BENCH=1M TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
+        TUNE_ONEGB=true TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune --efficiency >/tmp/e2e-eff.log 2>&1; then
+        tj="$(find "$HERE" -path '*worker*' -name 'rigforge-tune.json' 2>/dev/null | head -1)"
+        [ "$(jq -r '.target' "$tj" 2>/dev/null)" = efficiency ] &&
+            ok "tune --efficiency optimized hashrate-per-watt on real hardware (#79)" ||
+            bad "tune --efficiency didn't record target=efficiency (#79: fell back to perf? — see /tmp/e2e-eff.log)"
+    else
+        bad "tune --efficiency failed (see /tmp/e2e-eff.log):"
+        tail -5 /tmp/e2e-eff.log >&2
     fi
 
     phase "verify — live A/B confirm (#64)"

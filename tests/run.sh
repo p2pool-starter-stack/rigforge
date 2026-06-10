@@ -39,6 +39,28 @@ assert_rc() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected rc $3, g
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
+# HARDWARE INDEPENDENCE. The suite must give identical results on ANY machine — a cloud CI VM, a dev
+# laptop, or a real mining rig that actually has RAPL / DMI / SMT / reserved HugePages. So point every
+# hardware + firmware probe rigforge reads at a non-existent path (or a missing command) by default: a
+# test then reads NOTHING from the host's real hardware unless it explicitly supplies a fake. Individual
+# tests override these with controlled fakes where they need a specific value. Exported so the black-box
+# `bash "$SCRIPT" ...` runs inherit them; per-test `VAR=... run` prefixes and in-subshell sets still win.
+NOHW="$SANDBOX/no-hardware" # nothing is created here on purpose — every path below is meant to not exist
+export MEMINFO="$NOHW/meminfo"
+export MSR_MODULE_DIR="$NOHW/msr-module"
+export GOVERNOR_FILE="$NOHW/governor"
+export HUGEPAGES_1G_NR="$NOHW/nr_1g"
+export HUGEPAGES_1G_DIR="$NOHW/hugepages1G"
+export CPUFREQ_MAX="$NOHW/cpufreq_max"
+export CPU_SYSFS="$NOHW/cpu"
+export RAPL_DIR="$NOHW/powercap"
+export DMI_DIR="$NOHW/dmi"
+export SMT_CONTROL="$NOHW/smt"
+export THERMAL_ZONE="$NOHW/thermal"
+export CPUINFO="$NOHW/cpuinfo"            # util/proposed-grub.sh
+export DMIDECODE="$NOHW/dmidecode-absent" # absolute path that isn't an executable -> `command -v` fails
+export RDMSR_BIN="$NOHW/rdmsr-absent"
+
 # jq helpers: J = raw scalar, JC = compact (for arrays).
 J() { jq -r "$2" "$1"; }
 JC() { jq -c "$2" "$1"; }
@@ -1350,6 +1372,49 @@ chmod +x "$DOC/dmidecode_empty"
 out="$(DMIDECODE="$DOC/dmidecode_empty" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_contains "doctor: RAM-unreadable note when dmidecode is empty (#67)" "$out" "RAM layout not readable"
 
+# #78: doctor's BIOS/firmware advisory — board/BIOS context, XMP/EXPO off (rated > configured RAM speed),
+# and SMT off. Detect-and-recommend only (RigForge can't change BIOS from the OS), so it's all advisory
+# and degrades gracefully when the sysfs/dmidecode probes aren't available. Fakes drive each path.
+echo "== unit: doctor BIOS/firmware advisory (#78) =="
+mkdir -p "$DOC/dmi"
+printf 'ASUSTeK' >"$DOC/dmi/board_vendor"
+printf 'TUF B650-E' >"$DOC/dmi/board_name"
+printf '2613' >"$DOC/dmi/bios_version"
+printf '04/12/2024' >"$DOC/dmi/bios_date"
+printf 'off\n' >"$DOC/smt_off"
+printf 'on\n' >"$DOC/smt_on"
+# rated (Speed) > configured -> memory profile not enabled
+cat >"$DOC/dmidecode_xmpoff" <<'EOF'
+#!/usr/bin/env bash
+printf 'Memory Device\n\tSize: 16 GB\n\tBank Locator: P0 CHANNEL A\n\tSpeed: 6000 MT/s\n\tConfigured Memory Speed: 4800 MT/s\nMemory Device\n\tSize: 16 GB\n\tBank Locator: P0 CHANNEL B\n\tSpeed: 6000 MT/s\n\tConfigured Memory Speed: 4800 MT/s\n'
+EOF
+# rated == configured -> profile on
+cat >"$DOC/dmidecode_xmpon" <<'EOF'
+#!/usr/bin/env bash
+printf 'Memory Device\n\tSize: 16 GB\n\tBank Locator: P0 CHANNEL A\n\tSpeed: 6000 MT/s\n\tConfigured Memory Speed: 6000 MT/s\nMemory Device\n\tSize: 16 GB\n\tBank Locator: P0 CHANNEL B\n\tSpeed: 6000 MT/s\n\tConfigured Memory Speed: 6000 MT/s\n'
+EOF
+chmod +x "$DOC/dmidecode_xmpoff" "$DOC/dmidecode_xmpon"
+# All three fire: context line, XMP/EXPO off, SMT off.
+out="$(DMI_DIR="$DOC/dmi" SMT_CONTROL="$DOC/smt_off" DMIDECODE="$DOC/dmidecode_xmpoff" \
+    CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS="$DOC/cpu_ok" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: prints board/BIOS context (#78)" "$out" "BIOS 2613"
+assert_contains "doctor: firmware advisory is manual-only (#78)" "$out" "RigForge can't change them from the OS"
+assert_contains "doctor: XMP/EXPO off shows rated vs configured (#78)" "$out" "4800 MT/s but the modules are rated for 6000"
+assert_contains "doctor: recommends enabling the memory profile (#78)" "$out" "enable the memory profile (XMP / EXPO / DOCP)"
+assert_contains "doctor: SMT off -> recommend enabling (#78)" "$out" "SMT/Hyper-Threading is disabled"
+# Profile on + SMT on -> neither warning fires.
+out="$(DMI_DIR="$DOC/dmi" SMT_CONTROL="$DOC/smt_on" DMIDECODE="$DOC/dmidecode_xmpon" \
+    CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS="$DOC/cpu_ok" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_absent "doctor: memory profile on -> no XMP warning (#78)" "$out" "enable the memory profile"
+assert_absent "doctor: SMT on -> no SMT warning (#78)" "$out" "SMT/Hyper-Threading is disabled"
+assert_contains "doctor: still prints the firmware context line (#78)" "$out" "BIOS 2613"
+# DMI + SMT unreadable -> no context line, no crash (graceful degradation).
+out="$(DMI_DIR="/nonexistent-dmi" SMT_CONTROL="/nonexistent-smt" DMIDECODE="$DOC/dmidecode_xmpon" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_absent "doctor: no firmware context when DMI unreadable (#78)" "$out" "Firmware:"
+
 # #66: doctor verifies the MSR mod ACTUALLY applied — XMRig's log line confirms the write, and (when
 # rdmsr/msr-tools is present AND doctor runs as root) a register read-back catches a write a
 # hypervisor/lockdown silently dropped. The read-back is gated on root, and "couldn't read" is kept
@@ -1802,6 +1867,74 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETC
     TUNE_THREADS=-1 RAPL_DIR="$PWR" RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
 assert_rc "RAPL-path tune exits 0 (#81)" "$?" "0"
 assert_eq "RAPL path records a watts field without TUNE_POWER_CMD (#81)" "$(J "$TLOG" '.results[0] | has("watts")')" "true"
+
+# #79: the efficiency target ranks candidates by hashrate-per-watt instead of raw H/s. Unit-test the gate
+# directly: a slower-but-more-efficient candidate is rejected under perf and accepted under efficiency.
+echo "== unit: efficiency-target acceptance gate (#79) =="
+AT2="$(mktemp -d "$SANDBOX/acc.XXXXXX")"
+printf 'cand\t0\nbest\t0\n' >"$AT2/sd" # zero sample noise so only the metric matters
+: >"$AT2/thr"
+printf 'cand\t10.0\nbest\t8.0\n' >"$AT2/hpw" # cand is slower (1000<1200) but more efficient (10>8 hpw)
+acc() {                                      # <target>; cand=1000H/s/10hpw vs best=1200H/s/8hpw
+    (
+        source "$SCRIPT"
+        TUNE_TARGET="$1"
+        TUNE_MIN_DELTA=0.01
+        TUNE_SIGMA=0
+        MEMO_SD_FILE="$AT2/sd"
+        MEMO_THROTTLE_FILE="$AT2/thr"
+        MEMO_HPW_FILE="$AT2/hpw"
+        set +e
+        _accept_better 1000 cand 1200 best && echo accept || echo reject
+    )
+}
+assert_eq "perf: a slower candidate is rejected (#79)" "$(acc perf)" "reject"
+assert_eq "efficiency: a more-efficient candidate is accepted (#79)" "$(acc efficiency)" "accept"
+
+# #79: end-to-end — with power that makes prefetch=1 more efficient (1000 H/s @ 100 W = 10 hpw) than
+# prefetch=2 (1200 H/s @ 200 W = 6 hpw), perf picks the faster prefetch=2 and efficiency picks prefetch=1.
+echo "== black-box: efficiency winner differs from perf winner (#79) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+if [ "$m" = 2 ]; then echo 200 >"$PWF"; hr=1200; else echo 100 >"$PWF"; hr=1000; fi
+echo "speed $hr.0 H/s max $hr.0 H/s"
+sleep "${PWR_SLEEP:-0.8}" # stay loaded so the poll loop's (correct) power samples dominate the up-front one
+EOF
+chmod +x "$BD/xmrig"
+PWF="$TN/pwf"
+printf '150\n' >"$PWF"
+effrun() { # <--perf|--efficiency>
+    rm -f "$OVR"
+    (cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false \
+        TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 PWF="$PWF" PWR_SLEEP=0.8 TUNE_POWER_CMD='cat "$PWF"' \
+        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune "$1" </dev/null 2>&1)
+}
+out="$(effrun --perf)"
+assert_rc "perf tune exits 0 (#79)" "$?" "0"
+assert_eq "perf picks the faster prefetch=2 (#79)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+out="$(effrun --efficiency)"
+assert_eq "efficiency picks the more-efficient prefetch=1 (#79)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
+assert_eq "efficiency tune records target=efficiency (#79)" "$(J "$TLOG" '.target')" "efficiency"
+
+# #79: efficiency needs a power source — without RAPL or TUNE_POWER_CMD it warns and falls back to perf.
+echo "== black-box: tune --efficiency falls back without a power source (#79) =="
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "speed 1100.0 H/s max 1100.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+rm -f "$OVR"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false \
+    TUNE_THREADS=-1 RAPL_DIR="/nonexistent-rapl" RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --efficiency </dev/null 2>&1)"
+assert_rc "efficiency-fallback tune exits 0 (#79)" "$?" "0"
+assert_contains "efficiency without power warns + falls back (#79)" "$out" "needs a power source"
+assert_eq "efficiency fallback records target=perf (#79)" "$(J "$TLOG" '.target')" "perf"
 
 # #54: live tuning measures the running miner via the API instead of --bench, then applies the winner.
 # API is stubbed to a constant so no knob wins; the search stays at the seed and the winner is applied.
