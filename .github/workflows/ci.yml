@@ -52,6 +52,28 @@ jobs:
       - name: Run test suite
         run: bash tests/run.sh
 
+  test-macos:
+    name: Test suite (macOS)
+    runs-on: macos-14 # Apple silicon; pinned (not macos-latest) to avoid image drift
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # The Linux job only SIMULATES macOS (STUB_UNAME_S=Darwin + stubbed sed/launchctl). Here the suite
+      # runs on real macOS, natively exercising the Darwin paths — BSD `sed` (the donate.h patch), the
+      # macOS config profile, `mac_*` process control + the launchd login agent, and BSD `tar`/`date`
+      # backup/restore (#69). Also run under Apple's bash 3.2 (/bin/bash) to hold the line on the
+      # bash-3.2 portability CONTRIBUTING promises — our bash-5 Ubuntu CI can't catch that.
+      - name: Install jq
+        run: brew list jq >/dev/null 2>&1 || brew install jq
+      - name: Run test suite
+        run: bash tests/run.sh
+      - name: Run test suite under Apple's bash 3.2
+        run: /bin/bash tests/run.sh
+      # Native macOS e2e (#69 layer 2): the REAL rigforge.sh end to end with only brew/git/cmake/make
+      # stubbed — real BSD sed, the macOS config profile, real nohup/PID control, real launchctl
+      # enable/disable (headless-tolerant), and BSD tar/date backup/restore.
+      - name: Run native macOS e2e
+        run: bash tests/e2e/macos.sh
+
   e2e:
     name: End-to-end (Docker)
     runs-on: ubuntu-24.04

@@ -74,6 +74,27 @@ All notable changes to RigForge are documented here. The format is based on
   XMRig and so can't prove the shipped binary actually starts and hashes; this does. `bench` now also
   fails loudly — surfacing the XMRig output — on `MEMORY ALLOC FAILED` or a config-parse error, not
   just on a missing hashrate. Documented as a required step in RELEASING.md; kept out of CI by design.
+- Full real-hardware release e2e (`tests/e2e-real.sh` / `make e2e-real`), generalizing the bench smoke
+  check: a phased pre-tag gate that runs the genuine deploy on a real Linux rig and asserts each step —
+  `provision` (real deps + XMRig build + tuning + kernel tuning + service) → reboot → `verify` (doctor
+  confirms HugePages/MSR/governor/service, `bench` produces a real hashrate, a short `tune` runs end to
+  end) → `teardown` (`uninstall` + assert a clean revert). This is the "CI does all it can; the release
+  gate does the rest for real" layer — it exercises everything the suites stub. Out of CI by design.
+  Validated end-to-end on a real Ryzen 7800X3D rig, where it found and fixed two bugs the stubbed suites
+  could never catch (#74, #75).
+- Real macOS CI (#69): a `test-macos` job runs the suite on a macos-14 runner (and under Apple's bash
+  3.2) instead of only simulating Darwin via stubs on Linux, plus a **native macOS e2e**
+  (`tests/e2e/macos.sh` / `make test-e2e-macos`) that runs the real `rigforge.sh` end to end with only
+  brew/git/cmake/make stubbed — exercising BSD `sed` (the donate.h patch), the macOS config profile,
+  real `nohup`/PID-file process control, the real `launchctl` login agent (headless-tolerant), and BSD
+  `tar`/`date` `backup`/`restore`.
+- Headless-safe `setup`: dependency installation is non-interactive (an interactive `read` prompt aborted
+  the run on a non-tty stdin under `set -e`) and passes `-o DPkg::Lock::Timeout` so a fresh-boot
+  unattended-upgrades apt lock waits rather than fails (#74).
+- `bench` / `tune --bench` work on real hardware: `xmrig --bench` prints its result then waits for
+  Ctrl+C instead of exiting and block-buffers stdout, and the generated config redirected the result to
+  a log file / would mine / served the API — so the measurement hung. The new `_xmrig_bench` helper runs
+  xmrig against its own `--log-file`, waits for the `benchmark finished` line, then stops it (#75).
 - Pinned, commit-verified XMRig build via `XMRIG_VERSION` / `XMRIG_COMMIT` (#18, #2).
 - `upgrade` command and idempotent re-runs: re-running skips the (slow) recompile and service restart
   when the pinned XMRig is already built; old build archives are pruned so re-runs don't leak disk (#4).

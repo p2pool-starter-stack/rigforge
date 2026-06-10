@@ -882,6 +882,28 @@ rc=$?
 assert_rc "bench exits 0" "$rc" "0"
 assert_contains "bench reports hashrate" "$out" "1234.5 H/s"
 
+# #75: bench must strip `http`, `pools` and `log-file` from the config it hands to `xmrig --bench`. On
+# real hardware `log-file` sends the result off stdout (we capture nothing), `pools` makes XMRig mine
+# after the benchmark, and `http` keeps the API alive — so it never exits and the capture hangs. The
+# generated build config has all three; this fake fails if it still sees any, so a passing bench proves
+# the strip.
+assert_eq "build config has pools + http (precondition)" "$(J "$U/home/worker/xmrig/build/config.json" '(.pools != null) and (.http != null)')" "true"
+cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+if [ -n "$cfg" ] && grep -qE '"(http|pools|log-file)"' "$cfg" 2>/dev/null; then
+    echo "FAIL: bench config still has http/pools/log-file (real xmrig would hang or write elsewhere)"
+    exit 7
+fi
+echo "miner speed 10s/60s/15m 4242.0 n/a n/a H/s max 4242.0 H/s"
+EOF
+chmod +x "$U/home/worker/xmrig/build/xmrig"
+out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
+rc=$?
+assert_rc "bench strips http/pools/log-file (#75)" "$rc" "0"
+assert_contains "bench (stripped) reports hashrate" "$out" "4242.0 H/s"
+
 # #61: the smoke check relies on `bench` failing loudly on a dirty run (so a broken build/config is
 # caught before tagging) and surfacing the XMRig output for diagnosis.
 # (a) XMRig hit MEMORY ALLOC FAILED (dataset/HugePages/memlock) — even with a hashrate present, fail.
@@ -921,6 +943,34 @@ hr="$(printf 'starting\nminer 1100.0 H/s max 1180.5 H/s\n' | (
     _parse_hashrate
 ))"
 assert_eq "parses peak H/s" "$hr" "1180.5"
+
+# #74: `setup` runs headless (release e2e / over ssh), so install_dependencies must auto-install missing
+# packages — an interactive `read` prompt hit EOF on a non-tty stdin and aborted under set -e — and must
+# pass the apt lock-timeout so a fresh-boot unattended-upgrades lock doesn't fail the install.
+echo "== unit: install_dependencies non-interactive auto-install (#74) =="
+DEPT="$(mktemp -d "$SANDBOX/dep.XXXXXX")"
+cat >"$DEPT/dpkg" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in *build-essential*) exit 1 ;; *) exit 0 ;; esac   # build-essential "missing", rest present
+EOF
+cat >"$DEPT/apt-get" <<'EOF'
+#!/usr/bin/env bash
+echo "apt-get $*" >>"$APT_LOG"
+EOF
+printf '#!/usr/bin/env bash\nexit 1\n' >"$DEPT/apt-cache"
+printf '#!/usr/bin/env bash\nexec env "$@"\n' >"$DEPT/sudo" # `env` handles the `sudo VAR=x cmd` prefix
+chmod +x "$DEPT"/*
+APT_LOG="$DEPT/apt.log"
+: >"$APT_LOG"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux REAL_USER=test
+    PATH="$DEPT:$PATH" APT_LOG="$APT_LOG" install_dependencies </dev/null
+) >/dev/null 2>&1
+rc=$?
+assert_rc "install_dependencies exits 0 on a non-tty stdin (#74)" "$rc" "0"
+assert_contains "auto-installs the missing dep (#74)" "$(cat "$APT_LOG")" "build-essential"
+assert_contains "apt waits for the lock, not fail (#74)" "$(cat "$APT_LOG")" "DPkg::Lock::Timeout=300"
 
 # ---------------------------------------------------------------------------
 # When no service was installed (macOS), finish_deployment points the user at 'start' — not a raw

@@ -103,8 +103,10 @@ CI jobs, so `make test` locally is what CI checks.
 make lint        # shellcheck + shfmt the script, utilities, and test scripts
 make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
+make test-e2e-macos # native macOS e2e: real rigforge.sh, real launchctl/nohup/BSD tools (macOS only)
 make coverage    # measure rigforge.sh + util coverage via kcov, enforce the floor (needs Docker)
-make smoke       # release pre-tag gate: real xmrig --bench proves the built worker hashes (manual)
+make smoke       # release pre-tag gate (quick): real xmrig --bench proves the built worker hashes (manual)
+make e2e-real    # release pre-tag gate (full): real build+tune+bench+doctor+uninstall on a rig (root)
 ```
 
 **What `make test` covers** — it sources `rigforge.sh` and exercises its functions in isolation, with
