@@ -8,6 +8,11 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- `doctor` now flags **hashrate-capping hardware** it can't fix but you can (#67): single-channel or
+  slow RAM (parsed from `dmidecode`, run as root) and a power/boost-capped CPU clock (effective clock
+  vs. max boost, checked while the miner is loaded) — since RandomX fast-mode is dataset-latency bound,
+  these silently cost hashrate. Purely advisory, gated on tool/data availability, and degrades to a
+  gentle note when `dmidecode`/sysfs aren't readable.
 - Auto-tuning (#46, #54). `tune` searches for the fastest XMRig knobs for your CPU with an iterative,
   noise-aware coordinate hill-climb: starting from two seeds (XMRig's auto baseline and an educated
   guess) it sweeps the RandomX scratchpad prefetch mode, `cpu.yield`, and the RandomX thread count

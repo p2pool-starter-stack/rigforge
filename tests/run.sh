@@ -1187,6 +1187,10 @@ run_doctor() { # <meminfo> <msr_dir> <governor_file> <nr1g_file>
         MSR_MODULE_DIR="$2"
         GOVERNOR_FILE="$3"
         HUGEPAGES_1G_NR="$4"
+        # #67 advisory probes default to "unavailable"/skip here unless a caller sets them (see the #67 test).
+        DMIDECODE="${DMIDECODE:-/nonexistent}"
+        CPUFREQ_MAX="${CPUFREQ_MAX:-/nonexistent}"
+        CPU_SYSFS="${CPU_SYSFS:-/nonexistent}"
         set +e
         PATH="$STUBS:$PATH" doctor 2>&1
     )
@@ -1232,6 +1236,45 @@ out="$( (
     PATH="$STUBS:$PATH" doctor 2>&1
 ))"
 assert_contains "doctor: log HUGE PAGES below 100% WARN" "$out" "below 100%"
+
+# #67: doctor flags hashrate-capping HARDWARE (advisory) — single-channel/slow RAM (via dmidecode) and a
+# power/boost-capped clock (effective vs max, while mining). Fakes drive both the WARN and OK paths, and
+# the absence of dmidecode is handled gracefully.
+echo "== unit: doctor hashrate-capping hardware (#67) =="
+cat >"$DOC/dmidecode_single" <<'EOF'
+#!/usr/bin/env bash
+printf 'Memory Device\n\tSize: 8 GB\n\tBank Locator: P0 CHANNEL A\n\tSpeed: 2133 MT/s\n\tConfigured Memory Speed: 2133 MT/s\nMemory Device\n\tSize: No Module Installed\n\tBank Locator: P0 CHANNEL B\n'
+EOF
+cat >"$DOC/dmidecode_dual" <<'EOF'
+#!/usr/bin/env bash
+printf 'Memory Device\n\tSize: 16 GB\n\tBank Locator: P0 CHANNEL A\n\tSpeed: 4800 MT/s\n\tConfigured Memory Speed: 6000 MT/s\nMemory Device\n\tSize: 16 GB\n\tBank Locator: P0 CHANNEL B\n\tSpeed: 4800 MT/s\n\tConfigured Memory Speed: 6000 MT/s\n'
+EOF
+chmod +x "$DOC/dmidecode_single" "$DOC/dmidecode_dual"
+printf '5050000\n' >"$DOC/cpufreq_max"
+mkdir -p "$DOC/cpu_throttle/cpu0/cpufreq" "$DOC/cpu_throttle/cpu1/cpufreq" "$DOC/cpu_ok/cpu0/cpufreq"
+printf '3000000\n' >"$DOC/cpu_throttle/cpu0/cpufreq/scaling_cur_freq" # 3000/5050 = 59% -> WARN
+printf '3000000\n' >"$DOC/cpu_throttle/cpu1/cpufreq/scaling_cur_freq"
+printf '4600000\n' >"$DOC/cpu_ok/cpu0/cpufreq/scaling_cur_freq" # 4600/5050 = 91% -> OK
+# single-channel + slow RAM + throttled clock -> warnings
+out="$(DMIDECODE="$DOC/dmidecode_single" CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS="$DOC/cpu_throttle" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: warns single-channel RAM (#67)" "$out" "single-channel"
+assert_contains "doctor: warns slow RAM (#67)" "$out" "RAM speed 2133 MT/s is low"
+assert_contains "doctor: warns throttled clock (#67)" "$out" "59% of"
+# dual-channel + fast RAM + healthy clock -> OK
+out="$(DMIDECODE="$DOC/dmidecode_dual" CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS="$DOC/cpu_ok" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: dual-channel RAM OK (#67)" "$out" "2 channels"
+assert_contains "doctor: RAM speed reported (#67)" "$out" "6000 MT/s"
+assert_contains "doctor: healthy clock OK (#67)" "$out" "91% of max boost"
+# dmidecode unavailable -> graceful advisory note (not a hard failure)
+out="$(DMIDECODE="/nonexistent" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: degrades gracefully w/o dmidecode (#67)" "$out" "dmidecode not found"
+# dmidecode present but empty output (e.g. run as non-root) -> "not readable" note, not a crash
+printf '#!/usr/bin/env bash\n' >"$DOC/dmidecode_empty"
+chmod +x "$DOC/dmidecode_empty"
+out="$(DMIDECODE="$DOC/dmidecode_empty" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: RAM-unreadable note when dmidecode is empty (#67)" "$out" "RAM layout not readable"
 
 # #12: uninstall reverts every system change setup made, idempotently, leaving config.json. The GRUB
 # revert uses GNU `sed -i` so it's exercised in the Docker e2e (real Linux); here we point GRUB_DEFAULT
