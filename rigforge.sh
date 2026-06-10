@@ -1140,14 +1140,9 @@ _rapl_sum() { # <energy_uj|max_energy_range_uj>
 
 # Average watts from a package-energy delta: <e0_uj> <e1_uj> <max_total_uj> <elapsed_s>. Corrects a single
 # counter wrap (e1<e0 -> + max). Empty (never errors under set -e) when inputs are missing or elapsed<=0.
+# One-line awk so kcov attributes its coverage (a multi-line program in a string reads as uncovered).
 _watts_from_energy() {
-    awk -v e0="$1" -v e1="$2" -v mx="$3" -v secs="$4" 'BEGIN {
-        if (e0 == "" || e1 == "" || secs + 0 <= 0) exit
-        d = e1 - e0
-        if (d < 0 && mx + 0 > 0) d += mx
-        if (d < 0) exit
-        printf "%.2f", (d / 1e6) / secs
-    }'
+    awk -v e0="$1" -v e1="$2" -v mx="$3" -v secs="$4" 'BEGIN{if(e0==""||e1==""||secs+0<=0)exit;d=e1-e0;if(d<0&&mx+0>0)d+=mx;if(d<0)exit;printf "%.2f",(d/1e6)/secs}'
 }
 
 # Mean of the numeric args (empty if none) — averages instantaneous power samples over the window.

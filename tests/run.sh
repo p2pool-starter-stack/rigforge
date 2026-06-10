@@ -1780,13 +1780,34 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETC
     TUNE_POWER_CMD='[ -f "$PWR_DONE" ] && echo 50 || echo 200' \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
 assert_rc "power-under-load tune exits 0 (#81)" "$?" "0"
-assert_eq "watts sampled under load (200), not idle (50) (#81)" "$(J "$TLOG" '.results[0].watts == 200')" "true"
-assert_eq "hs_per_watt uses the load watts: 1500/200 = 7.5 (#81)" "$(J "$TLOG" '.results[0].hs_per_watt == 7.5')" "true"
+# Assert the load-vs-idle DISTINCTION, not an exact average: the window samples are ~200 (loaded), so the
+# mean lands well above the 50 W idle floor. (An exact == would be timing-flaky — once the fake exits its
+# PID can linger as a zombie that `kill -0` still sees, slipping one idle sample into the mean.) The old
+# bug sampled only after the kill, so it recorded ~50; the fix records load-side power (>100).
+assert_eq "watts sampled under load (>100), not idle (~50) (#81)" "$(J "$TLOG" '.results[0].watts > 100')" "true"
+assert_eq "hs_per_watt reflects load power (1500/load < 15, vs 1500/50=30 idle) (#81)" "$(J "$TLOG" '.results[0].hs_per_watt < 15')" "true"
+
+# #81: exercise the built-in RAPL path end-to-end with NO TUNE_POWER_CMD — the fake powercap tree ($PWR,
+# from the helper unit test) makes the energy readable, so the energy-delta branch runs and records a
+# watts field. (The arithmetic is unit-tested above; this proves the wiring is used by default and that a
+# static counter — zero delta — degrades to null rather than erroring.)
+echo "== black-box: tune built-in RAPL power path (#81) =="
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "speed 1300.0 H/s max 1300.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+rm -f "$OVR"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false \
+    TUNE_THREADS=-1 RAPL_DIR="$PWR" RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+assert_rc "RAPL-path tune exits 0 (#81)" "$?" "0"
+assert_eq "RAPL path records a watts field without TUNE_POWER_CMD (#81)" "$(J "$TLOG" '.results[0] | has("watts")')" "true"
 
 # #54: live tuning measures the running miner via the API instead of --bench, then applies the winner.
 # API is stubbed to a constant so no knob wins; the search stays at the seed and the winner is applied.
 echo "== black-box: tune --live (API-measured) (#54) =="
-out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
+# RAPL_DIR points the built-in power reader at the fake powercap tree, so #81's live RAPL branch runs too.
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" RAPL_DIR="$PWR" \
     API_CMD='echo 1500' TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
     TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
@@ -1795,6 +1816,13 @@ assert_eq "live log records mode=live" "$(J "$TLOG" '.mode')" "live"
 assert_contains "live tune applies the winner" "$out" "Applied the winning config to the live miner"
 # --live measures the real pool algorithm, so it must NOT print the rx/0-only bench caveat.
 assert_absent "live mode omits the rx/0 bench note" "$out" "measures Monero's RandomX"
+# #81: live mode also samples power — with TUNE_POWER_CMD it averages watts alongside the API samples.
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
+    API_CMD='echo 1500' TUNE_POWER_CMD='echo 90' TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=2 \
+    TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
+assert_rc "live power tune exits 0 (#81)" "$?" "0"
+assert_eq "live mode records watts via TUNE_POWER_CMD (#81)" "$(J "$TLOG" '.results[0].watts == 90')" "true"
 # tune --live is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_rc "tune --live rejected on non-Linux" "$?" "1"
