@@ -171,7 +171,10 @@ check_prerequisites() {
         else
             log "Installing prerequisite: jq..."
             if command -v apt-get &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq jq
+                # This is often the FIRST apt call on a fresh boot, so carry the same DPkg::Lock::Timeout
+                # as install_dependencies (#74) — otherwise an unattended-upgrades lock fails it outright.
+                sudo apt-get update -qq -o DPkg::Lock::Timeout=300 &&
+                    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300 jq
             elif command -v dnf &>/dev/null; then
                 sudo dnf install -y -q jq
             elif command -v pacman &>/dev/null; then
@@ -217,14 +220,11 @@ parse_config() {
         error "$CONFIG_JSON is not valid JSON."
     fi
 
-    # HOME_DIR becomes a filesystem path we mkdir/cd/write under (with sudo), so validate it: either the
-    # sentinel DYNAMIC_HOME or a clean absolute path (no spaces, metacharacters, or traversal tricks).
+    # HOME_DIR becomes a filesystem path we mkdir/cd/write under (with sudo), so validate it via the
+    # shared resolver (the same one the privileged uninstall/backup/restore use, so none of them can act
+    # on an unvalidated path).
     RAW_HOME=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON")
-    if [ "$RAW_HOME" == "DYNAMIC_HOME" ]; then
-        WORKER_ROOT="$SCRIPT_DIR/data/worker"
-    elif [[ "$RAW_HOME" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$RAW_HOME" != *..* ]]; then
-        WORKER_ROOT="$RAW_HOME/worker"
-    else
+    if ! WORKER_ROOT=$(_worker_root_for_home "$RAW_HOME"); then
         error "HOME_DIR must be \"DYNAMIC_HOME\" or an absolute path (letters, digits, . _ - /); got: '$RAW_HOME'."
     fi
     DONATION=$(jq -r '.DONATION // 1' "$CONFIG_JSON")
@@ -393,9 +393,13 @@ install_dependencies() {
             return
         fi
 
+        # $dependencies are PACKAGE names (build-essential, libuv1-dev, gettext-base — most have no
+        # same-named binary), so the package manager is the authority for "is it installed", not
+        # `command -v` (which would both miss header-only -dev packages and let an unrelated PATH binary
+        # mask a genuinely-absent package). Query $check_cmd only.
         local missing_deps=""
         for dep in $dependencies; do
-            if ! command -v "$dep" &>/dev/null && ! $check_cmd "$dep" &>/dev/null; then
+            if ! $check_cmd "$dep" &>/dev/null; then
                 missing_deps="$missing_deps $dep"
             fi
         done
@@ -419,11 +423,18 @@ compile_xmrig() {
         return 0
     fi
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
+    # Remove any partial/stale clone an interrupted or commit-mismatched prior run left behind — otherwise
+    # `git clone` aborts with "destination path 'xmrig' already exists and is not empty".
+    rm -rf xmrig
     git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git
 
-    # Verify we built the exact commit we pinned (supply-chain hardening).
+    # Verify we built the exact commit we pinned (supply-chain hardening). On a mismatch, drop the clone so
+    # the next run starts clean rather than tripping the not-empty error above.
     actual="$(git -C xmrig rev-parse HEAD)"
-    [ "$actual" = "$XMRIG_COMMIT" ] || error "XMRig commit mismatch: expected $XMRIG_COMMIT, got $actual"
+    [ "$actual" = "$XMRIG_COMMIT" ] || {
+        rm -rf xmrig
+        error "XMRig commit mismatch: expected $XMRIG_COMMIT, got $actual"
+    }
     log "Verified XMRig $XMRIG_VERSION at commit $XMRIG_COMMIT"
 
     # Build output goes to a logfile (not /dev/null) so a failed compile is diagnosable; the ERR trap
@@ -630,7 +641,7 @@ generate_xmrig_config() {
         notifempty
         copytruncate
         minsize 50M
-        create 0644 $(whoami) $(whoami)
+        create 0644 $REAL_USER $REAL_USER
     }
 EOF
     fi
@@ -743,6 +754,9 @@ tune_kernel() {
         log "Hardware-optimized HugePages: $REQUIRED_PAGES (2MB pages) calculated."
         sudo sysctl -w vm.nr_hugepages="$REQUIRED_PAGES"
     else
+        # Fallback when proposed-grub.sh is missing: 3072 × 2MB = 6 GB of huge pages — enough for the
+        # ~2.3 GB RandomX dataset plus per-thread scratchpads on a large desktop/server, without over-
+        # reserving on smaller hosts. proposed-grub.sh computes an exact, hardware-sized value instead.
         warn "Utility script not found. Fallback to safe default (3072)."
         sudo sysctl -w vm.nr_hugepages=3072
     fi
@@ -877,16 +891,33 @@ upgrade() {
     fi
 }
 
-# Resolve the worker root from config.json the same way parse_config would, but WITHOUT requiring a
-# valid/complete config (echoes "" when there's no config). Shared by uninstall/doctor/backup/restore.
-_worker_root_from_config() {
-    local raw
-    [ -f "$CONFIG_JSON" ] || return 0
-    raw=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON" 2>/dev/null)
+# Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
+# mkdir / cd / write / `sudo rm -rf` under, so it must be the sentinel DYNAMIC_HOME (or empty/null) or a
+# clean absolute path — no spaces, shell metacharacters, or `..` traversal. Echoes the worker root, or
+# returns 1 (invalid) so every consumer fails closed rather than acting on a typo- or attacker-controlled
+# path. Shared by parse_config and the privileged uninstall/backup/restore/doctor consumers.
+_worker_root_for_home() { # <raw HOME_DIR> -> echoes "<root>", or returns 1 if invalid
+    local raw="$1"
     if [ "$raw" = "DYNAMIC_HOME" ] || [ -z "$raw" ] || [ "$raw" = "null" ]; then
         echo "$SCRIPT_DIR/data/worker"
-    else
+    elif [[ "$raw" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$raw" != *..* ]]; then
         echo "$raw/worker"
+    else
+        return 1
+    fi
+}
+
+# Resolve the worker root from config.json the same way parse_config would, but WITHOUT requiring a
+# valid/complete config (echoes "" when there's no config). Refuses an invalid HOME_DIR (fails closed)
+# so the privileged consumers never act on it. Shared by uninstall/doctor/backup/restore.
+_worker_root_from_config() {
+    local raw root
+    [ -f "$CONFIG_JSON" ] || return 0
+    raw=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON" 2>/dev/null)
+    if root=$(_worker_root_for_home "$raw"); then
+        echo "$root"
+    else
+        error "Refusing to act on $CONFIG_JSON: HOME_DIR ('$raw') is not a clean absolute path. Fix it first."
     fi
 }
 
@@ -2393,8 +2424,8 @@ Usage: $0 [command]
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
   status     show whether the miner is running
   logs       follow the live miner logs
-  start      start the miner (systemd on Linux, a background process on macOS)
-  stop       stop the miner
+  start      start the miner (systemd on Linux, a background process on macOS) [alias: up]
+  stop       stop the miner [alias: down]
   restart    restart the miner
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically

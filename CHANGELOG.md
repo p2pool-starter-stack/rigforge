@@ -150,6 +150,10 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- CI now runs on Node-24 GitHub Actions: `actions/checkout` bumped to v6.0.3 (resolving the Node-20
+  deprecation warning), with pinned `shellcheck` 0.11.0 and `diff-cover` 10.3.0. `util/proposed-grub.sh`
+  now uses `#!/usr/bin/env bash` + `set -uo pipefail` and exact-match argument parsing, matching the rest
+  of the repo. `make help` lists the targets.
 - Hardened the `xmrig` systemd unit with defense-in-depth sandboxing (`NoNewPrivileges`,
   `ProtectSystem=full`, `PrivateTmp`, `ProtectControlGroups`, `LockPersonality`, `ReadWritePaths`
   scoped to the worker root) — chosen to not break the MSR mod, RandomX JIT, or HugePages. `memlock`
@@ -191,6 +195,17 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **Fail-closed worker-root resolution:** `uninstall`/`backup`/`restore` resolved `HOME_DIR` without the
+  validation `parse_config` enforces, so a malformed or hostile `HOME_DIR` could flow into a privileged
+  `sudo rm -rf`. The validation is now shared, and every consumer refuses an invalid `HOME_DIR`.
+- **logrotate ownership:** the rotated `xmrig.log` is now recreated owned by the real operator
+  (`SUDO_USER`), not `whoami` — which is `root` under `sudo ./rigforge.sh` and locked the operator out of
+  a manual run.
+- `compile_xmrig` removes any partial/stale clone before cloning, so a re-run after an interrupted or
+  commit-mismatched build no longer aborts with "destination path already exists".
+- `setup` no longer relies on `command -v` to decide whether a build *package* is installed (meaningless
+  for `-dev`/meta packages) — it queries the package manager directly. The first-boot `jq` bootstrap now
+  carries the same apt lock-timeout as the main dependency install (#74).
 - GRUB configuration now **merges** the HugePage/MSR kernel parameters into the existing
   `GRUB_CMDLINE_LINUX_DEFAULT` instead of overwriting it, preserving other kernel params — a
   boot-safety fix (#19).

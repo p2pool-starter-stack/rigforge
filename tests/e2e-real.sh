@@ -31,11 +31,11 @@ GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 PASS=0
 FAIL=0
 ok() {
-    printf '  \033[32m✓\033[0m %s\n' "$1"
+    printf '  \033[1;32m✓\033[0m %s\n' "$1"
     PASS=$((PASS + 1))
 }
 bad() {
-    printf '  \033[31m✗\033[0m %s\n' "$1" >&2
+    printf '  \033[1;31m✗\033[0m %s\n' "$1" >&2
     FAIL=$((FAIL + 1))
 }
 phase() { printf '\n\033[1m== e2e-real: %s ==\033[0m\n' "$1"; }

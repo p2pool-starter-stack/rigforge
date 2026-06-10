@@ -1,7 +1,13 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
-.PHONY: test test-stack test-e2e test-e2e-macos smoke coverage e2e-real lint fmt
+.PHONY: help test test-stack test-e2e test-e2e-macos smoke coverage e2e-real lint fmt
 
 SHELL_FILES = rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/run.sh tests/e2e/in-container.sh tests/e2e/macos.sh tests/smoke.sh tests/coverage.sh tests/e2e-real.sh
+
+# Keep `make` (no target) running the default dev check; `make help` lists every target.
+.DEFAULT_GOAL := test
+
+help: ## List the available targets
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 test: lint test-stack ## Lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 

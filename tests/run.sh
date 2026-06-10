@@ -837,6 +837,12 @@ rc=$?
 assert_rc "upgrade rebuild exits 0" "$rc" "0"
 assert_contains "upgrade rebuilds on a changed pin" "$out" "Upgraded to XMRig vNEW"
 assert_contains "upgrade nudges to re-tune when overrides exist (#10)" "$out" "consider re-running 'sudo"
+# The nudge is only half the promise — assert the actual carry-over: tune-overrides.json SURVIVES the
+# upgrade and its tuned knob is merged into the regenerated config (the substance of the warning) (#10).
+assert_eq "upgrade keeps tune-overrides.json (tuning carried over) (#10)" \
+    "$([ -f "$UPG/home/worker/tune-overrides.json" ] && echo kept || echo lost)" "kept"
+assert_eq "upgrade re-merges the tuned prefetch into the live config (#10)" \
+    "$(J "$UPG/home/worker/xmrig/build/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" help 2>&1)"
 rc=$?
 assert_rc "help exits 0" "$rc" "0"
@@ -881,6 +887,19 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" RIGFORGE_HOME
 rc=$?
 assert_rc "apply exits 0" "$rc" "0"
 assert_eq "apply regenerated config" "$(J "$U/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
+# The logrotate policy is actually written on a Linux apply, with the directives XMRig needs (it holds
+# the log open, so copytruncate; minsize avoids rotating tiny logs). Asserting the content also guards
+# the create-owner line (see the dedicated owner test below).
+LRF="$U/logrotate/xmrig"
+assert_eq "apply writes the logrotate policy" "$([ -f "$LRF" ] && echo y || echo n)" "y"
+assert_contains "logrotate uses copytruncate" "$(cat "$LRF")" "copytruncate"
+assert_contains "logrotate has a minsize guard" "$(cat "$LRF")" "minsize 50M"
+# #16: the rotated log must be recreated owned by the real operator (SUDO_USER), not by `whoami` — which
+# is root under `sudo ./rigforge.sh` and would lock the operator out of a manual run. Drive a simulated
+# sudo (SUDO_USER set, effective user differs) and assert the operator owns the create line.
+out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" SUDO_USER=rfoperator \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
+assert_contains "logrotate recreates the log owned by the operator, not whoami (#16)" "$(cat "$LRF")" "create 0644 rfoperator rfoperator"
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
@@ -945,6 +964,51 @@ cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
+
+# Security: the privileged consumers (uninstall/backup/restore) resolve the worker root via
+# _worker_root_from_config, which validates HOME_DIR (the same rule as parse_config) and FAILS CLOSED on
+# anything that isn't a clean absolute path — a malformed/hostile HOME_DIR must never reach `sudo rm -rf`.
+echo "== unit: _worker_root_from_config validates HOME_DIR =="
+WV="$(mktemp -d "$SANDBOX/wv.XXXXXX")"
+printf '{ "HOME_DIR": "/opt/rig", "pools":[{"url":"h:3333"}] }\n' >"$WV/good.json"
+printf '{ "HOME_DIR": "/etc; rm -rf /tmp/x", "pools":[{"url":"h:3333"}] }\n' >"$WV/meta.json"
+printf '{ "HOME_DIR": "/opt/../../etc", "pools":[{"url":"h:3333"}] }\n' >"$WV/trav.json"
+wrc() { (
+    source "$SCRIPT"
+    SCRIPT_DIR="$WV"
+    CONFIG_JSON="$1"
+    set +e
+    _worker_root_from_config 2>&1
+); }
+assert_eq "valid HOME_DIR resolves to the worker root" "$(wrc "$WV/good.json")" "/opt/rig/worker"
+assert_contains "HOME_DIR with shell metacharacters is refused" "$(wrc "$WV/meta.json")" "Refusing to act"
+assert_contains "HOME_DIR with .. traversal is refused" "$(wrc "$WV/trav.json")" "Refusing to act"
+
+# The periodic-autotune systemd timer: enabling it (AUTOTUNE=true) writes the .service + .timer; disabling
+# it (AUTOTUNE=false, files present) removes them — both via the SYSTEMD_DIR override the real units use.
+echo "== black-box: install_autotune timer enable/disable =="
+AT="$(mktemp -d "$SANDBOX/at.XXXXXX")"
+mkdir -p "$AT/systemd"
+run_autotune() { # <true|false> [oncalendar]
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$AT"
+        SYSTEMD_DIR="$AT/systemd"
+        AUTOTUNE="$1"
+        AUTOTUNE_ONCALENDAR="${2:-daily}"
+        set +e
+        PATH="$STUBS:$PATH" install_autotune 2>&1
+    )
+}
+out="$(run_autotune true hourly)"
+assert_eq "autotune enable writes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "y"
+assert_eq "autotune enable writes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "y"
+assert_contains "autotune timer honours the OnCalendar override" "$(cat "$AT/systemd/rigforge-autotune.timer")" "OnCalendar=hourly"
+assert_contains "autotune service invokes the autotune verb" "$(cat "$AT/systemd/rigforge-autotune.service")" "rigforge.sh autotune"
+out="$(run_autotune false)"
+assert_eq "autotune disable removes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "n"
+assert_eq "autotune disable removes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "n"
 
 # #11/#46: the shared hashrate parser picks the peak H/s figure.
 echo "== unit: _parse_hashrate (#11) =="
@@ -2034,6 +2098,25 @@ done
 for k in POOL_HOST WORKER_NAME WORKER_CONFIG_FILE; do
     assert_absent "advanced example has no $k key" "$(cat "$ADV")" "\"$k\""
 done
+
+# config.json.template is the copy-me starter (referenced by the docs and shipped in the release bundle).
+# It must be valid JSON, carry an obvious unreplaced placeholder, and be REJECTED by parse_config unedited
+# — so a user can't accidentally deploy the template and mine to a bogus host. (It can drift unnoticed
+# otherwise: unlike config.advanced.example.json, nothing else validates it.)
+echo "== unit: config.json.template (starter) =="
+TPL="$ROOT/config.json.template"
+if jq -e . "$TPL" >/dev/null 2>&1; then ok "config.json.template is valid JSON"; else bad "config.json.template is valid JSON" "jq parse failed"; fi
+assert_contains "template carries an unreplaced pool placeholder" "$(jq -r '.pools[0].url' "$TPL")" "<YOUR_POOL_HOST>"
+TT="$(mktemp -d "$SANDBOX/tpl.XXXXXX")"
+cp "$TPL" "$TT/config.json"
+out="$( (
+    source "$SCRIPT"
+    SCRIPT_DIR="$TT"
+    CONFIG_JSON="$TT/config.json"
+    set +e
+    parse_config 2>&1
+))"
+assert_contains "parse_config rejects the unedited template (no accidental deploy)" "$out" "not a valid hostname"
 
 # ---------------------------------------------------------------------------
 echo ""

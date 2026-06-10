@@ -10,12 +10,12 @@ jobs:
     name: Lint (shellcheck + shfmt)
     runs-on: ubuntu-24.04
     env:
-      SHELLCHECK_VERSION: "0.10.0"
-      SHELLCHECK_SHA256: "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+      SHELLCHECK_VERSION: "0.11.0"
+      SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
       SHFMT_VERSION: "3.13.1"
       SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # Install PINNED, checksum-verified shellcheck + shfmt instead of the runner's preinstalled
       # builds, so lint/format results are reproducible and don't drift with the runner image (#6).
       # Downloaded straight from the upstream releases — no `apt-get update`, avoiding the mirror
@@ -45,7 +45,7 @@ jobs:
     name: Test suite
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # Ubuntu is RigForge's supported target. The suite still exercises the macOS code path here via
       # stubs (OS_TYPE=Darwin + faked sysctl), so the macOS config profile is covered without a Mac
       # runner; contributors on macOS can also run `make test` locally. jq is preinstalled on the runner.
@@ -56,7 +56,7 @@ jobs:
     name: Test suite (macOS)
     runs-on: macos-14 # Apple silicon; pinned (not macos-latest) to avoid image drift
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # The Linux job only SIMULATES macOS (STUB_UNAME_S=Darwin + stubbed sed/launchctl). Here the suite
       # runs on real macOS, natively exercising the Darwin paths — BSD `sed` (the donate.h patch), the
       # macOS config profile, `mac_*` process control + the launchd login agent, and BSD `tar`/`date`
@@ -78,7 +78,7 @@ jobs:
     name: End-to-end (Docker)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
       # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
       - name: Run end-to-end suite
@@ -89,10 +89,10 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       # Pin diff-cover (the patch-coverage gate); kcov + jq are pinned inside tests/coverage.sh.
-      DIFF_COVER_VERSION: "9.7.2"
+      DIFF_COVER_VERSION: "10.3.0"
       PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0 # diff-cover needs history to diff the PR against origin/main
       - name: Fetch base branch for diff-cover
