@@ -1453,6 +1453,42 @@ assert_rc "min-delta tune exits 0" "$?" "0"
 assert_eq "min-delta keeps the seed prefetch" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
 assert_eq "min-delta leaves threads at auto (rx unpinned)" "$(J "$OVR" '.cpu.rx // "absent"')" "absent"
 
+# #63: variance-aware acceptance. A noisy fake returns 5 samples per candidate spread ±10 (median 100 for
+# prefetch=1, 102 for prefetch=2) — a 2% median "win" that clears the 1% TUNE_MIN_DELTA floor but sits
+# WITHIN the sample-noise band (combined sd ≈ 10). With the band ON it must be rejected (no phantom
+# adoption); with TUNE_SIGMA=0 the same win is adopted — proving the band is what rejected it.
+echo "== black-box: tune variance-aware acceptance gate (#63) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+ctr="$CTRDIR/$m"
+i=$(cat "$ctr" 2>/dev/null || echo 0)
+i=$((i + 1))
+echo "$i" >"$ctr"
+case "$m" in 2) c=102 ;; 1) c=100 ;; *) c=98 ;; esac
+case "$i" in 1) v=$((c - 10)) ;; 2) v=$((c - 5)) ;; 3) v=$c ;; 4) v=$((c + 5)) ;; 5) v=$((c + 10)) ;; *) v=$c ;; esac
+echo "speed $v.0 H/s max $v.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+CTRDIR="$TN/ctr"
+mkdir -p "$CTRDIR"
+tune_variance() { # <sigma>; resets the per-candidate counters and runs a fixed prefetch sweep
+    rm -f "$CTRDIR"/* 2>/dev/null
+    (cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=5 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" \
+        TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MIN_DELTA=0.01 TUNE_SIGMA="$1" CTRDIR="$CTRDIR" \
+        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)
+}
+out="$(tune_variance 1)"
+assert_rc "variance tune exits 0" "$?" "0"
+assert_eq "variance gate rejects a within-noise win (#63)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
+out="$(tune_variance 0)"
+assert_eq "TUNE_SIGMA=0 lets the same win through (#63 control)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+
 # #54: when 1G HugePages ARE reserved, the 1gb-pages knob is swept and pinned in the overrides. Point
 # HUGEPAGES_1G_NR at a fake sysfs node reporting reserved pages; the fake xmrig rewards 1gb-pages=true.
 echo "== black-box: tune 1gb-pages knob when reserved (#54) =="

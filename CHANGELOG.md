@@ -8,6 +8,11 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- Variance-aware tune acceptance (#63): `tune` now adopts a candidate only when its median beats the
+  current best by both the `TUNE_MIN_DELTA` floor **and** more than the combined sample-noise band
+  (`TUNE_SIGMA` × √(sd_cand² + sd_best²)), instead of a fixed relative delta alone — so jitter on noisy
+  hardware can't trigger a phantom adoption. Each candidate's sample stddev is recorded in
+  `rigforge-tune.json`. Applies to both the hill-climb and grid searches.
 - `doctor` now flags **hashrate-capping hardware** it can't fix but you can (#67): single-channel or
   slow RAM (parsed from `dmidecode`, run as root) and a power/boost-capped CPU clock (effective clock
   vs. max boost, checked while the miner is loaded) — since RandomX fast-mode is dataset-latency bound,

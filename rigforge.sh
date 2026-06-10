@@ -987,6 +987,7 @@ TUNE_BASE=""
 TUNE_BIN=""
 TUNE_OVERRIDES=""
 MEMO_FILE=""
+MEMO_SD_FILE="" # per-candidate sample stddev, for the variance-aware acceptance gate (#63)
 RESULTS_FILE=""
 TUNE_MODE=""
 S_p=""
@@ -1022,6 +1023,23 @@ _median() {
 # hill-climb — which revisits the current point as it sweeps each knob — never re-benchmarks a combo.
 _memo_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_FILE" 2>/dev/null; }
 _memo_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_FILE"; }
+# Parallel store for each candidate's sample stddev (kept out of the median memo so its value stays a
+# bare number for every existing caller), and the state's memo key (#63).
+_memo_sd_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_SD_FILE" 2>/dev/null; }
+_memo_sd_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_SD_FILE"; }
+_state_key() { printf '%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq"; }
+# Population stddev of the args (0 with fewer than 2).
+_stddev() {
+    printf '%s\n' "$@" | awk '{ s += $1; ss += $1 * $1; n++ } END { if (n < 2) { print 0; exit } m = s / n; v = ss / n - m * m; if (v < 0) v = 0; printf "%.4f", sqrt(v) }'
+}
+# Variance-aware acceptance (#63): the candidate wins only if its median beats the best by BOTH the
+# TUNE_MIN_DELTA floor AND more than the combined sample-noise band (TUNE_SIGMA × √(sd_cand²+sd_best²)),
+# so jitter on noisy hardware can't trigger a phantom adoption. sd is looked up by each combo's memo key.
+_accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
+    awk -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+        -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
+        'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
+}
 
 # Best-effort temperature (°C) and power (W) for a hashrate-per-watt view (#54). Both are optional:
 # temp defaults to the standard Linux thermal zone, power is opt-in via TUNE_POWER_CMD (reliable
@@ -1140,20 +1158,22 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         [ -n "$med" ] || med=0
     fi
 
-    local watts temp
+    local sd watts temp
+    sd=$(_stddev "${samples[@]}") # sample spread, for the variance-aware acceptance gate (#63)
     watts=$(_read_watts)
     temp=$(_read_temp)
     jq -cn --argjson p "$p" --argjson y "$y" --arg t "$t" --argjson g "$g" --argjson pr "$pr" \
         --argjson hj "$hj" --argjson cq "$cq" \
-        --argjson med "$med" --arg samples "${samples[*]}" --arg watts "${watts:-}" --arg temp "${temp:-}" '
+        --argjson med "$med" --arg samples "${samples[*]}" --arg sd "${sd:-0}" --arg watts "${watts:-}" --arg temp "${temp:-}" '
         { prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g, priority: $pr,
           "huge-pages-jit": $hj, cache_qos: $cq,
-          hashrate: $med, samples: ($samples|split(" ")|map(tonumber)),
+          hashrate: $med, samples: ($samples|split(" ")|map(tonumber)), stddev: ($sd|tonumber),
           watts: (if $watts=="" then null else ($watts|tonumber) end),
           temp_c: (if $temp=="" then null else ($temp|tonumber) end),
           hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
         >>"$RESULTS_FILE"
     _memo_put "$key" "$med"
+    _memo_sd_put "$key" "${sd:-0}"
     printf '%s' "$med"
 }
 
@@ -1239,8 +1259,9 @@ _hillclimb() {
     # called DIRECTLY (not via $(...)), because a command-substitution subshell would discard the S_*
     # mutations; the memo and results survive regardless because they are file-backed. Progress is
     # logged to stderr to keep stdout clean.
-    local best round=0 improved knob cur best_v best_here v cand
+    local best best_key round=0 improved knob cur best_v best_here best_here_key v cand cand_key
     best=$(_measure_state)
+    best_key=$(_state_key) # #63: track each best's memo key so the gate can read its sample spread
     while [ "$round" -lt "${TUNE_MAX_ROUNDS:-3}" ]; do
         round=$((round + 1))
         improved=0
@@ -1248,20 +1269,24 @@ _hillclimb() {
             cur=$(_knob_get "$knob")
             best_v="$cur"
             best_here="$best"
+            best_here_key="$best_key"
             for v in $(_knob_values "$knob"); do
                 [ "$v" = "$cur" ] && continue
                 _knob_set "$knob" "$v"
                 cand=$(_measure_state)
+                cand_key=$(_state_key) # capture while S_* still holds the candidate
                 _knob_set "$knob" "$cur"
                 log "    try $knob=$v -> $cand H/s" >&2
-                if awk "BEGIN{exit !($cand > $best_here * (1 + ${TUNE_MIN_DELTA:-0.01}))}"; then
+                if _accept_better "$cand" "$cand_key" "$best_here" "$best_here_key"; then
                     best_here="$cand"
                     best_v="$v"
+                    best_here_key="$cand_key"
                 fi
             done
             if [ "$best_v" != "$cur" ]; then
                 _knob_set "$knob" "$best_v"
                 best="$best_here"
+                best_key="$best_here_key"
                 improved=1
                 log "  adopt $knob=$best_v ($best H/s)" >&2
             fi
@@ -1290,8 +1315,9 @@ _gridsearch() {
                             for vcq in $(_knob_values cacheqos); do
                                 hr=$(_measure "$vp" "$vy" "$vt" "$vg" "$vpr" "$vhj" "$vcq")
                                 log "    grid prefetch=$vp yield=$vy threads=$vt 1gb=$vg prio=$vpr hpjit=$vhj cacheqos=$vcq -> $hr H/s" >&2
-                                if awk "BEGIN{exit !($hr > $G_best)}"; then
+                                if [ "$G_best" = "-1" ] || _accept_better "$hr" "$vp|$vy|$vt|$vg|$vpr|$vhj|$vcq" "$G_best" "$G_best_key"; then
                                     G_best="$hr"
+                                    G_best_key="$vp|$vy|$vt|$vg|$vpr|$vhj|$vcq"
                                     G_p="$vp"
                                     G_y="$vy"
                                     G_t="$vt"
@@ -1371,8 +1397,9 @@ tune() {
 
     TUNE_BENCH="${TUNE_BENCH:-10M}" # longer = steadier and closer to sustained load. You tune once and
     # run for months, so the default favors thoroughness over speed; set TUNE_BENCH=1M for a quick pass.
-    TUNE_ITERS="${TUNE_ITERS:-5}" # median of 5 short benches: steadier than 3 against RandomX jitter (#3)
-    TUNE_MIN_DELTA="${TUNE_MIN_DELTA:-0.01}"
+    TUNE_ITERS="${TUNE_ITERS:-5}"            # median of 5 short benches: steadier than 3 against RandomX jitter (#3)
+    TUNE_MIN_DELTA="${TUNE_MIN_DELTA:-0.01}" # minimum relative win (floor)
+    TUNE_SIGMA="${TUNE_SIGMA:-1}"            # #63: also require the win to exceed this × the combined sample noise band
     TUNE_MAX_ROUNDS="${TUNE_MAX_ROUNDS:-3}"
     TUNE_SEARCH="${TUNE_SEARCH:-climb}" # climb = hill-climb (fast); grid = exhaustive (robust, slower) (#6)
     TUNE_SEEDS="${TUNE_SEEDS:-auto guess}"
@@ -1415,8 +1442,10 @@ tune() {
 
     TUNE_TMP=$(mktemp -d)
     MEMO_FILE="$TUNE_TMP/memo"
+    MEMO_SD_FILE="$TUNE_TMP/memo_sd"
     RESULTS_FILE="$TUNE_TMP/results.jsonl"
     : >"$MEMO_FILE"
+    : >"$MEMO_SD_FILE"
     : >"$RESULTS_FILE"
 
     if [ "$TUNE_MODE" = live ]; then
@@ -1437,7 +1466,7 @@ tune() {
         trap '_tune_bench_cleanup' EXIT
     fi
 
-    local G_best="-1" G_p="" G_y="" G_t="" G_g="" G_pr="" G_hj="" G_cq="" seed seed_hr
+    local G_best="-1" G_best_key="" G_p="" G_y="" G_t="" G_g="" G_pr="" G_hj="" G_cq="" seed seed_hr
     if [ "$TUNE_SEARCH" = grid ]; then
         local combos=1 kk
         for kk in $ACTIVE_KNOBS; do combos=$((combos * $(_knob_values "$kk" | wc -w | tr -d ' '))); done
@@ -1457,8 +1486,9 @@ tune() {
             _hillclimb # sets HILL_BEST and leaves S_* at this seed's winner (must NOT run in a subshell)
             seed_hr="$HILL_BEST"
             log "Seed '$seed' best: prefetch=$S_p yield=$S_y threads=$S_t ($seed_hr H/s)"
-            if awk "BEGIN{exit !($seed_hr > $G_best)}"; then
+            if [ "$G_best" = "-1" ] || _accept_better "$seed_hr" "$(_state_key)" "$G_best" "$G_best_key"; then
                 G_best="$seed_hr"
+                G_best_key="$(_state_key)"
                 G_p="$S_p"
                 G_y="$S_y"
                 G_t="$S_t"
