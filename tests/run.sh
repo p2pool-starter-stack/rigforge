@@ -350,6 +350,14 @@ echo "== unit: parse_config — error paths =="
 printf '{ not json ' >"$SANDBOX/bad.json"
 parse_rc "$SANDBOX/bad.json" "$ROOT"
 assert_rc "invalid JSON rejected" "$?" "1"
+# #audit: a MISSING config (e.g. `apply`/`tune` before `setup`) is a clearer error than "not valid JSON".
+miss="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$SANDBOX/nope-missing.json"
+    set +e
+    parse_config 2>&1
+))"
+assert_contains "missing config -> 'run setup first' (not bad-JSON) (#audit)" "$miss" "No configuration at"
 
 # Interactive first-run: ensure_config_exists prompts (y, then the host:port pool URL) and writes a
 # minimal { "pools": [{ "url": ... }] }. A blank or port-less URL aborts and writes nothing.
@@ -1488,6 +1496,23 @@ out="$(reown asroot)"
 assert_contains "reown (root): chowns the worker root to the operator (#audit)" "$out" "[chown] -R rfop:rfop $RW/worker"
 assert_contains "reown (root): chowns config.json to the operator (#audit)" "$out" "[chown] rfop:rfop $RW/config.json"
 assert_eq "reown (non-root): no-op, nothing chowned (#audit)" "$(reown asuser)" ""
+# macOS chowns to the user WITHOUT an explicit group; an unknown OS is a no-op.
+reown_os() { # <OS_TYPE>
+    (
+        source "$SCRIPT"
+        OS_TYPE="$1"
+        REAL_USER=rfop
+        WORKER_ROOT="$RW/worker"
+        CONFIG_JSON="$RW/config.json"
+        export CHOWN_LOG="$RW/chown-os.log"
+        : >"$CHOWN_LOG"
+        set +e
+        PATH="$RW/asroot:$STUBS:$PATH" _reown_worker
+        cat "$CHOWN_LOG"
+    )
+}
+assert_contains "reown (macOS): chowns to the user without a group (#audit)" "$(reown_os Darwin)" "[chown] -R rfop $RW/worker"
+assert_eq "reown (unknown OS): no-op (#audit)" "$(reown_os FreeBSD)" ""
 
 # #66: doctor verifies the MSR mod ACTUALLY applied — XMRig's log line confirms the write, and (when
 # rdmsr/msr-tools is present AND doctor runs as root) a register read-back catches a write a
