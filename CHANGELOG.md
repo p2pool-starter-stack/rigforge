@@ -8,11 +8,18 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- Variance-aware tune acceptance (#63): `tune` now adopts a candidate only when its median beats the
-  current best by both the `TUNE_MIN_DELTA` floor **and** more than the combined sample-noise band
-  (`TUNE_SIGMA` × √(sd_cand² + sd_best²)), instead of a fixed relative delta alone — so jitter on noisy
-  hardware can't trigger a phantom adoption. Each candidate's sample stddev is recorded in
-  `rigforge-tune.json`. Applies to both the hill-climb and grid searches.
+- Trustworthy tuning measurement & decisions (#62, #63, #64):
+  - **Variance-aware acceptance (#63):** `tune` adopts a candidate only when its median beats the best by
+    both the `TUNE_MIN_DELTA` floor **and** more than the combined sample-noise band (`TUNE_SIGMA` ×
+    √(sd_cand² + sd_best²)), so jitter on noisy hardware can't trigger a phantom adoption. Each
+    candidate's stddev is recorded in `rigforge-tune.json`. Applies to the hill-climb and grid searches.
+  - **Thermal-throttle rejection (#62):** the default `--bench` window is already sustained (`TUNE_BENCH`
+    10M ≈ minutes of load); `tune` now samples the effective CPU clock *throughout* each candidate's
+    window and, if it dips below `TUNE_MIN_FREQ_MHZ` (default ~80% of max boost), flags the candidate as
+    **throttled** in the log and never adopts it — so a thermally-throttled reading can't crown a config.
+  - **Live A/B confirm (#64):** `tune --confirm` applies the winner, measures it live, then restores the
+    previous config and measures that, and keeps the winner only if it genuinely wins live (else reverts
+    and reports) — bridging the gap between offline `--bench` conditions and production.
 - `doctor` now flags **hashrate-capping hardware** it can't fix but you can (#67): single-channel or
   slow RAM (parsed from `dmidecode`, run as root) and a power/boost-capped CPU clock (effective clock
   vs. max boost, checked while the miner is loaded) — since RandomX fast-mode is dataset-latency bound,

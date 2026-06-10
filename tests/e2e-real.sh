@@ -139,18 +139,42 @@ verify() {
     fi
     "$RIGFORGE" start >/dev/null 2>&1 || true
 
-    phase "verify — a short real tune (proves the tune pipeline end to end)"
-    # Constrain the search to a single quick candidate so this stays fast (a real tune is a separate,
-    # hours-long operation). We only assert the pipeline runs and writes its result files.
-    if TUNE_BENCH=1M TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
-        "$RIGFORGE" tune >/tmp/e2e-tune.log 2>&1; then
-        local tj
-        tj="$(find "$HERE" -name 'rigforge-tune.json' -o -name 'tune-overrides.json' 2>/dev/null | head -1)"
-        [ -n "$tj" ] && ok "tune completed and wrote results ($(basename "$tj"))" || bad "tune left no result file"
+    phase "verify — a short real tune (pipeline + sustained-clock sampling #62)"
+    # Constrain the search to a couple of quick candidates so this stays fast (a real tune is a separate,
+    # hours-long operation). We assert the pipeline runs, writes its result files, and — proving the #62
+    # effective-clock sampling works on real hardware under load — records a min_freq_mhz per candidate.
+    local tj
+    if TUNE_BENCH=1M TUNE_ITERS=2 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
+        TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune >/tmp/e2e-tune.log 2>&1; then
+        tj="$(find "$HERE" -path '*worker*' -name 'rigforge-tune.json' 2>/dev/null | head -1)"
+        if [ -n "$tj" ]; then
+            ok "tune completed and wrote results ($(basename "$tj"))"
+            [ "$(jq -r '[.results[]|select(.min_freq_mhz!=null)]|length>0' "$tj" 2>/dev/null)" = true ] &&
+                ok "tune sampled the effective clock under load (#62: $(jq -r '[.results[].min_freq_mhz]|min' "$tj") MHz min)" ||
+                bad "tune recorded no effective-clock samples (#62)"
+        else
+            bad "tune left no result file"
+        fi
     else
         bad "tune failed (see /tmp/e2e-tune.log):"
         tail -5 /tmp/e2e-tune.log >&2
     fi
+
+    phase "verify — live A/B confirm (#64)"
+    # A real --confirm round against the live miner: it measures the tuned config, restores the previous
+    # one and measures that, then keeps or reverts. Short windows keep the e2e quick.
+    if TUNE_LIVE_WARMUP="${E2E_AB_WARMUP:-20}" TUNE_LIVE_SAMPLES=2 TUNE_LIVE_INTERVAL=5 TUNE_BENCH=1M \
+        TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+        "$RIGFORGE" tune --confirm >/tmp/e2e-ab.log 2>&1; then
+        grep -qE 'Confirmed:|Reverted:' /tmp/e2e-ab.log &&
+            ok "live A/B confirm ran ($(grep -oE '(Confirmed|Reverted):.*' /tmp/e2e-ab.log | tail -1))" ||
+            bad "live A/B confirm produced no verdict (see /tmp/e2e-ab.log)"
+    else
+        bad "tune --confirm failed (see /tmp/e2e-ab.log):"
+        tail -5 /tmp/e2e-ab.log >&2
+    fi
+    "$RIGFORGE" tune --clear >/dev/null 2>&1 || true # leave the rig on its baseline config
+    "$RIGFORGE" apply >/dev/null 2>&1 || true
     summary "verify"
 }
 

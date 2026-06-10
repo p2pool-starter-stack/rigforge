@@ -987,7 +987,8 @@ TUNE_BASE=""
 TUNE_BIN=""
 TUNE_OVERRIDES=""
 MEMO_FILE=""
-MEMO_SD_FILE="" # per-candidate sample stddev, for the variance-aware acceptance gate (#63)
+MEMO_SD_FILE=""       # per-candidate sample stddev, for the variance-aware acceptance gate (#63)
+MEMO_THROTTLE_FILE="" # per-candidate throttle flag (1/0), for thermal-throttle rejection (#62)
 RESULTS_FILE=""
 TUNE_MODE=""
 S_p=""
@@ -1027,6 +1028,8 @@ _memo_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_FILE"; }
 # bare number for every existing caller), and the state's memo key (#63).
 _memo_sd_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_SD_FILE" 2>/dev/null; }
 _memo_sd_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_SD_FILE"; }
+_memo_thr_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_THROTTLE_FILE" 2>/dev/null; } # #62
+_memo_thr_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_THROTTLE_FILE"; }
 _state_key() { printf '%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq"; }
 # Population stddev of the args (0 with fewer than 2).
 _stddev() {
@@ -1036,6 +1039,8 @@ _stddev() {
 # TUNE_MIN_DELTA floor AND more than the combined sample-noise band (TUNE_SIGMA × √(sd_cand²+sd_best²)),
 # so jitter on noisy hardware can't trigger a phantom adoption. sd is looked up by each combo's memo key.
 _accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
+    # #62: a throttled candidate's reading is unreliable — never adopt it.
+    if [ "$(_memo_thr_get "$2")" = 1 ]; then return 1; fi
     awk -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
         -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
         'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
@@ -1082,7 +1087,7 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
 # there and exits — process-gone ends the loop too). `http`/`pools`/`log-file`/`background` are stripped
 # from the config so xmrig doesn't serve the API, mine, or daemonize. `BENCH_TIMEOUT` bounds a stuck run.
 _xmrig_bench() { # <bin> <bench-size> <config|"">
-    local bin="$1" size="$2" cfg="${3:-}" bcfg="" tmpcfg="" out logf xpid deadline
+    local bin="$1" size="$2" cfg="${3:-}" bcfg="" tmpcfg="" out logf xpid deadline freqs="" f
     out="$(mktemp 2>/dev/null || echo "/tmp/rf-bo-$$")"
     logf="$(mktemp 2>/dev/null || echo "/tmp/rf-bl-$$")"
     if [ -n "$cfg" ] && [ -f "$cfg" ] && command -v jq >/dev/null 2>&1; then
@@ -1092,14 +1097,29 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
     # shellcheck disable=SC2086 # the :+ expansion is an intentional optional word
     "$bin" --bench="$size" ${bcfg:+--config="$bcfg"} --log-file="$logf" >"$out" 2>&1 &
     xpid=$!
+    # #62: when asked, sample the effective CPU clock THROUGHOUT the (sustained) window and keep the min,
+    # so the caller can tell a throttled run from a genuinely slow config. One sample up front covers a
+    # very short (test) run; the poll loop adds samples across a real ~minutes-long benchmark.
+    if [ -n "${BENCH_FREQ_FILE:-}" ]; then
+        f=$(_cpu_eff_khz)
+        [ -n "$f" ] && freqs="$f"
+    fi
     deadline=$(($(date +%s) + ${BENCH_TIMEOUT:-1800}))
     while kill -0 "$xpid" 2>/dev/null; do
         grep -qs 'benchmark finished' "$logf" "$out" && break
         [ "$(date +%s)" -ge "$deadline" ] && break
+        if [ -n "${BENCH_FREQ_FILE:-}" ]; then
+            f=$(_cpu_eff_khz)
+            [ -n "$f" ] && freqs="$freqs $f"
+        fi
         sleep 0.2
     done
     kill "$xpid" 2>/dev/null
     wait "$xpid" 2>/dev/null || true
+    # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
+    # min would mistake for thermal throttling (#62).
+    # shellcheck disable=SC2086 # $freqs is an intentional word-split list of samples
+    if [ -n "${BENCH_FREQ_FILE:-}" ]; then printf '%s' "$(_median $freqs)" >"$BENCH_FREQ_FILE"; fi
     cat "$logf" "$out" 2>/dev/null
     rm -f "$out" "$logf" "$tmpcfg" 2>/dev/null || true
 }
@@ -1141,7 +1161,7 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         return 0
     fi
 
-    local med samples=() s i cfg
+    local med samples=() s i cfg minfk="" bf
     if [ "$TUNE_MODE" = live ]; then
         med=$(_measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq")
         [ -n "$med" ] || med=0
@@ -1150,30 +1170,44 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         cfg="$TUNE_TMP/cand.json"
         _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq"
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
-            s=$(_bench_once "$cfg")
+            : >"$TUNE_TMP/freq" # #62: _xmrig_bench writes the min effective clock seen during this run
+            s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" _bench_once "$cfg")
             [ -n "$s" ] || s=0
             samples+=("$s")
+            bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
+            case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
         done
         med=$(_median "${samples[@]}")
         [ -n "$med" ] || med=0
     fi
+
+    # #62: a candidate whose sustained clock fell below TUNE_MIN_FREQ_MHZ thermally throttled — its number
+    # reflects the throttle, not the config, so flag it (logged + memoized) and never adopt it (gate below).
+    local throttled=0 minfmhz=""
+    if [ -n "$minfk" ] && [ "${TUNE_MIN_FREQ_MHZ:-0}" -gt 0 ] 2>/dev/null; then
+        minfmhz=$((minfk / 1000))
+        if [ "$minfmhz" -lt "$TUNE_MIN_FREQ_MHZ" ]; then throttled=1; fi
+    fi
+    if [ "$throttled" = 1 ]; then warn "  tune: candidate throttled to ${minfmhz} MHz (< ${TUNE_MIN_FREQ_MHZ} MHz min) — reading unreliable, skipping it." >&2; fi
 
     local sd watts temp
     sd=$(_stddev "${samples[@]}") # sample spread, for the variance-aware acceptance gate (#63)
     watts=$(_read_watts)
     temp=$(_read_temp)
     jq -cn --argjson p "$p" --argjson y "$y" --arg t "$t" --argjson g "$g" --argjson pr "$pr" \
-        --argjson hj "$hj" --argjson cq "$cq" \
-        --argjson med "$med" --arg samples "${samples[*]}" --arg sd "${sd:-0}" --arg watts "${watts:-}" --arg temp "${temp:-}" '
+        --argjson hj "$hj" --argjson cq "$cq" --argjson med "$med" --arg samples "${samples[*]}" \
+        --arg sd "${sd:-0}" --arg mf "${minfmhz:-}" --argjson thr "$throttled" --arg watts "${watts:-}" --arg temp "${temp:-}" '
         { prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g, priority: $pr,
           "huge-pages-jit": $hj, cache_qos: $cq,
           hashrate: $med, samples: ($samples|split(" ")|map(tonumber)), stddev: ($sd|tonumber),
+          min_freq_mhz: (if $mf=="" then null else ($mf|tonumber) end), throttled: ($thr==1),
           watts: (if $watts=="" then null else ($watts|tonumber) end),
           temp_c: (if $temp=="" then null else ($temp|tonumber) end),
           hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
         >>"$RESULTS_FILE"
     _memo_put "$key" "$med"
     _memo_sd_put "$key" "${sd:-0}"
+    _memo_thr_put "$key" "$throttled"
     printf '%s' "$med"
 }
 
@@ -1366,12 +1400,14 @@ _seed_guess() {
 tune() {
     local clear=0
     TUNE_MODE="${TUNE_MODE:-bench}"
+    TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
     while [ $# -gt 0 ]; do
         case "$1" in
         --clear) clear=1 ;;
         --live) TUNE_MODE=live ;;
         --bench) TUNE_MODE=bench ;;
-        *) error "Unknown tune option: $1 (use --live, --bench, or --clear)." ;;
+        --confirm) TUNE_CONFIRM=1 ;;
+        *) error "Unknown tune option: $1 (use --live, --bench, --confirm, or --clear)." ;;
         esac
         shift
     done
@@ -1379,6 +1415,8 @@ tune() {
     parse_config # resolves WORKER_ROOT (and validates the config)
     TUNE_OVERRIDES="$WORKER_ROOT/tune-overrides.json"
     local logf="$WORKER_ROOT/rigforge-tune.json"
+    local pre_overrides="" # #64: the overrides in place BEFORE this run, to A/B against and revert to
+    [ -f "$TUNE_OVERRIDES" ] && pre_overrides=$(cat "$TUNE_OVERRIDES" 2>/dev/null)
 
     if [ "$clear" = 1 ]; then
         sudo rm -f "$TUNE_OVERRIDES" "$logf"
@@ -1400,6 +1438,14 @@ tune() {
     TUNE_ITERS="${TUNE_ITERS:-5}"            # median of 5 short benches: steadier than 3 against RandomX jitter (#3)
     TUNE_MIN_DELTA="${TUNE_MIN_DELTA:-0.01}" # minimum relative win (floor)
     TUNE_SIGMA="${TUNE_SIGMA:-1}"            # #63: also require the win to exceed this × the combined sample noise band
+    # #62: a candidate whose effective clock dipped below this during its window thermally throttled and is
+    # skipped. Default ~80% of max boost (all-core RandomX should hold well above that); 0 disables it.
+    if [ -z "${TUNE_MIN_FREQ_MHZ:-}" ]; then
+        local _maxk=""
+        if [ -r "$CPUFREQ_MAX" ]; then _maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null) || _maxk=""; fi
+        if [ -n "$_maxk" ] && [ "$_maxk" -gt 0 ] 2>/dev/null; then TUNE_MIN_FREQ_MHZ=$((_maxk * 80 / 100 / 1000)); fi
+    fi
+    TUNE_MIN_FREQ_MHZ="${TUNE_MIN_FREQ_MHZ:-0}"
     TUNE_MAX_ROUNDS="${TUNE_MAX_ROUNDS:-3}"
     TUNE_SEARCH="${TUNE_SEARCH:-climb}" # climb = hill-climb (fast); grid = exhaustive (robust, slower) (#6)
     TUNE_SEEDS="${TUNE_SEEDS:-auto guess}"
@@ -1443,9 +1489,11 @@ tune() {
     TUNE_TMP=$(mktemp -d)
     MEMO_FILE="$TUNE_TMP/memo"
     MEMO_SD_FILE="$TUNE_TMP/memo_sd"
+    MEMO_THROTTLE_FILE="$TUNE_TMP/memo_throttle"
     RESULTS_FILE="$TUNE_TMP/results.jsonl"
     : >"$MEMO_FILE"
     : >"$MEMO_SD_FILE"
+    : >"$MEMO_THROTTLE_FILE"
     : >"$RESULTS_FILE"
 
     if [ "$TUNE_MODE" = live ]; then
@@ -1536,11 +1584,41 @@ tune() {
     if [ "$G_t" != "-1" ] && [ "$OS_TYPE" = Linux ]; then
         log "Note: cpu.rx is pinned to $G_t threads. HugePages are sized by 'setup'; if 'doctor' later reports HugePages below 100%, re-run 'sudo $0 setup' (reboot) to resize the reservation for this thread count."
     fi
-    if [ "$TUNE_MODE" = live ]; then
+    if [ "$TUNE_CONFIRM" = 1 ] && [ "$OS_TYPE" = Linux ]; then
+        _tune_confirm_live "$ovr" "$pre_overrides"
+    elif [ "$TUNE_MODE" = live ]; then
         apply >/dev/null 2>&1 || true
         log "Applied the winning config to the live miner."
     else
         log "Apply it: sudo $0 apply    (reset anytime with: sudo $0 tune --clear)"
+        [ "$OS_TYPE" = Linux ] && log "Or confirm it live first: sudo $0 tune --confirm"
+    fi
+}
+
+# #64: A/B-confirm the tuned winner against the PREVIOUS config on the live miner. bench/grid measure in
+# offline --bench conditions, which differ from production — so optionally apply the winner, measure it
+# live over a window, then restore the previous config and measure THAT, and keep the winner only if it
+# genuinely wins live (else leave the previous config in place). Reuses _sample_api_median + a margin.
+_tune_confirm_live() { # <winner_overrides_json> <previous_overrides_json>
+    local win_ovr="$1" pre_ovr="$2"
+    local n="${TUNE_LIVE_SAMPLES:-3}" iv="${TUNE_LIVE_INTERVAL:-30}" warm="${TUNE_LIVE_WARMUP:-60}"
+    local margin="${TUNE_CONFIRM_MARGIN:-${TUNE_MIN_DELTA:-0.01}}" win_hr base_hr
+    log "Confirming the tuned config against the previous one on the live miner (A/B)..."
+    apply >/dev/null 2>&1 || true # the winner is already in TUNE_OVERRIDES from the search
+    sleep "$warm"
+    win_hr=$(_sample_api_median "$n" "$iv")
+    [ -n "$win_hr" ] || win_hr=0
+    if [ -n "$pre_ovr" ]; then printf '%s\n' "$pre_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null; else sudo rm -f "$TUNE_OVERRIDES"; fi
+    apply >/dev/null 2>&1 || true
+    sleep "$warm"
+    base_hr=$(_sample_api_median "$n" "$iv")
+    [ -n "$base_hr" ] || base_hr=0
+    if awk "BEGIN{exit !($win_hr > $base_hr * (1 + $margin))}"; then
+        printf '%s\n' "$win_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null
+        apply >/dev/null 2>&1 || true
+        log "Confirmed: the tuned config wins live ($win_hr vs $base_hr H/s) — kept and applied."
+    else
+        log "Reverted: the tuned config did NOT beat the previous one live ($win_hr vs $base_hr H/s) — restored the previous config."
     fi
 }
 
@@ -1992,7 +2070,7 @@ _cpu_eff_khz() {
         sum=$((sum + v))
         n=$((n + 1))
     done
-    [ "$n" -gt 0 ] && echo $((sum / n))
+    if [ "$n" -gt 0 ]; then echo $((sum / n)); fi # always exit 0 (empty output when no data)
 }
 
 doctor() {
@@ -2123,7 +2201,8 @@ Usage: $0 [command]
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   bench      run a one-off 'xmrig --bench' and report the hashrate
   tune       iteratively search the XMRig knobs (prefetch, yield, threads, 1gb-pages) and keep the
-             fastest; '--live' tunes against the running miner, 'tune --clear' resets
+             fastest; '--live' tunes against the running miner, '--confirm' A/B-checks the winner live
+             before keeping it, 'tune --clear' resets
   autotune   one live trial against the running miner (enable periodic runs with autotune:true in config)
   backup     save config.json + tuning to a timestamped archive in ./backups
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
