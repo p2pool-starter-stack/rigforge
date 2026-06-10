@@ -600,6 +600,16 @@ assert_eq "grub --runtime: 2M fallback" "$out" "1234"
 printf '4\n' >"$SANDBOX/nr_4"
 out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 HUGEPAGES_1G_NR="$SANDBOX/nr_4" bash "$PG" --runtime)"
 assert_eq "grub --runtime: 1G allocated" "$out" "154"
+# #65: RX_THREADS overrides the L3-derived estimate so `setup` sizes the reservation for the tuned thread
+# count and `tune` can price a candidate's page need. 1G present: 2M = 128 + RX_THREADS + 10.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RX_THREADS=24 HUGEPAGES_1G_NR="$SANDBOX/nr_4" bash "$PG" --runtime)"
+assert_eq "grub --runtime: RX_THREADS override (#65)" "$out" "162"
+# fallback (no 1G): 1168 + RX_THREADS + 50.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RX_THREADS=24 HUGEPAGES_1G_NR="$SANDBOX/nr_none" bash "$PG" --runtime)"
+assert_eq "grub --runtime: RX_THREADS fallback (#65)" "$out" "1242"
+# A non-positive / garbage RX_THREADS is ignored -> the L3 estimate stands (threads=16 -> 154).
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RX_THREADS=0 HUGEPAGES_1G_NR="$SANDBOX/nr_4" bash "$PG" --runtime)"
+assert_eq "grub --runtime: RX_THREADS=0 falls back to L3 (#65)" "$out" "154"
 
 # ---------------------------------------------------------------------------
 # tune_kernel must MERGE its HugePage/MSR params into the existing GRUB cmdline, not overwrite it
@@ -1276,6 +1286,56 @@ chmod +x "$DOC/dmidecode_empty"
 out="$(DMIDECODE="$DOC/dmidecode_empty" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_contains "doctor: RAM-unreadable note when dmidecode is empty (#67)" "$out" "RAM layout not readable"
 
+# #66: doctor verifies the MSR mod ACTUALLY applied — XMRig's log line confirms the write, and (when
+# rdmsr/msr-tools is present) a register read-back catches a write a hypervisor/lockdown silently dropped.
+echo "== unit: doctor MSR mod verification (#66) =="
+MSRD="$DOC/msr"
+mkdir -p "$MSRD/home/worker"
+printf 'net      use pool ...\n* HUGE PAGES 100%%\nmsr      register values for "ryzen_19h_zen4" preset have been set successfully (1 ms)\n' >"$MSRD/home/worker/xmrig.log"
+cat >"$MSRD/config.json" <<EOF
+{ "HOME_DIR": "$MSRD/home", "pools": [{"url": "h:3333"}] }
+EOF
+# fake rdmsr returning the real Zen4 register values (verified on the 7800X3D rig); -p<cpu> -0 <reg>
+cat >"$DOC/rdmsr_ok" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in 0x*) reg="$a" ;; esac; done
+case "$reg" in
+0xc0011020) echo 0004400000000000 ;; 0xc0011021) echo 0004000000000040 ;;
+0xc0011022) echo 8680000401570000 ;; 0xc001102b) echo 000000002040cc10 ;;
+esac
+EOF
+printf '#!/usr/bin/env bash\necho 0\n' >"$DOC/rdmsr_bad" # a dropped write -> all-zero registers
+chmod +x "$DOC/rdmsr_ok" "$DOC/rdmsr_bad"
+run_doctor_msr() { # <rdmsr_bin>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$MSRD/config.json"
+        MEMINFO="$DOC/meminfo_ok"
+        MSR_MODULE_DIR="$DOC/msrmod"
+        GOVERNOR_FILE="$DOC/gov_perf"
+        HUGEPAGES_1G_NR="$DOC/nr1g"
+        RDMSR_BIN="$1"
+        set +e
+        PATH="$STUBS:$PATH" doctor 2>&1
+    )
+}
+out="$(run_doctor_msr "$DOC/rdmsr_ok")"
+assert_contains "doctor: MSR mod applied per XMRig log (#66)" "$out" "MSR mod applied"
+assert_contains "doctor: names the applied preset (#66)" "$out" "ryzen_19h_zen4"
+assert_contains "doctor: rdmsr verifies the registers (#66)" "$out" "verified via rdmsr (4/4"
+# rdmsr returns the wrong values (write silently dropped) -> mismatch WARN + an issue.
+out="$(run_doctor_msr "$DOC/rdmsr_bad")"
+assert_contains "doctor: rdmsr mismatch WARN (#66)" "$out" "don't match the ryzen_19h_zen4 preset"
+# rdmsr absent -> graceful advisory, not a failure (the log already confirms the write).
+out="$(run_doctor_msr "/nonexistent-rdmsr")"
+assert_contains "doctor: advises msr-tools when rdmsr absent (#66)" "$out" "install msr-tools"
+# A FAILED-to-set log line -> WARN.
+printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/home/worker/xmrig.log"
+out="$(run_doctor_msr "$DOC/rdmsr_ok")"
+assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
+
 # #12: uninstall reverts every system change setup made, idempotently, leaving config.json. The GRUB
 # revert uses GNU `sed -i` so it's exercised in the Docker e2e (real Linux); here we point GRUB_DEFAULT
 # at a nonexistent path so that block is skipped and the test runs on macOS too.
@@ -1329,6 +1389,10 @@ assert_rc "second uninstall exits 0" "$?" "0"
 echo "== black-box: tune (iterative hill-climb, multi-knob) (#54) =="
 TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
 cp "$ROOT/VERSION" "$TN/"
+# Mirror the install layout: proposed-grub.sh sits alongside rigforge.sh, so tune's #65 reservation math
+# (_hugepages_2m_need) can run it from SCRIPT_DIR just like production.
+mkdir -p "$TN/util"
+cp "$ROOT/util/proposed-grub.sh" "$TN/util/" && chmod +x "$TN/util/proposed-grub.sh"
 BD="$TN/home/worker/xmrig/build"
 mkdir -p "$BD"
 # #62: give every tune run in this block a controlled, HEALTHY clock source. The fake xmrig isn't a real
@@ -1619,6 +1683,60 @@ assert_eq "throttled faster candidate not adopted (#62)" "$(J "$OVR" '.randomx.s
 # Throttle OFF: the same faster candidate IS adopted.
 out="$(throttle_run 0)"
 assert_eq "TUNE_MIN_FREQ_MHZ=0 disables the throttle skip (#62 control)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+
+# #66: the opt-in wrmsr knob sweeps MSR presets. A fake whose hashrate depends on randomx.wrmsr proves the
+# knob is swept and the winner pinned; a single value leaves it off (not pinned, but still recorded).
+echo "== black-box: tune wrmsr knob (#66) =="
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true, "wrmsr": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+w=$(jq -r '.randomx.wrmsr' "$cfg" 2>/dev/null)
+base=1000; [ "$w" = false ] && base=1100   # this fake prefers wrmsr=false
+echo "speed $base.0 H/s max $base.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+rm -f "$OVR"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
+    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_WRMSR="true false" \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+assert_rc "wrmsr tune exits 0" "$?" "0"
+assert_eq "wrmsr swept and pinned (#66)" "$(J "$OVR" '.randomx.wrmsr')" "false"
+assert_eq "wrmsr recorded in results (#66)" "$(J "$TLOG" '.results[0] | has("wrmsr")')" "true"
+# Single value -> knob inactive -> not pinned into the overrides (#7-style isolation).
+rm -f "$OVR"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
+    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_WRMSR=true \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+assert_eq "wrmsr not pinned when single-valued (#66)" "$(J "$OVR" '.randomx.wrmsr // "absent"')" "absent"
+
+# #65: reservation-aware thread exploration. With a small HugePages reservation, a thread count whose
+# 2MB-page need exceeds it is recorded as hugepages_capped (ran without full backing = a floor reading),
+# and tune prints an honest note + the documented resize path. need(1)=1168+1+50=1219 (no 1G), so a
+# reservation of 1220 backs up to 2 threads; threads=8 is capped, threads=2 fits.
+echo "== black-box: tune reservation-aware threads (#65) =="
+printf 'HugePages_Total:    1220\n' >"$TN/meminfo_small"
+cat >"$BD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
+EOF
+cat >"$BD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+echo "speed 1000.0 H/s max 1000.0 H/s"
+EOF
+chmod +x "$BD/xmrig"
+rm -f "$OVR"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto MEMINFO="$TN/meminfo_small" \
+    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS="2 8" TUNE_MAX_ROUNDS=1 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+assert_rc "reservation-aware tune exits 0" "$?" "0"
+assert_contains "tune reports the reservation backing limit (#65)" "$out" "backs up to 2 threads"
+assert_eq "threads=8 flagged HugePages-capped (#65)" "$(J "$TLOG" 'any(.results[]; .threads==8 and .hugepages_capped==true)')" "true"
+assert_eq "threads=2 fits the reservation (#65)" "$(J "$TLOG" 'any(.results[]; .threads==2 and .hugepages_capped==true)')" "false"
+assert_contains "tune warns about the capped optimum (#65)" "$out" "HugePages-capped: thread counts {8}"
+assert_contains "tune gives the resize path (#65)" "$out" "RIGFORGE_THREADS=<n>"
 
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"

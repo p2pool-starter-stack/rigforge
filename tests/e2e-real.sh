@@ -89,13 +89,27 @@ provision() {
 verify() {
     require_linux_root verify
     phase "verify — doctor (tuning actually applied)"
-    "$RIGFORGE" doctor || true # doctor is advisory; we assert the specifics ourselves below
+    local doc
+    doc="$("$RIGFORGE" doctor 2>&1 || true)" # doctor is advisory; we assert the specifics ourselves below
+    printf '%s\n' "$doc"
 
     [ "$(hugepages_total)" -gt 0 ] && ok "HugePages reserved (HugePages_Total=$(hugepages_total))" ||
         bad "HugePages NOT reserved — did you reboot after provision?"
     # msr can be a loadable module OR built into the kernel; either way it shows under /sys/module
     # (lsmod only lists loadable modules, so a built-in msr would be a false negative) — match doctor.
     [ -d /sys/module/msr ] && ok "msr available (/sys/module/msr)" || bad "msr not available"
+    # #66: doctor must confirm the MSR mod actually APPLIED (from XMRig's log) and — since setup installs
+    # msr-tools — verify the prefetcher registers hold the preset's values via rdmsr. On the 7800X3D rig
+    # the preset is ryzen_19h_zen4; the verified value table lives in rigforge.sh (_msr_preset_regs).
+    printf '%s' "$doc" | grep -q "MSR mod applied" &&
+        ok "doctor confirms the MSR mod applied (#66)" || bad "doctor didn't confirm the MSR mod applied (#66)"
+    if command -v rdmsr >/dev/null 2>&1; then
+        printf '%s' "$doc" | grep -q "verified via rdmsr" &&
+            ok "doctor verified the MSR registers via rdmsr (#66)" ||
+            bad "doctor's rdmsr register verification did not pass (#66) — see the doctor output above"
+    else
+        bad "rdmsr (msr-tools) missing after setup — the #66 register-level check can't run"
+    fi
     [ "$(cat "$GOVERNOR_FILE" 2>/dev/null)" = "performance" ] && ok "CPU governor = performance" ||
         bad "governor is '$(cat "$GOVERNOR_FILE" 2>/dev/null || echo unknown)' (expected performance)"
     systemctl is-active --quiet xmrig && ok "service 'xmrig' is active" || bad "service 'xmrig' not active"
@@ -145,13 +159,21 @@ verify() {
     # effective-clock sampling works on real hardware under load — records a min_freq_mhz per candidate.
     local tj
     if TUNE_BENCH=1M TUNE_ITERS=2 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
-        TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune >/tmp/e2e-tune.log 2>&1; then
+        TUNE_WRMSR="true false" TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune >/tmp/e2e-tune.log 2>&1; then
         tj="$(find "$HERE" -path '*worker*' -name 'rigforge-tune.json' 2>/dev/null | head -1)"
         if [ -n "$tj" ]; then
             ok "tune completed and wrote results ($(basename "$tj"))"
             [ "$(jq -r '[.results[]|select(.min_freq_mhz!=null)]|length>0' "$tj" 2>/dev/null)" = true ] &&
                 ok "tune sampled the effective clock under load (#62: $(jq -r '[.results[].min_freq_mhz]|min' "$tj") MHz min)" ||
                 bad "tune recorded no effective-clock samples (#62)"
+            # #66: the wrmsr knob was swept (TUNE_WRMSR), so every candidate records its wrmsr value, and
+            # the live MSR write/read of each variant exercises the real msr path under load.
+            [ "$(jq -r '[.results[]|select(has("wrmsr"))]|length>0' "$tj" 2>/dev/null)" = true ] &&
+                ok "tune swept and recorded the wrmsr knob (#66)" || bad "tune didn't record the wrmsr knob (#66)"
+            # #65: the reservation-aware check ran on real hardware — candidates carry hugepages_capped
+            # (false here, since setup sized the reservation to fit; the field's presence proves the wiring).
+            [ "$(jq -r '[.results[]|select(has("hugepages_capped"))]|length>0' "$tj" 2>/dev/null)" = true ] &&
+                ok "tune records the reservation-cap status (#65)" || bad "tune didn't record hugepages_capped (#65)"
         else
             bad "tune left no result file"
         fi

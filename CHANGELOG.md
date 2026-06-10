@@ -8,6 +8,23 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- Hardware-aware tuning knobs: MSR verification & reservation-aware threads (#65, #66):
+  - **MSR mod verification (#66):** `doctor` no longer just checks that the `msr` module loaded — it now
+    confirms the prefetcher mod actually **applied**. It reads XMRig's own log line (`msr register values
+    for "<preset>" … set successfully`) and, when `msr-tools` is present, reads the registers back with
+    `rdmsr` and checks they hold the preset's values (verified against XMRig v6.26.0's table for
+    `ryzen_17h/19h/19h_zen4/1Ah_zen5` and `intel`) — catching a write silently dropped by a hypervisor or
+    kernel lockdown. `setup` now installs `msr-tools` so the check works out of the box.
+  - **Opt-in `wrmsr` tuning knob (#66):** `tune` can sweep the MSR preset as a knob — `TUNE_WRMSR="true
+    false"` (or a preset number) — applied per-bench (no reboot) and pinned to the winner only when it
+    actually wins, like the other off-by-default knobs.
+  - **Reservation-aware thread exploration (#65):** `tune` computes each candidate thread count's 2MB
+    HugePage need (via the same `proposed-grub.sh` math `setup` uses) and flags any candidate that exceeds
+    the current reservation as `hugepages_capped` in `rigforge-tune.json` — it ran *without* full
+    huge-page backing, so its hashrate is a floor, not a fair reading. `tune` reports the capped thread
+    counts and the documented resize path. `setup` now sizes the reservation for the **tuned** thread
+    count (the pinned `cpu.rx`, or an explicit `RIGFORGE_THREADS=<n>`), so `setup` and `tune` stay
+    consistent.
 - Trustworthy tuning measurement & decisions (#62, #63, #64):
   - **Variance-aware acceptance (#63):** `tune` adopts a candidate only when its median beats the best by
     both the `TUNE_MIN_DELTA` floor **and** more than the combined sample-noise band (`TUNE_SIGMA` ×

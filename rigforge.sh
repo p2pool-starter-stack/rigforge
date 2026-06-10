@@ -71,6 +71,7 @@ GOVERNOR_FILE="${GOVERNOR_FILE:-/sys/devices/system/cpu/cpu0/cpufreq/scaling_gov
 HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages}"
 # Hashrate-capping-hardware diagnostics (#67): RAM layout (dmidecode) + effective CPU clock under load.
 DMIDECODE="${DMIDECODE:-dmidecode}"
+RDMSR_BIN="${RDMSR_BIN:-rdmsr}" # msr-tools, for doctor's register-level MSR verification (#66)
 CPUFREQ_MAX="${CPUFREQ_MAX:-/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq}"
 CPU_SYSFS="${CPU_SYSFS:-/sys/devices/system/cpu}"
 MIN_RAM_MTS="${MIN_RAM_MTS:-2666}"   # warn below this configured RAM speed (MT/s)
@@ -369,7 +370,8 @@ install_dependencies() {
         if command -v apt-get &>/dev/null; then
             dependencies="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base"
             if [ "$OS_TYPE" == "Linux" ]; then
-                dependencies="$dependencies linux-tools-common"
+                # msr-tools (rdmsr): lets `doctor` verify the prefetcher MSR mod actually applied (#66).
+                dependencies="$dependencies linux-tools-common msr-tools"
                 if apt-cache show "linux-tools-$(uname -r)" &>/dev/null; then
                     dependencies="$dependencies linux-tools-$(uname -r)"
                 fi
@@ -379,7 +381,7 @@ install_dependencies() {
             install_cmd="sudo apt-get update -qq -o DPkg::Lock::Timeout=300 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300 -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
             check_cmd="dpkg -s"
         elif command -v dnf &>/dev/null; then
-            dependencies="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel"
+            dependencies="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel msr-tools"
             install_cmd="sudo dnf install -y"
             check_cmd="rpm -q"
         elif command -v pacman &>/dev/null; then
@@ -722,10 +724,22 @@ tune_kernel() {
         fi
     fi
 
+    # #65: size the HugePages reservation for the thread count we'll actually run — the tuned cpu.rx if
+    # `tune` pinned one (so setup + tune stay consistent), or an explicit RIGFORGE_THREADS override (the
+    # documented resize-then-re-tune path). Empty => proposed-grub.sh falls back to its L3 estimate.
+    RX_SETUP_THREADS=""
+    if [ -n "${RIGFORGE_THREADS:-}" ]; then
+        RX_SETUP_THREADS="$RIGFORGE_THREADS"
+    elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
+        RX_SETUP_THREADS=$(jq -r '.cpu.rx // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
+    fi
+    case "$RX_SETUP_THREADS" in -1 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
+    [ -n "$RX_SETUP_THREADS" ] && log "Sizing the HugePages reservation for $RX_SETUP_THREADS mining thread(s) (#65)."
+
     log "Applying runtime memory tuning..."
     if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
-        # Calculate exact requirement based on hardware and current 1GB page status
-        REQUIRED_PAGES=$("$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
+        # Calculate exact requirement based on hardware, the tuned thread count, and 1GB page status
+        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
         log "Hardware-optimized HugePages: $REQUIRED_PAGES (2MB pages) calculated."
         sudo sysctl -w vm.nr_hugepages="$REQUIRED_PAGES"
     else
@@ -738,7 +752,7 @@ tune_kernel() {
         # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
         # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
         # clobber other kernel parameters the user/distro set (#19 — boot-safety).
-        MANAGED=$("$SCRIPT_DIR/util/proposed-grub.sh" -q)
+        MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
         MANAGED="${MANAGED#quiet splash }"
 
         CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
@@ -998,7 +1012,9 @@ S_g=""
 S_pr=""
 S_hj=""             # cpu.huge-pages-jit (off by default; swept only if TUNE_HPJIT lists >1 value)
 S_cq=""             # randomx.cache_qos  (off by default; swept only if TUNE_CACHEQOS lists >1 value)
+S_wr=""             # randomx.wrmsr      (off by default; swept only if TUNE_WRMSR lists >1 value) (#66)
 HILL_BEST=""        # set by _hillclimb (its result is returned via this global, not stdout — see below)
+HP_CAP_THREADS=""   # #65: max thread count whose 2MB-page need fits the reservation (empty = check off)
 _TUNE_SVC_STOPPED=0 # set by tune() when it stops the live service for a --bench run (#2)
 
 # Restart the miner that a --bench run stopped, and clean the temp dir. Installed as an EXIT trap by
@@ -1030,7 +1046,7 @@ _memo_sd_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_SD_FILE" 2>
 _memo_sd_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_SD_FILE"; }
 _memo_thr_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_THROTTLE_FILE" 2>/dev/null; } # #62
 _memo_thr_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_THROTTLE_FILE"; }
-_state_key() { printf '%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq"; }
+_state_key() { printf '%s|%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq" "$S_wr"; }
 # Population stddev of the args (0 with fewer than 2).
 _stddev() {
     printf '%s\n' "$@" | awk '{ s += $1; ss += $1 * $1; n++ } END { if (n < 2) { print 0; exit } m = s / n; v = ss / n - m * m; if (v < 0) v = 0; printf "%.4f", sqrt(v) }'
@@ -1065,10 +1081,10 @@ _read_watts() {
 }
 
 # A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
-_tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos>
+_tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
     jq -cn --argjson p "$1" --argjson y "$2" --arg t "$3" --argjson g "$4" --argjson pr "$5" \
-        --argjson hj "$6" --argjson cq "$7" '
-        { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq },
+        --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
+        { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq, wrmsr: $wr },
           cpu: { yield: $y, priority: $pr, "huge-pages-jit": $hj,
                  rx: (if $t == "-1" then -1 else ($t|tonumber) end) } }'
 }
@@ -1134,7 +1150,7 @@ _bench_once() {
 # Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
 # few API samples over steady state and return their median. Heavier than --bench (it restarts the
 # service per candidate) but reflects real-world conditions. Linux-only; reuses _read_api_hashrate.
-_measure_live() { # <prefetch> <yield> <threads> <onegb> <priority>
+_measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
     local tmp
     tmp=$(mktemp)
     _tune_knobs_json "$@" >"$tmp" && sudo cp "$tmp" "$TUNE_OVERRIDES"
@@ -1153,8 +1169,8 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority>
 
 # Measure one candidate (memoized): median over TUNE_ITERS bench runs, or one live window. On a cache
 # miss it also records the candidate — samples, median, and any temp/watts — to the results log.
-_measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> -> echoes median H/s
-    local p="$1" y="$2" t="$3" g="$4" pr="$5" hj="$6" cq="$7" key="$1|$2|$3|$4|$5|$6|$7" cached
+_measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr> -> median H/s
+    local p="$1" y="$2" t="$3" g="$4" pr="$5" hj="$6" cq="$7" wr="$8" key="$1|$2|$3|$4|$5|$6|$7|$8" cached
     cached=$(_memo_get "$key")
     if [ -n "$cached" ]; then
         printf '%s' "$cached"
@@ -1163,12 +1179,12 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
 
     local med samples=() s i cfg minfk="" bf
     if [ "$TUNE_MODE" = live ]; then
-        med=$(_measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq")
+        med=$(_measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
         [ -n "$med" ] || med=0
         samples=("$med")
     else
         cfg="$TUNE_TMP/cand.json"
-        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq"
+        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr"
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
             : >"$TUNE_TMP/freq" # #62: _xmrig_bench writes the min effective clock seen during this run
             s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" _bench_once "$cfg")
@@ -1190,17 +1206,23 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     fi
     if [ "$throttled" = 1 ]; then warn "  tune: candidate throttled to ${minfmhz} MHz (< ${TUNE_MIN_FREQ_MHZ} MHz min) — reading unreliable, skipping it." >&2; fi
 
+    # #65: did this candidate's thread count exceed the HugePages reservation? Recorded per-candidate and
+    # summarized at the end of tune. Only meaningful for a concrete count ("-1" lets XMRig auto-size to fit).
+    local hpcapped=false
+    if [ -n "${HP_CAP_THREADS:-}" ] && [ "$t" != "-1" ] && [ "$t" -gt "$HP_CAP_THREADS" ] 2>/dev/null; then hpcapped=true; fi
+
     local sd watts temp
     sd=$(_stddev "${samples[@]}") # sample spread, for the variance-aware acceptance gate (#63)
     watts=$(_read_watts)
     temp=$(_read_temp)
     jq -cn --argjson p "$p" --argjson y "$y" --arg t "$t" --argjson g "$g" --argjson pr "$pr" \
-        --argjson hj "$hj" --argjson cq "$cq" --argjson med "$med" --arg samples "${samples[*]}" \
-        --arg sd "${sd:-0}" --arg mf "${minfmhz:-}" --argjson thr "$throttled" --arg watts "${watts:-}" --arg temp "${temp:-}" '
+        --argjson hj "$hj" --argjson cq "$cq" --argjson wr "$wr" --argjson med "$med" --arg samples "${samples[*]}" \
+        --arg sd "${sd:-0}" --arg mf "${minfmhz:-}" --argjson thr "$throttled" --arg hpc "$hpcapped" --arg watts "${watts:-}" --arg temp "${temp:-}" '
         { prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g, priority: $pr,
-          "huge-pages-jit": $hj, cache_qos: $cq,
+          "huge-pages-jit": $hj, cache_qos: $cq, wrmsr: $wr,
           hashrate: $med, samples: ($samples|split(" ")|map(tonumber)), stddev: ($sd|tonumber),
           min_freq_mhz: (if $mf=="" then null else ($mf|tonumber) end), throttled: ($thr==1),
+          hugepages_capped: ($hpc=="true"),
           watts: (if $watts=="" then null else ($watts|tonumber) end),
           temp_c: (if $temp=="" then null else ($temp|tonumber) end),
           hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
@@ -1222,23 +1244,37 @@ _knob_values() {
     priority) echo "$TUNE_PRIORITIES" ;;
     hpjit) echo "$TUNE_HPJIT" ;;
     cacheqos) echo "$TUNE_CACHEQOS" ;;
+    wrmsr) echo "$TUNE_WRMSR" ;;
     esac
 }
 _knob_get() {
     case "$1" in
     prefetch) echo "$S_p" ;; yield) echo "$S_y" ;; threads) echo "$S_t" ;;
     onegb) echo "$S_g" ;; priority) echo "$S_pr" ;;
-    hpjit) echo "$S_hj" ;; cacheqos) echo "$S_cq" ;;
+    hpjit) echo "$S_hj" ;; cacheqos) echo "$S_cq" ;; wrmsr) echo "$S_wr" ;;
     esac
 }
 _knob_set() {
     case "$1" in
     prefetch) S_p="$2" ;; yield) S_y="$2" ;; threads) S_t="$2" ;;
     onegb) S_g="$2" ;; priority) S_pr="$2" ;;
-    hpjit) S_hj="$2" ;; cacheqos) S_cq="$2" ;;
+    hpjit) S_hj="$2" ;; cacheqos) S_cq="$2" ;; wrmsr) S_wr="$2" ;;
     esac
 }
-_measure_state() { _measure "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq"; }
+_measure_state() { _measure "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq" "$S_wr"; }
+
+# #65: HugePages-reservation awareness. A thread candidate that needs more 2MB pages than are reserved
+# runs WITHOUT full huge-page backing, so its benchmark is an unfair lower bound. `avail` = the current
+# reservation (HugePages_Total); `need` = proposed-grub.sh's page math for a thread count — the SAME
+# source of truth `setup` uses, so the two never disagree. Both empty/0 when unavailable (e.g. macOS).
+_hugepages_2m_avail() { # echoes the reserved 2MB page count, or nothing (never errors under set -e)
+    [ -r "$MEMINFO" ] || return 0
+    awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null
+}
+_hugepages_2m_need() { # <threads> -> 2MB pages needed (via proposed-grub.sh), empty if unavailable
+    [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] || return 0
+    RX_THREADS="$1" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null
+}
 
 # A sensible RandomX thread count for this CPU (~one thread per 2 MB of L3, clamped to the core count),
 # or empty if it can't be determined. RandomX peaks near L3/2 MB; more threads thrash the cache.
@@ -1339,7 +1375,7 @@ _hillclimb() {
 # contribute one iteration each. Sets the G_* winner globals directly (tune()'s locals, via dynamic
 # scope), so it must be called DIRECTLY, not in a $(...) subshell.
 _gridsearch() {
-    local vp vy vt vg vpr vhj vcq hr
+    local vp vy vt vg vpr vhj vcq vwr hr
     for vp in $(_knob_values prefetch); do
         for vy in $(_knob_values yield); do
             for vt in $(_knob_values threads); do
@@ -1347,19 +1383,22 @@ _gridsearch() {
                     for vpr in $(_knob_values priority); do
                         for vhj in $(_knob_values hpjit); do
                             for vcq in $(_knob_values cacheqos); do
-                                hr=$(_measure "$vp" "$vy" "$vt" "$vg" "$vpr" "$vhj" "$vcq")
-                                log "    grid prefetch=$vp yield=$vy threads=$vt 1gb=$vg prio=$vpr hpjit=$vhj cacheqos=$vcq -> $hr H/s" >&2
-                                if [ "$G_best" = "-1" ] || _accept_better "$hr" "$vp|$vy|$vt|$vg|$vpr|$vhj|$vcq" "$G_best" "$G_best_key"; then
-                                    G_best="$hr"
-                                    G_best_key="$vp|$vy|$vt|$vg|$vpr|$vhj|$vcq"
-                                    G_p="$vp"
-                                    G_y="$vy"
-                                    G_t="$vt"
-                                    G_g="$vg"
-                                    G_pr="$vpr"
-                                    G_hj="$vhj"
-                                    G_cq="$vcq"
-                                fi
+                                for vwr in $(_knob_values wrmsr); do
+                                    hr=$(_measure "$vp" "$vy" "$vt" "$vg" "$vpr" "$vhj" "$vcq" "$vwr")
+                                    log "    grid prefetch=$vp yield=$vy threads=$vt 1gb=$vg prio=$vpr hpjit=$vhj cacheqos=$vcq wrmsr=$vwr -> $hr H/s" >&2
+                                    if [ "$G_best" = "-1" ] || _accept_better "$hr" "$vp|$vy|$vt|$vg|$vpr|$vhj|$vcq|$vwr" "$G_best" "$G_best_key"; then
+                                        G_best="$hr"
+                                        G_best_key="$vp|$vy|$vt|$vg|$vpr|$vhj|$vcq|$vwr"
+                                        G_p="$vp"
+                                        G_y="$vy"
+                                        G_t="$vt"
+                                        G_g="$vg"
+                                        G_pr="$vpr"
+                                        G_hj="$vhj"
+                                        G_cq="$vcq"
+                                        G_wr="$vwr"
+                                    fi
+                                done
                             done
                         done
                     done
@@ -1373,6 +1412,9 @@ _gridsearch() {
 # from what the generated config actually uses (both default false). Shared by the seeds.
 _seed_hj() { jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE"; }
 _seed_cq() { jq -r '.randomx.cache_qos // false' "$TUNE_BASE"; }
+# wrmsr seed: the base config's value as a single token (true/false/number). An array (advanced custom
+# MSRs) isn't a sweepable scalar, so seed from the safe default 'true' and let the operator set TUNE_WRMSR.
+_seed_wr() { jq -r '(.randomx.wrmsr // true) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
 
 # Seed the state with XMRig's auto baseline (the generated config's own values; threads left to auto).
 _seed_auto() {
@@ -1383,6 +1425,7 @@ _seed_auto() {
     S_t="-1"
     S_hj=$(_seed_hj)
     S_cq=$(_seed_cq)
+    S_wr=$(_seed_wr)
 }
 # Seed the state with an educated guess (a different starting point so the climb can escape a local
 # optimum the auto seed lands in): prefetch=2, yield off, threads sized to L3/2 MB.
@@ -1395,6 +1438,7 @@ _seed_guess() {
     [ -n "$S_t" ] || S_t="-1"
     S_hj=$(_seed_hj)
     S_cq=$(_seed_cq)
+    S_wr=$(_seed_wr)
 }
 
 tune() {
@@ -1457,6 +1501,10 @@ tune() {
     # TUNE_HPJIT="false true" (it then gets pinned only if it actually wins).
     TUNE_HPJIT="${TUNE_HPJIT:-$(jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE")}"
     TUNE_CACHEQOS="${TUNE_CACHEQOS:-$(jq -r '.randomx.cache_qos // false' "$TUNE_BASE")}"
+    # randomx.wrmsr (#66): off by default (single value = base config's). XMRig auto-picks a per-family MSR
+    # preset for `true`; sweep alternatives with e.g. TUNE_WRMSR="true false" or a preset number
+    # (TUNE_WRMSR="true 1"). Applied at miner start (no reboot), so it's a fair per-bench candidate.
+    TUNE_WRMSR="${TUNE_WRMSR:-$(_seed_wr)}"
 
     # Thread-count knob: candidates around the L3-derived center (none if L3 can't be read, e.g. macOS).
     THREAD_CENTER=$(_l3_thread_center)
@@ -1464,6 +1512,20 @@ tune() {
         TUNE_THREADS="${TUNE_THREADS:-$(_thread_candidates "$THREAD_CENTER")}"
     else
         TUNE_THREADS="${TUNE_THREADS:--1}"
+    fi
+
+    # #65: the largest thread count whose 2MB-page need still fits the current reservation. Candidates
+    # above it run without full huge-page backing (flagged per-candidate, summarized at the end). Derived
+    # from a single need() probe (the per-thread marginal cost is 1 page). Empty disables the check.
+    HP_CAP_THREADS=""
+    if [ "$OS_TYPE" = Linux ]; then
+        local _hpavail _hpneed1
+        _hpavail=$(_hugepages_2m_avail) || _hpavail=""
+        _hpneed1=$(_hugepages_2m_need 1) || _hpneed1=""
+        if [ -n "$_hpavail" ] && [ "$_hpavail" -gt 0 ] 2>/dev/null && [ -n "$_hpneed1" ] && [ "$_hpneed1" -gt 0 ] 2>/dev/null; then
+            HP_CAP_THREADS=$((_hpavail - (_hpneed1 - 1)))
+            log "HugePages reservation backs up to $HP_CAP_THREADS threads ($_hpavail × 2MB pages reserved)."
+        fi
     fi
 
     # 1gb-pages is reboot-bound (#54): flipping it only matters if the host actually has 1G HugePages
@@ -1481,7 +1543,7 @@ tune() {
     # Active knobs = those with more than one candidate value (the rest are fixed, not searched).
     ACTIVE_KNOBS=""
     local k n
-    for k in prefetch yield threads onegb priority hpjit cacheqos; do
+    for k in prefetch yield threads onegb priority hpjit cacheqos wrmsr; do
         n=$(_knob_values "$k" | wc -w | tr -d ' ')
         [ "$n" -gt 1 ] && ACTIVE_KNOBS="$ACTIVE_KNOBS $k"
     done
@@ -1514,7 +1576,7 @@ tune() {
         trap '_tune_bench_cleanup' EXIT
     fi
 
-    local G_best="-1" G_best_key="" G_p="" G_y="" G_t="" G_g="" G_pr="" G_hj="" G_cq="" seed seed_hr
+    local G_best="-1" G_best_key="" G_p="" G_y="" G_t="" G_g="" G_pr="" G_hj="" G_cq="" G_wr="" seed seed_hr
     if [ "$TUNE_SEARCH" = grid ]; then
         local combos=1 kk
         for kk in $ACTIVE_KNOBS; do combos=$((combos * $(_knob_values "$kk" | wc -w | tr -d ' '))); done
@@ -1544,6 +1606,7 @@ tune() {
                 G_pr="$S_pr"
                 G_hj="$S_hj"
                 G_cq="$S_cq"
+                G_wr="$S_wr"
             fi
         done
     fi
@@ -1563,15 +1626,16 @@ tune() {
     case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
     case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
     case " $ACTIVE_KNOBS " in *" cacheqos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
+    case " $ACTIVE_KNOBS " in *" wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
     printf '%s\n' "$ovr" >"$TUNE_TMP/ovr.json" && sudo cp "$TUNE_TMP/ovr.json" "$TUNE_OVERRIDES"
 
     # Assemble the full search log: the winner, the search parameters, and every measured candidate.
     jq -s --argjson p "$G_p" --argjson y "$G_y" --arg t "$G_t" --argjson g "$G_g" --argjson pr "$G_pr" \
-        --argjson hj "$G_hj" --argjson cq "$G_cq" \
+        --argjson hj "$G_hj" --argjson cq "$G_cq" --argjson wr "$G_wr" \
         --argjson hr "$G_best" --arg mode "$TUNE_MODE" --arg search "$TUNE_SEARCH" --arg seeds "$TUNE_SEEDS" \
         --argjson iters "$TUNE_ITERS" --argjson delta "$TUNE_MIN_DELTA" '
         { best: { scratchpad_prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g,
-                  priority: $pr, "huge-pages-jit": $hj, cache_qos: $cq, hashrate: $hr },
+                  priority: $pr, "huge-pages-jit": $hj, cache_qos: $cq, wrmsr: $wr, hashrate: $hr },
           mode: $mode, search: $search, seeds: ($seeds|split(" ")), iterations: $iters, min_delta: $delta,
           results: . }' "$RESULTS_FILE" >"$TUNE_TMP/log.json" && sudo cp "$TUNE_TMP/log.json" "$logf"
 
@@ -1581,8 +1645,17 @@ tune() {
 
     log "Best: prefetch_mode=$G_p yield=$G_y threads=$G_t ($G_best H/s). Saved to $TUNE_OVERRIDES (log: $logf)."
     [ -n "$hpw" ] && log "Best efficiency observed: $hpw H/s per watt."
-    if [ "$G_t" != "-1" ] && [ "$OS_TYPE" = Linux ]; then
-        log "Note: cpu.rx is pinned to $G_t threads. HugePages are sized by 'setup'; if 'doctor' later reports HugePages below 100%, re-run 'sudo $0 setup' (reboot) to resize the reservation for this thread count."
+    if [ "$OS_TYPE" = Linux ]; then
+        # #65: be honest about reservation-capped optima — any candidate that needed more 2MB HugePages
+        # than reserved ran without full backing, so its number is a floor, not a fair comparison.
+        local capped=""
+        capped=$(jq -r '[.results[]|select(.hugepages_capped==true)|.threads]|unique|sort|map(tostring)|join(", ")' "$logf" 2>/dev/null) || capped=""
+        if [ -n "$capped" ]; then
+            warn "HugePages-capped: thread counts {$capped} need more 2MB pages than are reserved, so they ran WITHOUT full backing — their hashrate is a floor, not a fair reading. To explore them properly: 'sudo RIGFORGE_THREADS=<n> $0 setup', reboot, then re-tune."
+        fi
+        if [ "$G_t" != "-1" ]; then
+            log "Note: cpu.rx is pinned to $G_t threads. 'setup' now sizes the HugePages reservation to the tuned thread count automatically — re-run 'sudo $0 setup' (reboot) if 'doctor' ever reports HugePages below 100%."
+        fi
     fi
     if [ "$TUNE_CONFIRM" = 1 ] && [ "$OS_TYPE" = Linux ]; then
         _tune_confirm_live "$ovr" "$pre_overrides"
@@ -2073,6 +2146,73 @@ _cpu_eff_khz() {
     if [ "$n" -gt 0 ]; then echo $((sum / n)); fi # always exit 0 (empty output when no data)
 }
 
+# #66 MSR-verification helpers. doctor confirms the prefetcher MSR mod actually took effect — not just
+# that the `msr` module loaded — in two layers: XMRig's own log line (always available) and an rdmsr
+# read-back (when msr-tools is installed), which catches a write a hypervisor / kernel-lockdown silently
+# dropped even though XMRig reported success.
+
+# Parse the worker's xmrig.log for XMRig's MSR-write confirmation. Per (re)start XMRig logs
+# 'msr register values for "<preset>" preset have been set successfully' (or a failure). Echoes
+# "<ok|fail|none>\t<preset>" for the LAST msr line. One-line awk so kcov attributes it correctly.
+_msr_log_status() { # <logfile>
+    if [ ! -f "$1" ]; then
+        printf 'none\t'
+        return 0
+    fi
+    awk '/msr +register values for/{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}} END{if(st=="")printf "none\t";else printf "%s\t%s",st,pr}' "$1" 2>/dev/null
+}
+
+# The (register, value, mask) triples XMRig writes per MSR preset — verified against XMRig v6.26.0
+# (src/crypto/rx/RxConfig.cpp). mask "-" means a whole-register (no-mask) write, so the register equals
+# the value exactly regardless of firmware; "~0x20" is encoded as ffffffffffffffdf. Only the presets we
+# verify on real hardware are listed — for any other preset, doctor relies on XMRig's log confirmation.
+_msr_preset_regs() { # <preset> -> lines "reg value mask"
+    case "$1" in
+    ryzen_19h_zen4 | ryzen_1Ah_zen5)
+        printf '%s\n' '0xc0011020 0004400000000000 -' '0xc0011021 0004000000000040 ffffffffffffffdf' \
+            '0xc0011022 8680000401570000 -' '0xc001102b 000000002040cc10 -'
+        ;;
+    ryzen_19h)
+        printf '%s\n' '0xc0011020 0004480000000000 -' '0xc0011021 001c000200000040 ffffffffffffffdf' \
+            '0xc0011022 c000000401570000 -' '0xc001102b 000000002000cc10 -'
+        ;;
+    ryzen_17h)
+        printf '%s\n' '0xc0011020 0000000000000000 -' '0xc0011021 0000000000000040 ffffffffffffffdf' \
+            '0xc0011022 0000000001510000 -' '0xc001102b 000000002000cc16 -'
+        ;;
+    intel)
+        printf '%s\n' '0x1a4 000000000000000f -'
+        ;;
+    esac
+}
+
+# Read each of a preset's registers via rdmsr and check the bits XMRig controls (value & mask) match.
+# Sets _MSR_OK / _MSR_TOTAL / _MSR_BAD. Best-effort: needs rdmsr (msr-tools) + the msr module + root.
+_msr_rdmsr_verify() { # <preset>
+    _MSR_OK=0
+    _MSR_TOTAL=0
+    _MSR_BAD=""
+    local reg val mask actual want got regs
+    regs=$(_msr_preset_regs "$1")
+    [ -n "$regs" ] || return 0
+    while read -r reg val mask; do
+        [ -n "$reg" ] || continue
+        _MSR_TOTAL=$((_MSR_TOTAL + 1))
+        [ "$mask" = "-" ] && mask="ffffffffffffffff"
+        actual=$("$RDMSR_BIN" -p0 -0 "$reg" 2>/dev/null) || actual=""
+        case "$actual" in '' | *[!0-9A-Fa-f]*)
+            _MSR_BAD="$_MSR_BAD $reg(unreadable)"
+            continue
+            ;;
+        esac
+        want=$((0x$val & 0x$mask))
+        got=$((0x$actual & 0x$mask))
+        if [ "$got" = "$want" ]; then _MSR_OK=$((_MSR_OK + 1)); else _MSR_BAD="$_MSR_BAD $reg"; fi
+    done <<EOF
+$regs
+EOF
+}
+
 doctor() {
     cmd_version
     if [ "$OS_TYPE" != "Linux" ]; then
@@ -2109,12 +2249,50 @@ doctor() {
         _ck_warn "1GB HugePages not reserved (optional; needs a pdpe1gb CPU + reboot)"
     fi
 
-    # MSR module loaded? (required for the MSR mod's ~10-15% hashrate)
+    # Resolve the worker's xmrig.log once — the MSR-applied (#66) and HUGE PAGES checks both read it.
+    local wr="" log_file=""
+    if [ -f "$CONFIG_JSON" ]; then
+        wr=$(_worker_root_from_config)
+        log_file="$wr/xmrig.log"
+    fi
+
+    # MSR mod applied? (#66) The ~10-15% RandomX gain needs three things, checked in order: the msr
+    # module loadable, XMRig's own log line confirming it WROTE the prefetcher preset, and — when rdmsr
+    # (msr-tools) is present — a register read-back that catches a write a hypervisor/lockdown dropped.
     if [ -d "$MSR_MODULE_DIR" ]; then
         _ck_ok "msr kernel module loaded"
     else
         _ck_warn "msr module not loaded — the MSR mod won't apply; if it persists, disable Secure Boot"
         issues=$((issues + 1))
+    fi
+    if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+        local msrstat="" preset=""
+        IFS="$(printf '\t')" read -r msrstat preset <<EOF
+$(_msr_log_status "$log_file")
+EOF
+        case "$msrstat" in
+        ok)
+            _ck_ok "MSR mod applied — XMRig set the '${preset:-?}' preset (per its log)"
+            if command -v "$RDMSR_BIN" >/dev/null 2>&1; then
+                if [ -n "$(_msr_preset_regs "$preset")" ]; then
+                    _msr_rdmsr_verify "$preset"
+                    if [ "${_MSR_TOTAL:-0}" -gt 0 ] && [ "${_MSR_OK:-0}" -eq "$_MSR_TOTAL" ]; then
+                        _ck_ok "MSR registers verified via rdmsr ($_MSR_OK/$_MSR_TOTAL match the $preset preset)"
+                    elif [ "${_MSR_TOTAL:-0}" -gt 0 ]; then
+                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — a hypervisor/lockdown may have dropped the write, or XMRig changed its preset"
+                        issues=$((issues + 1))
+                    fi
+                fi
+            else
+                _ck_warn "rdmsr not found — install msr-tools to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)"
+            fi
+            ;;
+        fail)
+            _ck_warn "XMRig reports the MSR preset FAILED to set — check Secure Boot / msr.allow_writes=on"
+            issues=$((issues + 1))
+            ;;
+        *) : ;; # no msr line yet (the miner may not have started a RandomX job) — stay quiet
+        esac
     fi
 
     # CPU governor
@@ -2166,17 +2344,13 @@ doctor() {
         fi
     fi
 
-    # XMRig's own startup report, if a log exists (HUGE PAGES 100% means the dataset is fully backed).
-    local wr log_file
-    if [ -f "$CONFIG_JSON" ]; then
-        wr=$(_worker_root_from_config)
-        log_file="$wr/xmrig.log"
-        if [ -f "$log_file" ]; then
-            if grep -qiE 'huge pages.*100%' "$log_file"; then
-                _ck_ok "XMRig log reports HUGE PAGES 100%"
-            elif grep -qi 'huge pages' "$log_file"; then
-                _ck_warn "XMRig log shows HUGE PAGES below 100% — not all threads are backed"
-            fi
+    # XMRig's own startup report (HUGE PAGES 100% means the dataset is fully backed). Reuses the
+    # log_file resolved above for the MSR-applied check.
+    if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+        if grep -qiE 'huge pages.*100%' "$log_file"; then
+            _ck_ok "XMRig log reports HUGE PAGES 100%"
+        elif grep -qi 'huge pages' "$log_file"; then
+            _ck_warn "XMRig log shows HUGE PAGES below 100% — not all threads are backed"
         fi
     fi
 

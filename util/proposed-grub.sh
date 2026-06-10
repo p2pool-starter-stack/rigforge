@@ -40,8 +40,14 @@ fi
 
 # --- 2. Resource Calculation ---
 
-# RandomX Requirement: 2MB L3 Cache per mining thread
-THREADS=$((L3_MB / 2))
+# RandomX Requirement: 2MB L3 Cache per mining thread. Callers can override this estimate with RX_THREADS
+# (#65): `setup` passes the tuned cpu.rx so the reservation matches the threads we actually run, and `tune`
+# uses it to price a candidate thread count's huge-page need. Falls back to the L3 estimate when unset.
+if [ -n "${RX_THREADS:-}" ] && [ "$RX_THREADS" -gt 0 ] 2>/dev/null; then
+    THREADS="$RX_THREADS"
+else
+    THREADS=$((L3_MB / 2))
+fi
 
 # 1GB HugePages: Reserve 3GB per socket for the RandomX dataset (~2080MB) + overhead
 TOTAL_GB_PAGES=$((3 * SOCKETS))
