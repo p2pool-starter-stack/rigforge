@@ -15,7 +15,7 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. |
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
-| `doctor` | Read-only health check: verifies HugePages are reserved, the **MSR mod actually applied** (XMRig's log + an `rdmsr` register read-back, see [MSR mod verification](#msr-mod-verification)), the CPU governor is `performance`, the service is active, 1 GB HugePages are reserved (optional bonus), and (from the XMRig log) that HugePages are 100% backed. It also flags **hashrate-capping hardware** (advisory) — single-channel or slow RAM (via `dmidecode`, run as root) and a power/boost-capped CPU clock (effective vs. max while mining) — which RigForge can't change but you can. Prints actionable hints for anything off. |
+| `doctor` | Read-only health check (run with `sudo` for the deepest checks). **Critical** findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the **MSR mod actually applied** — confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). **Advisory** findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), and **hashrate-capping hardware** RigForge can't fix but you can — single-channel or slow RAM (via `dmidecode`) and a power/boost-capped CPU clock. Prints an actionable hint for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
 | `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --clear` resets tuning. |
 | `autotune` | One live trial against the running miner. **Enable periodic runs** by setting `"autotune": true` in `config.json` (setup installs a systemd timer). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
@@ -101,7 +101,7 @@ to itself; still, run it when the box is otherwise idle for the steadiest number
 | `TUNE_PRIORITIES` | `2` | `cpu.priority` candidates (single value ⇒ knob off; set e.g. `1 2 3 4 5` to sweep). |
 | `TUNE_HPJIT` | _(off)_ | Set `false true` to sweep `cpu.huge-pages-jit` (XMRig: small Ryzen boost, unstable hashrate). |
 | `TUNE_CACHEQOS` | _(off)_ | Set `false true` to sweep `randomx.cache_qos` (Intel L3 Cache Allocation Technology). |
-| `TUNE_WRMSR` | _(off)_ | Set e.g. `true false` (or a preset number) to sweep the `randomx.wrmsr` MSR preset. Applied per-bench, no reboot. |
+| `TUNE_WRMSR` | _(off)_ | Sweep the `randomx.wrmsr` MSR preset, e.g. `true false` (or a preset number). Rarely needed — XMRig auto-picks the right preset; set this only to confirm it on unusual hardware. Applied per-bench, no reboot. |
 | `TUNE_POWER_CMD` | _(unset)_ | Optional shell command that echoes watts, sampled per candidate for a hashrate-per-watt view. |
 | `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
 
@@ -146,7 +146,7 @@ restarts, measures again, and **keeps the change only if it beats the baseline b
 Because live hashrate is noisy this is deliberately conservative; for a definitive sweep prefer the
 offline `tune`.
 
-### Reservation-aware thread tuning (#65)
+### Reservation-aware thread tuning
 
 RandomX wants its scratchpads backed by **HugePages**. `setup` reserves a pool sized for an estimated
 thread count; `tune` then benchmarks thread counts within that reservation. A thread count that needs
@@ -174,13 +174,17 @@ The MSR "RandomX boost" (writing the CPU's prefetcher MSRs) is one of the bigges
 - **From XMRig's log** (always): the `msr register values for "<preset>" preset have been set
   successfully` line confirms XMRig wrote the per-family preset (e.g. `ryzen_19h_zen4`). A `FAILED` line
   is flagged — usually Secure Boot or a missing `msr.allow_writes=on`.
-- **Register read-back via `rdmsr`** (when `msr-tools` is installed — `setup` installs it): `doctor`
-  reads the prefetcher registers back and checks they hold the preset's values, catching a write a
-  hypervisor or kernel lockdown silently dropped even though XMRig reported success. Without `rdmsr`,
-  `doctor` falls back to the log check and advises installing `msr-tools`.
+- **Register read-back via `rdmsr`** (run `doctor` as root, with `msr-tools` installed — `setup`
+  installs it): `doctor` reads the prefetcher registers back and checks they hold the preset's values,
+  catching a write a hypervisor or kernel lockdown silently dropped even though XMRig reported success.
+  Run without root, without `rdmsr`, or with the `msr` module unloaded, this step is skipped with an
+  advisory — never a false alarm; the log check above still confirms the write.
 
-You can also **tune** the MSR preset: set `TUNE_WRMSR="true false"` (or a preset number) to sweep
-`randomx.wrmsr` as a knob — it's applied per-bench (no reboot) and pinned only if it wins.
+You almost never need to **tune** the MSR preset — XMRig auto-selects the right per-family preset, and
+that's optimal on the vast majority of CPUs. The knob exists for the rare case where a non-default preset
+(or disabling the mod) wins on unusual silicon: set `TUNE_WRMSR="true false"` (or a preset number) to
+sweep `randomx.wrmsr` alongside the other knobs — it's applied per-bench (no reboot) and pinned only if
+it actually wins.
 
 ---
 
@@ -394,6 +398,8 @@ If you see MSR errors, see Troubleshooting below.
 |---|---|
 | **Setup fails during the build** | The script names the step that failed and tails the build log. Read the full error in `<WORKER_ROOT>/build.log` (e.g. `data/worker/build.log`). Common causes: a build dependency you declined to install (re-run and accept), or too little RAM during compilation (the build already caps parallelism by RAM — add swap on very low-memory hosts). Re-run `sudo ./rigforge.sh` once resolved; it resumes without redoing finished work. |
 | **MSR errors in the log** | Secure Boot is blocking the `msr` kernel module. **Disable Secure Boot** in your BIOS/UEFI, then reboot. |
+| **`doctor`: "MSR registers don't match the preset"** | XMRig's log says the write succeeded but the read-back disagrees — the kernel or hypervisor silently dropped it. Common on VMs/cloud instances and under kernel lockdown. Run RigForge on **bare metal**, and ensure `msr.allow_writes=on` (RigForge sets this) and that lockdown isn't enforced. |
+| **`doctor`: "couldn't read the MSRs via rdmsr"** | The `msr` module isn't loaded (or `doctor` wasn't run as root). Run `sudo ./rigforge.sh doctor`; if it persists, `sudo modprobe msr` (Secure Boot can block it). This is advisory — XMRig's log already confirms the write. |
 | **`HugePages_Total` is 0** | The kernel tuning needs a **reboot** to take effect (GRUB change). Reboot, then re-check `grep Huge /proc/meminfo`. |
 | **HugePages still 0 after reboot** | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; RigForge **merges** its kernel parameters into `GRUB_CMDLINE_LINUX_DEFAULT` rather than overwriting, so other params are preserved. |
 | **Low hashrate / few threads** | RandomX is L3-bound (~2 MB per thread). A CPU with little L3 runs fewer effective threads — this is expected. See [Hardware › L3 cache](hardware.md#a-note-on-l3-cache). |

@@ -1287,26 +1287,43 @@ out="$(DMIDECODE="$DOC/dmidecode_empty" run_doctor "$DOC/meminfo_ok" "$DOC/msrmo
 assert_contains "doctor: RAM-unreadable note when dmidecode is empty (#67)" "$out" "RAM layout not readable"
 
 # #66: doctor verifies the MSR mod ACTUALLY applied — XMRig's log line confirms the write, and (when
-# rdmsr/msr-tools is present) a register read-back catches a write a hypervisor/lockdown silently dropped.
+# rdmsr/msr-tools is present AND doctor runs as root) a register read-back catches a write a
+# hypervisor/lockdown silently dropped. The read-back is gated on root, and "couldn't read" is kept
+# distinct from "wrong value" so a non-root or module-less run advises instead of crying wolf.
 echo "== unit: doctor MSR mod verification (#66) =="
 MSRD="$DOC/msr"
 mkdir -p "$MSRD/home/worker"
-printf 'net      use pool ...\n* HUGE PAGES 100%%\nmsr      register values for "ryzen_19h_zen4" preset have been set successfully (1 ms)\n' >"$MSRD/home/worker/xmrig.log"
+msr_log() { printf 'net      use pool ...\n* HUGE PAGES 100%%\nmsr      register values for "%s" preset have been set successfully (1 ms)\n' "$1" >"$MSRD/home/worker/xmrig.log"; }
+msr_log ryzen_19h_zen4
 cat >"$MSRD/config.json" <<EOF
 { "HOME_DIR": "$MSRD/home", "pools": [{"url": "h:3333"}] }
 EOF
-# fake rdmsr returning the real Zen4 register values (verified on the 7800X3D rig); -p<cpu> -0 <reg>
+# fake rdmsr returning the real register values (Zen4 verified on the 7800X3D rig; intel 0x1a4=0xf); -p -0 <reg>
 cat >"$DOC/rdmsr_ok" <<'EOF'
 #!/usr/bin/env bash
 for a in "$@"; do case "$a" in 0x*) reg="$a" ;; esac; done
 case "$reg" in
 0xc0011020) echo 0004400000000000 ;; 0xc0011021) echo 0004000000000040 ;;
 0xc0011022) echo 8680000401570000 ;; 0xc001102b) echo 000000002040cc10 ;;
+0x1a4) echo 000000000000000f ;;
 esac
 EOF
-printf '#!/usr/bin/env bash\necho 0\n' >"$DOC/rdmsr_bad" # a dropped write -> all-zero registers
-chmod +x "$DOC/rdmsr_ok" "$DOC/rdmsr_bad"
-run_doctor_msr() { # <rdmsr_bin>
+printf '#!/usr/bin/env bash\necho 0\n' >"$DOC/rdmsr_bad" # readable but WRONG (dropped write) -> mismatch
+printf '#!/usr/bin/env bash\n' >"$DOC/rdmsr_empty"       # echoes nothing -> every register unreadable
+cat >"$DOC/rdmsr_partial" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in 0x*) reg="$a" ;; esac; done
+[ "$reg" = 0xc0011020 ] && echo 0004400000000000   # one register correct, the rest unreadable
+EOF
+chmod +x "$DOC/rdmsr_ok" "$DOC/rdmsr_bad" "$DOC/rdmsr_empty" "$DOC/rdmsr_partial"
+# doctor gates the rdmsr read-back on root (id -u == 0); stub both, to exercise the gate.
+mkdir -p "$DOC/asroot" "$DOC/asuser"
+printf '#!/usr/bin/env bash\ncase "$*" in *-un*) echo root ;; *) echo 0 ;; esac\n' >"$DOC/asroot/id"
+printf '#!/usr/bin/env bash\ncase "$*" in *-un*) echo tester ;; *) echo 1000 ;; esac\n' >"$DOC/asuser/id"
+chmod +x "$DOC/asroot/id" "$DOC/asuser/id"
+run_doctor_msr() { # <rdmsr_bin> [root|user]
+    local idstub="$DOC/asroot"
+    [ "${2:-root}" = user ] && idstub="$DOC/asuser"
     (
         source "$SCRIPT"
         OS_TYPE=Linux
@@ -1318,16 +1335,33 @@ run_doctor_msr() { # <rdmsr_bin>
         HUGEPAGES_1G_NR="$DOC/nr1g"
         RDMSR_BIN="$1"
         set +e
-        PATH="$STUBS:$PATH" doctor 2>&1
+        PATH="$idstub:$STUBS:$PATH" doctor 2>&1
     )
 }
+# Zen4 happy path (root): log confirms the preset + rdmsr verifies all 4 registers.
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR mod applied per XMRig log (#66)" "$out" "MSR mod applied"
 assert_contains "doctor: names the applied preset (#66)" "$out" "ryzen_19h_zen4"
 assert_contains "doctor: rdmsr verifies the registers (#66)" "$out" "verified via rdmsr (4/4"
-# rdmsr returns the wrong values (write silently dropped) -> mismatch WARN + an issue.
+# Readable but wrong values (a silently-dropped write) -> mismatch WARN.
 out="$(run_doctor_msr "$DOC/rdmsr_bad")"
 assert_contains "doctor: rdmsr mismatch WARN (#66)" "$out" "don't match the ryzen_19h_zen4 preset"
+# Non-root: the read-back is SKIPPED with an advisory — NOT a false mismatch (regression guard for the gate).
+out="$(run_doctor_msr "$DOC/rdmsr_ok" user)"
+assert_contains "doctor: non-root asks for sudo to verify MSRs (#66)" "$out" "run 'doctor' as root"
+assert_absent "doctor: non-root does NOT false-warn a mismatch (#66)" "$out" "don't match"
+assert_contains "doctor: non-root still confirms the mod via the log (#66)" "$out" "MSR mod applied"
+# rdmsr present but every register unreadable (e.g. msr module not loaded) -> advisory, not a mismatch.
+out="$(run_doctor_msr "$DOC/rdmsr_empty")"
+assert_contains "doctor: all-unreadable -> advisory (#66)" "$out" "couldn't read"
+assert_absent "doctor: all-unreadable is NOT a mismatch (#66)" "$out" "don't match"
+# Partial read (1 correct, 3 unreadable, none WRONG) -> advisory, not a mismatch.
+out="$(run_doctor_msr "$DOC/rdmsr_partial")"
+assert_contains "doctor: partial-read -> advisory not mismatch (#66)" "$out" "couldn't read"
+# Intel happy path (root): the single 0x1a4 register verifies.
+msr_log intel
+out="$(run_doctor_msr "$DOC/rdmsr_ok")"
+assert_contains "doctor: intel preset verified via rdmsr (#66)" "$out" "verified via rdmsr (1/1"
 # rdmsr absent -> graceful advisory, not a failure (the log already confirms the write).
 out="$(run_doctor_msr "/nonexistent-rdmsr")"
 assert_contains "doctor: advises msr-tools when rdmsr absent (#66)" "$out" "install msr-tools"
@@ -1336,30 +1370,34 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
-# #66: cover the MSR preset table for every supported family, the unknown-preset / missing-log / and
-# unreadable-register paths directly (doctor itself only exercises the rig's live preset).
-echo "== unit: MSR preset table + rdmsr edge cases (#66) =="
+# #66: the preset table is the SOURCE OF TRUTH for register verification — assert the exact
+# (register value mask) triples against XMRig v6.26.0 (RxConfig.cpp), so a typo fails a test rather
+# than silently weakening every rig's check. "-" = whole-register (no-mask) write.
+echo "== unit: MSR preset table values (#66) =="
 msr_regs() { (
     source "$SCRIPT"
     _msr_preset_regs "$1"
 ); }
-assert_eq "preset regs: ryzen_19h -> 4 registers (#66)" "$(msr_regs ryzen_19h | grep -c .)" "4"
-assert_eq "preset regs: ryzen_17h -> 4 registers (#66)" "$(msr_regs ryzen_17h | grep -c .)" "4"
-assert_eq "preset regs: intel -> 1 register (#66)" "$(msr_regs intel | grep -c .)" "1"
-assert_eq "preset regs: unknown preset -> empty (#66)" "$(msr_regs bogus | grep -c .)" "0"
+assert_eq "preset: zen4 0xc0011020 value (#66)" "$(msr_regs ryzen_19h_zen4 | awk '$1=="0xc0011020"{print $2, $3}')" "0004400000000000 -"
+assert_eq "preset: zen4 0xc0011021 masked (#66)" "$(msr_regs ryzen_19h_zen4 | awk '$1=="0xc0011021"{print $2, $3}')" "0004000000000040 ffffffffffffffdf"
+assert_eq "preset: zen4 0xc001102b value (#66)" "$(msr_regs ryzen_19h_zen4 | awk '$1=="0xc001102b"{print $2, $3}')" "000000002040cc10 -"
+assert_eq "preset: zen5 shares the zen4 table (#66)" "$(msr_regs ryzen_1Ah_zen5)" "$(msr_regs ryzen_19h_zen4)"
+assert_eq "preset: zen3/19h 0xc0011022 value (#66)" "$(msr_regs ryzen_19h | awk '$1=="0xc0011022"{print $2}')" "c000000401570000"
+assert_eq "preset: zen/17h 0xc001102b value (#66)" "$(msr_regs ryzen_17h | awk '$1=="0xc001102b"{print $2}')" "000000002000cc16"
+assert_eq "preset: intel 0x1a4 whole-register (#66)" "$(msr_regs intel)" "0x1a4 000000000000000f -"
+assert_eq "preset: unknown -> empty (#66)" "$(msr_regs bogus | grep -c .)" "0"
 assert_contains "log status: missing file -> none (#66)" "$( (
     source "$SCRIPT"
     _msr_log_status /nonexistent
 ))" "none"
-printf '#!/usr/bin/env bash\n' >"$DOC/rdmsr_empty" # echoes nothing -> register unreadable
-chmod +x "$DOC/rdmsr_empty"
+# Unreadable registers are counted in _MSR_UNREAD, kept OUT of _MSR_BAD (so they don't read as mismatches).
 out="$( (
     source "$SCRIPT"
     RDMSR_BIN="$DOC/rdmsr_empty"
     _msr_rdmsr_verify intel
-    printf '%s|%s|%s' "$_MSR_OK" "$_MSR_TOTAL" "$_MSR_BAD"
+    printf '%s|%s|%s|[%s]' "$_MSR_OK" "$_MSR_TOTAL" "$_MSR_UNREAD" "$_MSR_BAD"
 ))"
-assert_eq "rdmsr unreadable register flagged (#66)" "$out" "0|1| 0x1a4(unreadable)"
+assert_eq "rdmsr unreadable tracked separately from mismatch (#66)" "$out" "0|1|1|[]"
 
 # #12: uninstall reverts every system change setup made, idempotently, leaving config.json. The GRUB
 # revert uses GNU `sed -i` so it's exercised in the Docker e2e (real Linux); here we point GRUB_DEFAULT
@@ -1715,28 +1753,44 @@ echo "== black-box: tune wrmsr knob (#66) =="
 cat >"$BD/config.json" <<'EOF'
 { "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true, "wrmsr": true }, "cpu": { "yield": false, "priority": 2 } }
 EOF
+# Fake whose hashrate depends on randomx.wrmsr; WRMSR_WIN (env) chooses which value the fake rewards, so
+# the SAME test can prove the *measured* winner is pinned in BOTH directions (not a fixed first/last value).
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 cfg=""
 for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 w=$(jq -r '.randomx.wrmsr' "$cfg" 2>/dev/null)
-base=1000; [ "$w" = false ] && base=1100   # this fake prefers wrmsr=false
+base=1000; [ "$w" = "${WRMSR_WIN:-false}" ] && base=1100
 echo "speed $base.0 H/s max $base.0 H/s"
 EOF
 chmod +x "$BD/xmrig"
-rm -f "$OVR"
-out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
-    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_WRMSR="true false" \
-    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
-assert_rc "wrmsr tune exits 0" "$?" "0"
-assert_eq "wrmsr swept and pinned (#66)" "$(J "$OVR" '.randomx.wrmsr')" "false"
-assert_eq "wrmsr recorded in results (#66)" "$(J "$TLOG" '.results[0] | has("wrmsr")')" "true"
-# Single value -> knob inactive -> not pinned into the overrides (#7-style isolation).
-rm -f "$OVR"
-out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
-    TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_WRMSR=true \
-    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+wrmsr_run() { # <WRMSR_WIN> [tune_wrmsr value; OMIT the arg entirely to leave TUNE_WRMSR unset = default]
+    rm -f "$OVR"
+    (
+        cd "$TN" || exit 1
+        export WRMSR_WIN="$1" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 \
+            TUNE_YIELDS=false TUNE_THREADS=-1 RIGFORGE_HOME="$PWD"
+        [ "$#" -ge 2 ] && export TUNE_WRMSR="$2" # quoted => a multi-value "true false" stays one var
+        PATH="$STUBS:$PATH" bash "$SCRIPT" tune </dev/null 2>&1
+    )
+}
+# Fake prefers wrmsr=false -> false is the measured winner and gets pinned.
+out="$(wrmsr_run false "true false")"
+assert_rc "wrmsr tune exits 0 (#66)" "$?" "0"
+assert_eq "wrmsr: measured winner (false) is pinned (#66)" "$(J "$OVR" '.randomx.wrmsr')" "false"
+assert_eq "wrmsr recorded per candidate (#66)" "$(J "$TLOG" '.results[0] | has("wrmsr")')" "true"
+# Fake prefers wrmsr=true -> NOW true wins and is pinned. Proves the measurement drives the pin, not a
+# fixed value (false happened to be the last candidate in the case above).
+out="$(wrmsr_run true "true false")"
+assert_eq "wrmsr: measured winner (true) is pinned (#66)" "$(J "$OVR" '.randomx.wrmsr')" "true"
+# A single explicit value -> knob inactive -> not pinned (#7-style isolation).
+out="$(wrmsr_run false "true")"
 assert_eq "wrmsr not pinned when single-valued (#66)" "$(J "$OVR" '.randomx.wrmsr // "absent"')" "absent"
+# OFF BY DEFAULT: with TUNE_WRMSR unset (arg omitted), _seed_wr yields a single token (the base value),
+# so the knob is never swept and never pinned out of the box.
+out="$(wrmsr_run false)"
+assert_eq "wrmsr OFF by default (unset -> not swept/pinned) (#66)" "$(J "$OVR" '.randomx.wrmsr // "absent"')" "absent"
+assert_absent "wrmsr default isn't in the active-knob set (#66)" "$out" "wrmsr="
 
 # #65: reservation-aware thread exploration. With a small HugePages reservation, a thread count whose
 # 2MB-page need exceeds it is recorded as hugepages_capped (ran without full backing = a floor reading),
@@ -1762,6 +1816,50 @@ assert_eq "threads=8 flagged HugePages-capped (#65)" "$(J "$TLOG" 'any(.results[
 assert_eq "threads=2 fits the reservation (#65)" "$(J "$TLOG" 'any(.results[]; .threads==2 and .hugepages_capped==true)')" "false"
 assert_contains "tune warns about the capped optimum (#65)" "$out" "HugePages-capped: thread counts {8}"
 assert_contains "tune gives the resize path (#65)" "$out" "RIGFORGE_THREADS=<n>"
+
+# #65: the setup side of the tie-in — tune_kernel sizes the HugePages reservation for the tuned cpu.rx
+# (read from tune-overrides.json) or an explicit RIGFORGE_THREADS, passing it to proposed-grub.sh via
+# RX_THREADS. A fake proposed-grub records the RX_THREADS it received; GRUB_DEFAULT points nowhere so the
+# reboot-bound GRUB block is skipped (covered by the Docker e2e on real Linux).
+echo "== black-box: setup sizes the reservation for the tuned threads (#65) =="
+TK="$(mktemp -d "$SANDBOX/tk.XXXXXX")"
+mkdir -p "$TK/util" "$TK/home/worker"
+cat >"$TK/util/proposed-grub.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "RX_THREADS=[${RX_THREADS-}]" >>"$PG_CALLS"
+echo 200
+EOF
+chmod +x "$TK/util/proposed-grub.sh"
+printf '{ "cpu": { "rx": 24 } }\n' >"$TK/home/worker/tune-overrides.json"
+run_tunekernel() { # <pg_calls_file>; reads RIGFORGE_THREADS from the env
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$TK"
+        WORKER_ROOT="$TK/home/worker"
+        MODULES_LOAD_DIR="$TK/nope"
+        MODULES_FILE="$TK/nope/modules"
+        GRUB_DEFAULT="$TK/nope/grub" # nonexistent -> the GRUB block is skipped
+        export PG_CALLS="$1"
+        set +e
+        PATH="$STUBS:$PATH" tune_kernel 2>&1
+    )
+}
+PGC="$TK/calls1"
+: >"$PGC"
+out="$(run_tunekernel "$PGC")"
+assert_contains "setup sizes the reservation for the tuned cpu.rx (#65)" "$out" "Sizing the HugePages reservation for 24"
+assert_contains "setup passes the tuned thread count to proposed-grub (#65)" "$(cat "$PGC")" "RX_THREADS=[24]"
+PGC="$TK/calls2"
+: >"$PGC"
+out="$(RIGFORGE_THREADS=12 run_tunekernel "$PGC")"
+assert_contains "RIGFORGE_THREADS overrides the reservation sizing (#65)" "$out" "Sizing the HugePages reservation for 12"
+assert_contains "RIGFORGE_THREADS reaches proposed-grub (#65)" "$(cat "$PGC")" "RX_THREADS=[12]"
+PGC="$TK/calls3"
+: >"$PGC"
+out="$(RIGFORGE_THREADS=abc run_tunekernel "$PGC")"
+assert_absent "garbage RIGFORGE_THREADS is sanitized away (#65)" "$out" "Sizing the HugePages reservation"
+assert_contains "sanitized RIGFORGE_THREADS -> empty RX_THREADS to proposed-grub (#65)" "$(cat "$PGC")" "RX_THREADS=[]"
 
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"

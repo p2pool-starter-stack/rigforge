@@ -166,10 +166,12 @@ verify() {
             [ "$(jq -r '[.results[]|select(.min_freq_mhz!=null)]|length>0' "$tj" 2>/dev/null)" = true ] &&
                 ok "tune sampled the effective clock under load (#62: $(jq -r '[.results[].min_freq_mhz]|min' "$tj") MHz min)" ||
                 bad "tune recorded no effective-clock samples (#62)"
-            # #66: the wrmsr knob was swept (TUNE_WRMSR), so every candidate records its wrmsr value, and
-            # the live MSR write/read of each variant exercises the real msr path under load.
-            [ "$(jq -r '[.results[]|select(has("wrmsr"))]|length>0' "$tj" 2>/dev/null)" = true ] &&
-                ok "tune swept and recorded the wrmsr knob (#66)" || bad "tune didn't record the wrmsr knob (#66)"
+            # #66: the wrmsr knob was swept (TUNE_WRMSR="true false"), so the results must carry BOTH
+            # values — proving each MSR variant was actually applied and benchmarked on real silicon, not
+            # just that a wrmsr field exists.
+            [ "$(jq -r '[.results[].wrmsr]|unique|length>=2' "$tj" 2>/dev/null)" = true ] &&
+                ok "tune swept the wrmsr knob across both presets (#66: $(jq -c '[.results[].wrmsr]|unique' "$tj"))" ||
+                bad "tune didn't sweep wrmsr to 2 distinct values (#66)"
             # #65: the reservation-aware check ran on real hardware — candidates carry hugepages_capped
             # (false here, since setup sized the reservation to fit; the field's presence proves the wiring).
             [ "$(jq -r '[.results[]|select(has("hugepages_capped"))]|length>0' "$tj" 2>/dev/null)" = true ] &&

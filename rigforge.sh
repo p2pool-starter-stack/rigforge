@@ -2188,9 +2188,10 @@ _msr_preset_regs() { # <preset> -> lines "reg value mask"
 
 # Read each of a preset's registers via rdmsr and check the bits XMRig controls (value & mask) match.
 # Sets _MSR_OK / _MSR_TOTAL / _MSR_BAD. Best-effort: needs rdmsr (msr-tools) + the msr module + root.
-_msr_rdmsr_verify() { # <preset>
+_msr_rdmsr_verify() { # <preset> -> sets _MSR_OK / _MSR_TOTAL / _MSR_UNREAD / _MSR_BAD
     _MSR_OK=0
     _MSR_TOTAL=0
+    _MSR_UNREAD=0 # registers rdmsr couldn't read (not root / module absent) — distinct from a value mismatch
     _MSR_BAD=""
     local reg val mask actual want got regs
     regs=$(_msr_preset_regs "$1")
@@ -2201,10 +2202,12 @@ _msr_rdmsr_verify() { # <preset>
         [ "$mask" = "-" ] && mask="ffffffffffffffff"
         actual=$("$RDMSR_BIN" -p0 -0 "$reg" 2>/dev/null) || actual=""
         case "$actual" in '' | *[!0-9A-Fa-f]*)
-            _MSR_BAD="$_MSR_BAD $reg(unreadable)"
+            _MSR_UNREAD=$((_MSR_UNREAD + 1))
             continue
             ;;
         esac
+        # 64-bit masked compare: these constants set bit 63 (e.g. 0x8680…), so they're negative under bash's
+        # signed intmax_t arithmetic — but want/got are masked identically, so the bit patterns compare equal.
         want=$((0x$val & 0x$mask))
         got=$((0x$actual & 0x$mask))
         if [ "$got" = "$want" ]; then _MSR_OK=$((_MSR_OK + 1)); else _MSR_BAD="$_MSR_BAD $reg"; fi
@@ -2273,18 +2276,26 @@ EOF
         case "$msrstat" in
         ok)
             _ck_ok "MSR mod applied — XMRig set the '${preset:-?}' preset (per its log)"
-            if command -v "$RDMSR_BIN" >/dev/null 2>&1; then
-                if [ -n "$(_msr_preset_regs "$preset")" ]; then
-                    _msr_rdmsr_verify "$preset"
-                    if [ "${_MSR_TOTAL:-0}" -gt 0 ] && [ "${_MSR_OK:-0}" -eq "$_MSR_TOTAL" ]; then
-                        _ck_ok "MSR registers verified via rdmsr ($_MSR_OK/$_MSR_TOTAL match the $preset preset)"
-                    elif [ "${_MSR_TOTAL:-0}" -gt 0 ]; then
-                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — a hypervisor/lockdown may have dropped the write, or XMRig changed its preset"
-                        issues=$((issues + 1))
-                    fi
-                fi
-            else
+            # Register-level read-back (rdmsr) needs root + the msr device; it's the strong check that
+            # catches a write a hypervisor/lockdown silently dropped. Degrade gracefully otherwise — the
+            # log line above already confirms XMRig wrote the preset, so missing rdmsr is advisory, never
+            # an issue. Mirrors the #67 RAM check, which also asks for root rather than crying wolf.
+            if [ "$(id -u)" -ne 0 ]; then
+                _ck_warn "run 'doctor' as root (sudo) to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)"
+            elif ! command -v "$RDMSR_BIN" >/dev/null 2>&1; then
                 _ck_warn "rdmsr not found — install msr-tools to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)"
+            elif [ -n "$(_msr_preset_regs "$preset")" ]; then
+                _msr_rdmsr_verify "$preset"
+                if [ "${_MSR_OK:-0}" -gt 0 ] && [ "${_MSR_OK:-0}" -eq "${_MSR_TOTAL:-0}" ]; then
+                    _ck_ok "MSR registers verified via rdmsr ($_MSR_OK/$_MSR_TOTAL match the $preset preset)"
+                elif [ -n "$_MSR_BAD" ]; then
+                    # A genuine value mismatch — the write didn't take. This is the real failure (#66).
+                    _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — a hypervisor/lockdown may have dropped the write, or XMRig changed its preset"
+                    issues=$((issues + 1))
+                else
+                    # No mismatch, but some/all registers were unreadable (e.g. msr module not loaded). Advisory.
+                    _ck_warn "couldn't read $_MSR_UNREAD/$_MSR_TOTAL MSR(s) via rdmsr (is the 'msr' module loaded?) — relying on XMRig's log confirmation"
+                fi
             fi
             ;;
         fail)
