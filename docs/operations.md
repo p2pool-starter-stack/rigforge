@@ -15,7 +15,7 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
 | `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. |
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
-| `doctor` | Read-only health check (run with `sudo` for the deepest checks). **Critical** findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the **MSR mod actually applied** — confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). **Advisory** findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), and **hashrate-capping hardware** RigForge can't fix but you can — single-channel or slow RAM (via `dmidecode`) and a power/boost-capped CPU clock. Prints an actionable hint for anything off. |
+| `doctor` | Read-only health check (run with `sudo` for the deepest checks). **Critical** findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the **MSR mod actually applied** — confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). **Advisory** findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), **hashrate-capping hardware** RigForge can't fix but you can — single-channel or slow RAM (via `dmidecode`) and a power/boost-capped CPU clock — and **BIOS/firmware** recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
 | `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --clear` resets tuning. |
 | `autotune` | One live trial against the running miner. **Enable periodic runs** by setting `"autotune": true` in `config.json` (setup installs a systemd timer). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
@@ -103,6 +103,7 @@ to itself; still, run it when the box is otherwise idle for the steadiest number
 | `TUNE_CACHEQOS` | _(off)_ | Set `false true` to sweep `randomx.cache_qos` (Intel L3 Cache Allocation Technology). |
 | `TUNE_WRMSR` | _(off)_ | Sweep the `randomx.wrmsr` MSR preset, e.g. `true false` (or a preset number). Rarely needed — XMRig auto-picks the right preset; set this only to confirm it on unusual hardware. Applied per-bench, no reboot. |
 | `TUNE_POWER_CMD` | _(RAPL)_ | Override the power source with a shell command that echoes **instantaneous watts** (IPMI, a smart plug, wall-AC). Without it, the built-in CPU-package RAPL reader is used on Linux. |
+| `TUNE_TARGET` | `perf` | What to optimize for: `perf` (raw H/s) or `efficiency` (hashrate-per-watt). Same as `tune --efficiency`. Efficiency needs a power source (RAPL or `TUNE_POWER_CMD`) or it falls back to `perf`. |
 | `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
 
 **Power & efficiency.** RandomX hashrate isn't free, so `tune` records **watts per candidate** and reports
@@ -114,6 +115,14 @@ wall power — point `TUNE_POWER_CMD` at a source that echoes instantaneous watt
 
 ```bash
 sudo TUNE_POWER_CMD='my-smart-plug-watts' ./rigforge.sh tune   # else: built-in RAPL, no setup
+```
+
+By default `tune` **optimizes for raw hashrate**. To optimize for **efficiency** instead — picking the
+config with the best hashrate-per-watt, for a power-cost or heat/PSU-constrained rig — add `--efficiency`
+(or `TUNE_TARGET=efficiency`). It needs a power source; without one it warns and falls back to `perf`:
+
+```bash
+sudo ./rigforge.sh tune --efficiency       # rank by hashrate-per-watt, not raw H/s
 ```
 
 > **`hs_per_watt` is relative, not absolute.** It only compares candidates measured by the **same method on
