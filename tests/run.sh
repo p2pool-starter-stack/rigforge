@@ -39,6 +39,28 @@ assert_rc() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected rc $3, g
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
+# HARDWARE INDEPENDENCE. The suite must give identical results on ANY machine — a cloud CI VM, a dev
+# laptop, or a real mining rig that actually has RAPL / DMI / SMT / reserved HugePages. So point every
+# hardware + firmware probe rigforge reads at a non-existent path (or a missing command) by default: a
+# test then reads NOTHING from the host's real hardware unless it explicitly supplies a fake. Individual
+# tests override these with controlled fakes where they need a specific value. Exported so the black-box
+# `bash "$SCRIPT" ...` runs inherit them; per-test `VAR=... run` prefixes and in-subshell sets still win.
+NOHW="$SANDBOX/no-hardware" # nothing is created here on purpose — every path below is meant to not exist
+export MEMINFO="$NOHW/meminfo"
+export MSR_MODULE_DIR="$NOHW/msr-module"
+export GOVERNOR_FILE="$NOHW/governor"
+export HUGEPAGES_1G_NR="$NOHW/nr_1g"
+export HUGEPAGES_1G_DIR="$NOHW/hugepages1G"
+export CPUFREQ_MAX="$NOHW/cpufreq_max"
+export CPU_SYSFS="$NOHW/cpu"
+export RAPL_DIR="$NOHW/powercap"
+export DMI_DIR="$NOHW/dmi"
+export SMT_CONTROL="$NOHW/smt"
+export THERMAL_ZONE="$NOHW/thermal"
+export CPUINFO="$NOHW/cpuinfo"            # util/proposed-grub.sh
+export DMIDECODE="$NOHW/dmidecode-absent" # absolute path that isn't an executable -> `command -v` fails
+export RDMSR_BIN="$NOHW/rdmsr-absent"
+
 # jq helpers: J = raw scalar, JC = compact (for arrays).
 J() { jq -r "$2" "$1"; }
 JC() { jq -c "$2" "$1"; }
