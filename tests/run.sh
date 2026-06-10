@@ -1336,6 +1336,31 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
+# #66: cover the MSR preset table for every supported family, the unknown-preset / missing-log / and
+# unreadable-register paths directly (doctor itself only exercises the rig's live preset).
+echo "== unit: MSR preset table + rdmsr edge cases (#66) =="
+msr_regs() { (
+    source "$SCRIPT"
+    _msr_preset_regs "$1"
+); }
+assert_eq "preset regs: ryzen_19h -> 4 registers (#66)" "$(msr_regs ryzen_19h | grep -c .)" "4"
+assert_eq "preset regs: ryzen_17h -> 4 registers (#66)" "$(msr_regs ryzen_17h | grep -c .)" "4"
+assert_eq "preset regs: intel -> 1 register (#66)" "$(msr_regs intel | grep -c .)" "1"
+assert_eq "preset regs: unknown preset -> empty (#66)" "$(msr_regs bogus | grep -c .)" "0"
+assert_contains "log status: missing file -> none (#66)" "$( (
+    source "$SCRIPT"
+    _msr_log_status /nonexistent
+))" "none"
+printf '#!/usr/bin/env bash\n' >"$DOC/rdmsr_empty" # echoes nothing -> register unreadable
+chmod +x "$DOC/rdmsr_empty"
+out="$( (
+    source "$SCRIPT"
+    RDMSR_BIN="$DOC/rdmsr_empty"
+    _msr_rdmsr_verify intel
+    printf '%s|%s|%s' "$_MSR_OK" "$_MSR_TOTAL" "$_MSR_BAD"
+))"
+assert_eq "rdmsr unreadable register flagged (#66)" "$out" "0|1| 0x1a4(unreadable)"
+
 # #12: uninstall reverts every system change setup made, idempotently, leaving config.json. The GRUB
 # revert uses GNU `sed -i` so it's exercised in the Docker e2e (real Linux); here we point GRUB_DEFAULT
 # at a nonexistent path so that block is skipped and the test runs on macOS too.
