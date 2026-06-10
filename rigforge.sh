@@ -12,6 +12,7 @@ readonly C_RESET='\033[0m'
 readonly C_GREEN='\033[1;32m'
 readonly C_YELLOW='\033[1;33m'
 readonly C_RED='\033[1;31m'
+readonly C_BLUE='\033[1;34m'
 
 log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
 warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1"; }
@@ -76,6 +77,9 @@ CPUFREQ_MAX="${CPUFREQ_MAX:-/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_fre
 CPU_SYSFS="${CPU_SYSFS:-/sys/devices/system/cpu}"
 MIN_RAM_MTS="${MIN_RAM_MTS:-2666}"   # warn below this configured RAM speed (MT/s)
 MIN_CLOCK_PCT="${MIN_CLOCK_PCT:-75}" # warn when the loaded clock is below this % of max boost
+# BIOS/firmware advisory (#78): board/BIOS identity + SMT state (both world-readable from sysfs).
+DMI_DIR="${DMI_DIR:-/sys/class/dmi/id}"
+SMT_CONTROL="${SMT_CONTROL:-/sys/devices/system/cpu/smt/control}"
 
 # systemd service name for the worker.
 SERVICE_NAME="${SERVICE_NAME:-xmrig}"
@@ -1034,6 +1038,7 @@ TUNE_OVERRIDES=""
 MEMO_FILE=""
 MEMO_SD_FILE=""       # per-candidate sample stddev, for the variance-aware acceptance gate (#63)
 MEMO_THROTTLE_FILE="" # per-candidate throttle flag (1/0), for thermal-throttle rejection (#62)
+MEMO_HPW_FILE=""      # per-candidate hashrate-per-watt, for the efficiency optimization target (#79)
 RESULTS_FILE=""
 TUNE_MODE=""
 S_p=""
@@ -1075,6 +1080,14 @@ _memo_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_FILE"; }
 # bare number for every existing caller), and the state's memo key (#63).
 _memo_sd_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_SD_FILE" 2>/dev/null; }
 _memo_sd_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_SD_FILE"; }
+_memo_hpw_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_HPW_FILE" 2>/dev/null; } # #79
+_memo_hpw_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_HPW_FILE"; }
+# #79: efficiency mode needs a power source. True if TUNE_POWER_CMD is set or RAPL is readable.
+_power_supported() {
+    [ -n "${TUNE_POWER_CMD:-}" ] && return 0
+    [ -n "$(_rapl_sum energy_uj)" ] && return 0
+    return 1
+}
 _memo_thr_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_THROTTLE_FILE" 2>/dev/null; } # #62
 _memo_thr_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_THROTTLE_FILE"; }
 _state_key() { printf '%s|%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq" "$S_wr"; }
@@ -1088,14 +1101,27 @@ _stddev() {
 _accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
     # #62: a throttled candidate's reading is unreliable — never adopt it.
     if [ "$(_memo_thr_get "$2")" = 1 ]; then return 1; fi
+    # #79: the efficiency target ranks by hashrate-per-watt instead of raw H/s. The variance band (#63)
+    # carries over proportionally — each candidate's relative H/s spread applied to its hs_per_watt. Any
+    # pair missing a power reading falls back to the raw-H/s comparison so the search still progresses.
+    if [ "${TUNE_TARGET:-perf}" = efficiency ]; then
+        local chpw bhpw
+        chpw=$(_memo_hpw_get "$2")
+        bhpw=$(_memo_hpw_get "$4")
+        if [ -n "$chpw" ] && [ -n "$bhpw" ]; then
+            awk -v c="$chpw" -v b="$bhpw" -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+                -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
+                'BEGIN { crel = (cm > 0 ? csd / cm : 0); brel = (best > 0 ? bsd / best : 0); band = sig * sqrt((c * crel) ^ 2 + (b * brel) ^ 2); exit !(c > b * (1 + delta) && (c - b) > band) }'
+            return
+        fi
+    fi
     awk -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
         -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
         'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
 }
 
-# Best-effort temperature (°C) and power (W) for a hashrate-per-watt view (#54). Both are optional:
-# temp defaults to the standard Linux thermal zone, power is opt-in via TUNE_POWER_CMD (reliable
-# wattage needs a method the operator chooses — RAPL sampler, smart plug, IPMI). Either may be empty.
+# Best-effort temperature (°C) for the hashrate-per-watt view (#54). Defaults to the standard Linux
+# thermal zone; TUNE_TEMP_CMD overrides. Read right after the loaded window (the cores are still hot).
 _read_temp() {
     if [ -n "${TUNE_TEMP_CMD:-}" ]; then
         eval "$TUNE_TEMP_CMD"
@@ -1106,10 +1132,54 @@ _read_temp() {
     [ -r "$z" ] && awk '{printf "%.1f", $1/1000}' "$z" 2>/dev/null
     return 0
 }
-_read_watts() {
+
+# Power measurement (#81). hashrate-per-watt only means something if watts are sampled UNDER LOAD and
+# averaged across the measurement window — the old code read once AFTER the bench (idle), collapsing the
+# metric onto raw H/s. Two sources, both sampled during the load window:
+#   - built-in RAPL: the CPU-package energy-counter delta over the window (Linux, root, no config);
+#   - TUNE_POWER_CMD: an instantaneous-watts override (IPMI / smart plug / wall AC), polled + averaged.
+# hs_per_watt is therefore RELATIVE within one method/machine — RAPL is CPU-package only, a smart plug is
+# whole-wall AC — not an absolute or cross-rig figure. See docs/tuning.md.
+
+# An instantaneous watts reading from the operator's override (empty if none).
+_read_watts_now() {
     [ -n "${TUNE_POWER_CMD:-}" ] && eval "$TUNE_POWER_CMD"
     return 0
 }
+
+# Sum a RAPL sysfs metric (energy_uj or max_energy_range_uj) across the PACKAGE domains only — the
+# top-level intel-rapl:N zones named "package-*" (AMD Zen + Intel both expose these here). DRAM/core
+# subzones (intel-rapl:N:M) and psys are skipped so nothing is double-counted. RAPL_DIR is overridable
+# for tests. Empty when RAPL isn't present/readable (needs root) — power then falls back to TUNE_POWER_CMD.
+_rapl_sum() { # <energy_uj|max_energy_range_uj>
+    [ "$OS_TYPE" = Linux ] || return 0
+    local base="${RAPL_DIR:-/sys/class/powercap}" d v sum=0 got=0
+    for d in "$base"/intel-rapl:*; do
+        [ -r "$d/$1" ] || continue
+        case "$(cat "$d/name" 2>/dev/null)" in package-*) ;; *) continue ;; esac
+        v=$(cat "$d/$1" 2>/dev/null) || continue
+        case "$v" in '' | *[!0-9]*) continue ;; esac
+        sum=$((sum + v))
+        got=1
+    done
+    [ "$got" = 1 ] && echo "$sum"
+}
+
+# Average watts from a package-energy delta: <e0_uj> <e1_uj> <max_total_uj> <elapsed_s>. Corrects a single
+# counter wrap (e1<e0 -> + max). Empty (never errors under set -e) when inputs are missing or elapsed<=0.
+# One-line awk so kcov attributes its coverage (a multi-line program in a string reads as uncovered).
+_watts_from_energy() {
+    awk -v e0="$1" -v e1="$2" -v mx="$3" -v secs="$4" 'BEGIN{if(e0==""||e1==""||secs+0<=0)exit;d=e1-e0;if(d<0&&mx+0>0)d+=mx;if(d<0)exit;printf "%.2f",(d/1e6)/secs}'
+}
+
+# Mean of the numeric args (empty if none) — averages instantaneous power samples over the window.
+_mean() {
+    [ "$#" -gt 0 ] || return 0
+    printf '%s\n' "$@" | awk '{ s += $1; n++ } END { if (n > 0) printf "%.2f", s / n }'
+}
+
+# Wall-clock seconds with sub-second precision (GNU date) for timing the RAPL energy window (Linux path).
+_now_s() { date +%s.%N 2>/dev/null; }
 
 # A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
@@ -1135,6 +1205,7 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
 # from the config so xmrig doesn't serve the API, mine, or daemonize. `BENCH_TIMEOUT` bounds a stuck run.
 _xmrig_bench() { # <bin> <bench-size> <config|"">
     local bin="$1" size="$2" cfg="${3:-}" bcfg="" tmpcfg="" out logf xpid deadline freqs="" f
+    local wsamples="" pe0="" pt0="" pmax="" w # #81: power-window state
     out="$(mktemp 2>/dev/null || echo "/tmp/rf-bo-$$")"
     logf="$(mktemp 2>/dev/null || echo "/tmp/rf-bl-$$")"
     if [ -n "$cfg" ] && [ -f "$cfg" ] && command -v jq >/dev/null 2>&1; then
@@ -1151,6 +1222,19 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
         f=$(_cpu_eff_khz)
         [ -n "$f" ] && freqs="$f"
     fi
+    # #81: bracket the same loaded window for power. With TUNE_POWER_CMD we poll instantaneous watts in the
+    # loop; otherwise we read the RAPL package energy counter now and at the end and divide by the elapsed
+    # time. Averaged into BENCH_WATTS_FILE, so hs_per_watt reflects LOAD power, not the old idle reading.
+    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
+        if [ -n "${TUNE_POWER_CMD:-}" ]; then
+            w=$(_read_watts_now)
+            case "$w" in '') ;; *) wsamples="$w" ;; esac
+        else
+            pe0=$(_rapl_sum energy_uj)
+            pt0=$(_now_s)
+            pmax=$(_rapl_sum max_energy_range_uj)
+        fi
+    fi
     deadline=$(($(date +%s) + ${BENCH_TIMEOUT:-1800}))
     while kill -0 "$xpid" 2>/dev/null; do
         grep -qs 'benchmark finished' "$logf" "$out" && break
@@ -1159,8 +1243,26 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
             f=$(_cpu_eff_khz)
             [ -n "$f" ] && freqs="$freqs $f"
         fi
+        if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -n "${TUNE_POWER_CMD:-}" ]; then
+            w=$(_read_watts_now)
+            case "$w" in '') ;; *) wsamples="$wsamples $w" ;; esac
+        fi
         sleep 0.2
     done
+    # #81: read the end-of-window energy BEFORE killing xmrig (still loaded), then average over the window.
+    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
+        local pe1="" pt1="" secs="" wout=""
+        if [ -n "${TUNE_POWER_CMD:-}" ]; then
+            # shellcheck disable=SC2086 # intentional word-split of the sample list
+            wout=$(_mean $wsamples)
+        elif [ -n "$pe0" ]; then
+            pe1=$(_rapl_sum energy_uj)
+            pt1=$(_now_s)
+            secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
+            wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
+        fi
+        printf '%s' "$wout" >"$BENCH_WATTS_FILE"
+    fi
     kill "$xpid" 2>/dev/null
     wait "$xpid" 2>/dev/null || true
     # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
@@ -1189,12 +1291,37 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     apply >/dev/null 2>&1 || true
     sleep "${TUNE_LIVE_WARMUP:-60}"
     local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
+    # #81: bracket the steady-state window for power — RAPL energy delta over the window, or the mean of
+    # instantaneous TUNE_POWER_CMD samples taken alongside the hashrate samples. Written to BENCH_WATTS_FILE.
+    local wsamples="" pe0="" pt0="" pmax="" w
+    if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -z "${TUNE_POWER_CMD:-}" ]; then
+        pe0=$(_rapl_sum energy_uj)
+        pt0=$(_now_s)
+        pmax=$(_rapl_sum max_energy_range_uj)
+    fi
     for i in $(seq 1 "$n"); do
         s=$(_read_api_hashrate)
         [ -n "$s" ] || s=0
         samples+=("$s")
+        if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -n "${TUNE_POWER_CMD:-}" ]; then
+            w=$(_read_watts_now)
+            case "$w" in '') ;; *) wsamples="$wsamples $w" ;; esac
+        fi
         [ "$i" -lt "$n" ] && sleep "${TUNE_LIVE_INTERVAL:-30}"
     done
+    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
+        local pe1="" pt1="" secs="" wout=""
+        if [ -n "${TUNE_POWER_CMD:-}" ]; then
+            # shellcheck disable=SC2086 # intentional word-split of the sample list
+            wout=$(_mean $wsamples)
+        elif [ -n "$pe0" ]; then
+            pe1=$(_rapl_sum energy_uj)
+            pt1=$(_now_s)
+            secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
+            wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
+        fi
+        printf '%s' "$wout" >"$BENCH_WATTS_FILE"
+    fi
     _median "${samples[@]}"
 }
 
@@ -1208,24 +1335,30 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         return 0
     fi
 
-    local med samples=() s i cfg minfk="" bf
+    local med samples=() s i cfg minfk="" bf watts="" wsamps=() wv
     if [ "$TUNE_MODE" = live ]; then
-        med=$(_measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
+        : >"$TUNE_TMP/watts" # #81: _measure_live writes the under-load average watts here
+        med=$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
         [ -n "$med" ] || med=0
         samples=("$med")
+        watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
         _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr"
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
-            : >"$TUNE_TMP/freq" # #62: _xmrig_bench writes the min effective clock seen during this run
-            s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" _bench_once "$cfg")
+            : >"$TUNE_TMP/freq"  # #62: _xmrig_bench writes the effective clock seen during this run
+            : >"$TUNE_TMP/watts" # #81: ... and the average watts under load
+            s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" BENCH_WATTS_FILE="$TUNE_TMP/watts" _bench_once "$cfg")
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
+            wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
+            case "$wv" in '' | *[!0-9.]*) ;; *) wsamps+=("$wv") ;; esac
         done
         med=$(_median "${samples[@]}")
         [ -n "$med" ] || med=0
+        [ "${#wsamps[@]}" -gt 0 ] && watts=$(_median "${wsamps[@]}") # median load watts across the iters
     fi
 
     # #62: a candidate whose sustained clock fell below TUNE_MIN_FREQ_MHZ thermally throttled — its number
@@ -1242,9 +1375,10 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     local hpcapped=false
     if [ -n "${HP_CAP_THREADS:-}" ] && [ "$t" != "-1" ] && [ "$t" -gt "$HP_CAP_THREADS" ] 2>/dev/null; then hpcapped=true; fi
 
-    local sd watts temp
+    local sd temp
     sd=$(_stddev "${samples[@]}") # sample spread, for the variance-aware acceptance gate (#63)
-    watts=$(_read_watts)
+    # #81: watts is the median UNDER-LOAD reading collected during the window above (no longer a post-bench
+    # idle sample), so hs_per_watt below ranks candidates by real load efficiency.
     temp=$(_read_temp)
     jq -cn --argjson p "$p" --argjson y "$y" --arg t "$t" --argjson g "$g" --argjson pr "$pr" \
         --argjson hj "$hj" --argjson cq "$cq" --argjson wr "$wr" --argjson med "$med" --arg samples "${samples[*]}" \
@@ -1258,9 +1392,13 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
           temp_c: (if $temp=="" then null else ($temp|tonumber) end),
           hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
         >>"$RESULTS_FILE"
+    # #79: store hashrate-per-watt for the efficiency-target gate (empty when there's no power reading).
+    local hpw
+    hpw=$(awk -v m="$med" -v w="${watts:-0}" 'BEGIN{if(w+0>0)printf "%.4f",m/w}')
     _memo_put "$key" "$med"
     _memo_sd_put "$key" "${sd:-0}"
     _memo_thr_put "$key" "$throttled"
+    _memo_hpw_put "$key" "$hpw"
     printf '%s' "$med"
 }
 
@@ -1475,14 +1613,17 @@ _seed_guess() {
 tune() {
     local clear=0
     TUNE_MODE="${TUNE_MODE:-bench}"
-    TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
+    TUNE_CONFIRM="${TUNE_CONFIRM:-0}"  # #64: A/B-confirm the winner against the previous config, live
+    TUNE_TARGET="${TUNE_TARGET:-perf}" # #79: perf (raw H/s) or efficiency (hashrate-per-watt)
     while [ $# -gt 0 ]; do
         case "$1" in
         --clear) clear=1 ;;
         --live) TUNE_MODE=live ;;
         --bench) TUNE_MODE=bench ;;
         --confirm) TUNE_CONFIRM=1 ;;
-        *) error "Unknown tune option: $1 (use --live, --bench, --confirm, or --clear)." ;;
+        --efficiency) TUNE_TARGET=efficiency ;; # #79: optimize hashrate-per-watt
+        --perf) TUNE_TARGET=perf ;;
+        *) error "Unknown tune option: $1 (use --live, --bench, --confirm, --efficiency, --perf, or --clear)." ;;
         esac
         shift
     done
@@ -1513,6 +1654,13 @@ tune() {
     TUNE_ITERS="${TUNE_ITERS:-5}"            # median of 5 short benches: steadier than 3 against RandomX jitter (#3)
     TUNE_MIN_DELTA="${TUNE_MIN_DELTA:-0.01}" # minimum relative win (floor)
     TUNE_SIGMA="${TUNE_SIGMA:-1}"            # #63: also require the win to exceed this × the combined sample noise band
+    # #79: efficiency mode ranks by hashrate-per-watt, which needs a power source. Without RAPL or
+    # TUNE_POWER_CMD, fall back to perf rather than "optimizing" on a metric we can't measure.
+    if [ "$TUNE_TARGET" = efficiency ] && ! _power_supported; then
+        warn "tune --efficiency needs a power source (built-in RAPL or TUNE_POWER_CMD) — none available; optimizing for raw hashrate (perf) instead."
+        TUNE_TARGET=perf
+    fi
+    [ "$TUNE_TARGET" = efficiency ] && log "Optimization target: efficiency (hashrate-per-watt)."
     # #62: a candidate whose effective clock dipped below this during its window thermally throttled and is
     # skipped. Default ~80% of max boost (all-core RandomX should hold well above that); 0 disables it.
     if [ -z "${TUNE_MIN_FREQ_MHZ:-}" ]; then
@@ -1583,10 +1731,12 @@ tune() {
     MEMO_FILE="$TUNE_TMP/memo"
     MEMO_SD_FILE="$TUNE_TMP/memo_sd"
     MEMO_THROTTLE_FILE="$TUNE_TMP/memo_throttle"
+    MEMO_HPW_FILE="$TUNE_TMP/memo_hpw"
     RESULTS_FILE="$TUNE_TMP/results.jsonl"
     : >"$MEMO_FILE"
     : >"$MEMO_SD_FILE"
     : >"$MEMO_THROTTLE_FILE"
+    : >"$MEMO_HPW_FILE"
     : >"$RESULTS_FILE"
 
     if [ "$TUNE_MODE" = live ]; then
@@ -1662,12 +1812,12 @@ tune() {
 
     # Assemble the full search log: the winner, the search parameters, and every measured candidate.
     jq -s --argjson p "$G_p" --argjson y "$G_y" --arg t "$G_t" --argjson g "$G_g" --argjson pr "$G_pr" \
-        --argjson hj "$G_hj" --argjson cq "$G_cq" --argjson wr "$G_wr" \
+        --argjson hj "$G_hj" --argjson cq "$G_cq" --argjson wr "$G_wr" --arg target "$TUNE_TARGET" \
         --argjson hr "$G_best" --arg mode "$TUNE_MODE" --arg search "$TUNE_SEARCH" --arg seeds "$TUNE_SEEDS" \
         --argjson iters "$TUNE_ITERS" --argjson delta "$TUNE_MIN_DELTA" '
         { best: { scratchpad_prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g,
                   priority: $pr, "huge-pages-jit": $hj, cache_qos: $cq, wrmsr: $wr, hashrate: $hr },
-          mode: $mode, search: $search, seeds: ($seeds|split(" ")), iterations: $iters, min_delta: $delta,
+          mode: $mode, target: $target, search: $search, seeds: ($seeds|split(" ")), iterations: $iters, min_delta: $delta,
           results: . }' "$RESULTS_FILE" >"$TUNE_TMP/log.json" && sudo cp "$TUNE_TMP/log.json" "$logf"
 
     local hpw=""
@@ -2156,14 +2306,22 @@ bench() {
 # changes the system, just reports PASS/WARN with actionable hints. Linux-only checks.
 _ck_ok() { echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
 _ck_warn() { echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
+_ck_info() { echo -e "  ${C_BLUE}∙${C_RESET} $1"; } # neutral context line (#78), not a pass/fail check
+# Read a /sys/class/dmi/id field (board/BIOS identity; world-readable). Empty if missing. #78.
+_dmi() {
+    [ -r "$DMI_DIR/$1" ] || return 0
+    tr -d '\n' <"$DMI_DIR/$1" 2>/dev/null
+    return 0
+}
 
-# #67 helpers. _mem_summary parses `dmidecode -t memory` into "<populated-DIMMs> <channels> <min MT/s>"
-# (channels from the Bank Locator; speed prefers the running "Configured Memory Speed"). _cpu_eff_khz
-# averages the per-core scaling_cur_freq — the effective clock under load.
+# #67/#78 helper. _mem_summary parses `dmidecode -t memory` into "<populated-DIMMs> <channels>
+# <min configured MT/s> <max rated MT/s>" — channels from the Bank Locator, the configured speed is the
+# RUNNING one, the rated speed is the module's SPD/XMP "Speed". #78 compares the two to spot a memory
+# profile that isn't enabled. _cpu_eff_khz averages the per-core scaling_cur_freq (clock under load).
 _mem_summary() {
-    # One-line awk (kcov can't see coverage of a multi-line program inside a string): for each Memory
-    # Device, count populated DIMMs, distinct channels (Bank Locator) and the min running speed.
-    "$DMIDECODE" -t memory 2>/dev/null | awk 'function flush(){if(sz~/[0-9]+ *[GMgm][Bb]/){pop++;if(ch!="")chans[ch]=1;if(sp+0>0&&(mins==0||sp+0<mins))mins=sp+0};sz="";ch="";sp=""} /^Memory Device/{flush();next} /^[ \t]*Size:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);sz=v} /Bank Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);ch=v} /^[ \t]*Speed:/{if(sp==""&&match($0,/[0-9]+/))sp=substr($0,RSTART,RLENGTH)} /Configured Memory Speed:/{if(match($0,/[0-9]+/))sp=substr($0,RSTART,RLENGTH)} END{flush();nc=0;for(c in chans)nc++;printf "%d %d %d",pop+0,nc+0,mins+0}'
+    # One-line awk (kcov can't see coverage of a multi-line program inside a string): per Memory Device,
+    # count populated DIMMs + distinct channels, and track the min configured (cf) and max rated (rt) speed.
+    "$DMIDECODE" -t memory 2>/dev/null | awk 'function flush(){if(sz~/[0-9]+ *[GMgm][Bb]/){pop++;if(ch!="")chans[ch]=1;if(cf+0>0&&(minc==0||cf+0<minc))minc=cf+0;if(rt+0>maxr)maxr=rt+0};sz="";ch="";cf="";rt=""} /^Memory Device/{flush();next} /^[ \t]*Size:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);sz=v} /Bank Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);ch=v} /^[ \t]*Speed:/{if(match($0,/[0-9]+/))rt=substr($0,RSTART,RLENGTH)} /Configured Memory Speed:/{if(match($0,/[0-9]+/))cf=substr($0,RSTART,RLENGTH)} END{flush();nc=0;for(c in chans)nc++;printf "%d %d %d %d",pop+0,nc+0,minc+0,maxr+0}'
 }
 _cpu_eff_khz() {
     local f v sum=0 n=0
@@ -2350,9 +2508,9 @@ EOF
     # single memory channel, slow RAM, or a power/boost cap silently leaves performance on the table.
     # doctor can't change these — it only flags them. Best-effort, gated on tool/data availability.
     if command -v "$DMIDECODE" >/dev/null 2>&1; then
-        local mem pop nch spd
+        local mem pop nch spd rated
         mem=$(_mem_summary)
-        read -r pop nch spd <<<"${mem:-0 0 0}"
+        read -r pop nch spd rated <<<"${mem:-0 0 0 0}" # rated (4th field) feeds the #78 XMP/EXPO check
         if [ "${pop:-0}" -eq 0 ] 2>/dev/null; then
             _ck_warn "RAM layout not readable — run 'doctor' as root so dmidecode can check channels/speed"
         else
@@ -2385,6 +2543,29 @@ EOF
             fi
         fi
     fi
+
+    # BIOS / firmware advisory (#78). RigForge can't read or change BIOS setup variables from a booted OS,
+    # so this is detect-and-recommend only: it reads what the OS DOES expose (board/BIOS identity, the
+    # memory profile, SMT) and turns it into concrete manual recommendations. Advisory — never an issue.
+    local bvendor board bios bdate cpu smt
+    bvendor=$(_dmi board_vendor)
+    board=$(_dmi board_name)
+    bios=$(_dmi bios_version)
+    bdate=$(_dmi bios_date)
+    cpu=$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}') || cpu=""
+    if [ -n "$bvendor$board$bios" ]; then
+        _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the items below in BIOS/UEFI; RigForge can't change them from the OS."
+    fi
+    # XMP/EXPO/DOCP: RAM running below its rated SPD speed means the memory profile isn't enabled. Sharper
+    # than the #67 fixed-threshold check (it compares rated vs configured for THIS kit).
+    if [ "${rated:-0}" -gt 0 ] 2>/dev/null && [ "${spd:-0}" -gt 0 ] 2>/dev/null && [ "$spd" -lt "$rated" ] 2>/dev/null; then
+        _ck_warn "RAM is running at ${spd} MT/s but the modules are rated for ${rated} MT/s — enable the memory profile (XMP / EXPO / DOCP) in BIOS for a sizable RandomX gain."
+    fi
+    # SMT / Hyper-Threading off on a capable CPU leaves logical cores unused for RandomX.
+    smt=$(cat "$SMT_CONTROL" 2>/dev/null) || smt=""
+    case "$smt" in
+    off | forceoff) _ck_warn "SMT/Hyper-Threading is disabled — enable it in BIOS (SMT / Hyper-Threading) so RandomX can use every logical core." ;;
+    esac
 
     # XMRig's own startup report (HUGE PAGES 100% means the dataset is fully backed). Reuses the
     # log_file resolved above for the MSR-applied check.

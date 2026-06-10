@@ -8,6 +8,17 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`tune` optimization target — raw hashrate vs. efficiency (#79).** `tune --efficiency` (or
+  `TUNE_TARGET=efficiency`) ranks candidates by **hashrate-per-watt** instead of raw H/s — for power-cost
+  or heat/PSU-constrained rigs. The variance gate (#63) carries over proportionally, and efficiency mode
+  requires a power source (built-in RAPL or `TUNE_POWER_CMD`), falling back to `perf` with a warning when
+  none is available. The chosen target is recorded in `rigforge-tune.json`. Default stays `perf`.
+- **`doctor` BIOS/firmware advisory (#78).** `doctor` now reads what the booted OS exposes — board + BIOS
+  version/date from `/sys/class/dmi/id`, the memory profile (rated vs. configured speed via `dmidecode`),
+  and SMT state — and turns it into concrete, manual BIOS recommendations: enable **XMP/EXPO/DOCP** when
+  RAM runs below its rated speed, and enable **SMT/Hyper-Threading** when it's off. Detect-and-recommend
+  only — RigForge can't read or change BIOS setup variables from a running OS — so it's purely advisory
+  and degrades gracefully when the probes aren't available.
 - Hardware-aware tuning knobs: MSR verification & reservation-aware threads (#65, #66):
   - **MSR mod verification (#66):** `doctor` no longer just checks that the `msr` module loaded — it now
     confirms the prefetcher mod actually **applied**. It reads XMRig's own log line (`msr register values
@@ -195,6 +206,14 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`tune` hashrate-per-watt was measured at idle (#81).** In `--bench` mode, watts were read *after* the
+  benchmark finished and every `xmrig` child was killed — i.e. while the machine coasted back to idle —
+  so `hs_per_watt` divided a loaded hashrate by idle power and couldn't rank candidates. Power is now
+  sampled **under load and averaged over the window** (in both `--bench` and `--live`). Added a **built-in
+  RAPL** reader (the CPU-package energy-counter delta — works on Linux as root with no `TUNE_POWER_CMD`),
+  with `TUNE_POWER_CMD` kept as the instantaneous-watts override for IPMI / smart-plug / wall-AC sources;
+  a single counter wrap is corrected. Documented that `hs_per_watt` is **relative within one method and
+  machine** (RAPL = CPU package only; a smart plug = whole-wall AC), not an absolute or cross-rig figure.
 - **Fail-closed worker-root resolution:** `uninstall`/`backup`/`restore` resolved `HOME_DIR` without the
   validation `parse_config` enforces, so a malformed or hostile `HOME_DIR` could flow into a privileged
   `sudo rm -rf`. The validation is now shared, and every consumer refuses an invalid `HOME_DIR`.
