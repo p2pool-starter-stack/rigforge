@@ -1,16 +1,23 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Kernel Boot Parameter Calculator for RandomX Mining
 #
 # Analyzes hardware topology (L3 Cache, Sockets) to recommend optimal
 # GRUB configuration for HugePages (1GB/2MB) and MSR registers.
 #
+# No `set -e`: the hardware probes (lscpu/grep) intentionally fall back to safe defaults when a tool or
+# field is missing, so a non-zero probe must not abort. `-u`/pipefail still catch real mistakes.
+set -uo pipefail
 
-# Parse arguments
+# Parse arguments by EXACT match (a substring test would let a stray "-q" inside a path flip QUIET).
 QUIET=0
-if [[ "$*" == *"-q"* ]]; then
-    QUIET=1
-fi
+RUNTIME=0
+for arg in "$@"; do
+    case "$arg" in
+    -q | --quiet) QUIET=1 ;;
+    --runtime) RUNTIME=1 ;;
+    esac
+done
 
 # Hardware probe paths. Overridable so the calculation can be tested off a Linux box (the defaults
 # are the real kernel locations, so normal invocation is unchanged).
@@ -60,7 +67,7 @@ TOTAL_2MB_PAGES=$((128 + THREADS + 10))
 BASE_2MB_PAGES=1168
 TOTAL_2MB_FALLBACK=$(((BASE_2MB_PAGES * SOCKETS) + THREADS + 50))
 
-if [[ "$*" == *"--runtime"* ]]; then
+if [ "$RUNTIME" -eq 1 ]; then
     # Check if 1GB pages are already allocated
     PAGES_1GB=0
     if [ -f "$HUGEPAGES_1G_NR" ]; then
@@ -88,7 +95,7 @@ fi
 
 # --- 4. Output ---
 
-if [ $QUIET -eq 1 ]; then
+if [ "$QUIET" -eq 1 ]; then
     echo "$NEW_GRUB"
 else
     echo "--- Hardware Analysis ---"
