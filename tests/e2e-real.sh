@@ -100,6 +100,33 @@ verify() {
         bad "governor is '$(cat "$GOVERNOR_FILE" 2>/dev/null || echo unknown)' (expected performance)"
     systemctl is-active --quiet xmrig && ok "service 'xmrig' is active" || bad "service 'xmrig' not active"
 
+    phase "verify — live pool (the worker actually connects and submits a share)"
+    systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
+    local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0
+    wlog="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
+    if [ -z "$wlog" ]; then
+        bad "could not find the worker's xmrig.log to check pool connectivity"
+    else
+        # Connection: a stratum job from the pool proves the worker reached and authed with it.
+        while [ "$waited" -lt 60 ] && ! grep -q 'new job from' "$wlog" 2>/dev/null; do
+            sleep 3
+            waited=$((waited + 3))
+        done
+        grep -q 'new job from' "$wlog" 2>/dev/null &&
+            ok "connected to the pool ($(grep -oE 'new job from [^ ]+' "$wlog" | tail -1 | awk '{print $NF}'))" ||
+            bad "no pool job in the log within 60s — is the pool reachable?"
+        # Share submission: an accepted share proves the full mining round-trip. Assumes a reachable pool
+        # with sane difficulty (e.g. the stack's pool); raise E2E_SHARE_TIMEOUT for a high-difficulty pool.
+        waited=0
+        while [ "$waited" -lt "$share_to" ] && ! grep -q 'accepted (' "$wlog" 2>/dev/null; do
+            sleep 5
+            waited=$((waited + 5))
+        done
+        grep -q 'accepted (' "$wlog" 2>/dev/null &&
+            ok "submitted an accepted share ($(grep -c 'accepted (' "$wlog") accepted so far)" ||
+            bad "no accepted share within ${share_to}s — check pool reachability / difficulty"
+    fi
+
     phase "verify — bench (real hashing, off the running service)"
     "$RIGFORGE" stop >/dev/null 2>&1 || true # take the whole machine for a clean reading
     local out hr=""
