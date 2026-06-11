@@ -1464,6 +1464,10 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
+            # _median emits a fractional kHz for an even sample count (e.g. 4627500.5); floor it to whole kHz
+            # so the integer guard below keeps the reading instead of dropping it — a dropped reading would
+            # leave min_freq_mhz null, silently disabling this candidate's #62 throttle check.
+            bf=${bf%.*}
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
             wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
             case "$wv" in '' | *[!0-9.]*) ;; *) wsamps+=("$wv") ;; esac
