@@ -149,6 +149,19 @@ else
     bad "deploy: config.json stable across runs" "differs or missing"
 fi
 
+echo "== third run (recompile is skipped when already built) =="
+# #audit: the skip-the-recompile engine behind a no-op re-run + `upgrade`. The stub `make` never produces
+# a binary, so runs 1+2 above ALWAYS rebuild — the skip path was never exercised in a dispatched run. Drop
+# in a fake built binary at the pinned commit, then a third run must skip the clone/compile entirely.
+printf '#!/bin/sh\necho fake-xmrig\n' >"$BUILD/xmrig"
+chmod +x "$BUILD/xmrig"
+: >"$WORK/calls3.log"
+out3="$(CALL_LOG="$WORK/calls3.log" ./rigforge.sh </dev/null 2>&1)"
+assert_rc "third run (already built) exits 0" "$?" "0"
+assert_contains "recompile SKIPPED when already built at the pinned commit" "$out3" "recompile will be skipped"
+assert_absent "no git clone on a build-skip re-run" "$(cat "$WORK/calls3.log" 2>/dev/null)" "clone"
+assert_eq "no new build archive on a skip re-run" "$(find "$WORK/data-home/worker" -maxdepth 1 -name 'xmrig-*' | wc -l | tr -d ' ')" "1"
+
 # #54: the iterative auto-tuner, end-to-end on REAL Linux (real bash/jq/awk/sort). The compile is
 # stubbed, so drop in a fake xmrig that reports a hashrate as a function of the knobs (peak at
 # prefetch=2 / yield=false / threads=8 — the L3=256 MiB center clamped to the 8 stub cores). This

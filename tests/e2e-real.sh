@@ -119,30 +119,38 @@ verify() {
         bad "doctor printed no firmware context line (#78) — is /sys/class/dmi/id readable?"
 
     phase "verify — live pool (the worker actually connects and submits a share)"
-    systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
-    local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0
-    wlog="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
-    if [ -z "$wlog" ]; then
-        bad "could not find the worker's xmrig.log to check pool connectivity"
+    # This needs a REACHABLE pool. The default ensure_config writes an unroutable TEST-NET-3 placeholder
+    # (203.0.113.x) so the installed service never mines to a real destination — with that, the connect/
+    # share round-trip CANNOT run, so SKIP it rather than failing the gate. To exercise the full mining
+    # round-trip before tagging, put a real reachable pool in config.json first (see RELEASING.md).
+    if grep -q '203\.0\.113\.' "$HERE/config.json" 2>/dev/null; then
+        ok "SKIP live-pool round-trip — offline placeholder pool in config.json (set a real pool to test connect+share)"
     else
-        # Connection: a stratum job from the pool proves the worker reached and authed with it.
-        while [ "$waited" -lt 60 ] && ! grep -q 'new job from' "$wlog" 2>/dev/null; do
-            sleep 3
-            waited=$((waited + 3))
-        done
-        grep -q 'new job from' "$wlog" 2>/dev/null &&
-            ok "connected to the pool ($(grep -oE 'new job from [^ ]+' "$wlog" | tail -1 | awk '{print $NF}'))" ||
-            bad "no pool job in the log within 60s — is the pool reachable?"
-        # Share submission: an accepted share proves the full mining round-trip. Assumes a reachable pool
-        # with sane difficulty (e.g. the stack's pool); raise E2E_SHARE_TIMEOUT for a high-difficulty pool.
-        waited=0
-        while [ "$waited" -lt "$share_to" ] && ! grep -q 'accepted (' "$wlog" 2>/dev/null; do
-            sleep 5
-            waited=$((waited + 5))
-        done
-        grep -q 'accepted (' "$wlog" 2>/dev/null &&
-            ok "submitted an accepted share ($(grep -c 'accepted (' "$wlog") accepted so far)" ||
-            bad "no accepted share within ${share_to}s — check pool reachability / difficulty"
+        systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
+        local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0
+        wlog="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
+        if [ -z "$wlog" ]; then
+            bad "could not find the worker's xmrig.log to check pool connectivity"
+        else
+            # Connection: a stratum job from the pool proves the worker reached and authed with it.
+            while [ "$waited" -lt 60 ] && ! grep -q 'new job from' "$wlog" 2>/dev/null; do
+                sleep 3
+                waited=$((waited + 3))
+            done
+            grep -q 'new job from' "$wlog" 2>/dev/null &&
+                ok "connected to the pool ($(grep -oE 'new job from [^ ]+' "$wlog" | tail -1 | awk '{print $NF}'))" ||
+                bad "no pool job in the log within 60s — is the pool reachable?"
+            # Share submission: an accepted share proves the full mining round-trip. Assumes a reachable
+            # pool with sane difficulty; raise E2E_SHARE_TIMEOUT for a high-difficulty pool.
+            waited=0
+            while [ "$waited" -lt "$share_to" ] && ! grep -q 'accepted (' "$wlog" 2>/dev/null; do
+                sleep 5
+                waited=$((waited + 5))
+            done
+            grep -q 'accepted (' "$wlog" 2>/dev/null &&
+                ok "submitted an accepted share ($(grep -c 'accepted (' "$wlog") accepted so far)" ||
+                bad "no accepted share within ${share_to}s — check pool reachability / difficulty"
+        fi
     fi
 
     phase "verify — bench (real hashing, off the running service)"
@@ -232,15 +240,36 @@ verify() {
 
 teardown() {
     require_linux_root teardown
-    phase "teardown — ./rigforge.sh uninstall --yes (clean revert)"
+    phase "teardown — ./rigforge.sh uninstall --yes (a COMPLETE revert)"
     "$RIGFORGE" uninstall --yes
 
+    # The stubbed suites check most of these against fake /etc, but ONLY this real-hardware gate proves the
+    # real privileged `sudo cp`/`rm`/`umount`/`remove_line` against the real system actually leaves the box
+    # clean — a leftover fstab line (next `mount -a` fails) or un-removed worker dir would otherwise ship.
     systemctl cat xmrig >/dev/null 2>&1 && bad "xmrig.service still present after uninstall" ||
         ok "systemd unit removed"
+    systemctl cat rigforge-autotune.timer >/dev/null 2>&1 && bad "autotune timer still present" ||
+        ok "autotune timer removed (or was never installed)"
     if [ -f /etc/default/grub ]; then
         grep -qE 'hugepages|hugepagesz' /etc/default/grub &&
             bad "GRUB still carries HugePage params (revert incomplete)" || ok "GRUB kernel params reverted"
     fi
+    [ -f /etc/logrotate.d/xmrig ] && bad "/etc/logrotate.d/xmrig still present" || ok "logrotate policy removed"
+    grep -qiE 'hugetlbfs' /etc/fstab 2>/dev/null && bad "fstab still has HugePage mounts" || ok "fstab HugePage mounts removed"
+    grep -qiE 'memlock unlimited' /etc/security/limits.conf 2>/dev/null &&
+        bad "limits.conf still has memlock entries" || ok "memlock limits removed"
+    [ -f /etc/modules-load.d/msr.conf ] && bad "/etc/modules-load.d/msr.conf still present" || ok "msr autoload conf removed"
+    grep -qxF 'msr' /etc/modules 2>/dev/null && bad "/etc/modules still autoloads msr" || ok "msr line removed from /etc/modules"
+    grep -q 'hugepages1G' /proc/mounts 2>/dev/null && bad "/dev/hugepages1G still mounted" || ok "1G HugePage mount unmounted"
+    [ -d "$HERE/data/worker/xmrig" ] && bad "worker build dir still present at $HERE/data/worker/xmrig" || ok "worker build/logs removed"
+    [ -f "$HERE/config.json" ] && ok "config.json preserved (uninstall keeps it)" || bad "config.json was removed — uninstall must keep it"
+
+    phase "teardown — uninstall is idempotent (a second run is a clean no-op)"
+    "$RIGFORGE" uninstall --yes >/tmp/e2e-uninstall2.log 2>&1 &&
+        ok "second uninstall exits 0 (idempotent)" || {
+        bad "second uninstall failed (not idempotent)"
+        tail -5 /tmp/e2e-uninstall2.log >&2
+    }
     summary "teardown"
 }
 

@@ -26,6 +26,10 @@ Pre-1.0 (`0.x`), minor versions may include breaking changes while the interface
    ```
    Each phase must report `E2E-REAL (<phase>): PASS`. This is what proves a release bundle actually
    builds, tunes, and hashes on real hardware — the suites all stub XMRig and can't.
+   - **Put a real, reachable pool in `config.json` first.** Without one, `setup` writes an unroutable
+     placeholder and `verify` **skips** the connect + share-submission round-trip (it can't run against an
+     unreachable pool). To prove the full mining round-trip before tagging, point `pools[0].url` at a
+     real low-difficulty pool you control (e.g. the stack's test pool).
    - **Quick subset:** `make smoke` (bench-only) is the fast version when you just need to confirm a
      built worker still hashes; the full `e2e-real` flow above supersedes it for a real release.
    - Kept **out of CI** on purpose (a real build + HugePages + mining are flaky-by-nature and against

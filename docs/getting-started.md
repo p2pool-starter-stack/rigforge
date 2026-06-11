@@ -43,8 +43,14 @@ chmod +x rigforge.sh
 ```
 
 Have your **pool URL** ready — a `host:port`. For a Pithead stack that's the stack machine's address
-and its proxy port `3333` (e.g. `stack.lan:3333`). You do **not** need a wallet address: with Pithead
-the stack handles payouts centrally.
+and its proxy port `3333` (e.g. `stack.lan:3333`); with Pithead you do **not** need a wallet — the stack
+handles payouts centrally.
+
+> **Mining to a public pool instead of Pithead?** Most public pools (e.g. `pool.example.com:3333`) expect
+> your **Monero wallet address as the login**. The quick setup only asks for the pool URL, so afterwards
+> set `pools[].user` to your wallet and run `sudo ./rigforge.sh apply` — see
+> [Configuration › Pools](configuration.md#pools-full-control). Otherwise your hashes credit the rig's
+> hostname, not you.
 
 ---
 
@@ -99,8 +105,9 @@ sudo journalctl -u xmrig -f      # live logs — watch for accepted shares
 Confirm the optimizations applied:
 
 ```bash
+sudo ./rigforge.sh doctor                       # the one-stop health check (HugePages, MSR, governor, …)
 grep Huge /proc/meminfo                         # HugePages_Total should be non-zero
-grep -i msr <WORKER_ROOT>/xmrig.log             # MSR mod applied (no errors)
+grep -i msr data/worker/xmrig.log               # MSR mod applied (no errors)
 ```
 
 `<WORKER_ROOT>` is `data/worker` inside the repo by default. If you see MSR errors, you may need to

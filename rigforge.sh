@@ -193,14 +193,16 @@ check_prerequisites() {
 ensure_config_exists() {
     if [ ! -f "$CONFIG_JSON" ]; then
         warn "Configuration file not found: $CONFIG_JSON"
-        read -r -p "Create a minimal configuration now? (y/N): " CREATE_CONF
+        # `|| true`: on a non-interactive stdin (EOF) `read` returns non-zero, which would abort the run
+        # via the ERR trap; instead fall through to the clear "configuration required" error below.
+        read -r -p "Create a minimal configuration now? (y/N): " CREATE_CONF || true
         if [[ "$CREATE_CONF" =~ ^[Yy] ]]; then
             log "Starting interactive setup..."
 
             # We only need the pool URL — every other key has a sensible default (see
             # config.advanced.example.json for the full list). The URL is host:port (Pithead's proxy
             # listens on 3333).
-            read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL
+            read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL || true
 
             if [ -z "$IN_URL" ]; then
                 error "A pool URL is required. Aborting."
@@ -211,6 +213,7 @@ ensure_config_exists() {
 
             # Minimal config: just the native pools array. jq writes it so the URL is safely quoted.
             jq -n --arg url "$IN_URL" '{pools: [{url: $url}]}' >"$CONFIG_JSON"
+            _reown_worker # hand the freshly-created config.json to the operator, even if setup later fails
             log "Created $CONFIG_JSON successfully."
         else
             error "Configuration file required to proceed."
@@ -220,6 +223,10 @@ ensure_config_exists() {
 
 parse_config() {
     log "Parsing configuration..."
+    # A missing config (e.g. `apply`/`tune` before `setup`) is a different, clearer error than bad JSON.
+    if [ ! -f "$CONFIG_JSON" ]; then
+        error "No configuration at $CONFIG_JSON — run 'sudo $0 setup' first (it creates one on first run)."
+    fi
     if ! jq -e . "$CONFIG_JSON" >/dev/null 2>&1; then
         error "$CONFIG_JSON is not valid JSON."
     fi
@@ -669,9 +676,14 @@ install_service() {
         # Enable service to start on boot
         sudo systemctl enable xmrig.service
 
-        # Restart only when the binary was rebuilt; otherwise just ensure it's running (a running
-        # service is left undisturbed on a no-op re-run).
-        if [ "$XMRIG_REBUILD" = true ]; then
+        if [ "$REBOOT_REQUIRED" = true ]; then
+            # HugePages aren't reserved until the GRUB change takes effect on reboot — starting the miner
+            # now would run it DEGRADED (no huge-page backing, Restart=always churn) until then. So only
+            # enable it; it starts automatically after the reboot. (#audit A2)
+            log "Service enabled — it will start automatically after you reboot."
+        elif [ "$XMRIG_REBUILD" = true ]; then
+            # Restart only when the binary was rebuilt; otherwise just ensure it's running (a running
+            # service is left undisturbed on a no-op re-run).
             log "Restarting XMRig service..."
             sudo systemctl restart xmrig.service
         else
@@ -827,7 +839,11 @@ finish_deployment() {
     log "--------------------------------------------------------"
     echo ""
     if [ "$SERVICE_INSTALLED" = true ]; then
-        log "Service created. xmrig running in background."
+        if [ "$REBOOT_REQUIRED" = true ]; then
+            log "Service enabled — it starts automatically after the reboot above (then: $0 status / logs)."
+        else
+            log "Service created. xmrig running in background (check: $0 status / logs)."
+        fi
     else
         log "Start the miner with:"
         echo "  $0 start          # then: $0 status / logs / stop"
@@ -844,6 +860,23 @@ decide_rebuild() {
     else
         XMRIG_REBUILD=true
     fi
+}
+
+# Re-own everything written as root back to the invoking operator. setup/upgrade/tune/apply/restore write
+# files under WORKER_ROOT as root (the XMRig build, the generated config, logs, tune-overrides), and the
+# first-run config.json is created as root under `sudo` — leaving a tree the operator can't edit, re-run
+# `setup` over without sudo, or `git clean`. Reconcile ownership once at the end of each such command,
+# rather than chmod-ing every individual `sudo cp`/`tee`. No-op unless we're root on Linux/macOS.
+_reown_worker() {
+    [ "$(id -u)" -eq 0 ] || return 0
+    local owner
+    case "$OS_TYPE" in
+    Linux) owner="$REAL_USER:$REAL_USER" ;;
+    Darwin) owner="$REAL_USER" ;;
+    *) return 0 ;;
+    esac
+    if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
+    if [ -f "$CONFIG_JSON" ]; then sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true; fi
 }
 
 main() {
@@ -871,6 +904,8 @@ main() {
     install_service
     CURRENT_STEP="configuring autotune"
     install_autotune
+    CURRENT_STEP="reconciling file ownership"
+    _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
     CURRENT_STEP="finishing up"
     finish_deployment
 }
@@ -893,6 +928,7 @@ upgrade() {
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         warn "Saved tuning (tune-overrides.json) carried over from the previous build. The fastest knobs can shift between XMRig versions — consider re-running 'sudo $0 tune' (or 'tune --clear' to discard)."
     fi
+    _reown_worker
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -1847,6 +1883,7 @@ tune() {
         log "Apply it: sudo $0 apply    (reset anytime with: sudo $0 tune --clear)"
         [ "$OS_TYPE" = Linux ] && log "Or confirm it live first: sudo $0 tune --confirm"
     fi
+    _reown_worker # the tune-overrides / log were written via sudo — hand them back to the operator
 }
 
 # #64: A/B-confirm the tuned winner against the PREVIOUS config on the live miner. bench/grid measure in
@@ -2063,6 +2100,7 @@ restore() {
         ;;
     esac
     log "Next: 'sudo $0 setup' to build + apply (or 'sudo $0 apply' if XMRig is already built)."
+    WORKER_ROOT="$wr" _reown_worker # restored config.json + tuning were written as root
 }
 
 # --- Command surface (#11) -------------------------------------------------
@@ -2275,6 +2313,7 @@ apply() {
     else
         log "Config regenerated. Restart the miner to apply."
     fi
+    _reown_worker
 }
 
 # bench (#11): run a one-off xmrig --bench and report the hashrate. A quick perf/health check.
@@ -2599,7 +2638,8 @@ Usage: $0 [command]
   bench      run a one-off 'xmrig --bench' and report the hashrate
   tune       iteratively search the XMRig knobs (prefetch, yield, threads, 1gb-pages) and keep the
              fastest; '--live' tunes against the running miner, '--confirm' A/B-checks the winner live
-             before keeping it, 'tune --clear' resets
+             before keeping it, '--efficiency' optimizes hashrate-per-watt (default '--perf' = raw H/s),
+             'tune --clear' resets
   autotune   one live trial against the running miner (enable periodic runs with autotune:true in config)
   backup     save config.json + tuning to a timestamped archive in ./backups
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
