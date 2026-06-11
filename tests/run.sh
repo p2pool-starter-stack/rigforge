@@ -989,6 +989,36 @@ assert_contains "apply notice names the performance target (#95)" "$(apply_notic
 assert_contains "apply notice reports disabled (#95)" "$(apply_notice disabled)" "disabled"
 assert_eq "apply notice is silent on non-Linux (#95)" "$(apply_notice efficiency Darwin)" ""
 
+# #95 (regression): `apply` RECONCILES the autotune timer with config — so changing the target and running
+# apply actually re-bakes the installed unit. Previously apply only PRINTED the new target while the timer
+# kept the old one (config said efficiency, but tune --history still read the stale performance unit).
+echo "== black-box: apply reconciles the autotune timer to config (#95) =="
+ARC="$(mktemp -d "$SANDBOX/arec.XXXXXX")"
+mkdir -p "$ARC/systemd"
+cp "$ROOT/systemd/rigforge-autotune.service.template" "$ROOT/systemd/rigforge-autotune.timer.template" "$ARC/systemd/"
+# A stale unit from a prior setup, baked as performance — the exact state behind the reported bug.
+printf 'Environment=AUTOTUNE_TARGET=perf\n' >"$ARC/systemd/rigforge-autotune.service"
+printf 'OnCalendar=monthly\n' >"$ARC/systemd/rigforge-autotune.timer"
+arc_apply() {
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ARC"
+        SYSTEMD_DIR="$ARC/systemd"
+        SERVICE_NAME=xmrig
+        REAL_USER=rfop
+        AUTOTUNE_MODE=efficiency
+        AUTOTUNE_TARGET=efficiency
+        _apply_runtime() { :; } # skip the heavy config regen + restart; we're testing the reconcile
+        sudo() { "$@"; }        # install_autotune writes the unit via sudo tee
+        set +e
+        PATH="$STUBS:$PATH" apply 2>&1
+    )
+}
+arc_out="$(arc_apply)"
+assert_contains "apply re-bakes the stale timer to the configured target (#95)" "$(cat "$ARC/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=efficiency"
+assert_contains "apply reports the reconciled target (#95)" "$arc_out" "Periodic autotune: efficiency"
+
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
@@ -1159,9 +1189,9 @@ autotune_decide() { # <target> -> final prefetch mode
         AUTOTUNE_MARGIN=0.001
         API_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 1100 || echo 1000'
         TUNE_POWER_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 125 || echo 100'
-        parse_config() { :; } # keep the test's WORKER_ROOT/target; skip real config parsing
-        apply() { :; }        # no real service restart
-        sudo() { "$@"; }      # _autotune_set_prefetch uses `sudo cp`
+        parse_config() { :; }   # keep the test's WORKER_ROOT/target; skip real config parsing
+        _apply_runtime() { :; } # autotune applies each mode via _apply_runtime; no real restart
+        sudo() { "$@"; }        # _autotune_set_prefetch uses `sudo cp`
         set +e
         PATH="$STUBS:$PATH" autotune >/dev/null 2>&1
     )
@@ -1188,7 +1218,7 @@ np_out="$(
         unset TUNE_POWER_CMD
         API_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 1100 || echo 1000'
         parse_config() { :; }
-        apply() { :; }
+        _apply_runtime() { :; }
         sudo() { "$@"; }
         set +e
         PATH="$STUBS:$PATH" autotune 2>&1

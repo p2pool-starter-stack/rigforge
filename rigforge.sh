@@ -1437,7 +1437,7 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     tmp=$(mktemp)
     _tune_knobs_json "$@" >"$tmp" && sudo cp "$tmp" "$TUNE_OVERRIDES"
     rm -f "$tmp"
-    apply >/dev/null 2>&1 || true
+    _apply_runtime >/dev/null 2>&1 || true
     sleep "${TUNE_LIVE_WARMUP:-60}"
     local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
     # #81: bracket the steady-state window for power — RAPL energy delta over the window, or the mean of
@@ -2064,7 +2064,7 @@ tune() {
     if [ "$TUNE_CONFIRM" = 1 ] && [ "$OS_TYPE" = Linux ]; then
         _tune_confirm_live "$ovr" "$pre_overrides"
     elif [ "$TUNE_MODE" = live ]; then
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
         log "Applied the winning config to the live miner."
     else
         log "Apply it: sudo $0 apply    (reset anytime with: sudo $0 tune --clear)"
@@ -2082,18 +2082,18 @@ _tune_confirm_live() { # <winner_overrides_json> <previous_overrides_json>
     local n="${TUNE_LIVE_SAMPLES:-3}" iv="${TUNE_LIVE_INTERVAL:-30}" warm="${TUNE_LIVE_WARMUP:-60}"
     local margin="${TUNE_CONFIRM_MARGIN:-${TUNE_MIN_DELTA:-0.01}}" win_hr base_hr
     log "Confirming the tuned config against the previous one on the live miner (A/B)..."
-    apply >/dev/null 2>&1 || true # the winner is already in TUNE_OVERRIDES from the search
+    _apply_runtime >/dev/null 2>&1 || true # the winner is already in TUNE_OVERRIDES from the search
     sleep "$warm"
     win_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$win_hr" ] || win_hr=0
     if [ -n "$pre_ovr" ]; then printf '%s\n' "$pre_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null; else sudo rm -f "$TUNE_OVERRIDES"; fi
-    apply >/dev/null 2>&1 || true
+    _apply_runtime >/dev/null 2>&1 || true
     sleep "$warm"
     base_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$base_hr" ] || base_hr=0
     if awk "BEGIN{exit !($win_hr > $base_hr * (1 + $margin))}"; then
         printf '%s\n' "$win_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
         log "Confirmed: the tuned config wins live ($win_hr vs $base_hr H/s) — kept and applied."
     else
         log "Reverted: the tuned config did NOT beat the previous one live ($win_hr vs $base_hr H/s) — restored the previous config."
@@ -2220,7 +2220,7 @@ autotune() {
     for m in $modes; do
         [ "$m" = "$cur" ] && continue
         _autotune_set_prefetch "$overrides" "$m"
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
         last_applied="$m"
         sleep "$warm"
         s=$(_autotune_sample "$n" "$iv" "$target")
@@ -2245,7 +2245,7 @@ autotune() {
     # Leave the chosen mode running (the sweep may have ended on a different one).
     if [ "$last_applied" != "$best_mode" ]; then
         _autotune_set_prefetch "$overrides" "$best_mode"
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
     fi
 }
 
@@ -2598,9 +2598,10 @@ _autotune_apply_notice() {
     log "Periodic autotune: $(_autotune_desc "${AUTOTUNE_MODE:-disabled}")."
 }
 
-# apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
-# recompiling. The fast path after editing config.json.
-apply() {
+# The config-regen + restart core of `apply`, WITHOUT touching the autotune timer. Used directly by
+# tune/autotune — which call it in a loop and own the timer themselves — so they don't re-render the unit
+# on every prefetch trial.
+_apply_runtime() {
     parse_config
     local build="$WORKER_ROOT/xmrig/build"
     [ -d "$build" ] || error "No built worker at $build. Run 'setup' first."
@@ -2610,8 +2611,20 @@ apply() {
     else
         log "Config regenerated. Restart the miner to apply."
     fi
-    _autotune_apply_notice
     _reown_worker
+}
+
+# apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
+# recompiling. The fast path after editing config.json. As the config-change path it also RECONCILES the
+# periodic-autotune timer with config (#95) — so changing the `autotune` target and running `apply`
+# actually takes effect (not just shows the new value) — then reports the target. install_autotune is the
+# autotune analog of restarting the service; its own log is suppressed in favour of the single status line.
+apply() {
+    _apply_runtime
+    if [ "$OS_TYPE" = Linux ]; then
+        install_autotune >/dev/null 2>&1 || true
+        _autotune_apply_notice
+    fi
 }
 
 # bench (#11): run a one-off xmrig --bench and report the hashrate. A quick perf/health check.

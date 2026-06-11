@@ -38,8 +38,9 @@ All notable changes to RigForge are documented here. The format is based on
   **hashrate-per-watt** — sampling watts over the same live window and ranking by H/s/W, extending the
   `tune --efficiency` target (#79) to the scheduled run. The target is baked into the systemd unit at setup
   so timer-driven runs optimize for what you chose; with no power source it falls back to `performance` and
-  warns. `tune --history` shows the active target, and `apply` prints it so you can see what the scheduled
-  run optimizes for. Legacy booleans still parse (`true` → `performance`,
+  warns. `tune --history` shows the active target, and `apply` **reconciles the installed timer with
+  config** (so changing the `autotune` target and running `apply` actually takes effect, not just shows the
+  new value) and prints it. Legacy booleans still parse (`true` → `performance`,
   `false` → `disabled`); an unknown value hard-errors rather than silently disabling tuning.
   - **Re-tuning is event-driven.** Once the prefetch mode converges it's stable, so re-tuning happens when
     it actually matters: **`upgrade` re-tunes the new build** (the fastest knobs can shift between XMRig
