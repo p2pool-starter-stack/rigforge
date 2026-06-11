@@ -1876,6 +1876,26 @@ hout="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD"
 assert_rc "tune --history after --clear exits 0 (#hist)" "$?" "0"
 assert_contains "tune --history: 'none' once cleared (#hist)" "$hout" "none — running XMRig's auto defaults"
 
+# tune --history on Linux: with an installed+active auto-tune timer (stubbed systemctl) and a journal of
+# decisions (stubbed journalctl), it surfaces the periodic-autotune section — the Linux-only branch.
+echo "== black-box: tune --history surfaces periodic auto-tune (Linux) (#hist) =="
+HL="$(mktemp -d "$SANDBOX/histlinux.XXXXXX")"
+cp "$ROOT/VERSION" "$HL/"
+mkdir -p "$HL/home/worker" "$HL/bin"
+cat >"$HL/config.json" <<EOF
+{ "HOME_DIR": "$HL/home", "pools": [{"url":"h:3333"}] }
+EOF
+printf '{ "randomx": { "scratchpad_prefetch_mode": 1 } }\n' >"$HL/home/worker/tune-overrides.json"
+printf '{ "best": { "hashrate": 10741 }, "target": "perf", "results": [1,2] }\n' >"$HL/home/worker/rigforge-tune.json"
+printf '#!/usr/bin/env bash\ncase "$*" in *"cat rigforge-autotune.timer"*) exit 0 ;; *"is-active"*) echo active ;; esac\nexit 0\n' >"$HL/bin/systemctl"
+printf '#!/usr/bin/env bash\nprintf "[INFO] autotune: prefetch_mode=2 not better (10758 vs 10741 H/s) — rolling back to 1.\\n"\n' >"$HL/bin/journalctl"
+chmod +x "$HL/bin/systemctl" "$HL/bin/journalctl"
+hout="$(cd "$HL" && PATH="$HL/bin:$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
+assert_rc "tune --history (Linux) exits 0 (#hist)" "$?" "0"
+assert_contains "tune --history: auto-tune shown as enabled (#hist)" "$hout" "Periodic auto-tune: enabled"
+assert_contains "tune --history: surfaces a recent decision (#hist)" "$hout" "rolling back to 1"
+assert_contains "tune --history: last-tune summary on Linux (#hist)" "$hout" "candidate(s) tried"
+
 # #54: median noise-handling. With a single (inactive) candidate and a fake whose three readings are
 # base-10, base, base+10, the recorded hashrate must be the MEDIAN (base), not the max.
 echo "== black-box: tune median-of-N noise handling (#54) =="
