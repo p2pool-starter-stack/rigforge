@@ -5,7 +5,32 @@ upgrading, and troubleshooting.
 
 ---
 
+## Common tasks
+
+Most days you'll only touch a handful of these. Each is a single command — the full [command
+reference](#commands) is below.
+
+| I want to… | Command | What happens |
+|---|---|---|
+| **Change a setting** — pool, rig name, TLS, failover | edit `config.json`, then `sudo ./rigforge.sh apply` | Regenerates the live config and restarts. No rebuild. |
+| **Redeploy after a `git pull`** | `git pull && sudo ./rigforge.sh upgrade` | Rebuilds + restarts (and re-tunes) **if** the XMRig pin moved; otherwise a no-op — see [the note below](#upgrading-xmrig-redeploy-after-a-git-pull). |
+| **Run a live tune now** | `sudo ./rigforge.sh tune --now` | One live pass against the running miner; keeps the best prefetch mode if it wins. Linux only. |
+| **Check the worker is healthy** | `sudo ./rigforge.sh doctor` | HugePages, MSR, governor, service — with a fix hint for anything off. |
+| **Watch it mining** | `sudo ./rigforge.sh logs` | Live logs; `Ctrl-C` stops following (the miner keeps running). |
+| **Stop / start / restart** | `sudo ./rigforge.sh stop` · `start` · `restart` | Control the miner service. |
+| **Quick speed check** | `sudo ./rigforge.sh bench` | One-off offline benchmark; reports H/s. |
+| **Save config + tuning** | `sudo ./rigforge.sh backup` | Snapshots the only hard-to-recreate state to `./backups`. |
+
+> On **macOS**, drop the `sudo` (the privileged steps are Linux-only) and run `./rigforge.sh restart`
+> after `apply` to pick up changes. `doctor` and the live re-tunes (`tune --now`, `tune --live`) are
+> Linux-only. See [Running on macOS](#running-on-macos).
+
+---
+
 ## Commands
+
+The complete surface — most days you only need the handful in [Common tasks](#common-tasks) above; the
+rest are here for completeness.
 
 RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`. _(Optional: set
 `"add_to_path": true` in `config.json` and setup installs a `rigforge` command on your PATH, so you can
@@ -19,8 +44,8 @@ run `sudo rigforge [command]` from any directory; `uninstall` removes it.)_
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). **Critical** findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the **MSR mod actually applied** — confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). **Advisory** findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), **hashrate-capping hardware** RigForge can't fix but you can — single-channel or slow RAM (via `dmidecode`) and a power/boost-capped CPU clock — and **BIOS/firmware** recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
-| `tune` | Measure the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) and keep them — an **optional, one-time** step. Flags: `--live`, `--efficiency`, `--confirm`, `--history`, `--clear`. See [Tuning](#tuning). |
-| `autotune` | One live trial against the running miner. **Schedule periodic runs** by setting `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` (setup installs a systemd timer; also re-tuned on `upgrade`). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
+| `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them — an **optional, one-time** step. Live variants: **`--now`** (a quick re-tune against the running miner — *run a live tune now*), `--live` (a full live search), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
+| `autotune` | The **scheduled** live tuner. You normally don't type it — `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
 | `status` | Show the systemd service status. |
@@ -81,7 +106,8 @@ See what's tuned — and what the periodic auto-tuner has been doing — at any 
 
 | Command | What it does |
 |---|---|
-| `tune --live` | Tune against your **running pool** instead of offline `--bench` — measures real-world conditions. Slower; Linux only. |
+| `tune --now` | **Run a live tune now** — a quick convergent pass against the running miner that keeps the best prefetch mode if it wins. The everyday live re-tune; Linux only. |
+| `tune --live` | Tune against your **running pool** instead of offline `--bench` — measures real-world conditions. A full search (every knob), so slower than `--now`; Linux only. |
 | `tune --efficiency` / `--perf` | Force the optimization target — **hashrate-per-watt** vs **raw speed** — overriding the `autotune` config default for this run (efficiency needs a power source). |
 | `tune --confirm` | A/B-check the winner on the live miner and keep it only if it genuinely beats the previous config. Linux only. |
 | `tune --history` | Show the current tuning, the last full run, and recent auto-tune decisions. |
@@ -92,6 +118,12 @@ power/efficiency and reservation-aware details are all in
 [How It Works -> Measured tuning](how-it-works.md#measured-tuning-the-tune-search).
 
 ### Live auto-tuning (opt-in)
+
+**Run one pass on demand** any time with `sudo ./rigforge.sh tune --now` — it sweeps the prefetch modes
+against your running miner and keeps the best if it beats the current setting by a margin. No scheduling
+needed; it's the quickest way to re-tune live after a BIOS, RAM, or cooling change. (`tune --now` is the
+friendly name for the `autotune` engine — the standalone `autotune` verb still works and is what the
+scheduled timer below runs.)
 
 Prefer it hands-off? Set `autotune` in `config.json` to a target and re-run `setup` — RigForge installs a
 **systemd timer** that periodically optimizes the prefetch mode against your *live* miner:
@@ -276,7 +308,7 @@ miner yourself — see [Running on macOS](#running-on-macos).)
 
 ---
 
-## Upgrading XMRig
+## Upgrading XMRig (redeploy after a `git pull`)
 
 RigForge pins XMRig to a known version/commit. To move to a newer pinned build:
 
@@ -290,6 +322,12 @@ sudo ./rigforge.sh upgrade      # rebuild + restart only if the pin changed
 path. If you've enabled periodic [autotune](#live-auto-tuning-opt-in), `upgrade` **re-tunes the new build
 automatically** once it's live — the optimal prefetch mode can change between XMRig versions, so the
 upgrade is the moment that actually warrants a re-tune (the monthly timer is just a slow safety net).
+
+> **Pulled RigForge changes but not a new XMRig pin?** Then `upgrade` is a no-op — the build is
+> unchanged. To pick up RigForge's own changes, run `sudo ./rigforge.sh apply` (regenerate the live
+> config + restart); if the pull also changed kernel tuning or the service unit, run a full
+> `sudo ./rigforge.sh setup`, then `restart`. When unsure, `upgrade` followed by `apply` covers the
+> common cases.
 
 > Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk.
 

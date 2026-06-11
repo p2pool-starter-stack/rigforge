@@ -1006,9 +1006,9 @@ _post_upgrade_retune() {
     if [ "$OS_TYPE" = Linux ] && [ "${AUTOTUNE_MODE:-disabled}" != disabled ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         log "Re-tuning the new build (autotune: $(_autotune_desc "$AUTOTUNE_MODE")) — knobs can shift between XMRig versions..."
         if _wait_miner_live; then
-            autotune || warn "Post-upgrade autotune didn't complete — re-run 'sudo $0 autotune' once the miner is warm."
+            autotune || warn "Post-upgrade autotune didn't complete — re-run 'sudo $0 tune --now' once the miner is warm."
         else
-            warn "Miner isn't reporting a live hashrate yet — skipping the post-upgrade re-tune. Run 'sudo $0 autotune' manually, or wait for the scheduled run."
+            warn "Miner isn't reporting a live hashrate yet — skipping the post-upgrade re-tune. Run 'sudo $0 tune --now' manually, or wait for the scheduled run."
         fi
     elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         warn "Saved tuning (tune-overrides.json) carried over from the previous build. The fastest knobs can shift between XMRig versions — re-run 'sudo $0 tune' (or 'tune --clear' to discard), or enable periodic autotune in config.json."
@@ -1505,6 +1505,10 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
+            # _median emits a fractional kHz for an even sample count (e.g. 4627500.5); floor it to whole kHz
+            # so the integer guard below keeps the reading instead of dropping it — a dropped reading would
+            # leave min_freq_mhz null, silently disabling this candidate's #62 throttle check.
+            bf=${bf%.*}
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
             wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
             case "$wv" in '' | *[!0-9.]*) ;; *) wsamps+=("$wv") ;; esac
@@ -1845,7 +1849,7 @@ tune() {
     # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
     # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
     # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
-    local _hist=0 clear=0 target_set=0
+    local _hist=0 clear=0 target_set=0 now=0
     case " $* " in *" --history "*) _hist=1 ;; esac
     if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
         log "tune needs root — re-running with sudo..."
@@ -1870,11 +1874,23 @@ tune() {
             TUNE_TARGET=perf
             target_set=1
             ;;
+        --now) now=1 ;;              # quick on-demand live re-tune (the 'autotune' engine, under 'tune')
         --history) TUNE_HISTORY=1 ;; # show current tuning + last run + auto-tune decisions, then exit
-        *) error "Unknown tune option: $1 (use --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
+        *) error "Unknown tune option: $1 (use --now, --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
         esac
         shift
     done
+
+    # 'tune --now' is the on-demand live re-tune: a quick convergent pass against the *running* miner
+    # (it IS the 'autotune' engine). Exposing it under 'tune' gives one mental model — all manual tuning
+    # lives under 'tune' — and reserves the word "autotune" for the scheduled feature (config key + timer).
+    # Nothing is lost: the 'autotune' verb still works as an alias, and is the verb the timer runs.
+    if [ "$now" = 1 ]; then
+        [ "$OS_TYPE" = Linux ] || error "tune --now runs a live re-tune against the systemd service and is Linux-only."
+        [ "$target_set" = 1 ] && AUTOTUNE_TARGET="$TUNE_TARGET" # honor --perf/--efficiency for this run
+        autotune
+        return
+    fi
 
     parse_config # resolves WORKER_ROOT (and validates the config)
     # #95: default the target to what `autotune` is set to in config, unless the user was explicit above.
@@ -2990,29 +3006,41 @@ RigForge — provision and maintain an XMRig mining worker.
 
 Usage: $0 [command]
 
-  setup      (default) provision the worker: dependencies, build, kernel tuning, service
-  upgrade    rebuild + restart only if the pinned XMRig version/commit changed
+Most days you only need the first group; the rest are grouped below. Full guide: docs/operations.md
+
+Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild)
-  uninstall  remove the service and revert all system changes (add --yes/-y to skip the prompt)
+  upgrade    redeploy after a 'git pull': rebuild + restart if the pinned XMRig changed
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
-  bench      run a one-off 'xmrig --bench' and report the hashrate
-  tune       iteratively search the XMRig knobs (prefetch, yield, threads, 1gb-pages) and keep the
-             fastest; '--live' tunes against the running miner, '--confirm' A/B-checks the winner live
-             before keeping it, '--efficiency' optimizes hashrate-per-watt (default '--perf' = raw H/s),
-             '--history' shows the current tuning + recent runs, 'tune --clear' resets
-  autotune   live-sweep the prefetch modes against the running miner and keep the best (one convergent
-             pass; schedule periodic runs with autotune:"performance"|"efficiency" in config)
-  backup     save config.json + tuning to a timestamped archive in ./backups
-  restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
-  status     show whether the miner is running
   logs       follow the live miner logs
+  status     show whether the miner is running
   start      start the miner (systemd on Linux, a background process on macOS) [alias: up]
   stop       stop the miner [alias: down]
   restart    restart the miner
+
+Tuning:
+  tune       measure the fastest XMRig knobs and keep them. Live re-tunes: '--now' a quick pass vs the
+             running miner (run a live tune now — keeps the best prefetch mode), '--live' a full live
+             search, '--confirm' A/B-checks the winner live before keeping it. '--efficiency' optimizes
+             hashrate-per-watt (default '--perf' = raw H/s), '--history' shows the current tuning +
+             recent runs, '--clear' resets
+  bench      run a one-off 'xmrig --bench' and report the hashrate
+  autotune   alias of 'tune --now' (and the verb the scheduled timer runs); turn on the schedule with
+             autotune:"performance"|"efficiency" in config.json
+
+Provision & lifecycle:
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service
+  uninstall  remove the service and revert all system changes (add --yes/-y to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically
-  version    print the RigForge version
-  help       show this help
+
+Backup:
+  backup     save config.json + tuning to a timestamped archive in ./backups
+  restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
+
+Info:
+  version    print the RigForge version  (-v, --version)
+  help       show this help              (-h, --help)
 
 Re-running 'setup' is idempotent: it skips the recompile when the pinned XMRig is already built.
 USAGE

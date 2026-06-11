@@ -49,7 +49,7 @@ RigForge builds XMRig from source rather than shipping a binary:
 - **Memory-guarded parallelism.** `make -j` is capped based on available RAM, so the build doesn't OOM
   on small machines.
 - **Idempotent.** If the pinned build already exists, setup skips the (slow) recompile entirely; the
-  [`upgrade`](operations.md#upgrading-xmrig) command rebuilds only when the pin changes.
+  [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull) command rebuilds only when the pin changes.
 
 ---
 
