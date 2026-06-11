@@ -69,7 +69,15 @@ provision() {
     require_linux_root provision
     ensure_config
     phase "provision — ./rigforge.sh setup (real deps + build + tuning + service)"
-    "$RIGFORGE" setup
+    "$RIGFORGE" setup 2>&1 | tee /tmp/e2e-provision.log
+
+    # #cpu: as root, lscpu also prints a "BIOS Model name:" DMI line; setup's detected-CPU line must show
+    # the clean model, not concatenate that line's "… Unknown CPU @ …" garbage.
+    if grep -q 'Detected CPU:' /tmp/e2e-provision.log && ! grep -q 'Unknown CPU @' /tmp/e2e-provision.log; then
+        ok "setup logged a clean CPU model ($(grep -oE 'Detected CPU: [^—]+' /tmp/e2e-provision.log | head -1 | sed 's/Detected CPU: //'))"
+    else
+        bad "setup's 'Detected CPU:' line looks garbled (lscpu BIOS-Model-name concatenation?)"
+    fi
 
     local bin
     bin="$(find_worker_bin)"
@@ -111,8 +119,9 @@ verify() {
     # (lsmod only lists loadable modules, so a built-in msr would be a false negative) — match doctor.
     [ -d /sys/module/msr ] && ok "msr available (/sys/module/msr)" || bad "msr not available"
     # #66: doctor must confirm the MSR mod actually APPLIED (from XMRig's log) and — since setup installs
-    # msr-tools — verify the prefetcher registers hold the preset's values via rdmsr. On the 7800X3D rig
-    # the preset is ryzen_19h_zen4; the verified value table lives in rigforge.sh (_msr_preset_regs).
+    # msr-tools — verify the prefetcher registers hold the preset's values via rdmsr. Hardware-agnostic:
+    # it asserts on doctor's output (whatever per-family preset this CPU uses — e.g. ryzen_19h_zen4 on
+    # Zen4, intel on Intel), not a fixed model; the verified value tables live in rigforge.sh.
     printf '%s' "$doc" | grep -q "MSR mod applied" &&
         ok "doctor confirms the MSR mod applied (#66)" || bad "doctor didn't confirm the MSR mod applied (#66)"
     if command -v rdmsr >/dev/null 2>&1; then
@@ -247,6 +256,32 @@ verify() {
     fi
     "$RIGFORGE" tune --clear >/dev/null 2>&1 || true # leave the rig on its baseline config
     "$RIGFORGE" apply >/dev/null 2>&1 || true
+
+    phase "verify — tune --history (status) + #92 systemd re-own"
+    # tune --history is a read-only status command — it must work after a real tune.
+    if "$RIGFORGE" tune --history >/tmp/e2e-history.log 2>&1; then
+        grep -qE 'Winning tune options|Periodic auto-tune' /tmp/e2e-history.log &&
+            ok "tune --history shows the tuning status" || bad "tune --history produced no status output"
+    else
+        bad "tune --history failed (see /tmp/e2e-history.log)"
+    fi
+    # #reown: the nightly autotune runs as root via systemd (no SUDO_USER), so its unit must bake in
+    # RIGFORGE_OPERATOR for the re-own to hand files back to the operator (not root). Assert the unit
+    # carries it, then exercise the re-own exactly the way the root timer does (no SUDO_USER + that operator).
+    local wr="$HERE/data/worker" op=""
+    op=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=RIGFORGE_OPERATOR=//p' | head -1)
+    if [ -n "$op" ]; then
+        ok "autotune unit bakes in RIGFORGE_OPERATOR=$op (#reown)"
+        if [ -d "$wr" ]; then
+            chown -R root:root "$wr" 2>/dev/null
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin RIGFORGE_OPERATOR="$op" RIGFORGE_HOME="$HERE" bash "$RIGFORGE" apply >/dev/null 2>&1 || true
+            [ "$(stat -c %U "$wr")" = "$op" ] &&
+                ok "a root-context run (no SUDO_USER) re-owned the worker to '$op', not root (#reown)" ||
+                bad "a root-context run left the worker owned by '$(stat -c %U "$wr")' (expected '$op')"
+        fi
+    else
+        ok "SKIP autotune re-own check — periodic autotune not enabled ('autotune': true in config.json)"
+    fi
     summary "verify"
 }
 
