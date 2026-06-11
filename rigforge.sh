@@ -762,7 +762,7 @@ install_autotune() {
         fi
         return 0
     fi
-    log "Enabling periodic autotune (target: ${AUTOTUNE_MODE}, ${AUTOTUNE_ONCALENDAR:-daily})..."
+    log "Enabling periodic autotune: $(_autotune_desc "$AUTOTUNE_MODE"), runs ${AUTOTUNE_ONCALENDAR:-daily}..."
     # Render the unit templates from systemd/ (kept alongside xmrig.service.template, not inline). The
     # service bakes in RIGFORGE_OPERATOR=$REAL_USER so the root timer hands files back to the operator,
     # and AUTOTUNE_TARGET (#95) so the scheduled run optimizes for the target the operator chose.
@@ -1737,8 +1737,20 @@ _seed_guess() {
 
 # --- Auto-tuning: 'tune' command + live confirm / scheduled autotune ---
 
+# User-facing description of a periodic-autotune target, in the SAME vocabulary the operator types in
+# config.json ("performance"/"efficiency"/"disabled"). Accepts either the config mode or the internal
+# target (perf -> performance), so every autotune surface — setup, apply, tune --history, the run log —
+# speaks one consistent language (the offline `tune` command keeps its own "perf"/"--perf" vocabulary).
+_autotune_desc() {
+    case "$1" in
+    efficiency) printf 'efficiency (hashrate-per-watt)' ;;
+    disabled) printf 'disabled' ;;
+    *) printf 'performance (raw hashrate)' ;;
+    esac
+}
+
 # `tune --history`: a readable summary of this rig's tuning — what knobs are applied now, the last full
-# `tune` run, and (Linux) the periodic auto-tune timer's recent decisions. Read-only and best-effort:
+# `tune` run, and (Linux) the periodic autotune timer's recent decisions. Read-only and best-effort:
 # every probe is guarded so it never aborts, and it degrades gracefully when nothing's been tuned yet.
 _tune_history() { # <overrides_file> <log_file>
     local ovr="$1" logf="$2" when target best n recent sched next tgt has_log=0
@@ -1769,9 +1781,9 @@ _tune_history() { # <overrides_file> <log_file>
     fi
     echo ""
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
-        echo "  Periodic auto-tune: enabled ($(systemctl is-active rigforge-autotune.timer 2>/dev/null || echo unknown))."
+        echo "  Periodic autotune: enabled ($(systemctl is-active rigforge-autotune.timer 2>/dev/null || echo unknown))."
         tgt=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=AUTOTUNE_TARGET=//p' | head -1)
-        [ -n "$tgt" ] && echo "    optimizing for: $tgt (perf = raw H/s, efficiency = hashrate-per-watt)"
+        [ -n "$tgt" ] && echo "    optimizing for: $(_autotune_desc "$tgt")"
         sched=$(systemctl cat rigforge-autotune.timer 2>/dev/null | sed -nE 's/^OnCalendar=//p' | head -1)
         next=$(systemctl show rigforge-autotune.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
         [ -n "$sched" ] && echo "    schedule: $sched${next:+ — next run: $next}"
@@ -1784,7 +1796,7 @@ _tune_history() { # <overrides_file> <log_file>
         fi
         echo "    full log: journalctl -u rigforge-autotune"
     else
-        echo "  Periodic auto-tune: off. Set \"autotune\": \"performance\" (or \"efficiency\") in config.json, then re-run 'sudo $0 setup' to enable it."
+        echo "  Periodic autotune: off. Set \"autotune\": \"performance\" (or \"efficiency\") in config.json, then re-run 'sudo $0 setup' to enable it."
     fi
 }
 
@@ -2156,7 +2168,7 @@ autotune() {
     # #95: efficiency ranks by hashrate-per-watt, which needs a power source; without one, optimize raw
     # H/s instead (same fallback as `tune --efficiency`).
     if [ "$target" = efficiency ] && ! _power_supported; then
-        warn "autotune: efficiency target needs a power source (RAPL or TUNE_POWER_CMD) — none available; optimizing raw hashrate (perf) instead."
+        warn "autotune: efficiency target needs a power source (RAPL or TUNE_POWER_CMD) — none available; falling back to performance (raw hashrate) instead."
         target=perf
     fi
     [ "$target" = efficiency ] && unit="H/s/W" || unit="H/s"
@@ -2174,7 +2186,7 @@ autotune() {
     best_mode="$cur"
     best_score="$base_score"
     last_applied="$cur"
-    log "autotune: target=$target; live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $(_autotune_fmt "$target" "$base_hr" "$base_w") (median of $n)."
+    log "autotune: optimizing for $(_autotune_desc "$target"); live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $(_autotune_fmt "$target" "$base_hr" "$base_w") (median of $n)."
 
     # Try every OTHER mode once, live; track the running best by the target's score.
     for m in $modes; do
@@ -2555,11 +2567,7 @@ _parse_hashrate() {
 # redirected, so this only shows on a direct `apply`. Reflects the `autotune` value apply just parsed.
 _autotune_apply_notice() {
     [ "$OS_TYPE" = Linux ] || return 0
-    case "${AUTOTUNE_MODE:-disabled}" in
-    efficiency) log "Periodic autotune: efficiency (optimizing hashrate-per-watt)." ;;
-    performance) log "Periodic autotune: performance (optimizing raw hashrate)." ;;
-    *) log "Periodic autotune: disabled." ;;
-    esac
+    log "Periodic autotune: $(_autotune_desc "${AUTOTUNE_MODE:-disabled}")."
 }
 
 # apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT

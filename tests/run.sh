@@ -2068,12 +2068,23 @@ cat >"$HL/config.json" <<EOF
 EOF
 printf '{ "randomx": { "scratchpad_prefetch_mode": 1 } }\n' >"$HL/home/worker/tune-overrides.json"
 printf '{ "best": { "hashrate": 10741 }, "target": "perf", "results": [1,2] }\n' >"$HL/home/worker/rigforge-tune.json"
-printf '#!/usr/bin/env bash\ncase "$*" in *"cat rigforge-autotune.timer"*) echo "OnCalendar=daily" ;; *"is-active"*) echo active ;; *NextElapseUSecRealtime*) echo "Mon 2099-01-01 00:00:00 UTC" ;; esac\nexit 0\n' >"$HL/bin/systemctl"
+cat >"$HL/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+*"cat rigforge-autotune.service"*) printf 'Environment=AUTOTUNE_TARGET=perf\n' ;; # #95: drives the target line
+*"cat rigforge-autotune.timer"*) echo "OnCalendar=daily" ;;
+*"is-active"*) echo active ;;
+*NextElapseUSecRealtime*) echo "Mon 2099-01-01 00:00:00 UTC" ;;
+esac
+exit 0
+EOF
 printf '#!/usr/bin/env bash\nprintf "[INFO] autotune: prefetch_mode=2 not better (10758 vs 10741 H/s) — rolling back to 1.\\n"\n' >"$HL/bin/journalctl"
 chmod +x "$HL/bin/systemctl" "$HL/bin/journalctl"
 hout="$(cd "$HL" && PATH="$HL/bin:$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
 assert_rc "tune --history (Linux) exits 0 (#hist)" "$?" "0"
-assert_contains "tune --history: auto-tune shown as enabled (#hist)" "$hout" "Periodic auto-tune: enabled"
+assert_contains "tune --history: autotune shown as enabled (#hist)" "$hout" "Periodic autotune: enabled"
+# #95: the target reads in the config's vocabulary ("performance"), not the internal "perf".
+assert_contains "tune --history: target in config vocabulary (#95)" "$hout" "optimizing for: performance (raw hashrate)"
 assert_contains "tune --history: shows the schedule (#hist)" "$hout" "schedule: daily"
 assert_contains "tune --history: shows the next scheduled run (#hist)" "$hout" "next run: Mon 2099-01-01"
 assert_contains "tune --history: surfaces a recent decision (#hist)" "$hout" "rolling back to 1"
