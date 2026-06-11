@@ -238,6 +238,12 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`doctor` no longer aborts when run without `sudo`.** The RAM-layout probe runs `dmidecode` (root-only),
+  so a non-root `doctor` made `dmidecode | awk` non-zero under `set -o pipefail` — tripping errexit and
+  aborting the whole health check with a spurious "rigforge aborted" message right after the governor
+  line. `_mem_summary` now always exits 0 (falling back to the "run as root" advisory), and `doctor`'s
+  other optional probes (`rdmsr`, CPU clock, SMT) guard *inside* the command substitution so a missing
+  sysfs file (e.g. on a VM) can't trip the trap either. Non-root `doctor` now completes cleanly.
 - **`sudo` runs no longer leave root-owned files behind.** `setup`/`upgrade`/`tune`/`apply`/`restore`
   wrote the build, generated config, logs, and tuning files as root (and the first-run `config.json` was
   created root-owned), so an operator following the documented "edit `config.json` → `apply`" loop hit
