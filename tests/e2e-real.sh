@@ -207,12 +207,19 @@ verify() {
     "$RIGFORGE" start >/dev/null 2>&1 || true
 
     phase "verify — a short real tune (pipeline + sustained-clock sampling #62)"
-    # Constrain the search to a couple of quick candidates so this stays fast (a real tune is a separate,
-    # hours-long operation). We assert the pipeline runs, writes its result files, and — proving the #62
-    # effective-clock sampling works on real hardware under load — records a min_freq_mhz per candidate.
+    # Constrain the search to just the candidates the assertions below actually need, so this stays fast (a
+    # real tune is a separate, hours-long operation). Every speed knob here was validated against the checks:
+    #   - TUNE_BENCH=500K: a ~40-50s loaded window — still ample for the #62 effective-clock median and the
+    #     #81 RAPL energy delta, which both integrate over the window and read stable, non-trivial values
+    #     long before a full 1M run finishes. Halving the hash count roughly halves each candidate.
+    #   - TUNE_ITERS=1: no assertion here ranks on the median hashrate, so one bench per candidate suffices.
+    #   - sweep ONLY wrmsr (prefetch + 1gb-pages pinned): wrmsr is the knob #66 needs both presets of; the
+    #     prefetch path is already exercised by the efficiency tune below, and 1gb-pages isn't asserted — so
+    #     pinning them leaves exactly two candidates (wrmsr true/false), each still recording the
+    #     min_freq/watts/hugepages_capped fields the #62/#81/#65 checks read.
     local tj
-    if TUNE_BENCH=1M TUNE_ITERS=2 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
-        TUNE_WRMSR="true false" TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune >/tmp/e2e-tune.log 2>&1; then
+    if TUNE_BENCH=500K TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
+        TUNE_ONEGB=true TUNE_WRMSR="true false" TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune >/tmp/e2e-tune.log 2>&1; then
         tj="$(find "$HERE" -path '*worker*' -name 'rigforge-tune.json' 2>/dev/null | head -1)"
         if [ -n "$tj" ]; then
             ok "tune completed and wrote results ($(basename "$tj"))"
@@ -234,7 +241,7 @@ verify() {
             # delta path works on real hardware. (Skipped if RAPL isn't readable, e.g. a locked-down host.)
             if [ -r /sys/class/powercap/intel-rapl:0/energy_uj ]; then
                 [ "$(jq -r '[.results[]|select(.watts!=null and .watts>20)]|length>0' "$tj" 2>/dev/null)" = true ] &&
-                    ok "tune measured under-load power via built-in RAPL (#81: $(jq -r '[.results[].watts]|max') W peak)" ||
+                    ok "tune measured under-load power via built-in RAPL (#81: $(jq -r '[.results[].watts]|max' "$tj") W peak)" ||
                     bad "tune recorded no plausible under-load watts via RAPL (#81)"
             else
                 ok "RAPL not readable here — skipping the #81 built-in-power check"
@@ -249,8 +256,9 @@ verify() {
 
     phase "verify — efficiency-target tune (#79)"
     # With the built-in RAPL source available, 'tune --efficiency' optimizes hashrate-per-watt and records
-    # the target. Proves the efficiency path runs on real hardware (no fall-back to perf).
-    if TUNE_BENCH=1M TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
+    # the target. Proves the efficiency path runs on real hardware (no fall-back to perf). Same 500K/ITERS=1
+    # speed-up as above; prefetch is left swept ("1 2") so the hs/watt ranking has two candidates to compare.
+    if TUNE_BENCH=500K TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
         TUNE_ONEGB=true TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune --efficiency >/tmp/e2e-eff.log 2>&1; then
         tj="$(find "$HERE" -path '*worker*' -name 'rigforge-tune.json' 2>/dev/null | head -1)"
         [ "$(jq -r '.target' "$tj" 2>/dev/null)" = efficiency ] &&
@@ -263,10 +271,12 @@ verify() {
 
     phase "verify — live A/B confirm (#64)"
     # A real --confirm round against the live miner: it measures the tuned config, restores the previous
-    # one and measures that, then keeps or reverts. Short windows keep the e2e quick.
-    if TUNE_LIVE_WARMUP="${E2E_AB_WARMUP:-20}" TUNE_LIVE_SAMPLES=2 TUNE_LIVE_INTERVAL=5 TUNE_BENCH=1M \
-        TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
-        "$RIGFORGE" tune --confirm >/tmp/e2e-ab.log 2>&1; then
+    # one and measures that, then keeps or reverts. The #64 path under test is the LIVE A/B, so the offline
+    # search is pinned to a single candidate (prefetch + 1gb-pages fixed) just to pick a winner to confirm —
+    # a 500K bench plus the short live windows keep this quick.
+    if TUNE_LIVE_WARMUP="${E2E_AB_WARMUP:-20}" TUNE_LIVE_SAMPLES=2 TUNE_LIVE_INTERVAL=5 TUNE_BENCH=500K \
+        TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_ONEGB=true \
+        TUNE_MAX_ROUNDS=1 "$RIGFORGE" tune --confirm >/tmp/e2e-ab.log 2>&1; then
         grep -qE 'Confirmed:|Reverted:' /tmp/e2e-ab.log &&
             ok "live A/B confirm ran ($(grep -oE '(Confirmed|Reverted):.*' /tmp/e2e-ab.log | tail -1))" ||
             bad "live A/B confirm produced no verdict (see /tmp/e2e-ab.log)"
