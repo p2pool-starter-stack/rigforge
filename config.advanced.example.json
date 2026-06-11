@@ -9,6 +9,7 @@
 
     "DONATION": 1,
     "autotune": false,
+    "add_to_path": false,
 
     "HOME_DIR": "DYNAMIC_HOME"
 }

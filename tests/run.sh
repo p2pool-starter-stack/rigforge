@@ -69,6 +69,11 @@ export THERMAL_ZONE="$NOHW/thermal"
 export CPUINFO="$NOHW/cpuinfo"            # util/proposed-grub.sh
 export DMIDECODE="$NOHW/dmidecode-absent" # absolute path that isn't an executable -> `command -v` fails
 export RDMSR_BIN="$NOHW/rdmsr-absent"
+# `setup` installs the `rigforge` command as a symlink in BIN_DIR. Redirect it at a real, writable
+# sandbox dir (NOT $NOHW, which mustn't exist) so any black-box `setup` run links HERE — never into the
+# host's real /usr/local/bin. Tests that assert on the link either read this dir or override it locally.
+export BIN_DIR="$SANDBOX/usr-local-bin"
+mkdir -p "$BIN_DIR"
 
 # jq helpers: J = raw scalar, JC = compact (for arrays).
 J() { jq -r "$2" "$1"; }
@@ -1247,6 +1252,9 @@ assert_eq "build: output captured to logfile" "$([ -f "$W/home/worker/build.log"
 assert_contains "build: verified pinned commit" "$E2E_OUT" "Verified XMRig"
 assert_eq "deploy: pool url from hostname" "$(J "$BUILD/config.json" '.pools[0].url')" "poolbox.lan:3333"
 assert_eq "deploy: donate-level = 7" "$(J "$BUILD/config.json" '.["donate-level"]')" "7"
+# #cli: add_to_path defaults OFF — this config doesn't set it, so setup must NOT touch PATH. (BIN_DIR is
+# the suite's sandbox; the opt-in install is covered by the add_to_path=true test below + the Docker e2e.)
+assert_eq "cli: NOT on PATH by default — add_to_path off (#cli)" "$([ -L "$BIN_DIR/rigforge" ] && echo present || echo absent)" "absent"
 if [ "$HOST_OS" = Linux ]; then
     assert_eq "deploy: EPYC numa applied" "$(J "$BUILD/config.json" '.randomx.numa')" "true"
     svc="$(cat "$W/etc/systemd/xmrig.service")"
@@ -1287,6 +1295,16 @@ else
     echo "  • macOS host: Linux /etc idempotency (fstab/limits/grub) is covered by the Docker E2E"
     echo "    (make test-e2e) and by the Linux CI job — the Linux deploy path needs GNU sed."
 fi
+
+# #cli: the opt-in. With "add_to_path": true in config.json, setup installs the symlink (into a per-test
+# BIN_DIR so it doesn't collide with the default-off run above). RIGFORGE_HOME=$CW -> target $CW/rigforge.sh.
+echo "== black-box: setup installs the CLI only when add_to_path is enabled (#cli) =="
+CW="$(e2e_setup)"
+jq '.add_to_path = true' "$CW/config.json" >"$CW/config.json.tmp" && mv "$CW/config.json.tmp" "$CW/config.json"
+CBIN="$CW/usr-local-bin"
+mkdir -p "$CBIN"
+BIN_DIR="$CBIN" e2e_run "$CW" "$HOST_OS"
+assert_eq "cli: add_to_path=true links rigforge onto PATH (#cli)" "$(readlink "$CBIN/rigforge" 2>/dev/null)" "$CW/rigforge.sh"
 
 # ---------------------------------------------------------------------------
 # Release metadata (#3): VERSION must be valid SemVer so it stays in lock-step with tags/CHANGELOG.
@@ -1523,6 +1541,60 @@ reown_os() { # <OS_TYPE>
 assert_contains "reown (macOS): chowns to the user without a group (#audit)" "$(reown_os Darwin)" "[chown] -R rfop $RW/worker"
 assert_eq "reown (unknown OS): no-op (#audit)" "$(reown_os FreeBSD)" ""
 
+# #cli: setup puts a `rigforge` command on PATH (a symlink in BIN_DIR -> this script), and the script
+# resolves itself THROUGH that symlink so the repo (config/util/data) is still found when run as
+# `rigforge`. _script_dir (the resolver) and link_cli (installer + guards) are unit-tested here; the
+# end-to-end install-on-setup / remove-on-uninstall paths are covered by the black-box tests below.
+echo "== unit: _script_dir resolves through symlinks (#cli) =="
+SD="$(mktemp -d "$SANDBOX/scriptdir.XXXXXX")"
+mkdir -p "$SD/repo" "$SD/bin"
+: >"$SD/repo/rigforge.sh"
+ln -s "../repo/rigforge.sh" "$SD/bin/rel"  # relative target
+ln -s "$SD/repo/rigforge.sh" "$SD/bin/abs" # absolute target
+sdir() { (
+    source "$SCRIPT"
+    set +eu
+    _script_dir "$1"
+); }
+WANT="$(cd -P "$SD/repo" && pwd)"
+assert_eq "_script_dir: relative symlink -> the repo dir (#cli)" "$(sdir "$SD/bin/rel")" "$WANT"
+assert_eq "_script_dir: absolute symlink -> the repo dir (#cli)" "$(sdir "$SD/bin/abs")" "$WANT"
+assert_eq "_script_dir: a plain file -> its own dir (#cli)" "$(sdir "$SD/repo/rigforge.sh")" "$WANT"
+
+echo "== unit: link_cli installs + guards the rigforge command (#cli) =="
+lc() { # <script_dir> <bin_dir> [add_to_path=true] -> runs link_cli with those, prints its output
+    (
+        source "$SCRIPT"
+        SCRIPT_DIR="$1"
+        BIN_DIR="$2"
+        ADD_TO_PATH="${3:-true}"
+        set +eu
+        PATH="$STUBS:$PATH" link_cli 2>&1
+    )
+}
+LC="$(mktemp -d "$SANDBOX/linkcli.XXXXXX")"
+mkdir -p "$LC/repo" "$LC/bin"
+: >"$LC/repo/rigforge.sh"
+lc "$LC/repo" "$LC/bin" >/dev/null
+assert_eq "link_cli: symlinks rigforge -> the script (#cli)" "$(readlink "$LC/bin/rigforge" 2>/dev/null)" "$LC/repo/rigforge.sh"
+lc "$LC/repo" "$LC/bin" >/dev/null # second call
+assert_eq "link_cli: idempotent — one entry (#cli)" "$(find "$LC/bin" -maxdepth 1 -name rigforge | wc -l | tr -d ' ')" "1"
+assert_contains "link_cli: missing BIN_DIR warns, never fails (#cli)" "$(lc "$LC/repo" "$LC/nope")" "Skipped the 'rigforge' command"
+mkdir -p "$LC/real"
+: >"$LC/real/rigforge"
+assert_contains "link_cli: refuses to clobber a non-symlink (#cli)" "$(lc "$LC/repo" "$LC/real")" "isn't a RigForge symlink"
+assert_eq "link_cli: the pre-existing file is preserved (#cli)" "$([ -L "$LC/real/rigforge" ] && echo symlink || echo file)" "file"
+# OFF by default: with add_to_path unset/false, link_cli is a silent no-op (no symlink created).
+mkdir -p "$LC/off"
+lc "$LC/repo" "$LC/off" false >/dev/null
+assert_eq "link_cli: no-op when add_to_path is off (#cli)" "$([ -L "$LC/off/rigforge" ] && echo present || echo absent)" "absent"
+# add_to_path is parsed from config.json, defaulting to false.
+APP="$(mktemp -d "$SANDBOX/addpath.XXXXXX")"
+printf '{ "pools":[{"url":"h:3333"}] }\n' >"$APP/off.json"
+printf '{ "pools":[{"url":"h:3333"}], "add_to_path": true }\n' >"$APP/on.json"
+assert_eq "add_to_path: defaults to false (#cli)" "$(parse_and_print "$APP/off.json" "$APP" ADD_TO_PATH)" "false"
+assert_eq "add_to_path: reads true when set (#cli)" "$(parse_and_print "$APP/on.json" "$APP" ADD_TO_PATH)" "true"
+
 # #66: doctor verifies the MSR mod ACTUALLY applied — XMRig's log line confirms the write, and (when
 # rdmsr/msr-tools is present AND doctor runs as root) a register read-back catches a write a
 # hypervisor/lockdown silently dropped. The read-back is gated on root, and "couldn't read" is kept
@@ -1660,8 +1732,13 @@ un_run() {
         FSTAB="$UN/etc/fstab" LIMITS_CONF="$UN/etc/security/limits.conf" \
         MODULES_LOAD_DIR="$UN/etc/modules-load.d" MODULES_FILE="$UN/etc/modules" \
         HUGEPAGES_1G_DIR="$UN/dev/hp1g" GRUB_DEFAULT="$UN/nonexistent-grub" \
+        BIN_DIR="$UN/usr-local-bin" \
         RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)
 }
+# setup would have linked $BIN_DIR/rigforge -> $UN/rigforge.sh (SCRIPT_DIR=$UN); uninstall must remove
+# OUR symlink. (The target need not exist — a dangling symlink is still removed.)
+mkdir -p "$UN/usr-local-bin"
+ln -s "$UN/rigforge.sh" "$UN/usr-local-bin/rigforge"
 out="$(un_run)"
 rc=$?
 assert_rc "uninstall exits 0" "$rc" "0"
@@ -1675,9 +1752,13 @@ assert_eq "limits memlock lines gone" "$(grep -c 'memlock unlimited' "$UN/etc/se
 assert_contains "limits unrelated line kept" "$(cat "$UN/etc/security/limits.conf")" "root hard nofile 1024"
 assert_eq "modules msr line gone" "$(grep -cx 'msr' "$UN/etc/modules")" "0"
 assert_contains "modules unrelated line kept" "$(cat "$UN/etc/modules")" "loop"
+assert_eq "cli: our 'rigforge' symlink removed (#cli)" "$([ -L "$UN/usr-local-bin/rigforge" ] && echo present || echo gone)" "gone"
+# Safety: a `rigforge` we did NOT create (a real file, or a symlink elsewhere) must be left alone.
+: >"$UN/usr-local-bin/rigforge"
 # Idempotent: a second uninstall is a clean no-op.
 out="$(un_run)"
 assert_rc "second uninstall exits 0" "$?" "0"
+assert_eq "cli: a non-RigForge 'rigforge' is preserved (#cli)" "$([ -f "$UN/usr-local-bin/rigforge" ] && [ ! -L "$UN/usr-local-bin/rigforge" ] && echo kept || echo removed)" "kept"
 
 # #54: tune is an iterative, noise-aware, multi-knob hill-climb. It sweeps prefetch_mode, cpu.yield and
 # the RandomX thread count (cpu.rx, around L3/2 MB), measures each candidate as the MEDIAN of N runs,
@@ -2352,14 +2433,22 @@ echo "Core(s) per socket:    8"
 EOF
 printf '#!/usr/bin/env bash\necho 16\n' >"$TC/nproc"
 chmod +x "$TC/lscpu" "$TC/nproc"
+# hash -r: earlier tests run lscpu via the generic $STUBS/lscpu (no "Core(s) per socket:" line), which
+# bash may keep in its command hash. Some bash 3.2 builds then reuse that stale path instead of honoring
+# the $TC-first PATH below, so _physical_cores would read no cores-per-socket and return empty. Clearing
+# the hash forces a fresh PATH lookup so the richer $TC/lscpu wins — deterministic on every host.
 phys="$(
     source "$SCRIPT"
+    set +e
+    hash -r 2>/dev/null || true
     OS_TYPE=Linux
     PATH="$TC:$STUBS:$PATH" _physical_cores
 )"
 assert_eq "physical cores = cores-per-socket x sockets" "$phys" "8"
 cands="$(
     source "$SCRIPT"
+    set +e
+    hash -r 2>/dev/null || true
     OS_TYPE=Linux
     PATH="$TC:$STUBS:$PATH" _thread_candidates 16
 )"

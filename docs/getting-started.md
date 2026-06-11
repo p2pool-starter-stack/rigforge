@@ -80,6 +80,11 @@ built, and it won't duplicate the kernel/limits edits. Later on, to apply a `con
 [`apply`](operations.md#applying-configuration-changes); to rebuild only when the pinned version
 changed, use [`upgrade`](operations.md#upgrading-xmrig).
 
+**Optional — a `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and setup
+installs a `rigforge` symlink in `/usr/local/bin`, so you can run it from any directory — `sudo rigforge
+doctor`, `sudo rigforge tune`, … — instead of `./rigforge.sh`. It's **off by default**, so this guide
+uses `./rigforge.sh` throughout. (`uninstall` removes the symlink.)
+
 ---
 
 ## 4. Reboot (Linux only)
