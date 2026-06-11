@@ -2550,6 +2550,18 @@ _parse_hashrate() {
     grep -oiE '[0-9]+(\.[0-9]+)?[[:space:]]*H/s' | grep -oE '[0-9]+(\.[0-9]+)?' | sort -nr | head -n1
 }
 
+# Surface the periodic-autotune target on a top-level `apply` (#95) so the operator can see what the
+# nightly run optimizes for. Linux-only (the timer is Linux-only); tune/autotune invoke apply with output
+# redirected, so this only shows on a direct `apply`. Reflects the `autotune` value apply just parsed.
+_autotune_apply_notice() {
+    [ "$OS_TYPE" = Linux ] || return 0
+    case "${AUTOTUNE_MODE:-disabled}" in
+    efficiency) log "Periodic autotune: efficiency (optimizing hashrate-per-watt)." ;;
+    performance) log "Periodic autotune: performance (optimizing raw hashrate)." ;;
+    *) log "Periodic autotune: disabled." ;;
+    esac
+}
+
 # apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
 # recompiling. The fast path after editing config.json.
 apply() {
@@ -2562,6 +2574,7 @@ apply() {
     else
         log "Config regenerated. Restart the miner to apply."
     fi
+    _autotune_apply_notice
     _reown_worker
 }
 

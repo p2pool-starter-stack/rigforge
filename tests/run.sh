@@ -972,6 +972,23 @@ assert_contains "logrotate has a minsize guard" "$(cat "$LRF")" "minsize 50M"
 out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" SUDO_USER=rfoperator \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
 assert_contains "logrotate recreates the log owned by the operator, not whoami (#16)" "$(cat "$LRF")" "create 0644 rfoperator rfoperator"
+
+# #95: a top-level `apply` reports the configured periodic-autotune target so the operator can see what
+# the nightly run optimizes for. Linux-only (the timer is Linux-only). Drive the notice directly with
+# OS_TYPE forced so the assertion is host-independent (the macOS suite runs this same file).
+echo "== unit: apply reports the autotune target (#95) =="
+apply_notice() { (
+    source "$SCRIPT"
+    OS_TYPE="${2:-Linux}"
+    AUTOTUNE_MODE="$1"
+    set +e
+    _autotune_apply_notice 2>&1
+); }
+assert_contains "apply notice names the efficiency target (#95)" "$(apply_notice efficiency)" "efficiency"
+assert_contains "apply notice names the performance target (#95)" "$(apply_notice performance)" "performance"
+assert_contains "apply notice reports disabled (#95)" "$(apply_notice disabled)" "disabled"
+assert_eq "apply notice is silent on non-Linux (#95)" "$(apply_notice efficiency Darwin)" ""
+
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash

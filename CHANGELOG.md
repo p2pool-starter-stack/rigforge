@@ -38,7 +38,8 @@ All notable changes to RigForge are documented here. The format is based on
   **hashrate-per-watt** — sampling watts over the same live window and ranking by H/s/W, extending the
   `tune --efficiency` target (#79) to the scheduled run. The target is baked into the systemd unit at setup
   so timer-driven runs optimize for what you chose; with no power source it falls back to `performance` and
-  warns, and `tune --history` shows the active target. Legacy booleans still parse (`true` → `performance`,
+  warns. `tune --history` shows the active target, and `apply` prints it so you can see what the scheduled
+  run optimizes for. Legacy booleans still parse (`true` → `performance`,
   `false` → `disabled`); an unknown value hard-errors rather than silently disabling tuning.
 - **`doctor` BIOS/firmware advisory (#78).** `doctor` now reads what the booted OS exposes — board + BIOS
   version/date from `/sys/class/dmi/id`, the memory profile (rated vs. configured speed via `dmidecode`),
