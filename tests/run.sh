@@ -1421,6 +1421,20 @@ printf '#!/usr/bin/env bash\n' >"$DOC/dmidecode_empty"
 chmod +x "$DOC/dmidecode_empty"
 out="$(DMIDECODE="$DOC/dmidecode_empty" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_contains "doctor: RAM-unreadable note when dmidecode is empty (#67)" "$out" "RAM layout not readable"
+# Regression: dmidecode needs root, so a non-root `doctor` makes `dmidecode | awk` FAIL (exit 1), not just
+# return empty. In production doctor runs under `set -Eeuo pipefail`, so that non-zero pipeline (pipefail)
+# would trip errexit and ABORT the whole health check. The sourced run_doctor above uses `set +e` and so
+# can't catch it — run the REAL dispatch (real errexit) with a dmidecode that fails like a non-root run.
+printf '#!/usr/bin/env bash\necho "dmidecode: /dev/mem: Permission denied" >&2\nexit 1\n' >"$DOC/dmidecode_denied"
+chmod +x "$DOC/dmidecode_denied"
+dout="$(cd "$DOC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux \
+    MEMINFO="$DOC/meminfo_ok" MSR_MODULE_DIR="$DOC/msrmod" GOVERNOR_FILE="$DOC/gov_perf" \
+    HUGEPAGES_1G_NR="$DOC/nr1g" DMIDECODE="$DOC/dmidecode_denied" CPUFREQ_MAX="$DOC/none" CPU_SYSFS="$DOC/none" \
+    RIGFORGE_HOME="$DOC" bash "$SCRIPT" doctor </dev/null 2>&1)"
+drc=$?
+assert_rc "doctor: a non-root dmidecode failure doesn't abort doctor (#67)" "$drc" "0"
+assert_absent "doctor: no errexit abort on non-root dmidecode (#67)" "$dout" "aborted while"
+assert_contains "doctor: graceful 'run as root' on non-root dmidecode (#67)" "$dout" "RAM layout not readable"
 
 # #78: doctor's BIOS/firmware advisory — board/BIOS context, XMP/EXPO off (rated > configured RAM speed),
 # and SMT off. Detect-and-recommend only (RigForge can't change BIOS from the OS), so it's all advisory
