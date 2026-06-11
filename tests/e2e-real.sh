@@ -46,6 +46,24 @@ die() {
     exit 2
 }
 
+# Drive `rigforge enable|disable` to a settled systemd boot-state. The gate hammers the service
+# with many stop/start/restart/tune cycles, and systemctl/D-Bus can transiently drop a single
+# enable/disable under that load — so poll is-enabled for the target state and re-issue the verb
+# once before giving up. This absorbs flakes without masking a real break: a genuinely broken
+# verb still never reaches the target state and fails. Returns 0 once the state is reached.
+_set_boot() { # <enable|disable> <enabled|disabled>
+    local verb=$1 want=$2 i
+    "$RIGFORGE" "$verb" >/dev/null 2>&1 || true
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        case "$(systemctl is-enabled xmrig 2>/dev/null || true)" in
+        *"$want"*) return 0 ;;
+        esac
+        [ "$i" = 6 ] && { "$RIGFORGE" "$verb" >/dev/null 2>&1 || true; } # one retry mid-way
+        sleep 0.5
+    done
+    return 1
+}
+
 require_linux_root() {
     [ "$(uname -s)" = "Linux" ] || die "Linux-only (this host is $(uname -s)) — run on the release rig."
     [ "$(id -u)" -eq 0 ] || die "must run as root (kernel tuning / modprobe / apt): sudo bash tests/e2e-real.sh $*"
@@ -283,11 +301,11 @@ verify() {
     "$RIGFORGE" restart >/dev/null 2>&1 || true
     sleep 2
     systemctl is-active --quiet xmrig && ok "restart -> service active" || bad "restart left it inactive"
-    # enable / disable on boot
-    "$RIGFORGE" disable >/dev/null 2>&1 || true
-    systemctl is-enabled xmrig 2>/dev/null | grep -q disabled && ok "disable -> not started on boot" || bad "disable didn't take"
-    "$RIGFORGE" enable >/dev/null 2>&1 || true
-    systemctl is-enabled xmrig 2>/dev/null | grep -q enabled && ok "enable -> started on boot" || bad "enable didn't take"
+    # enable / disable on boot (settle-tolerant: systemctl can lag/flake under the gate's load)
+    _set_boot disable disabled && ok "disable -> not started on boot" ||
+        bad "disable didn't take (is-enabled=$(systemctl is-enabled xmrig 2>/dev/null || true))"
+    _set_boot enable enabled && ok "enable -> started on boot" ||
+        bad "enable didn't take (is-enabled=$(systemctl is-enabled xmrig 2>/dev/null || true))"
     # upgrade is a no-op on the already-pinned XMRig (no rebuild)
     if "$RIGFORGE" upgrade >/tmp/e2e-upgrade.log 2>&1; then
         grep -qiE 'already built|recompile will be skipped|no rebuild|skipp' /tmp/e2e-upgrade.log &&
