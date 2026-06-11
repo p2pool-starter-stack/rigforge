@@ -65,6 +65,12 @@ sudo ./rigforge.sh apply      # regenerate the config with them and restart
 > `config.json` is never touched, and it's kept for the life of the rig. After an `upgrade` bumps XMRig,
 > RigForge reminds you to re-tune (the fastest knobs can shift between versions).
 
+`tune` **optimizes for whatever your [`autotune`](configuration.md#configuration-reference) config is set to**
+— so if `autotune` is `"efficiency"`, a plain `tune` measures hashrate-per-watt, matching what the scheduled
+run does. Override per-run with `--perf` or `--efficiency`. It announces the target at the start, e.g.
+`Optimization target: efficiency (hashrate-per-watt)`. Run it without `sudo` and it re-runs itself with
+`sudo` for you.
+
 See what's tuned — and what the periodic auto-tuner has been doing — at any time:
 
 ```bash
@@ -76,7 +82,7 @@ See what's tuned — and what the periodic auto-tuner has been doing — at any 
 | Command | What it does |
 |---|---|
 | `tune --live` | Tune against your **running pool** instead of offline `--bench` — measures real-world conditions. Slower; Linux only. |
-| `tune --efficiency` | Optimize for **hashrate-per-watt** instead of raw speed — for power-cost or heat/PSU-limited rigs (needs a power source). |
+| `tune --efficiency` / `--perf` | Force the optimization target — **hashrate-per-watt** vs **raw speed** — overriding the `autotune` config default for this run (efficiency needs a power source). |
 | `tune --confirm` | A/B-check the winner on the live miner and keep it only if it genuinely beats the previous config. Linux only. |
 | `tune --history` | Show the current tuning, the last full run, and recent auto-tune decisions. |
 | `tune --clear` | Discard all tuning and return to the auto defaults. |

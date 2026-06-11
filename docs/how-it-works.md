@@ -126,7 +126,7 @@ Every part of the search is overridable; the defaults favour a thorough one-time
 | `TUNE_CACHEQOS` | _(off)_ | Set `false true` to sweep `randomx.cache_qos` (Intel L3 Cache Allocation Technology). |
 | `TUNE_WRMSR` | _(off)_ | Sweep the `randomx.wrmsr` MSR preset, e.g. `true false` (or a preset number). Rarely needed — XMRig auto-picks the right preset; set this only to confirm it on unusual hardware. Applied per-bench, no reboot. |
 | `TUNE_POWER_CMD` | _(RAPL)_ | Override the power source with a shell command that echoes **instantaneous watts** (IPMI, a smart plug, wall-AC). Without it, the built-in CPU-package RAPL reader is used on Linux. |
-| `TUNE_TARGET` | `perf` | Optimize for `perf` (raw H/s) or `efficiency` (hashrate-per-watt). Same as `tune --efficiency`; efficiency needs a power source or falls back to `perf`. |
+| `TUNE_TARGET` | _(follows `autotune` config)_ | Optimize for `perf` (raw H/s) or `efficiency` (hashrate-per-watt). Defaults to the `autotune` config value (so a manual `tune` matches the scheduled run); `--perf`/`--efficiency` or this env var override. Efficiency needs a power source or falls back to `perf`. |
 | `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
 
 ### Power & efficiency
