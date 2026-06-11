@@ -1634,13 +1634,16 @@ assert_contains "doctor: firmware advisory is manual-only (#78)" "$out" "RigForg
 assert_contains "doctor: XMP/EXPO off shows rated vs configured (#78)" "$out" "4800 MT/s but the modules are rated for 6000"
 assert_contains "doctor: recommends enabling the memory profile (#78)" "$out" "enable the memory profile (XMP / EXPO / DOCP)"
 assert_contains "doctor: SMT off -> recommend enabling (#78)" "$out" "SMT/Hyper-Threading is disabled"
-# Profile on + SMT on -> neither warning fires.
+assert_contains "doctor: context points to the items below when there ARE recs (#78)" "$out" "apply the BIOS/UEFI item(s) below"
+# Profile on + SMT on -> neither warning fires, and the context line must NOT promise items below (none).
 out="$(DMI_DIR="$DOC/dmi" SMT_CONTROL="$DOC/smt_on" DMIDECODE="$DOC/dmidecode_xmpon" \
     CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS="$DOC/cpu_ok" \
     run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_absent "doctor: memory profile on -> no XMP warning (#78)" "$out" "enable the memory profile"
 assert_absent "doctor: SMT on -> no SMT warning (#78)" "$out" "SMT/Hyper-Threading is disabled"
 assert_contains "doctor: still prints the firmware context line (#78)" "$out" "BIOS 2613"
+assert_contains "doctor: says 'no BIOS changes recommended' when all optimal (#78)" "$out" "no BIOS changes recommended"
+assert_absent "doctor: no false 'items below' when nothing to apply (#78)" "$out" "items below"
 # DMI + SMT unreadable -> no context line, no crash (graceful degradation).
 out="$(DMI_DIR="/nonexistent-dmi" SMT_CONTROL="/nonexistent-smt" DMIDECODE="$DOC/dmidecode_xmpon" \
     run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"

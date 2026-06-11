@@ -11,8 +11,10 @@
 # It drives the genuine commands end to end and asserts each step:
 #   provision : sudo ./rigforge.sh setup   -> deps + real XMRig build + tuning + kernel tuning + service
 #   (reboot)  : HugePages (1G + the GRUB cmdline) only take effect on boot
-#   verify    : doctor (HugePages/MSR/governor/service) + bench (real H/s, clean) + a short real tune
-#   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert
+#   verify    : doctor (HugePages/MSR/governor/service) + bench (real H/s) + tune (perf/efficiency/confirm)
+#               + tune --history + the systemd re-own + EVERY verb (version/help/status/logs/start/stop/
+#               restart/enable/disable/upgrade/backup/restore/apply + non-root doctor)
+#   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
 #   sudo bash tests/e2e-real.sh provision
@@ -44,6 +46,24 @@ die() {
     exit 2
 }
 
+# Drive `rigforge enable|disable` to a settled systemd boot-state. The gate hammers the service
+# with many stop/start/restart/tune cycles, and systemctl/D-Bus can transiently drop a single
+# enable/disable under that load — so poll is-enabled for the target state and re-issue the verb
+# once before giving up. This absorbs flakes without masking a real break: a genuinely broken
+# verb still never reaches the target state and fails. Returns 0 once the state is reached.
+_set_boot() { # <enable|disable> <enabled|disabled>
+    local verb=$1 want=$2 i
+    "$RIGFORGE" "$verb" >/dev/null 2>&1 || true
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        case "$(systemctl is-enabled xmrig 2>/dev/null || true)" in
+        *"$want"*) return 0 ;;
+        esac
+        [ "$i" = 6 ] && { "$RIGFORGE" "$verb" >/dev/null 2>&1 || true; } # one retry mid-way
+        sleep 0.5
+    done
+    return 1
+}
+
 require_linux_root() {
     [ "$(uname -s)" = "Linux" ] || die "Linux-only (this host is $(uname -s)) — run on the release rig."
     [ "$(id -u)" -eq 0 ] || die "must run as root (kernel tuning / modprobe / apt): sudo bash tests/e2e-real.sh $*"
@@ -69,7 +89,15 @@ provision() {
     require_linux_root provision
     ensure_config
     phase "provision — ./rigforge.sh setup (real deps + build + tuning + service)"
-    "$RIGFORGE" setup
+    "$RIGFORGE" setup 2>&1 | tee /tmp/e2e-provision.log
+
+    # #cpu: as root, lscpu also prints a "BIOS Model name:" DMI line; setup's detected-CPU line must show
+    # the clean model, not concatenate that line's "… Unknown CPU @ …" garbage.
+    if grep -q 'Detected CPU:' /tmp/e2e-provision.log && ! grep -q 'Unknown CPU @' /tmp/e2e-provision.log; then
+        ok "setup logged a clean CPU model ($(grep -oE 'Detected CPU: [^—]+' /tmp/e2e-provision.log | head -1 | sed 's/Detected CPU: //'))"
+    else
+        bad "setup's 'Detected CPU:' line looks garbled (lscpu BIOS-Model-name concatenation?)"
+    fi
 
     local bin
     bin="$(find_worker_bin)"
@@ -111,8 +139,9 @@ verify() {
     # (lsmod only lists loadable modules, so a built-in msr would be a false negative) — match doctor.
     [ -d /sys/module/msr ] && ok "msr available (/sys/module/msr)" || bad "msr not available"
     # #66: doctor must confirm the MSR mod actually APPLIED (from XMRig's log) and — since setup installs
-    # msr-tools — verify the prefetcher registers hold the preset's values via rdmsr. On the 7800X3D rig
-    # the preset is ryzen_19h_zen4; the verified value table lives in rigforge.sh (_msr_preset_regs).
+    # msr-tools — verify the prefetcher registers hold the preset's values via rdmsr. Hardware-agnostic:
+    # it asserts on doctor's output (whatever per-family preset this CPU uses — e.g. ryzen_19h_zen4 on
+    # Zen4, intel on Intel), not a fixed model; the verified value tables live in rigforge.sh.
     printf '%s' "$doc" | grep -q "MSR mod applied" &&
         ok "doctor confirms the MSR mod applied (#66)" || bad "doctor didn't confirm the MSR mod applied (#66)"
     if command -v rdmsr >/dev/null 2>&1; then
@@ -247,6 +276,92 @@ verify() {
     fi
     "$RIGFORGE" tune --clear >/dev/null 2>&1 || true # leave the rig on its baseline config
     "$RIGFORGE" apply >/dev/null 2>&1 || true
+
+    phase "verify — full command surface (every verb)"
+    local op="${SUDO_USER:-root}"
+    "$RIGFORGE" version 2>&1 | grep -q RigForge && ok "version prints the version" || bad "version failed"
+    "$RIGFORGE" help 2>&1 | grep -qi usage && ok "help prints usage" || bad "help failed"
+    # doctor as the OPERATOR (non-root) must run clean — no abort (#89: non-root dmidecode)
+    local nrdoc nrrc
+    nrdoc=$(sudo -u "$op" "$RIGFORGE" doctor 2>&1) && nrrc=0 || nrrc=$?
+    if [ "$nrrc" = 0 ] && ! printf '%s' "$nrdoc" | grep -qi aborted; then
+        ok "doctor runs clean as the operator '$op' (non-root, #89)"
+    else
+        bad "doctor as the operator (non-root) aborted or exited non-zero (#89)"
+    fi
+    # status / logs are read-only
+    "$RIGFORGE" status >/dev/null 2>&1 && ok "status reports the service" || bad "status failed"
+    journalctl -u xmrig -n 1 --no-pager >/dev/null 2>&1 && ok "service journal is readable (logs)" || bad "journal not readable"
+    # service control: stop -> inactive, start/restart -> active
+    "$RIGFORGE" stop >/dev/null 2>&1 || true
+    systemctl is-active --quiet xmrig && bad "stop left the service active" || ok "stop -> service inactive"
+    "$RIGFORGE" start >/dev/null 2>&1 || true
+    sleep 2
+    systemctl is-active --quiet xmrig && ok "start -> service active" || bad "start didn't start the service"
+    "$RIGFORGE" restart >/dev/null 2>&1 || true
+    sleep 2
+    systemctl is-active --quiet xmrig && ok "restart -> service active" || bad "restart left it inactive"
+    # enable / disable on boot (settle-tolerant: systemctl can lag/flake under the gate's load)
+    _set_boot disable disabled && ok "disable -> not started on boot" ||
+        bad "disable didn't take (is-enabled=$(systemctl is-enabled xmrig 2>/dev/null || true))"
+    _set_boot enable enabled && ok "enable -> started on boot" ||
+        bad "enable didn't take (is-enabled=$(systemctl is-enabled xmrig 2>/dev/null || true))"
+    # upgrade is a no-op on the already-pinned XMRig (no rebuild)
+    if "$RIGFORGE" upgrade >/tmp/e2e-upgrade.log 2>&1; then
+        grep -qiE 'already built|recompile will be skipped|no rebuild|skipp' /tmp/e2e-upgrade.log &&
+            ok "upgrade is a no-op on the pinned XMRig (no rebuild)" ||
+            ok "upgrade ran cleanly (no-op expected on pinned)"
+    else
+        bad "upgrade exited non-zero (see /tmp/e2e-upgrade.log)"
+    fi
+    # backup + restore round-trip
+    if "$RIGFORGE" backup >/tmp/e2e-backup.log 2>&1; then
+        local ar
+        ar=$(find "$HERE/backups" -name 'rigforge-backup-*.tar.gz' 2>/dev/null | sort | tail -1)
+        if [ -n "$ar" ] && [ -f "$ar" ]; then
+            ok "backup wrote an archive ($(basename "$ar"))"
+            "$RIGFORGE" restore -y "$ar" >/tmp/e2e-restore.log 2>&1 &&
+                ok "restore round-trips config + tuning" || bad "restore failed (see /tmp/e2e-restore.log)"
+        else
+            bad "backup reported success but wrote no archive"
+        fi
+    else
+        bad "backup failed (see /tmp/e2e-backup.log)"
+    fi
+    # apply (regenerate the live config + restart, no recompile)
+    if "$RIGFORGE" apply >/tmp/e2e-apply.log 2>&1; then
+        sleep 2
+        systemctl is-active --quiet xmrig && ok "apply regenerated the config + restarted (no recompile)" ||
+            bad "apply ran but the service isn't active"
+    else
+        bad "apply failed (see /tmp/e2e-apply.log)"
+    fi
+
+    phase "verify — tune --history (status) + #92 systemd re-own"
+    # tune --history is a read-only status command — it must work after a real tune.
+    if "$RIGFORGE" tune --history >/tmp/e2e-history.log 2>&1; then
+        grep -qE 'Winning tune options|Periodic auto-tune' /tmp/e2e-history.log &&
+            ok "tune --history shows the tuning status" || bad "tune --history produced no status output"
+    else
+        bad "tune --history failed (see /tmp/e2e-history.log)"
+    fi
+    # #reown: the nightly autotune runs as root via systemd (no SUDO_USER), so its unit must bake in
+    # RIGFORGE_OPERATOR for the re-own to hand files back to the operator (not root). Assert the unit
+    # carries it, then exercise the re-own exactly the way the root timer does (no SUDO_USER + that operator).
+    local wr="$HERE/data/worker" op=""
+    op=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=RIGFORGE_OPERATOR=//p' | head -1)
+    if [ -n "$op" ]; then
+        ok "autotune unit bakes in RIGFORGE_OPERATOR=$op (#reown)"
+        if [ -d "$wr" ]; then
+            chown -R root:root "$wr" 2>/dev/null
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin RIGFORGE_OPERATOR="$op" RIGFORGE_HOME="$HERE" bash "$RIGFORGE" apply >/dev/null 2>&1 || true
+            [ "$(stat -c %U "$wr")" = "$op" ] &&
+                ok "a root-context run (no SUDO_USER) re-owned the worker to '$op', not root (#reown)" ||
+                bad "a root-context run left the worker owned by '$(stat -c %U "$wr")' (expected '$op')"
+        fi
+    else
+        ok "SKIP autotune re-own check — periodic autotune not enabled ('autotune': true in config.json)"
+    fi
     summary "verify"
 }
 

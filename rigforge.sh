@@ -2861,25 +2861,33 @@ EOF
     # BIOS / firmware advisory (#78). RigForge can't read or change BIOS setup variables from a booted OS,
     # so this is detect-and-recommend only: it reads what the OS DOES expose (board/BIOS identity, the
     # memory profile, SMT) and turns it into concrete manual recommendations. Advisory — never an issue.
-    local bvendor board bios bdate cpu smt
+    local bvendor board bios bdate cpu smt xmp_rec="" smt_rec=""
     bvendor=$(_dmi board_vendor)
     board=$(_dmi board_name)
     bios=$(_dmi bios_version)
     bdate=$(_dmi bios_date)
     cpu=$(lscpu 2>/dev/null | awk -F: '/^Model name:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || true) # ^anchored: skip "BIOS Model name:"; guard INSIDE $()
-    if [ -n "$bvendor$board$bios" ]; then
-        _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the items below in BIOS/UEFI; RigForge can't change them from the OS."
-    fi
+    # Work out the recommendations FIRST, so the context line only points "below" when there ARE any
+    # (otherwise it'd promise items that never come — e.g. RAM already at its rated speed and SMT on).
     # XMP/EXPO/DOCP: RAM running below its rated SPD speed means the memory profile isn't enabled. Sharper
     # than the #67 fixed-threshold check (it compares rated vs configured for THIS kit).
     if [ "${rated:-0}" -gt 0 ] 2>/dev/null && [ "${spd:-0}" -gt 0 ] 2>/dev/null && [ "$spd" -lt "$rated" ] 2>/dev/null; then
-        _ck_warn "RAM is running at ${spd} MT/s but the modules are rated for ${rated} MT/s — enable the memory profile (XMP / EXPO / DOCP) in BIOS for a sizable RandomX gain."
+        xmp_rec="RAM is running at ${spd} MT/s but the modules are rated for ${rated} MT/s — enable the memory profile (XMP / EXPO / DOCP) in BIOS for a sizable RandomX gain."
     fi
     # SMT / Hyper-Threading off on a capable CPU leaves logical cores unused for RandomX.
     smt=$(cat "$SMT_CONTROL" 2>/dev/null || true) # guard INSIDE $(): missing SMT sysfs mustn't trip the ERR trap
     case "$smt" in
-    off | forceoff) _ck_warn "SMT/Hyper-Threading is disabled — enable it in BIOS (SMT / Hyper-Threading) so RandomX can use every logical core." ;;
+    off | forceoff) smt_rec="SMT/Hyper-Threading is disabled — enable it in BIOS (SMT / Hyper-Threading) so RandomX can use every logical core." ;;
     esac
+    if [ -n "$bvendor$board$bios" ]; then
+        if [ -n "$xmp_rec$smt_rec" ]; then
+            _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the BIOS/UEFI item(s) below (RigForge can't change them from the OS)."
+        else
+            _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — no BIOS changes recommended."
+        fi
+    fi
+    if [ -n "$xmp_rec" ]; then _ck_warn "$xmp_rec"; fi
+    if [ -n "$smt_rec" ]; then _ck_warn "$smt_rec"; fi
 
     # XMRig's own startup report (HUGE PAGES 100% means the dataset is fully backed). Reuses the
     # log_file resolved above for the MSR-applied check.

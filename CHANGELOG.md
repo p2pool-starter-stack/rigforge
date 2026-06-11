@@ -254,6 +254,10 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`doctor` no longer says "apply the items below" when there's nothing to apply.** The firmware/BIOS
+  context line always promised "apply the items below in BIOS/UEFI", even when no XMP/EXPO or SMT
+  recommendation followed (RAM already at its rated speed, SMT on). It now works out the recommendations
+  first and says "no BIOS changes recommended" when everything's already optimal.
 - **`setup` no longer prints a garbled CPU model.** Run as root, modern `lscpu` also emits a DMI-derived
   `BIOS Model name:` line (e.g. `…  Unknown CPU @ 4.2GHz`), and the unanchored `grep "Model name"`
   concatenated both — so every `setup` logged `Detected CPU: <model> <model> Unknown CPU @ 4.2GHz`.
