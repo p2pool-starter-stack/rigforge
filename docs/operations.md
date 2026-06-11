@@ -19,7 +19,7 @@ run `sudo rigforge [command]` from any directory; `uninstall` removes it.)_
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). **Critical** findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the **MSR mod actually applied** — confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). **Advisory** findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), **hashrate-capping hardware** RigForge can't fix but you can — single-channel or slow RAM (via `dmidecode`) and a power/boost-capped CPU clock — and **BIOS/firmware** recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
-| `tune` | Iteratively search the XMRig knobs (prefetch mode, `cpu.yield`, thread count, and `1gb-pages` when reserved) for the fastest combination for this CPU and keep it. Logs every candidate to `<WORKER_ROOT>/rigforge-tune.json` and writes the winning knobs to a separate `tune-overrides.json` (merged into the generated config). `tune --live` measures against the running miner instead of `--bench`; `tune --confirm` A/B-checks the tuned winner live and reverts it if it doesn't actually beat the previous config; `tune --efficiency` optimizes hashrate-per-watt instead of raw H/s; `tune --clear` resets tuning. |
+| `tune` | Measure the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) and keep them — an **optional, one-time** step. Flags: `--live`, `--efficiency`, `--confirm`, `--history`, `--clear`. See [Tuning](#tuning). |
 | `autotune` | One live trial against the running miner. **Enable periodic runs** by setting `"autotune": true` in `config.json` (setup installs a systemd timer). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
@@ -50,143 +50,61 @@ the MSR mod blocked by Secure Boot. See [Troubleshooting](#troubleshooting).
 > aren't reserved before then), so a `doctor` run between `setup` and the reboot will report "service is
 > not active" — that's expected; it starts automatically after you reboot.
 
-### Auto-tuning
+### Tuning
 
-Most of the hashrate-critical settings are already chosen for you (see [How It Works](how-it-works.md)), but a
-few knobs are genuinely CPU-specific. `tune` measures rather than guesses:
-
-```bash
-sudo ./rigforge.sh tune       # search for the fastest knobs, save the winners
-sudo ./rigforge.sh apply      # regenerate the config with them + restart
-```
-
-> **Tune once, run for months.** Tuning is a one-time, measurement-heavy step — a thorough run can take
-> hours (longer with `grid` or a large `TUNE_BENCH`), and that's fine: the result is kept for the life of
-> the rig. Offline `--bench` measures **Monero's RandomX (rx/0)**; for a different RandomX variant, use
-> `tune --live` so it measures your actual pool's algorithm. After an `upgrade` bumps XMRig, it reminds
-> you to re-tune, since the fastest knobs can shift between versions.
-
-`tune` runs an **iterative, noise-aware search** rather than a single fixed sweep. It:
-
-- **Sweeps the knobs whose best value varies per CPU** — the RandomX **scratchpad prefetch mode**,
-  **`cpu.yield`**, and the RandomX **thread count** (`cpu.rx`). The thread search is **SMT-aware**: it
-  tries XMRig's auto value, the **physical-core** and **logical-core** counts (one thread per physical
-  core vs. hyperthreaded — RandomX often prefers the former), and a window around the L3 ÷ 2 MB sweet
-  spot. **`1gb-pages`** is swept *only when 1G HugePages are actually reserved* (they're reboot-bound — a
-  GRUB change + reboot done by `setup` — so flipping them mid-run is meaningless; the knob is skipped
-  with a note if absent). Three more knobs are **off by default** and searched only when you opt in:
-  `cpu.huge-pages-jit` (`TUNE_HPJIT="false true"` — XMRig warns it can make hashrate unstable),
-  `randomx.cache_qos` (`TUNE_CACHEQOS="false true"`, an Intel L3-CAT lever), and the MSR preset
-  `randomx.wrmsr` (`TUNE_WRMSR="true false"`, or a preset number — see [MSR mod](#msr-mod-verification)).
-- **Hill-climbs from two seeds** — XMRig's auto baseline and an educated guess — adopting a knob change
-  only when it beats the current best by at least `TUNE_MIN_DELTA`, and **stops at a plateau** (a full
-  pass with no improvement). It never benchmarks the same combination twice. Set **`TUNE_SEARCH=grid`**
-  for an **exhaustive** search of every knob combination instead — slower, but immune to local optima.
-- **Handles noise** by measuring each candidate as the **median** of `TUNE_ITERS` benchmark runs
-  (RandomX hashrate is jittery), and — in `--bench` mode — by **stopping the miner service** for the run
-  (see below) so nothing competes for the CPU or huge pages.
-
-Every candidate — its samples, median, and any recorded power/temperature — is written to
-`<WORKER_ROOT>/rigforge-tune.json`, and the winning knobs go to a separate **`tune-overrides.json`**.
-That overlay is merged into the generated config, so your `config.json` is never touched;
-`sudo ./rigforge.sh tune --clear` removes it. In `--bench` mode `tune` **stops the `xmrig` service for
-the duration and restarts it afterwards** (even if interrupted), so the benchmark has the whole machine
-to itself; still, run it when the box is otherwise idle for the steadiest numbers.
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `TUNE_SEARCH` | `climb` | `climb` (hill-climb, fast) or `grid` (exhaustive over all knob combos, robust but slower). |
-| `TUNE_ITERS` | `5` | Benchmark runs per candidate; the median is used. |
-| `TUNE_BENCH` | `10M` | `xmrig --bench` size. Longer = steadier and closer to sustained load; set `1M` for a quick pass. |
-| `TUNE_MIN_DELTA` | `0.01` | Minimum *relative* gain (1%) needed to adopt a change. |
-| `TUNE_MAX_ROUNDS` | `3` | Cap on hill-climb passes per seed. |
-| `TUNE_SEEDS` | `auto guess` | Starting points to climb from. |
-| `TUNE_PREFETCH_MODES` | `0 1 2 3` | Prefetch-mode candidates. |
-| `TUNE_YIELDS` | `true false` | `cpu.yield` candidates. |
-| `TUNE_THREADS` | _(auto: SMT-aware set)_ | `cpu.rx` thread-count candidates. Defaults to auto + physical/logical cores + an L3 window; override with an explicit list. |
-| `TUNE_PRIORITIES` | `2` | `cpu.priority` candidates (single value ⇒ knob off; set e.g. `1 2 3 4 5` to sweep). |
-| `TUNE_HPJIT` | _(off)_ | Set `false true` to sweep `cpu.huge-pages-jit` (XMRig: small Ryzen boost, unstable hashrate). |
-| `TUNE_CACHEQOS` | _(off)_ | Set `false true` to sweep `randomx.cache_qos` (Intel L3 Cache Allocation Technology). |
-| `TUNE_WRMSR` | _(off)_ | Sweep the `randomx.wrmsr` MSR preset, e.g. `true false` (or a preset number). Rarely needed — XMRig auto-picks the right preset; set this only to confirm it on unusual hardware. Applied per-bench, no reboot. |
-| `TUNE_POWER_CMD` | _(RAPL)_ | Override the power source with a shell command that echoes **instantaneous watts** (IPMI, a smart plug, wall-AC). Without it, the built-in CPU-package RAPL reader is used on Linux. |
-| `TUNE_TARGET` | `perf` | What to optimize for: `perf` (raw H/s) or `efficiency` (hashrate-per-watt). Same as `tune --efficiency`. Efficiency needs a power source (RAPL or `TUNE_POWER_CMD`) or it falls back to `perf`. |
-| `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
-
-**Power & efficiency.** RandomX hashrate isn't free, so `tune` records **watts per candidate** and reports
-the best **hashrate-per-watt**. On Linux it reads the CPU-package energy counter (RAPL) automatically — no
-configuration needed (run as root). Watts are sampled **under load and averaged over the measurement
-window**, so the figure reflects real mining power, and the metric can rank candidates by efficiency
-rather than collapsing onto raw H/s. To measure something other than the CPU package — e.g. whole-system
-wall power — point `TUNE_POWER_CMD` at a source that echoes instantaneous watts:
+RigForge auto-configures the hashrate-critical settings, so a freshly-deployed worker already runs well.
+`tune` is an **optional, one-time** step that *measures* the handful of knobs whose best value is genuinely
+CPU-specific (the RandomX prefetch mode, `cpu.yield`, the thread count) and keeps the fastest:
 
 ```bash
-sudo TUNE_POWER_CMD='my-smart-plug-watts' ./rigforge.sh tune   # else: built-in RAPL, no setup
+sudo ./rigforge.sh tune       # measure the fastest knobs for this CPU — thorough, so it takes a while
+sudo ./rigforge.sh apply      # regenerate the config with them and restart
 ```
 
-By default `tune` **optimizes for raw hashrate**. To optimize for **efficiency** instead — picking the
-config with the best hashrate-per-watt, for a power-cost or heat/PSU-constrained rig — add `--efficiency`
-(or `TUNE_TARGET=efficiency`). It needs a power source; without one it warns and falls back to `perf`:
+> **Tune once, run for months.** The result is saved to a separate overlay (`tune-overrides.json`), so your
+> `config.json` is never touched, and it's kept for the life of the rig. After an `upgrade` bumps XMRig,
+> RigForge reminds you to re-tune (the fastest knobs can shift between versions).
+
+See what's tuned — and what the periodic auto-tuner has been doing — at any time:
 
 ```bash
-sudo ./rigforge.sh tune --efficiency       # rank by hashrate-per-watt, not raw H/s
+./rigforge.sh tune --history  # applied knobs + the last full run + recent auto-tune decisions
 ```
 
-> **`hs_per_watt` is relative, not absolute.** It only compares candidates measured by the **same method on
-> the same machine**. Built-in RAPL counts the **CPU package only** (not RAM, board, PSU loss); a smart
-> plug counts **whole-wall AC**. Don't compare the number across methods or across rigs.
+**Useful variants** (all optional):
 
-#### Live tuning (`tune --live`)
+| Command | What it does |
+|---|---|
+| `tune --live` | Tune against your **running pool** instead of offline `--bench` — measures real-world conditions. Slower; Linux only. |
+| `tune --efficiency` | Optimize for **hashrate-per-watt** instead of raw speed — for power-cost or heat/PSU-limited rigs (needs a power source). |
+| `tune --confirm` | A/B-check the winner on the live miner and keep it only if it genuinely beats the previous config. Linux only. |
+| `tune --history` | Show the current tuning, the last full run, and recent auto-tune decisions. |
+| `tune --clear` | Discard all tuning and return to the auto defaults. |
 
-By default `tune` benchmarks offline with `xmrig --bench`. To tune under **real-world** conditions
-against your actual pool instead, use `--live` (Linux only):
-
-```bash
-sudo ./rigforge.sh tune --live
-```
-
-Each candidate is applied to the running miner, a warmup window is discarded, and the steady-state
-hashrate is read from the worker's API over a few samples (median). This restarts the service once per
-candidate, so it's much slower than `--bench` — narrow the search (e.g. `TUNE_SEEDS=auto`, a smaller
-`TUNE_PREFETCH_MODES`) for a quicker live pass. Windows are controlled by `TUNE_LIVE_WARMUP` (default
-60s), `TUNE_LIVE_SAMPLES` (default 3), and `TUNE_LIVE_INTERVAL` (default 30s). The winning config is
-applied automatically when the search finishes. For a hands-off periodic version, see
-[Live auto-tuning](#live-auto-tuning-opt-in) below.
+The search internals, every tunable knob, the full list of `TUNE_*` environment variables, and the
+power/efficiency and reservation-aware details are all in
+[How It Works -> Measured tuning](how-it-works.md#measured-tuning-the-tune-search).
 
 ### Live auto-tuning (opt-in)
 
-Set `"autotune": true` in `config.json` and setup installs a **systemd timer** that periodically runs:
+Prefer it hands-off? Set `"autotune": true` in `config.json` and re-run `setup` — RigForge installs a
+**systemd timer** that periodically optimizes the prefetch mode against your *live* miner.
 
-```bash
-sudo ./rigforge.sh autotune
-```
+**Each run converges in one pass (~minutes).** It reads the current hashrate from the miner's API
+(median of a few samples), then sweeps every prefetch mode — applying each, restarting, and re-measuring
+over a warmup window — and adopts the fastest, but **only if it beats the baseline by a margin** (else it
+keeps the current mode). So a single run settles on the best prefetch mode; you don't wait days. The
+change is merged on top of any offline `tune` result, so your tuned thread count and `cpu.yield` are
+preserved.
 
-Each run is one **live trial**: it reads the current hashrate from the worker's API (the **median** of
-`AUTOTUNE_SAMPLES` readings, default 3, taken `AUTOTUNE_INTERVAL`s apart), tries the next prefetch mode,
-restarts, measures again, and **keeps the change only if it beats the baseline by a margin**
-(`AUTOTUNE_MARGIN`, default 1%) — otherwise it rolls back. The prefetch change is **merged into** any
-`tune-overrides.json` a prior offline `tune` wrote, so your tuned thread count and `cpu.yield` are kept.
-Because live hashrate is noisy this is deliberately conservative; for a definitive sweep prefer the
-offline `tune`.
+**Cadence.** The timer fires **daily** by default (it re-verifies and catches drift, e.g. after an
+`upgrade`). Set `AUTOTUNE_ONCALENDAR` to any [systemd calendar](https://www.freedesktop.org/software/systemd/man/systemd.time.html)
+spec before `setup` to change it — e.g. `AUTOTUNE_ONCALENDAR=weekly sudo ./rigforge.sh setup` for less
+restart churn now that one run already converges. Review the schedule, the next run, and recent decisions
+any time with **`rigforge tune --history`** (or `journalctl -u rigforge-autotune`).
 
-### Reservation-aware thread tuning
-
-RandomX wants its scratchpads backed by **HugePages**. `setup` reserves a pool sized for an estimated
-thread count; `tune` then benchmarks thread counts within that reservation. A thread count that needs
-*more* 2 MB pages than are reserved still runs — but the extra threads fall back to normal pages, so its
-benchmark is a **floor, not a fair reading**. `tune` detects this: each such candidate is flagged
-`hugepages_capped: true` in `rigforge-tune.json`, and `tune` ends with a note listing the capped thread
-counts.
-
-To explore a higher thread count *properly*, resize the reservation for it and re-tune:
-
-```bash
-sudo RIGFORGE_THREADS=<n> ./rigforge.sh setup   # sizes the HugePages reservation for <n> threads
-sudo reboot                                     # the GRUB HugePages change needs a reboot
-sudo ./rigforge.sh tune                         # now <n> threads benchmarks with full backing
-```
-
-`setup` also reads the **tuned** `cpu.rx` from `tune-overrides.json` automatically, so once you've tuned,
-a plain `sudo ./rigforge.sh setup` keeps the reservation matched to your winning thread count.
+Auto-tune only touches the prefetch mode (the knob most worth re-checking live). For a **definitive,
+one-time sweep of every knob**, run the offline [`tune`](#tuning) above. Linux only.
 
 ### MSR mod verification
 

@@ -104,9 +104,65 @@ A few design choices keep it honest and cheap on jittery RandomX hardware:
 Reboot-bound knobs are handled explicitly: `1gb-pages` only matters once 1G HugePages are reserved (a
 GRUB change + reboot), so the search sweeps it only when they're actually present and otherwise skips it
 with a note. The winning knobs are written to a separate overlay file (`tune-overrides.json`) that's
-merged into the generated config — your `config.json` is never edited. For the full command reference,
-the tunable env vars, power/efficiency recording, and the live (`--live`) variant, see
-[Operations › Auto-tuning](operations.md#auto-tuning).
+merged into the generated config — your `config.json` is never edited.
+
+### Tuning environment variables
+
+Every part of the search is overridable; the defaults favour a thorough one-time run.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `TUNE_SEARCH` | `climb` | `climb` (hill-climb, fast) or `grid` (exhaustive over all knob combos, robust but slower). |
+| `TUNE_ITERS` | `5` | Benchmark runs per candidate; the median is used. |
+| `TUNE_BENCH` | `10M` | `xmrig --bench` size. Longer = steadier and closer to sustained load; set `1M` for a quick pass. |
+| `TUNE_MIN_DELTA` | `0.01` | Minimum *relative* gain (1%) needed to adopt a change. |
+| `TUNE_MAX_ROUNDS` | `3` | Cap on hill-climb passes per seed. |
+| `TUNE_SEEDS` | `auto guess` | Starting points to climb from. |
+| `TUNE_PREFETCH_MODES` | `0 1 2 3` | Prefetch-mode candidates. |
+| `TUNE_YIELDS` | `true false` | `cpu.yield` candidates. |
+| `TUNE_THREADS` | _(auto: SMT-aware set)_ | `cpu.rx` thread-count candidates. Defaults to auto + physical/logical cores + an L3 window; override with an explicit list. |
+| `TUNE_PRIORITIES` | `2` | `cpu.priority` candidates (single value ⇒ knob off; set e.g. `1 2 3 4 5` to sweep). |
+| `TUNE_HPJIT` | _(off)_ | Set `false true` to sweep `cpu.huge-pages-jit` (XMRig: small Ryzen boost, unstable hashrate). |
+| `TUNE_CACHEQOS` | _(off)_ | Set `false true` to sweep `randomx.cache_qos` (Intel L3 Cache Allocation Technology). |
+| `TUNE_WRMSR` | _(off)_ | Sweep the `randomx.wrmsr` MSR preset, e.g. `true false` (or a preset number). Rarely needed — XMRig auto-picks the right preset; set this only to confirm it on unusual hardware. Applied per-bench, no reboot. |
+| `TUNE_POWER_CMD` | _(RAPL)_ | Override the power source with a shell command that echoes **instantaneous watts** (IPMI, a smart plug, wall-AC). Without it, the built-in CPU-package RAPL reader is used on Linux. |
+| `TUNE_TARGET` | `perf` | Optimize for `perf` (raw H/s) or `efficiency` (hashrate-per-watt). Same as `tune --efficiency`; efficiency needs a power source or falls back to `perf`. |
+| `TUNE_TEMP_CMD` | _(Linux thermal zone)_ | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
+
+### Power & efficiency
+
+RandomX hashrate isn't free, so `tune` records **watts per candidate** and can rank by **hashrate-per-watt**.
+On Linux it reads the CPU-package energy counter (RAPL) automatically — no configuration, run as root.
+Watts are sampled **under load and averaged over the measurement window**, so the figure reflects real
+mining power. `tune --efficiency` (or `TUNE_TARGET=efficiency`) then picks the most efficient config rather
+than the raw-fastest — useful for a power-cost or heat/PSU-constrained rig; without a power source it warns
+and falls back to `perf`. To measure whole-system wall power instead of the CPU package alone, point
+`TUNE_POWER_CMD` at a source that echoes instantaneous watts.
+
+> **`hs_per_watt` is relative, not absolute.** It only compares candidates measured by the **same method on
+> the same machine**. Built-in RAPL counts the **CPU package only** (not RAM, board, PSU loss); a smart plug
+> counts **whole-wall AC**. Don't compare the number across methods or across rigs.
+
+### Reservation-aware thread tuning
+
+RandomX wants its scratchpads backed by **HugePages**. `setup` reserves a pool sized for an estimated thread
+count; `tune` then benchmarks thread counts within that reservation. A thread count that needs *more* 2 MB
+pages than are reserved still runs — but the extra threads fall back to normal pages, so its benchmark is a
+**floor, not a fair reading**. `tune` flags each such candidate `hugepages_capped: true` in
+`rigforge-tune.json` and ends with a note listing the capped thread counts. To explore a higher count
+*properly*, resize the reservation for it and re-tune:
+
+```bash
+sudo RIGFORGE_THREADS=<n> ./rigforge.sh setup   # sizes the HugePages reservation for <n> threads
+sudo reboot                                     # the GRUB HugePages change needs a reboot
+sudo ./rigforge.sh tune                         # now <n> threads benchmarks with full backing
+```
+
+`setup` also reads the **tuned** `cpu.rx` from `tune-overrides.json` automatically, so once you've tuned, a
+plain `sudo ./rigforge.sh setup` keeps the reservation matched to your winning thread count.
+
+For how to *run* `tune` — the command, `--live`, `--efficiency`, `--confirm`, `--history`, and `--clear` —
+see [Operations › Tuning](operations.md#tuning).
 
 ---
 
