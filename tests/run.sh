@@ -2412,14 +2412,22 @@ echo "Core(s) per socket:    8"
 EOF
 printf '#!/usr/bin/env bash\necho 16\n' >"$TC/nproc"
 chmod +x "$TC/lscpu" "$TC/nproc"
+# hash -r: earlier tests run lscpu via the generic $STUBS/lscpu (no "Core(s) per socket:" line), which
+# bash may keep in its command hash. Some bash 3.2 builds then reuse that stale path instead of honoring
+# the $TC-first PATH below, so _physical_cores would read no cores-per-socket and return empty. Clearing
+# the hash forces a fresh PATH lookup so the richer $TC/lscpu wins — deterministic on every host.
 phys="$(
     source "$SCRIPT"
+    set +e
+    hash -r 2>/dev/null || true
     OS_TYPE=Linux
     PATH="$TC:$STUBS:$PATH" _physical_cores
 )"
 assert_eq "physical cores = cores-per-socket x sockets" "$phys" "8"
 cands="$(
     source "$SCRIPT"
+    set +e
+    hash -r 2>/dev/null || true
     OS_TYPE=Linux
     PATH="$TC:$STUBS:$PATH" _thread_candidates 16
 )"
