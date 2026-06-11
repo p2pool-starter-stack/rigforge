@@ -1412,7 +1412,11 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
         fi
         printf '%s' "$wout" >"$BENCH_WATTS_FILE"
     fi
-    kill "$xpid" 2>/dev/null
+    # `|| true`: xmrig --bench exits ON ITS OWN when the benchmark finishes, so by here it's often already
+    # gone — an unguarded kill then returns non-zero and, under set -Eeuo, fires the ERR trap INSIDE this
+    # measurement subshell, aborting it before it echoes the result (→ spurious "aborted" spam + a 0 H/s
+    # reading). Guarding it keeps the bench result intact whether or not xmrig is still alive.
+    kill "$xpid" 2>/dev/null || true
     wait "$xpid" 2>/dev/null || true
     # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
     # min would mistake for thermal throttling (#62).
@@ -1827,19 +1831,45 @@ _tune_history() { # <overrides_file> <log_file>
     fi
 }
 
+# Whether `tune` should re-exec itself under sudo: non-root + interactive (TTY) only, so sudo can actually
+# prompt and we never surprise non-interactive callers (tests/cron/pipes). RIGFORGE_FORCE_ELEVATE=1 forces
+# it regardless (the coverage test drives this path from a real child process).
+_tune_should_elevate() {
+    [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] && return 0
+    [ "$(id -u)" -ne 0 ] && [ -t 0 ]
+}
+
 tune() {
-    local clear=0
+    # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
+    # when run without sudo — a plain `rigforge tune` then just works (sudo prompts) instead of failing
+    # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
+    # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
+    # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
+    local _hist=0 clear=0 target_set=0
+    case " $* " in *" --history "*) _hist=1 ;; esac
+    if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
+        log "tune needs root — re-running with sudo..."
+        exec sudo "$0" tune "$@"
+    fi
     TUNE_MODE="${TUNE_MODE:-bench}"
-    TUNE_CONFIRM="${TUNE_CONFIRM:-0}"  # #64: A/B-confirm the winner against the previous config, live
-    TUNE_TARGET="${TUNE_TARGET:-perf}" # #79: perf (raw H/s) or efficiency (hashrate-per-watt)
+    TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
+    # #95: the optimization target defaults to the `autotune` config value (resolved by parse_config below);
+    # a TUNE_TARGET env override or an explicit --perf/--efficiency flag wins.
+    [ -n "${TUNE_TARGET:-}" ] && target_set=1
     while [ $# -gt 0 ]; do
         case "$1" in
         --clear) clear=1 ;;
         --live) TUNE_MODE=live ;;
         --bench) TUNE_MODE=bench ;;
         --confirm) TUNE_CONFIRM=1 ;;
-        --efficiency) TUNE_TARGET=efficiency ;; # #79: optimize hashrate-per-watt
-        --perf) TUNE_TARGET=perf ;;
+        --efficiency)
+            TUNE_TARGET=efficiency
+            target_set=1
+            ;; # #79: optimize hashrate-per-watt
+        --perf)
+            TUNE_TARGET=perf
+            target_set=1
+            ;;
         --history) TUNE_HISTORY=1 ;; # show current tuning + last run + auto-tune decisions, then exit
         *) error "Unknown tune option: $1 (use --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
         esac
@@ -1847,6 +1877,8 @@ tune() {
     done
 
     parse_config # resolves WORKER_ROOT (and validates the config)
+    # #95: default the target to what `autotune` is set to in config, unless the user was explicit above.
+    [ "$target_set" = 1 ] || TUNE_TARGET="${AUTOTUNE_TARGET:-perf}"
     TUNE_OVERRIDES="$WORKER_ROOT/tune-overrides.json"
     local logf="$WORKER_ROOT/rigforge-tune.json"
     local pre_overrides="" # #64: the overrides in place BEFORE this run, to A/B against and revert to
@@ -1883,7 +1915,9 @@ tune() {
         warn "tune --efficiency needs a power source (built-in RAPL or TUNE_POWER_CMD) — none available; optimizing for raw hashrate (perf) instead."
         TUNE_TARGET=perf
     fi
-    [ "$TUNE_TARGET" = efficiency ] && log "Optimization target: efficiency (hashrate-per-watt)."
+    local tgt_src=""
+    [ "$target_set" = 1 ] || tgt_src=" (from your autotune config; override with --perf/--efficiency)"
+    log "Optimization target: $(_autotune_desc "$TUNE_TARGET")${tgt_src}."
     # #62: a candidate whose effective clock dipped below this during its window thermally throttled and is
     # skipped. Default ~80% of max boost (all-core RandomX should hold well above that); 0 disables it.
     if [ -z "${TUNE_MIN_FREQ_MHZ:-}" ]; then

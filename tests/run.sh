@@ -2128,6 +2128,50 @@ assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
+
+# #tunefix: the optimization target defaults to the `autotune` config value (overridable with
+# --perf/--efficiency) and is announced at the start of the run. Isolated sandbox so it doesn't disturb the
+# ordered $TN tests above. TUNE_POWER_CMD makes a power source available so efficiency doesn't fall back.
+echo "== black-box: tune target follows autotune config + is announced (#tunefix) =="
+TT="$(mktemp -d "$SANDBOX/tunetgt.XXXXXX")"
+cp "$ROOT/VERSION" "$TT/"
+mkdir -p "$TT/util" "$TT/home/worker/xmrig/build" "$TT/cpuok/cpu0/cpufreq"
+cp "$ROOT/util/proposed-grub.sh" "$TT/util/" 2>/dev/null
+printf '5000000\n' >"$TT/cpu_max"
+printf '4800000\n' >"$TT/cpuok/cpu0/cpufreq/scaling_cur_freq"
+printf '{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": false }, "cpu": { "yield": false, "priority": 2 } }\n' >"$TT/home/worker/xmrig/build/config.json"
+printf '#!/usr/bin/env bash\necho "miner speed 10s 1100.0 H/s max 1100.0 H/s"\n' >"$TT/home/worker/xmrig/build/xmrig"
+chmod +x "$TT/home/worker/xmrig/build/xmrig"
+tune_target() { # <autotune-config-value> [tune-flags...]
+    local atv="$1"
+    shift
+    printf '{ "HOME_DIR": "%s/home", "autotune": "%s", "pools": [{"url":"h:3333"}] }\n' "$TT" "$atv" >"$TT/config.json"
+    (cd "$TT" && PATH="$STUBS:$PATH" CPUFREQ_MAX="$TT/cpu_max" CPU_SYSFS="$TT/cpuok" \
+        TUNE_ITERS=1 TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+        TUNE_POWER_CMD='echo 90' RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune "$@" </dev/null 2>&1) | grep -i "Optimization target"
+}
+tt_eff="$(tune_target efficiency)"
+assert_contains "tune defaults to efficiency from autotune=efficiency (#tunefix)" "$tt_eff" "Optimization target: efficiency"
+assert_contains "tune notes the target came from config (#tunefix)" "$tt_eff" "from your autotune config"
+assert_contains "tune defaults to performance from autotune=performance (#tunefix)" "$(tune_target performance)" "Optimization target: performance"
+assert_contains "tune defaults to performance from autotune=disabled (#tunefix)" "$(tune_target disabled)" "Optimization target: performance"
+tt_ovr="$(tune_target performance --efficiency)"
+assert_contains "--efficiency overrides config performance (#tunefix)" "$tt_ovr" "Optimization target: efficiency"
+assert_eq "an explicit target has no 'from config' note (#tunefix)" "$(printf '%s' "$tt_ovr" | grep -c 'from your autotune config')" "0"
+assert_contains "--perf overrides config efficiency (#tunefix)" "$(tune_target efficiency --perf)" "Optimization target: performance"
+# the sudo auto-elevate is gated on an interactive TTY, so a non-interactive (</dev/null) tune never re-execs.
+assert_eq "non-interactive tune does not auto-elevate (#tunefix)" "$(tune_target performance | grep -c 're-running with sudo')" "0"
+# Cover the interactive auto-elevate path. Run it as a real child process (so coverage sees the exec) with
+# RIGFORGE_FORCE_ELEVATE=1 forcing the gate regardless of the runner's uid, and a PATH `sudo` stub so exec
+# captures the re-exec instead of looping.
+ELB="$(mktemp -d "$SANDBOX/elev.XXXXXX")"
+printf '#!/usr/bin/env bash\necho "REEXEC: $*"\n' >"$ELB/sudo"
+chmod +x "$ELB/sudo"
+elev_out="$(cd "$TT" && PATH="$ELB:$STUBS:$PATH" RIGFORGE_FORCE_ELEVATE=1 STUB_UNAME_S=Linux \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
+assert_contains "tune auto-elevates with sudo when interactive (#tunefix)" "$elev_out" "REEXEC:"
+assert_contains "tune re-execs the same tune command (#tunefix)" "$elev_out" "tune --live"
+
 # tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
 # above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
 hout="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
