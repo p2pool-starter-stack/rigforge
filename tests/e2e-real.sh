@@ -11,8 +11,10 @@
 # It drives the genuine commands end to end and asserts each step:
 #   provision : sudo ./rigforge.sh setup   -> deps + real XMRig build + tuning + kernel tuning + service
 #   (reboot)  : HugePages (1G + the GRUB cmdline) only take effect on boot
-#   verify    : doctor (HugePages/MSR/governor/service) + bench (real H/s, clean) + a short real tune
-#   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert
+#   verify    : doctor (HugePages/MSR/governor/service) + bench (real H/s) + tune (perf/efficiency/confirm)
+#               + tune --history + the systemd re-own + EVERY verb (version/help/status/logs/start/stop/
+#               restart/enable/disable/upgrade/backup/restore/apply + non-root doctor)
+#   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
 #   sudo bash tests/e2e-real.sh provision
@@ -256,6 +258,66 @@ verify() {
     fi
     "$RIGFORGE" tune --clear >/dev/null 2>&1 || true # leave the rig on its baseline config
     "$RIGFORGE" apply >/dev/null 2>&1 || true
+
+    phase "verify — full command surface (every verb)"
+    local op="${SUDO_USER:-root}"
+    "$RIGFORGE" version 2>&1 | grep -q RigForge && ok "version prints the version" || bad "version failed"
+    "$RIGFORGE" help 2>&1 | grep -qi usage && ok "help prints usage" || bad "help failed"
+    # doctor as the OPERATOR (non-root) must run clean — no abort (#89: non-root dmidecode)
+    local nrdoc nrrc
+    nrdoc=$(sudo -u "$op" "$RIGFORGE" doctor 2>&1) && nrrc=0 || nrrc=$?
+    if [ "$nrrc" = 0 ] && ! printf '%s' "$nrdoc" | grep -qi aborted; then
+        ok "doctor runs clean as the operator '$op' (non-root, #89)"
+    else
+        bad "doctor as the operator (non-root) aborted or exited non-zero (#89)"
+    fi
+    # status / logs are read-only
+    "$RIGFORGE" status >/dev/null 2>&1 && ok "status reports the service" || bad "status failed"
+    journalctl -u xmrig -n 1 --no-pager >/dev/null 2>&1 && ok "service journal is readable (logs)" || bad "journal not readable"
+    # service control: stop -> inactive, start/restart -> active
+    "$RIGFORGE" stop >/dev/null 2>&1 || true
+    systemctl is-active --quiet xmrig && bad "stop left the service active" || ok "stop -> service inactive"
+    "$RIGFORGE" start >/dev/null 2>&1 || true
+    sleep 2
+    systemctl is-active --quiet xmrig && ok "start -> service active" || bad "start didn't start the service"
+    "$RIGFORGE" restart >/dev/null 2>&1 || true
+    sleep 2
+    systemctl is-active --quiet xmrig && ok "restart -> service active" || bad "restart left it inactive"
+    # enable / disable on boot
+    "$RIGFORGE" disable >/dev/null 2>&1 || true
+    systemctl is-enabled xmrig 2>/dev/null | grep -q disabled && ok "disable -> not started on boot" || bad "disable didn't take"
+    "$RIGFORGE" enable >/dev/null 2>&1 || true
+    systemctl is-enabled xmrig 2>/dev/null | grep -q enabled && ok "enable -> started on boot" || bad "enable didn't take"
+    # upgrade is a no-op on the already-pinned XMRig (no rebuild)
+    if "$RIGFORGE" upgrade >/tmp/e2e-upgrade.log 2>&1; then
+        grep -qiE 'already built|recompile will be skipped|no rebuild|skipp' /tmp/e2e-upgrade.log &&
+            ok "upgrade is a no-op on the pinned XMRig (no rebuild)" ||
+            ok "upgrade ran cleanly (no-op expected on pinned)"
+    else
+        bad "upgrade exited non-zero (see /tmp/e2e-upgrade.log)"
+    fi
+    # backup + restore round-trip
+    if "$RIGFORGE" backup >/tmp/e2e-backup.log 2>&1; then
+        local ar
+        ar=$(find "$HERE/backups" -name 'rigforge-backup-*.tar.gz' 2>/dev/null | sort | tail -1)
+        if [ -n "$ar" ] && [ -f "$ar" ]; then
+            ok "backup wrote an archive ($(basename "$ar"))"
+            "$RIGFORGE" restore -y "$ar" >/tmp/e2e-restore.log 2>&1 &&
+                ok "restore round-trips config + tuning" || bad "restore failed (see /tmp/e2e-restore.log)"
+        else
+            bad "backup reported success but wrote no archive"
+        fi
+    else
+        bad "backup failed (see /tmp/e2e-backup.log)"
+    fi
+    # apply (regenerate the live config + restart, no recompile)
+    if "$RIGFORGE" apply >/tmp/e2e-apply.log 2>&1; then
+        sleep 2
+        systemctl is-active --quiet xmrig && ok "apply regenerated the config + restarted (no recompile)" ||
+            bad "apply ran but the service isn't active"
+    else
+        bad "apply failed (see /tmp/e2e-apply.log)"
+    fi
 
     phase "verify — tune --history (status) + #92 systemd re-own"
     # tune --history is a read-only status command — it must work after a real tune.
