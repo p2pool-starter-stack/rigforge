@@ -139,6 +139,12 @@ than the raw-fastest — useful for a power-cost or heat/PSU-constrained rig; wi
 and falls back to `perf`. To measure whole-system wall power instead of the CPU package alone, point
 `TUNE_POWER_CMD` at a source that echoes instantaneous watts.
 
+The **periodic `autotune`** takes the same target: set `"autotune": "efficiency"` in `config.json` and the
+nightly run ranks prefetch modes by hashrate-per-watt (sampling watts over the same live window), instead
+of `"performance"`'s raw H/s. The target is baked into the systemd unit at setup; same RAPL/`TUNE_POWER_CMD`
+sources and the same fall-back-to-`perf`-with-a-warning behavior apply. See
+[Operations → Live auto-tuning](operations.md#live-auto-tuning-opt-in).
+
 > **`hs_per_watt` is relative, not absolute.** It only compares candidates measured by the **same method on
 > the same machine**. Built-in RAPL counts the **CPU package only** (not RAM, board, PSU loss); a smart plug
 > counts **whole-wall AC**. Don't compare the number across methods or across rigs.

@@ -141,7 +141,8 @@ EOF
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
-    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g"
+    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
+    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -1055,36 +1056,126 @@ assert_eq "valid HOME_DIR resolves to the worker root" "$(wrc "$WV/good.json")" 
 assert_contains "HOME_DIR with shell metacharacters is refused" "$(wrc "$WV/meta.json")" "Refusing to act"
 assert_contains "HOME_DIR with .. traversal is refused" "$(wrc "$WV/trav.json")" "Refusing to act"
 
-# The periodic-autotune systemd timer: enabling it (AUTOTUNE=true) writes the .service + .timer; disabling
-# it (AUTOTUNE=false, files present) removes them — both via the SYSTEMD_DIR override the real units use.
-echo "== black-box: install_autotune timer enable/disable =="
+# The periodic-autotune systemd timer (#95): a non-"disabled" mode (performance|efficiency) writes the
+# .service + .timer and bakes the target into the unit; "disabled" (files present) removes them — both via
+# the SYSTEMD_DIR override the real units use.
+echo "== black-box: install_autotune timer enable/disable (#95 tri-state) =="
 AT="$(mktemp -d "$SANDBOX/at.XXXXXX")"
 mkdir -p "$AT/systemd"
 # install_autotune renders the unit TEMPLATES from systemd/ (like xmrig.service), so they must be present.
 cp "$ROOT/systemd/rigforge-autotune.service.template" "$ROOT/systemd/rigforge-autotune.timer.template" "$AT/systemd/"
-run_autotune() { # <true|false> [oncalendar]
+run_autotune() { # <disabled|performance|efficiency> [oncalendar]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
         SCRIPT_DIR="$AT"
         SYSTEMD_DIR="$AT/systemd"
         REAL_USER=rfop # the operator captured at setup time; baked into the service unit
-        AUTOTUNE="$1"
+        AUTOTUNE_MODE="$1"
+        case "$1" in efficiency) AUTOTUNE_TARGET=efficiency ;; *) AUTOTUNE_TARGET=perf ;; esac
         AUTOTUNE_ONCALENDAR="${2:-daily}"
         set +e
         PATH="$STUBS:$PATH" install_autotune 2>&1
     )
 }
-out="$(run_autotune true hourly)"
+out="$(run_autotune performance hourly)"
 assert_eq "autotune enable writes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "y"
 assert_eq "autotune enable writes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "y"
 assert_contains "autotune timer honours the OnCalendar override" "$(cat "$AT/systemd/rigforge-autotune.timer")" "OnCalendar=hourly"
 assert_contains "autotune service invokes the autotune verb" "$(cat "$AT/systemd/rigforge-autotune.service")" "rigforge.sh autotune"
 # #reown: the service bakes in the operator so the root timer hands files back to them (not to root).
 assert_contains "autotune service bakes in RIGFORGE_OPERATOR (#reown)" "$(cat "$AT/systemd/rigforge-autotune.service")" "RIGFORGE_OPERATOR=rfop"
-out="$(run_autotune false)"
+# #95: the chosen target is baked into the unit so scheduled runs match what the operator configured.
+assert_contains "performance mode bakes AUTOTUNE_TARGET=perf (#95)" "$(cat "$AT/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=perf"
+out="$(run_autotune efficiency)"
+assert_contains "efficiency mode bakes AUTOTUNE_TARGET=efficiency (#95)" "$(cat "$AT/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=efficiency"
+out="$(run_autotune disabled)"
 assert_eq "autotune disable removes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "n"
 assert_eq "autotune disable removes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "n"
+
+# #95: the tri-state `autotune` value normalizes to a mode (+ a perf|efficiency target). Legacy booleans
+# still map (true->performance, false->disabled); an unknown value hard-errors so a typo can't silently
+# disable scheduled tuning.
+echo "== unit: parse_config — autotune tri-state (#95) =="
+at_mode() { parse_and_print "$1" "$ROOT" AUTOTUNE_MODE; }
+at_tgt() { parse_and_print "$1" "$ROOT" AUTOTUNE_TARGET; }
+c="$(mkconf at_dis "{ $POOL, \"autotune\": \"disabled\" }")"
+assert_eq "autotune disabled -> mode disabled" "$(at_mode "$c")" "disabled"
+c="$(mkconf at_perf "{ $POOL, \"autotune\": \"performance\" }")"
+assert_eq "autotune performance -> mode performance" "$(at_mode "$c")" "performance"
+assert_eq "autotune performance -> target perf" "$(at_tgt "$c")" "perf"
+c="$(mkconf at_eff "{ $POOL, \"autotune\": \"efficiency\" }")"
+assert_eq "autotune efficiency -> mode efficiency" "$(at_mode "$c")" "efficiency"
+assert_eq "autotune efficiency -> target efficiency" "$(at_tgt "$c")" "efficiency"
+c="$(mkconf at_def "{ $POOL }")"
+assert_eq "autotune omitted -> default disabled" "$(at_mode "$c")" "disabled"
+c="$(mkconf at_true "{ $POOL, \"autotune\": true }")"
+assert_eq "legacy autotune true -> performance" "$(at_mode "$c")" "performance"
+c="$(mkconf at_false "{ $POOL, \"autotune\": false }")"
+assert_eq "legacy autotune false -> disabled" "$(at_mode "$c")" "disabled"
+c="$(mkconf at_bad "{ $POOL, \"autotune\": \"turbo\" }")"
+parse_rc "$c" "$ROOT" && at_rc=0 || at_rc=$?
+assert_eq "invalid autotune value hard-errors (#95)" "$([ "${at_rc:-0}" -ne 0 ] && echo errored || echo ok)" "errored"
+
+# #95: the autotune TARGET decides the winner. Two modes where raw-fastest != most-efficient:
+#   mode0 = 1000 H/s @ 100 W (10.0 H/s/W) ; mode1 = 1100 H/s @ 125 W (8.8 H/s/W).
+# perf must pick mode1 (raw fastest); efficiency must keep mode0 (best H/s/W). The stubbed API + power
+# read the active prefetch mode from the overrides file the sweep rewrites, so each mode reports its pair.
+echo "== black-box: autotune ranks by target (#95) =="
+ATD="$(mktemp -d "$SANDBOX/atd.XXXXXX")"
+mkdir -p "$ATD/worker" "$ATD/no-rapl"
+ovf="$ATD/worker/tune-overrides.json"
+autotune_decide() { # <target> -> final prefetch mode
+    printf '{"randomx":{"scratchpad_prefetch_mode":0}}\n' >"$ovf"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$ATD/worker"
+        AUTOTUNE_TARGET="$1"
+        AUTOTUNE_MODES="0 1"
+        AUTOTUNE_SAMPLES=1
+        AUTOTUNE_INTERVAL=0
+        AUTOTUNE_WARMUP=0
+        AUTOTUNE_MARGIN=0.001
+        API_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 1100 || echo 1000'
+        TUNE_POWER_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 125 || echo 100'
+        parse_config() { :; } # keep the test's WORKER_ROOT/target; skip real config parsing
+        apply() { :; }        # no real service restart
+        sudo() { "$@"; }      # _autotune_set_prefetch uses `sudo cp`
+        set +e
+        PATH="$STUBS:$PATH" autotune >/dev/null 2>&1
+    )
+    jq -r '.randomx.scratchpad_prefetch_mode' "$ovf"
+}
+assert_eq "autotune perf picks the raw-fastest mode (#95)" "$(autotune_decide perf)" "1"
+assert_eq "autotune efficiency keeps the most-efficient mode (#95)" "$(autotune_decide efficiency)" "0"
+
+# #95: efficiency with NO power source warns and falls back to perf — it still optimizes (raw-fastest),
+# rather than dividing by a missing watts reading.
+printf '{"randomx":{"scratchpad_prefetch_mode":0}}\n' >"$ovf"
+np_out="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$ATD/worker"
+        AUTOTUNE_TARGET=efficiency
+        AUTOTUNE_MODES="0 1"
+        AUTOTUNE_SAMPLES=1
+        AUTOTUNE_INTERVAL=0
+        AUTOTUNE_WARMUP=0
+        AUTOTUNE_MARGIN=0.001
+        RAPL_DIR="$ATD/no-rapl" # empty -> _rapl_sum returns nothing
+        unset TUNE_POWER_CMD
+        API_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 1100 || echo 1000'
+        parse_config() { :; }
+        apply() { :; }
+        sudo() { "$@"; }
+        set +e
+        PATH="$STUBS:$PATH" autotune 2>&1
+    )
+)"
+assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
+assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
 
 # #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
 # no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
