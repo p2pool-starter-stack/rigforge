@@ -152,7 +152,7 @@ All notable changes to RigForge are documented here. The format is based on
 - Pinned, checksum-verified `shellcheck` + `shfmt` formatting check in CI, plus a `make fmt` target (#6).
 - Documented the Pithead worker-API contract (port 8080, read-only, token = rig name) in the docs (#24).
 - Community-health files: SECURITY policy, CONTRIBUTING guide, issue/PR templates (#16).
-- A `docs/` set (getting-started, hardware, configuration, operations, how-it-works (`tuning.md`), Pithead
+- A `docs/` set (getting-started, hardware, configuration, operations, how-it-works, Pithead
   integration, FAQ) mirroring Pithead's structure; the README is slimmed to a quick-start that links
   out to it, and the release bundle now ships `docs/` (#25).
 - Branded README header: a flame logo (`images/rigforge-mark.svg`, shared with the project website)
@@ -161,6 +161,12 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- Repo readability polish: renamed `docs/tuning.md` → `docs/how-it-works.md` (matching the page title
+  and every inbound link), the Linux container e2e `tests/e2e/run.sh` → `tests/e2e/linux.sh` (parallel to
+  `tests/e2e/macos.sh`), and the `make test-stack` target → `make test-suite`. Added section banners + a
+  table of contents to `rigforge.sh`, a suite index to `tests/run.sh`, and a `tests/README.md` mapping the
+  test layers. Also fixed `make help`, which silently hid every target with a digit in its name
+  (`test-e2e`, `test-e2e-macos`, `e2e-real`) — it now lists all ten. No behaviour change.
 - CI now runs on Node-24 GitHub Actions: `actions/checkout` bumped to v6.0.3 (resolving the Node-20
   deprecation warning), with pinned `shellcheck` 0.11.0 and `diff-cover` 10.3.0. `util/proposed-grub.sh`
   now uses `#!/usr/bin/env bash` + `set -uo pipefail` and exact-match argument parsing, matching the rest

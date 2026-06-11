@@ -14,7 +14,7 @@ individual topics once you're up and running.
 | [Hardware Requirements](hardware.md) | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles RigForge applies. |
 | [Configuration](configuration.md) | Every `config.json` key and default, minimal vs. advanced setups, and how the XMRig config is generated. |
 | [Operations & Maintenance](operations.md) | The full command reference, service management, logs, upgrades, and troubleshooting. |
-| [How It Works](tuning.md) | What the script actually does — dependencies, compile-from-source, HugePages, MSR, NUMA, the governor, and the systemd service. |
+| [How It Works](how-it-works.md) | What the script actually does — dependencies, compile-from-source, HugePages, MSR, NUMA, the governor, and the systemd service. |
 | [Pithead Integration](pithead-integration.md) | The worker ↔ dashboard contract: discovery via `:3333`, the read-only HTTP API on `:8080`, and the token rules. |
 | [FAQ](faq.md) | Common questions, plus why RigForge vs. setting XMRig up by hand. |
 

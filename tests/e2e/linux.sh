@@ -9,7 +9,7 @@
 # compile (git/cmake/make), the package install (dpkg reports "already present"), and the host-only
 # bits (systemctl/modprobe/mount/sysctl). Hardware detection is stubbed so the CPU profile is
 # deterministic. We force linux/amd64 so the x86-only MSR path actually fires (emulated on Apple
-# Silicon). Run: tests/e2e/run.sh   (or: make test-e2e)
+# Silicon). Run: tests/e2e/linux.sh   (or: make test-e2e)
 #
 set -uo pipefail
 

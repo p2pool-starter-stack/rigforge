@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Runs INSIDE a disposable Linux container (invoked by tests/e2e/run.sh). Provisions a writable copy
+# Runs INSIDE a disposable Linux container (invoked by tests/e2e/linux.sh). Provisions a writable copy
 # of the repo, runs the real rigforge.sh twice against the container's real /etc, and asserts the
 # Linux deploy path + idempotency. Exits non-zero on any failed assertion.
 #

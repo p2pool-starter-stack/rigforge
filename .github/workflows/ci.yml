@@ -82,7 +82,7 @@ jobs:
       # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
       # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
       - name: Run end-to-end suite
-        run: bash tests/e2e/run.sh
+        run: bash tests/e2e/linux.sh
 
   coverage:
     name: Coverage (kcov + diff-cover)
