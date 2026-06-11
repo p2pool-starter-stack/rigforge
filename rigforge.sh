@@ -1737,24 +1737,28 @@ _seed_guess() {
 # `tune` run, and (Linux) the periodic auto-tune timer's recent decisions. Read-only and best-effort:
 # every probe is guarded so it never aborts, and it degrades gracefully when nothing's been tuned yet.
 _tune_history() { # <overrides_file> <log_file>
-    local ovr="$1" logf="$2" when target best n recent
-    log "Tuning status for this rig"
-    echo ""
-    if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then
-        echo "  Applied tuning ($ovr):"
-        jq -r '[(.randomx.scratchpad_prefetch_mode|select(.!=null)|"prefetch_mode=\(.)"),(.cpu.rx|select(.!=null)|"threads=\(.)"),(.cpu.yield|select(.!=null)|"yield=\(.)"),(.randomx."1gb-pages"|select(.!=null)|"1gb-pages=\(.)"),(.cpu.priority|select(.!=null)|"priority=\(.)"),(.cpu."huge-pages-jit"|select(.!=null)|"huge-pages-jit=\(.)"),(.randomx.cache_qos|select(.!=null)|"cache_qos=\(.)"),(.randomx.wrmsr|select(.!=null)|"wrmsr=\(.)")]|.[]|"    • "+.' "$ovr" 2>/dev/null || true
-        echo "    -> merged into the generated config; the miner is using these now."
-    else
-        echo "  Applied tuning: none — running XMRig's auto defaults."
-        echo "    Run 'sudo $0 tune' to measure the fastest knobs for this CPU."
-    fi
-    echo ""
+    local ovr="$1" logf="$2" when target best n recent sched next has_log=0
+    # Read the last full run's summary up front (the best hashrate goes with the winning knobs).
     if [ -s "$logf" ] && jq -e . "$logf" >/dev/null 2>&1; then
+        has_log=1
         if [ "$OS_TYPE" = Darwin ]; then when=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$logf" 2>/dev/null || echo "?"); else when=$(date -r "$logf" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?"); fi
         target=$(jq -r '.target // "perf"' "$logf" 2>/dev/null || echo perf)
         best=$(jq -r '.best.hashrate // empty' "$logf" 2>/dev/null || true)
         n=$(jq -r '.results | length' "$logf" 2>/dev/null || echo 0)
-        echo "  Last full tune ($when): target=$target, ${n:-0} candidate(s) tried${best:+, best $best H/s}"
+    fi
+    log "Tuning status for this rig"
+    echo ""
+    if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then
+        echo "  Winning tune options (applied — $ovr):"
+        jq -r '[(.randomx.scratchpad_prefetch_mode|select(.!=null)|"prefetch_mode=\(.)"),(.cpu.rx|select(.!=null)|"threads=\(.)"),(.cpu.yield|select(.!=null)|"yield=\(.)"),(.randomx."1gb-pages"|select(.!=null)|"1gb-pages=\(.)"),(.cpu.priority|select(.!=null)|"priority=\(.)"),(.cpu."huge-pages-jit"|select(.!=null)|"huge-pages-jit=\(.)"),(.randomx.cache_qos|select(.!=null)|"cache_qos=\(.)"),(.randomx.wrmsr|select(.!=null)|"wrmsr=\(.)")]|.[]|"    • "+.' "$ovr" 2>/dev/null || true
+        echo "    -> merged into the generated config; the miner is using these now."
+    else
+        echo "  Winning tune options: none yet — running XMRig's auto defaults."
+        echo "    Run 'sudo $0 tune' to measure the fastest knobs for this CPU."
+    fi
+    echo ""
+    if [ "$has_log" = 1 ]; then
+        echo "  Last full tune ($when): target=${target:-perf}, ${n:-0} candidate(s) tried${best:+, best $best H/s}"
         echo "    full search log: $logf"
     else
         echo "  Last full tune: none recorded yet."
@@ -1762,12 +1766,15 @@ _tune_history() { # <overrides_file> <log_file>
     echo ""
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
         echo "  Periodic auto-tune: enabled ($(systemctl is-active rigforge-autotune.timer 2>/dev/null || echo unknown))."
-        recent=$(journalctl -u rigforge-autotune.service --no-pager -o cat -n 500 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | grep -aE 'autotune: (prefetch_mode=|could not)' | sed -E 's/^\[(INFO|WARN)\] autotune: //' | tail -5 || true)
+        sched=$(systemctl cat rigforge-autotune.timer 2>/dev/null | sed -nE 's/^OnCalendar=//p' | head -1)
+        next=$(systemctl show rigforge-autotune.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+        [ -n "$sched" ] && echo "    schedule: $sched${next:+ — next run: $next}"
+        recent=$(journalctl -u rigforge-autotune.service --no-pager -o cat -n 500 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | grep -aE 'autotune: (prefetch_mode=|best |no mode|could not)' | sed -E 's/^\[(INFO|WARN)\] autotune: //' | tail -5 || true)
         if [ -n "$recent" ]; then
             echo "    recent decisions:"
             printf '%s\n' "$recent" | sed 's/^/      /'
         else
-            echo "    no runs logged yet — it fires on the timer's schedule."
+            echo "    no runs logged yet — it fires on the schedule above."
         fi
         echo "    full log: journalctl -u rigforge-autotune"
     else

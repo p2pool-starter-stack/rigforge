@@ -8,10 +8,11 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- **`tune --history`** — a readable summary of this rig's tuning: the knobs applied right now (from
-  `tune-overrides.json`), the last full `tune` run (target, best H/s, candidates tried), and — on Linux —
-  the periodic auto-tuner's recent keep/rollback decisions (from the systemd journal). Read-only and
-  best-effort; works without a built worker and degrades gracefully when nothing's been tuned yet.
+- **`tune --history`** — a readable summary of this rig's tuning: the **winning tune options** applied
+  right now (from `tune-overrides.json`), the last full `tune` run (target, best H/s, candidates tried),
+  and — on Linux — the periodic auto-tuner's **schedule, next scheduled run**, and recent keep/rollback
+  decisions (from the systemd journal). Read-only and best-effort; works without a built worker and
+  degrades gracefully when nothing's been tuned yet.
 - **Optional `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and `setup`
   installs a `rigforge` command — a symlink in `/usr/local/bin` pointing at the script — so you can run
   `sudo rigforge doctor` / `tune` / `apply` from any directory instead of `./rigforge.sh`. The script
