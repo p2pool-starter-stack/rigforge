@@ -1831,16 +1831,18 @@ _tune_history() { # <overrides_file> <log_file>
     fi
 }
 
+_tune_can_elevate() { [ -t 0 ]; } # interactive (TTY) only — so sudo can prompt; overridable in tests
+
 tune() {
     # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
     # when run without sudo — a plain `rigforge tune` then just works (sudo prompts) instead of failing
-    # partway with a cryptic error. Gated on an interactive TTY (`[ -t 0 ]`): sudo can only prompt then, and
+    # partway with a cryptic error. Interactive-only (_tune_can_elevate): sudo can only prompt at a TTY, and
     # it keeps non-interactive callers (the test suite, cron, pipes) on their existing path — no surprise
     # elevation and no re-exec loop if `sudo` is a passthrough stub. `--history` is read-only, so skip it.
     case " $* " in
     *" --history "*) ;;
     *)
-        if [ "$OS_TYPE" = Linux ] && [ "$(id -u)" -ne 0 ] && [ -t 0 ]; then
+        if [ "$OS_TYPE" = Linux ] && [ "$(id -u)" -ne 0 ] && _tune_can_elevate; then
             log "tune needs root — re-running with sudo..."
             exec sudo "$0" tune "$@"
         fi

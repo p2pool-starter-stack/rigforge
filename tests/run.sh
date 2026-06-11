@@ -2161,6 +2161,25 @@ assert_eq "an explicit target has no 'from config' note (#tunefix)" "$(printf '%
 assert_contains "--perf overrides config efficiency (#tunefix)" "$(tune_target efficiency --perf)" "Optimization target: performance"
 # the sudo auto-elevate is gated on an interactive TTY, so a non-interactive (</dev/null) tune never re-execs.
 assert_eq "non-interactive tune does not auto-elevate (#tunefix)" "$(tune_target performance | grep -c 're-running with sudo')" "0"
+# Cover the interactive auto-elevate path: force the TTY gate (CI has no TTY) and stub `sudo` so the exec
+# captures the re-exec instead of looping. Skipped if the suite itself runs as root (then tune never elevates).
+if [ "$(id -u)" -ne 0 ]; then
+    ELB="$(mktemp -d "$SANDBOX/elev.XXXXXX")"
+    printf '#!/usr/bin/env bash\necho "REEXEC: $*"\n' >"$ELB/sudo"
+    chmod +x "$ELB/sudo"
+    tune_elev() {
+        (
+            source "$SCRIPT"
+            OS_TYPE=Linux
+            _tune_can_elevate() { true; } # force the interactive gate
+            set +e
+            PATH="$ELB:$PATH" tune --live
+        )
+    }
+    elev_out="$(tune_elev 2>&1)"
+    assert_contains "tune auto-elevates with sudo when interactive (#tunefix)" "$elev_out" "REEXEC:"
+    assert_contains "tune re-execs the same tune command (#tunefix)" "$elev_out" "tune --live"
+fi
 
 # tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
 # above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
