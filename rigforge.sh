@@ -2449,7 +2449,10 @@ _dmi() {
 _mem_summary() {
     # One-line awk (kcov can't see coverage of a multi-line program inside a string): per Memory Device,
     # count populated DIMMs + distinct channels, and track the min configured (cf) and max rated (rt) speed.
-    "$DMIDECODE" -t memory 2>/dev/null | awk 'function flush(){if(sz~/[0-9]+ *[GMgm][Bb]/){pop++;if(ch!="")chans[ch]=1;if(cf+0>0&&(minc==0||cf+0<minc))minc=cf+0;if(rt+0>maxr)maxr=rt+0};sz="";ch="";cf="";rt=""} /^Memory Device/{flush();next} /^[ \t]*Size:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);sz=v} /Bank Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);ch=v} /^[ \t]*Speed:/{if(match($0,/[0-9]+/))rt=substr($0,RSTART,RLENGTH)} /Configured Memory Speed:/{if(match($0,/[0-9]+/))cf=substr($0,RSTART,RLENGTH)} END{flush();nc=0;for(c in chans)nc++;printf "%d %d %d %d",pop+0,nc+0,minc+0,maxr+0}'
+    # Trailing `|| true`: dmidecode needs root, so a non-root `doctor` makes the pipeline non-zero under
+    # `set -o pipefail`; without this the command substitution in doctor would trip errexit and abort the
+    # whole health check. Always exit 0 — empty/zeroed output (handled as "run as root") instead.
+    "$DMIDECODE" -t memory 2>/dev/null | awk 'function flush(){if(sz~/[0-9]+ *[GMgm][Bb]/){pop++;if(ch!="")chans[ch]=1;if(cf+0>0&&(minc==0||cf+0<minc))minc=cf+0;if(rt+0>maxr)maxr=rt+0};sz="";ch="";cf="";rt=""} /^Memory Device/{flush();next} /^[ \t]*Size:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);sz=v} /Bank Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);ch=v} /^[ \t]*Speed:/{if(match($0,/[0-9]+/))rt=substr($0,RSTART,RLENGTH)} /Configured Memory Speed:/{if(match($0,/[0-9]+/))cf=substr($0,RSTART,RLENGTH)} END{flush();nc=0;for(c in chans)nc++;printf "%d %d %d %d",pop+0,nc+0,minc+0,maxr+0}' || true
 }
 _cpu_eff_khz() {
     local f v sum=0 n=0
@@ -2517,7 +2520,7 @@ _msr_rdmsr_verify() { # <preset> -> sets _MSR_OK / _MSR_TOTAL / _MSR_UNREAD / _M
         [ -n "$reg" ] || continue
         _MSR_TOTAL=$((_MSR_TOTAL + 1))
         [ "$mask" = "-" ] && mask="ffffffffffffffff"
-        actual=$("$RDMSR_BIN" -p0 -0 "$reg" 2>/dev/null) || actual=""
+        actual=$("$RDMSR_BIN" -p0 -0 "$reg" 2>/dev/null || true) # guard INSIDE $(): a failing rdmsr mustn't trip the ERR trap
         case "$actual" in '' | *[!0-9A-Fa-f]*)
             _MSR_UNREAD=$((_MSR_UNREAD + 1))
             continue
@@ -2662,7 +2665,7 @@ EOF
     # Effective CPU clock under load — only meaningful while the miner is running (else the cores idle).
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         local maxk effk pct
-        maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null)
+        maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null || true) # guard INSIDE $(): missing cpufreq sysfs (a VM) mustn't trip the ERR trap
         effk=$(_cpu_eff_khz)
         if [ -n "$effk" ] && [ "${maxk:-0}" -gt 0 ] 2>/dev/null; then
             pct=$((effk * 100 / maxk))
@@ -2682,7 +2685,7 @@ EOF
     board=$(_dmi board_name)
     bios=$(_dmi bios_version)
     bdate=$(_dmi bios_date)
-    cpu=$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}') || cpu=""
+    cpu=$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || true) # guard INSIDE $()
     if [ -n "$bvendor$board$bios" ]; then
         _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the items below in BIOS/UEFI; RigForge can't change them from the OS."
     fi
@@ -2692,7 +2695,7 @@ EOF
         _ck_warn "RAM is running at ${spd} MT/s but the modules are rated for ${rated} MT/s — enable the memory profile (XMP / EXPO / DOCP) in BIOS for a sizable RandomX gain."
     fi
     # SMT / Hyper-Threading off on a capable CPU leaves logical cores unused for RandomX.
-    smt=$(cat "$SMT_CONTROL" 2>/dev/null) || smt=""
+    smt=$(cat "$SMT_CONTROL" 2>/dev/null || true) # guard INSIDE $(): missing SMT sysfs mustn't trip the ERR trap
     case "$smt" in
     off | forceoff) _ck_warn "SMT/Hyper-Threading is disabled — enable it in BIOS (SMT / Hyper-Threading) so RandomX can use every logical core." ;;
     esac
