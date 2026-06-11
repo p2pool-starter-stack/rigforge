@@ -1831,24 +1831,22 @@ _tune_history() { # <overrides_file> <log_file>
     fi
 }
 
-_tune_can_elevate() { [ -t 0 ]; } # interactive (TTY) only — so sudo can prompt; overridable in tests
+# Auto-elevate only at an interactive TTY, so sudo can actually prompt. RIGFORGE_FORCE_ELEVATE=1 forces it
+# (used by the coverage test to drive the path from a real child process).
+_tune_can_elevate() { [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] || [ -t 0 ]; }
 
 tune() {
     # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
     # when run without sudo — a plain `rigforge tune` then just works (sudo prompts) instead of failing
-    # partway with a cryptic error. Interactive-only (_tune_can_elevate): sudo can only prompt at a TTY, and
-    # it keeps non-interactive callers (the test suite, cron, pipes) on their existing path — no surprise
-    # elevation and no re-exec loop if `sudo` is a passthrough stub. `--history` is read-only, so skip it.
-    case " $* " in
-    *" --history "*) ;;
-    *)
-        if [ "$OS_TYPE" = Linux ] && [ "$(id -u)" -ne 0 ] && _tune_can_elevate; then
-            log "tune needs root — re-running with sudo..."
-            exec sudo "$0" tune "$@"
-        fi
-        ;;
-    esac
-    local clear=0 target_set=0
+    # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
+    # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
+    # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
+    local _hist=0 clear=0 target_set=0
+    case " $* " in *" --history "*) _hist=1 ;; esac
+    if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && [ "$(id -u)" -ne 0 ] && _tune_can_elevate; then
+        log "tune needs root — re-running with sudo..."
+        exec sudo "$0" tune "$@"
+    fi
     TUNE_MODE="${TUNE_MODE:-bench}"
     TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
     # #95: the optimization target defaults to the `autotune` config value (resolved by parse_config below);
