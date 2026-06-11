@@ -1858,10 +1858,23 @@ assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
+# tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
+# above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
+hout="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
+assert_rc "tune --history exits 0 (#hist)" "$?" "0"
+assert_contains "tune --history: shows applied prefetch_mode (#hist)" "$hout" "prefetch_mode=2"
+assert_contains "tune --history: shows applied threads (#hist)" "$hout" "threads=4"
+assert_contains "tune --history: shows the last full tune (#hist)" "$hout" "Last full tune"
+assert_contains "tune --history: shows the candidate count (#hist)" "$hout" "candidate(s) tried"
+
 # tune --clear removes the tuning state.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --clear </dev/null 2>&1)"
 assert_rc "tune --clear exits 0" "$?" "0"
 assert_eq "overrides removed by --clear" "$([ -f "$OVR" ] && echo y || echo n)" "n"
+# After --clear, --history reports the un-tuned (auto-defaults) state instead of crashing on missing files.
+hout="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
+assert_rc "tune --history after --clear exits 0 (#hist)" "$?" "0"
+assert_contains "tune --history: 'none' once cleared (#hist)" "$hout" "none — running XMRig's auto defaults"
 
 # #54: median noise-handling. With a single (inactive) candidate and a fake whose three readings are
 # base-10, base, base+10, the recorded hashrate must be the MEDIAN (base), not the max.

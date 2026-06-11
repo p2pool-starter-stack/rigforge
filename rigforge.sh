@@ -1733,6 +1733,48 @@ _seed_guess() {
 
 # --- Auto-tuning: 'tune' command + live confirm / scheduled autotune ---
 
+# `tune --history`: a readable summary of this rig's tuning — what knobs are applied now, the last full
+# `tune` run, and (Linux) the periodic auto-tune timer's recent decisions. Read-only and best-effort:
+# every probe is guarded so it never aborts, and it degrades gracefully when nothing's been tuned yet.
+_tune_history() { # <overrides_file> <log_file>
+    local ovr="$1" logf="$2" when target best n recent
+    log "Tuning status for this rig"
+    echo ""
+    if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then
+        echo "  Applied tuning ($ovr):"
+        jq -r '[(.randomx.scratchpad_prefetch_mode|select(.!=null)|"prefetch_mode=\(.)"),(.cpu.rx|select(.!=null)|"threads=\(.)"),(.cpu.yield|select(.!=null)|"yield=\(.)"),(.randomx."1gb-pages"|select(.!=null)|"1gb-pages=\(.)"),(.cpu.priority|select(.!=null)|"priority=\(.)"),(.cpu."huge-pages-jit"|select(.!=null)|"huge-pages-jit=\(.)"),(.randomx.cache_qos|select(.!=null)|"cache_qos=\(.)"),(.randomx.wrmsr|select(.!=null)|"wrmsr=\(.)")]|.[]|"    • "+.' "$ovr" 2>/dev/null || true
+        echo "    -> merged into the generated config; the miner is using these now."
+    else
+        echo "  Applied tuning: none — running XMRig's auto defaults."
+        echo "    Run 'sudo $0 tune' to measure the fastest knobs for this CPU."
+    fi
+    echo ""
+    if [ -s "$logf" ] && jq -e . "$logf" >/dev/null 2>&1; then
+        if [ "$OS_TYPE" = Darwin ]; then when=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$logf" 2>/dev/null || echo "?"); else when=$(date -r "$logf" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?"); fi
+        target=$(jq -r '.target // "perf"' "$logf" 2>/dev/null || echo perf)
+        best=$(jq -r '.best.hashrate // empty' "$logf" 2>/dev/null || true)
+        n=$(jq -r '.results | length' "$logf" 2>/dev/null || echo 0)
+        echo "  Last full tune ($when): target=$target, ${n:-0} candidate(s) tried${best:+, best $best H/s}"
+        echo "    full search log: $logf"
+    else
+        echo "  Last full tune: none recorded yet."
+    fi
+    echo ""
+    if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
+        echo "  Periodic auto-tune: enabled ($(systemctl is-active rigforge-autotune.timer 2>/dev/null || echo unknown))."
+        recent=$(journalctl -u rigforge-autotune.service --no-pager -o cat -n 500 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' | grep -aE 'autotune: (prefetch_mode=|could not)' | sed -E 's/^\[(INFO|WARN)\] autotune: //' | tail -5 || true)
+        if [ -n "$recent" ]; then
+            echo "    recent decisions:"
+            printf '%s\n' "$recent" | sed 's/^/      /'
+        else
+            echo "    no runs logged yet — it fires on the timer's schedule."
+        fi
+        echo "    full log: journalctl -u rigforge-autotune"
+    else
+        echo "  Periodic auto-tune: off. Set \"autotune\": true in config.json, then re-run 'sudo $0 setup' to enable it."
+    fi
+}
+
 tune() {
     local clear=0
     TUNE_MODE="${TUNE_MODE:-bench}"
@@ -1746,7 +1788,8 @@ tune() {
         --confirm) TUNE_CONFIRM=1 ;;
         --efficiency) TUNE_TARGET=efficiency ;; # #79: optimize hashrate-per-watt
         --perf) TUNE_TARGET=perf ;;
-        *) error "Unknown tune option: $1 (use --live, --bench, --confirm, --efficiency, --perf, or --clear)." ;;
+        --history) TUNE_HISTORY=1 ;; # show current tuning + last run + auto-tune decisions, then exit
+        *) error "Unknown tune option: $1 (use --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
         esac
         shift
     done
@@ -1756,6 +1799,11 @@ tune() {
     local logf="$WORKER_ROOT/rigforge-tune.json"
     local pre_overrides="" # #64: the overrides in place BEFORE this run, to A/B against and revert to
     [ -f "$TUNE_OVERRIDES" ] && pre_overrides=$(cat "$TUNE_OVERRIDES" 2>/dev/null)
+
+    if [ "${TUNE_HISTORY:-0}" = 1 ]; then
+        _tune_history "$TUNE_OVERRIDES" "$logf" # read-only; works without a built worker
+        return 0
+    fi
 
     if [ "$clear" = 1 ]; then
         sudo rm -f "$TUNE_OVERRIDES" "$logf"
@@ -2732,7 +2780,7 @@ Usage: $0 [command]
   tune       iteratively search the XMRig knobs (prefetch, yield, threads, 1gb-pages) and keep the
              fastest; '--live' tunes against the running miner, '--confirm' A/B-checks the winner live
              before keeping it, '--efficiency' optimizes hashrate-per-watt (default '--perf' = raw H/s),
-             'tune --clear' resets
+             '--history' shows the current tuning + recent runs, 'tune --clear' resets
   autotune   one live trial against the running miner (enable periodic runs with autotune:true in config)
   backup     save config.json + tuning to a timestamped archive in ./backups
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>

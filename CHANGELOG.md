@@ -8,6 +8,10 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`tune --history`** — a readable summary of this rig's tuning: the knobs applied right now (from
+  `tune-overrides.json`), the last full `tune` run (target, best H/s, candidates tried), and — on Linux —
+  the periodic auto-tuner's recent keep/rollback decisions (from the systemd journal). Read-only and
+  best-effort; works without a built worker and degrades gracefully when nothing's been tuned yet.
 - **Optional `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and `setup`
   installs a `rigforge` command — a symlink in `/usr/local/bin` pointing at the script — so you can run
   `sudo rigforge doctor` / `tune` / `apply` from any directory instead of `./rigforge.sh`. The script
@@ -168,6 +172,11 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- Simplified the tuning docs for first-time users: `docs/operations.md` now leads with the one-time
+  `tune` → `apply` path, a short "useful variants" table, and `tune --history`, with a pointer to
+  `docs/how-it-works.md` for the rest. The search internals, the full `TUNE_*` environment-variable
+  reference, and the power/efficiency and reservation-aware details moved to `how-it-works.md` (next to
+  the mechanics they belong with), removing the duplication that made the section hard to follow.
 - Repo readability polish: renamed `docs/tuning.md` → `docs/how-it-works.md` (matching the page title
   and every inbound link), the Linux container e2e `tests/e2e/run.sh` → `tests/e2e/linux.sh` (parallel to
   `tests/e2e/macos.sh`), and the `make test-stack` target → `make test-suite`. Added section banners + a
