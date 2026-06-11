@@ -57,8 +57,8 @@ ensure_config() {
     # setup needs a valid config.json. A release e2e benches OFFLINE, so any valid pool entry works;
     # default to an unroutable TEST-NET-3 (RFC 5737) host so the installed service never actually mines.
     if [ ! -f "$HERE/config.json" ]; then
-        printf '{ "pools": [{ "url": "203.0.113.1:3333" }], "DONATION": 1 }\n' >"$HERE/config.json"
-        ok "wrote a placeholder config.json (offline bench; the service won't mine)"
+        printf '{ "pools": [{ "url": "203.0.113.1:3333" }], "DONATION": 1, "add_to_path": true }\n' >"$HERE/config.json"
+        ok "wrote a placeholder config.json (offline bench; the service won't mine; add_to_path on to exercise the CLI)"
     else
         ok "using the existing config.json"
     fi
@@ -75,14 +75,17 @@ provision() {
     bin="$(find_worker_bin)"
     [ -n "$bin" ] && [ -x "$bin" ] && ok "XMRig binary was built ($bin)" || bad "no built XMRig binary found"
     systemctl cat xmrig >/dev/null 2>&1 && ok "systemd unit 'xmrig' installed" || bad "xmrig.service not installed"
-    # #cli: setup put a `rigforge` command on PATH; prove invoking it THROUGH the symlink resolves the repo.
-    if [ -L /usr/local/bin/rigforge ]; then
+    # #cli: opt-in. With "add_to_path": true, setup put a `rigforge` command on PATH; prove invoking it
+    # THROUGH the symlink resolves the repo. Skip when the operator's config.json hasn't opted in.
+    if [ "$(jq -r '.add_to_path // false' "$HERE/config.json" 2>/dev/null)" != "true" ]; then
+        ok "SKIP rigforge-on-PATH check — add_to_path not enabled in config.json"
+    elif [ -L /usr/local/bin/rigforge ]; then
         ok "the 'rigforge' command is on PATH (-> $(readlink /usr/local/bin/rigforge))"
         [ "$(rigforge version 2>&1)" = "$("$RIGFORGE" version 2>&1)" ] &&
             ok "'rigforge' (via PATH) matches ./rigforge.sh — symlink resolves the repo" ||
             bad "'rigforge' on PATH didn't resolve the repo (version mismatch vs ./rigforge.sh)"
     else
-        bad "setup didn't install the 'rigforge' command on PATH (/usr/local/bin/rigforge)"
+        bad "add_to_path is enabled but setup didn't install /usr/local/bin/rigforge"
     fi
 
     if [ "$(hugepages_total)" -gt 0 ]; then

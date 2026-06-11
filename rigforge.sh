@@ -342,6 +342,10 @@ parse_config() {
     # Opt-in periodic live auto-tuning (#46): when true, setup installs a systemd timer that runs
     # `autotune` on a schedule.
     AUTOTUNE=$(jq -r '.autotune // false' "$CONFIG_JSON")
+
+    # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
+    # no system-wide convenience change you didn't ask for.
+    ADD_TO_PATH=$(jq -r '.add_to_path // false' "$CONFIG_JSON")
 }
 
 # --- Setup: workspace & dependency install ---
@@ -861,9 +865,11 @@ configure_limits() {
 }
 
 # Put a `rigforge` command on PATH: a symlink in BIN_DIR pointing at this script, so the operator can
-# run `sudo rigforge <cmd>` from anywhere instead of `./rigforge.sh`. Best-effort and idempotent — it
-# never fails the deploy. `uninstall` removes it, but only while it's still our symlink.
+# run `sudo rigforge <cmd>` from anywhere instead of `./rigforge.sh`. OPT-IN via `add_to_path` in
+# config.json (off by default). Best-effort and idempotent — it never fails the deploy. `uninstall`
+# removes it regardless, but only while it's still our symlink.
 link_cli() {
+    [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
     local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge" ok=1
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
@@ -968,7 +974,7 @@ main() {
     CURRENT_STEP="configuring autotune"
     install_autotune
     CURRENT_STEP="linking the rigforge command"
-    link_cli # put `rigforge` on PATH so the operator can run it from anywhere
+    link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
     CURRENT_STEP="reconciling file ownership"
     _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
     CURRENT_STEP="finishing up"

@@ -1252,9 +1252,9 @@ assert_eq "build: output captured to logfile" "$([ -f "$W/home/worker/build.log"
 assert_contains "build: verified pinned commit" "$E2E_OUT" "Verified XMRig"
 assert_eq "deploy: pool url from hostname" "$(J "$BUILD/config.json" '.pools[0].url')" "poolbox.lan:3333"
 assert_eq "deploy: donate-level = 7" "$(J "$BUILD/config.json" '.["donate-level"]')" "7"
-# #cli: setup links the `rigforge` command onto PATH (BIN_DIR is sandboxed for the suite). RIGFORGE_HOME
-# is $W, so the symlink targets $W/rigforge.sh — same on Linux and macOS.
-assert_eq "cli: 'rigforge' linked onto PATH -> the script (#cli)" "$(readlink "$BIN_DIR/rigforge" 2>/dev/null)" "$W/rigforge.sh"
+# #cli: add_to_path defaults OFF — this config doesn't set it, so setup must NOT touch PATH. (BIN_DIR is
+# the suite's sandbox; the opt-in install is covered by the add_to_path=true test below + the Docker e2e.)
+assert_eq "cli: NOT on PATH by default — add_to_path off (#cli)" "$([ -L "$BIN_DIR/rigforge" ] && echo present || echo absent)" "absent"
 if [ "$HOST_OS" = Linux ]; then
     assert_eq "deploy: EPYC numa applied" "$(J "$BUILD/config.json" '.randomx.numa')" "true"
     svc="$(cat "$W/etc/systemd/xmrig.service")"
@@ -1295,6 +1295,16 @@ else
     echo "  • macOS host: Linux /etc idempotency (fstab/limits/grub) is covered by the Docker E2E"
     echo "    (make test-e2e) and by the Linux CI job — the Linux deploy path needs GNU sed."
 fi
+
+# #cli: the opt-in. With "add_to_path": true in config.json, setup installs the symlink (into a per-test
+# BIN_DIR so it doesn't collide with the default-off run above). RIGFORGE_HOME=$CW -> target $CW/rigforge.sh.
+echo "== black-box: setup installs the CLI only when add_to_path is enabled (#cli) =="
+CW="$(e2e_setup)"
+jq '.add_to_path = true' "$CW/config.json" >"$CW/config.json.tmp" && mv "$CW/config.json.tmp" "$CW/config.json"
+CBIN="$CW/usr-local-bin"
+mkdir -p "$CBIN"
+BIN_DIR="$CBIN" e2e_run "$CW" "$HOST_OS"
+assert_eq "cli: add_to_path=true links rigforge onto PATH (#cli)" "$(readlink "$CBIN/rigforge" 2>/dev/null)" "$CW/rigforge.sh"
 
 # ---------------------------------------------------------------------------
 # Release metadata (#3): VERSION must be valid SemVer so it stays in lock-step with tags/CHANGELOG.
@@ -1552,11 +1562,12 @@ assert_eq "_script_dir: absolute symlink -> the repo dir (#cli)" "$(sdir "$SD/bi
 assert_eq "_script_dir: a plain file -> its own dir (#cli)" "$(sdir "$SD/repo/rigforge.sh")" "$WANT"
 
 echo "== unit: link_cli installs + guards the rigforge command (#cli) =="
-lc() { # <script_dir> <bin_dir> -> runs link_cli with those, prints its output
+lc() { # <script_dir> <bin_dir> [add_to_path=true] -> runs link_cli with those, prints its output
     (
         source "$SCRIPT"
         SCRIPT_DIR="$1"
         BIN_DIR="$2"
+        ADD_TO_PATH="${3:-true}"
         set +eu
         PATH="$STUBS:$PATH" link_cli 2>&1
     )
@@ -1573,6 +1584,16 @@ mkdir -p "$LC/real"
 : >"$LC/real/rigforge"
 assert_contains "link_cli: refuses to clobber a non-symlink (#cli)" "$(lc "$LC/repo" "$LC/real")" "isn't a RigForge symlink"
 assert_eq "link_cli: the pre-existing file is preserved (#cli)" "$([ -L "$LC/real/rigforge" ] && echo symlink || echo file)" "file"
+# OFF by default: with add_to_path unset/false, link_cli is a silent no-op (no symlink created).
+mkdir -p "$LC/off"
+lc "$LC/repo" "$LC/off" false >/dev/null
+assert_eq "link_cli: no-op when add_to_path is off (#cli)" "$([ -L "$LC/off/rigforge" ] && echo present || echo absent)" "absent"
+# add_to_path is parsed from config.json, defaulting to false.
+APP="$(mktemp -d "$SANDBOX/addpath.XXXXXX")"
+printf '{ "pools":[{"url":"h:3333"}] }\n' >"$APP/off.json"
+printf '{ "pools":[{"url":"h:3333"}], "add_to_path": true }\n' >"$APP/on.json"
+assert_eq "add_to_path: defaults to false (#cli)" "$(parse_and_print "$APP/off.json" "$APP" ADD_TO_PATH)" "false"
+assert_eq "add_to_path: reads true when set (#cli)" "$(parse_and_print "$APP/on.json" "$APP" ADD_TO_PATH)" "true"
 
 # #66: doctor verifies the MSR mod ACTUALLY applied — XMRig's log line confirms the write, and (when
 # rdmsr/msr-tools is present AND doctor runs as root) a register read-back catches a write a

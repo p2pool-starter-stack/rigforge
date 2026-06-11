@@ -80,10 +80,10 @@ built, and it won't duplicate the kernel/limits edits. Later on, to apply a `con
 [`apply`](operations.md#applying-configuration-changes); to rebuild only when the pinned version
 changed, use [`upgrade`](operations.md#upgrading-xmrig).
 
-Setup also installs a **`rigforge` command on your PATH** (a symlink in `/usr/local/bin`), so from then
-on you can run it from any directory — `sudo rigforge doctor`, `sudo rigforge tune`, … — instead of
-`./rigforge.sh`. The two are equivalent; this guide writes `./rigforge.sh` because the command isn't on
-PATH until that first setup finishes. (`uninstall` removes the symlink.)
+**Optional — a `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and setup
+installs a `rigforge` symlink in `/usr/local/bin`, so you can run it from any directory — `sudo rigforge
+doctor`, `sudo rigforge tune`, … — instead of `./rigforge.sh`. It's **off by default**, so this guide
+uses `./rigforge.sh` throughout. (`uninstall` removes the symlink.)
 
 ---
 
@@ -110,12 +110,11 @@ sudo journalctl -u xmrig -f      # live logs — watch for accepted shares
 Confirm the optimizations applied:
 
 ```bash
-sudo rigforge doctor                            # the one-stop health check (HugePages, MSR, governor, …)
+sudo ./rigforge.sh doctor                       # the one-stop health check (HugePages, MSR, governor, …)
 grep Huge /proc/meminfo                         # HugePages_Total should be non-zero
 grep -i msr data/worker/xmrig.log               # MSR mod applied (no errors)
 ```
 
-(`rigforge` is the command setup put on your PATH — `sudo ./rigforge.sh doctor` from the repo works too.)
 `<WORKER_ROOT>` is `data/worker` inside the repo by default. If you see MSR errors, you may need to
 **disable Secure Boot** in your BIOS/UEFI — see [Operations › Troubleshooting](operations.md#troubleshooting).
 
