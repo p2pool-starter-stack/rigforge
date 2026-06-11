@@ -1872,10 +1872,45 @@ assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
+# tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
+# above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
+hout="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
+assert_rc "tune --history exits 0 (#hist)" "$?" "0"
+assert_contains "tune --history: shows applied prefetch_mode (#hist)" "$hout" "prefetch_mode=2"
+assert_contains "tune --history: shows applied threads (#hist)" "$hout" "threads=4"
+assert_contains "tune --history: shows the last full tune (#hist)" "$hout" "Last full tune"
+assert_contains "tune --history: shows the candidate count (#hist)" "$hout" "candidate(s) tried"
+
 # tune --clear removes the tuning state.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --clear </dev/null 2>&1)"
 assert_rc "tune --clear exits 0" "$?" "0"
 assert_eq "overrides removed by --clear" "$([ -f "$OVR" ] && echo y || echo n)" "n"
+# After --clear, --history reports the un-tuned (auto-defaults) state instead of crashing on missing files.
+hout="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
+assert_rc "tune --history after --clear exits 0 (#hist)" "$?" "0"
+assert_contains "tune --history: 'none' once cleared (#hist)" "$hout" "none yet — running XMRig's auto defaults"
+
+# tune --history on Linux: with an installed+active auto-tune timer (stubbed systemctl) and a journal of
+# decisions (stubbed journalctl), it surfaces the periodic-autotune section — the Linux-only branch.
+echo "== black-box: tune --history surfaces periodic auto-tune (Linux) (#hist) =="
+HL="$(mktemp -d "$SANDBOX/histlinux.XXXXXX")"
+cp "$ROOT/VERSION" "$HL/"
+mkdir -p "$HL/home/worker" "$HL/bin"
+cat >"$HL/config.json" <<EOF
+{ "HOME_DIR": "$HL/home", "pools": [{"url":"h:3333"}] }
+EOF
+printf '{ "randomx": { "scratchpad_prefetch_mode": 1 } }\n' >"$HL/home/worker/tune-overrides.json"
+printf '{ "best": { "hashrate": 10741 }, "target": "perf", "results": [1,2] }\n' >"$HL/home/worker/rigforge-tune.json"
+printf '#!/usr/bin/env bash\ncase "$*" in *"cat rigforge-autotune.timer"*) echo "OnCalendar=daily" ;; *"is-active"*) echo active ;; *NextElapseUSecRealtime*) echo "Mon 2099-01-01 00:00:00 UTC" ;; esac\nexit 0\n' >"$HL/bin/systemctl"
+printf '#!/usr/bin/env bash\nprintf "[INFO] autotune: prefetch_mode=2 not better (10758 vs 10741 H/s) — rolling back to 1.\\n"\n' >"$HL/bin/journalctl"
+chmod +x "$HL/bin/systemctl" "$HL/bin/journalctl"
+hout="$(cd "$HL" && PATH="$HL/bin:$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
+assert_rc "tune --history (Linux) exits 0 (#hist)" "$?" "0"
+assert_contains "tune --history: auto-tune shown as enabled (#hist)" "$hout" "Periodic auto-tune: enabled"
+assert_contains "tune --history: shows the schedule (#hist)" "$hout" "schedule: daily"
+assert_contains "tune --history: shows the next scheduled run (#hist)" "$hout" "next run: Mon 2099-01-01"
+assert_contains "tune --history: surfaces a recent decision (#hist)" "$hout" "rolling back to 1"
+assert_contains "tune --history: last-tune summary on Linux (#hist)" "$hout" "candidate(s) tried"
 
 # #54: median noise-handling. With a single (inactive) candidate and a fake whose three readings are
 # base-10, base, base+10, the recorded hashrate must be the MEDIAN (base), not the max.
@@ -2379,10 +2414,22 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
 rc=$?
 assert_rc "autotune exits 0" "$rc" "0"
 assert_contains "autotune reads a median baseline" "$out" "median of 1"
-assert_contains "autotune keeps the faster candidate" "$out" "keeping it"
-assert_eq "autotune updated prefetch to next" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_contains "autotune live-sweeps every prefetch mode (#46)" "$out" "live-sweeping prefetch modes"
+assert_contains "autotune measured a non-baseline mode (#46)" "$out" "prefetch_mode=0 measured"
+assert_contains "autotune adopts the fastest mode (#46)" "$out" "best is prefetch_mode=2"
+assert_eq "autotune updated prefetch to the winner" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "autotune PRESERVED tuned threads (#46 merge)" "$(J "$OVR" '.cpu.rx')" "4"
 assert_eq "autotune PRESERVED tuned yield (#46 merge)" "$(J "$OVR" '.cpu.yield')" "false"
+# Noise guard: when no mode beats the baseline (a flat fake), autotune keeps the current mode.
+cat >"$OVR" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "rx": 4 } }
+EOF
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
+    API_CMD='echo 1200' AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" autotune </dev/null 2>&1)"
+assert_rc "autotune (flat) exits 0 (#46)" "$?" "0"
+assert_contains "autotune keeps current mode when nothing wins (#46)" "$out" "no mode beat the baseline"
+assert_eq "autotune left prefetch at the current mode (#46)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
 # autotune is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" autotune </dev/null 2>&1)"
 assert_rc "autotune rejected on non-Linux" "$?" "1"
