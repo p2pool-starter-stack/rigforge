@@ -2400,10 +2400,22 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
 rc=$?
 assert_rc "autotune exits 0" "$rc" "0"
 assert_contains "autotune reads a median baseline" "$out" "median of 1"
-assert_contains "autotune keeps the faster candidate" "$out" "keeping it"
-assert_eq "autotune updated prefetch to next" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+assert_contains "autotune live-sweeps every prefetch mode (#46)" "$out" "live-sweeping prefetch modes"
+assert_contains "autotune measured a non-baseline mode (#46)" "$out" "prefetch_mode=0 measured"
+assert_contains "autotune adopts the fastest mode (#46)" "$out" "best is prefetch_mode=2"
+assert_eq "autotune updated prefetch to the winner" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "autotune PRESERVED tuned threads (#46 merge)" "$(J "$OVR" '.cpu.rx')" "4"
 assert_eq "autotune PRESERVED tuned yield (#46 merge)" "$(J "$OVR" '.cpu.yield')" "false"
+# Noise guard: when no mode beats the baseline (a flat fake), autotune keeps the current mode.
+cat >"$OVR" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "rx": 4 } }
+EOF
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
+    API_CMD='echo 1200' AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" autotune </dev/null 2>&1)"
+assert_rc "autotune (flat) exits 0 (#46)" "$?" "0"
+assert_contains "autotune keeps current mode when nothing wins (#46)" "$out" "no mode beat the baseline"
+assert_eq "autotune left prefetch at the current mode (#46)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
 # autotune is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" autotune </dev/null 2>&1)"
 assert_rc "autotune rejected on non-Linux" "$?" "1"

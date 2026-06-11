@@ -173,6 +173,15 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- **Live auto-tuning now converges in one run.** Instead of trying one prefetch mode per daily run
+  (~4 days to sweep all four), each `autotune` run **live-sweeps every prefetch mode** and adopts the
+  fastest (median measurement + a margin gate, else it keeps the current mode) — converging in a single
+  ~minutes-long pass. The timer still fires daily by default to re-verify/catch drift; `AUTOTUNE_ONCALENDAR`
+  changes the cadence and `AUTOTUNE_MODES` the modes swept. For a definitive all-knob sweep, run `tune`.
+- **`status` and `logs` no longer prompt for sudo.** They're read-only — `systemctl status` is
+  world-readable and the operator (in the `adm` group) can follow the service journal — so neither runs
+  `sudo` anymore. The privileged verbs (`start`/`stop`/`restart`/`enable`/`disable`) still elevate as
+  needed.
 - Simplified the tuning docs for first-time users: `docs/operations.md` now leads with the one-time
   `tune` → `apply` path, a short "useful variants" table, and `tune --history`, with a pointer to
   `docs/how-it-works.md` for the rest. The search internals, the full `TUNE_*` environment-variable
