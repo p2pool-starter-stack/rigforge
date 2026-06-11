@@ -69,7 +69,7 @@ sudo ./rigforge.sh
 3. **Build.** Clones and compiles XMRig from source, pinned to a known version/commit and patched to
    your `DONATION` level. Build output is captured to a logfile.
 4. **Hardware tuning.** Detects your CPU and writes a matching XMRig config (NUMA, ASM, thread layout,
-   MSR). See [How It Works](tuning.md).
+   MSR). See [How It Works](how-it-works.md).
 5. **Kernel tuning (Linux only).** Configures **HugePages** (1 GB and 2 MB), MSR access, `hugetlbfs`
    mounts, and memlock limits. The GRUB change requires a **reboot**.
 6. **Service.** Installs and enables the `xmrig` systemd service with a `cpupower` performance

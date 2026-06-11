@@ -44,7 +44,7 @@ the raw silicon:
 - **Thread count, ASM, NUMA** — XMRig auto-detects these from the CPU topology (see below).
 - **Performance governor** — `cpupower` pins the CPU to its performance frequency under load.
 
-The full mechanics are in [How It Works](tuning.md).
+The full mechanics are in [How It Works](how-it-works.md).
 
 ---
 
@@ -79,5 +79,5 @@ The resulting XMRig config (pools, donate level, API, CPU section) lives under y
 ## See also
 
 - [Getting Started](getting-started.md) — provision a worker in one command.
-- [How It Works](tuning.md) — the mechanics of every optimization above.
+- [How It Works](how-it-works.md) — the mechanics of every optimization above.
 - [Configuration](configuration.md) — the config keys and how the XMRig config is generated.

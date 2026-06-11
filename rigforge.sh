@@ -4,6 +4,13 @@
 # Automates the provisioning of a high-performance Monero mining worker.
 # Handles dependency installation, kernel tuning (HugePages/MSR), and service configuration.
 #
+# Sections, in order (search for "# --- "):
+#   Logging utilities · Global variables · Helpers (idempotent edits, build math, GRUB)
+#   Setup pipeline: prerequisites & config → workspace & deps → build → XMRig config → service/kernel
+#   Orchestration (main) · Lifecycle (upgrade / uninstall)
+#   Auto-tuning: memo & stats → power/thermal sensing → measurement → search → 'tune' command
+#   Backup / restore · Commands (service control, version, apply, bench) · Doctor · Usage & dispatch
+#
 
 set -Eeuo pipefail
 
@@ -92,7 +99,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 # Report which step failed on an unexpected error (skip when sourced by the test suite).
 [ "$_RIGFORGE_SOURCED" = "0" ] && trap on_err ERR
 
-# --- Helper Functions ---
+# --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
 # Append a single line to a file only if that exact line is not already present (idempotent).
 # Uses sudo so it works on root-owned system files; harmless when the file is user-writable.
@@ -161,6 +168,8 @@ grub_strip_managed() { # <current cmdline>
     done
     printf '%s' "$preserved"
 }
+
+# --- Setup: prerequisites & configuration ---
 
 check_prerequisites() {
     log "Verifying system prerequisites..."
@@ -318,6 +327,8 @@ parse_config() {
     AUTOTUNE=$(jq -r '.autotune // false' "$CONFIG_JSON")
 }
 
+# --- Setup: workspace & dependency install ---
+
 prepare_workspace() {
     log "Preparing workspace at $WORKER_ROOT..."
 
@@ -428,6 +439,8 @@ install_dependencies() {
     fi
 }
 
+# --- Setup: build XMRig from source ---
+
 compile_xmrig() {
     if [ "$XMRIG_REBUILD" != true ]; then
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
@@ -476,6 +489,8 @@ compile_xmrig() {
     # Record the built commit so a later run can detect "already built" and skip the recompile (#4).
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig/.rigforge-commit"
 }
+
+# --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
 
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
@@ -657,6 +672,8 @@ generate_xmrig_config() {
 EOF
     fi
 }
+
+# --- Setup: service, kernel tuning & deployment ---
 
 install_service() {
     if [ "$OS_TYPE" == "Linux" ]; then
@@ -850,7 +867,7 @@ finish_deployment() {
     fi
 }
 
-# --- Main Execution ---
+# --- Orchestration: main (setup) ---
 
 # Decide whether the pinned XMRig needs (re)building. Call after parse_config (needs WORKER_ROOT).
 decide_rebuild() {
@@ -909,6 +926,8 @@ main() {
     CURRENT_STEP="finishing up"
     finish_deployment
 }
+
+# --- Lifecycle: upgrade & uninstall ---
 
 # Upgrade flow: rebuild + restart ONLY if the pinned XMRig version/commit changed. Skips the
 # setup-only steps (dependency install, kernel tuning) — those don't change on a version bump.
@@ -1047,7 +1066,7 @@ uninstall() {
     fi
 }
 
-# --- Auto-tuning (#46, #54) ------------------------------------------------
+# --- Auto-tuning: memoization, stats & acceptance (#46, #54) ---
 #
 # `tune` finds the fastest XMRig knob settings for THIS CPU and records the winner in a separate
 # overrides file that generate_xmrig_config merges on top of the generated config — so your own
@@ -1156,6 +1175,8 @@ _accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
         'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
 }
 
+# --- Auto-tuning: power & thermal sensing (#81) ---
+
 # Best-effort temperature (°C) for the hashrate-per-watt view (#54). Defaults to the standard Linux
 # thermal zone; TUNE_TEMP_CMD overrides. Read right after the loaded window (the cores are still hot).
 _read_temp() {
@@ -1175,7 +1196,7 @@ _read_temp() {
 #   - built-in RAPL: the CPU-package energy-counter delta over the window (Linux, root, no config);
 #   - TUNE_POWER_CMD: an instantaneous-watts override (IPMI / smart plug / wall AC), polled + averaged.
 # hs_per_watt is therefore RELATIVE within one method/machine — RAPL is CPU-package only, a smart plug is
-# whole-wall AC — not an absolute or cross-rig figure. See docs/tuning.md.
+# whole-wall AC — not an absolute or cross-rig figure. See docs/how-it-works.md.
 
 # An instantaneous watts reading from the operator's override (empty if none).
 _read_watts_now() {
@@ -1216,6 +1237,8 @@ _mean() {
 
 # Wall-clock seconds with sub-second precision (GNU date) for timing the RAPL energy window (Linux path).
 _now_s() { date +%s.%N 2>/dev/null; }
+
+# --- Auto-tuning: config build & H/s measurement ---
 
 # A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
@@ -1527,6 +1550,8 @@ _thread_candidates() { # <center>
 }
 
 # Coordinate hill-climb from the current S_* state: sweep each active knob, adopt the best value that
+# --- Auto-tuning: search strategies & seeding ---
+
 # beats the running best by TUNE_MIN_DELTA, and repeat rounds until a pass makes no gain (plateau).
 # Echoes the best hashrate reached; leaves S_* at the winning combination.
 _hillclimb() {
@@ -1645,6 +1670,8 @@ _seed_guess() {
     S_cq=$(_seed_cq)
     S_wr=$(_seed_wr)
 }
+
+# --- Auto-tuning: 'tune' command + live confirm / scheduled autotune ---
 
 tune() {
     local clear=0
@@ -1994,7 +2021,7 @@ _sample_api_median() { # <n> <interval>
     _median "${out[@]}"
 }
 
-# --- Backup / restore ------------------------------------------------------
+# --- Backup / restore ---
 #
 # A worker's expensive, hard-to-recreate state is just its config and its tuning — the XMRig build and
 # the system tuning are regenerated by `setup`. `backup` snapshots config.json + the tuning files into a
@@ -2103,7 +2130,7 @@ restore() {
     WORKER_ROOT="$wr" _reown_worker # restored config.json + tuning were written as root
 }
 
-# --- Command surface (#11) -------------------------------------------------
+# --- Commands: macOS & systemd service control (#11) ---
 
 # Service-control verbs. On Linux they wrap the systemd unit; on macOS (no systemd) start/stop/restart/
 # status/logs manage XMRig directly, so the same commands work on both. `enable`/`disable` install/remove
@@ -2289,6 +2316,8 @@ svc_disable() {
     }
     sudo systemctl disable "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
 }
+# --- Commands: version, apply & bench ---
+
 cmd_version() {
     local v="unknown"
     if [ -f "$SCRIPT_DIR/VERSION" ]; then v="$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")"; fi
@@ -2443,6 +2472,8 @@ _msr_rdmsr_verify() { # <preset> -> sets _MSR_OK / _MSR_TOTAL / _MSR_UNREAD / _M
 $regs
 EOF
 }
+
+# --- Doctor: one-stop health check ---
 
 doctor() {
     cmd_version
@@ -2623,6 +2654,8 @@ EOF
         warn "doctor: $issues issue(s) found — see the hints above."
     fi
 }
+
+# --- Usage & command dispatch ---
 
 usage() {
     cat <<USAGE

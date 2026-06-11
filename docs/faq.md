@@ -2,7 +2,7 @@
 
 Common questions about what RigForge is, what it does for you, and how it compares to setting XMRig up
 by hand. New here? Start with [Getting Started](getting-started.md); the deeper "how" lives in
-[How It Works](tuning.md).
+[How It Works](how-it-works.md).
 
 ---
 
@@ -82,7 +82,7 @@ regenerates the config; run `./rigforge.sh restart` to pick it up — see [Opera
 
 On Linux, persistent **HugePages** are configured via GRUB, which only takes effect after a reboot —
 that's the single biggest RandomX performance lever. macOS doesn't expose HugePages, so it needs no
-reboot. See [How It Works › Kernel tuning](tuning.md#kernel--system-tuning-linux-only).
+reboot. See [How It Works › Kernel tuning](how-it-works.md#kernel--system-tuning-linux-only).
 
 ---
 
@@ -135,5 +135,5 @@ details — what differs, how to run it, and which commands are Linux-only — a
 ## See also
 
 - [Getting Started](getting-started.md) — fresh machine to a running worker.
-- [How It Works](tuning.md) — the mechanics of every optimization.
+- [How It Works](how-it-works.md) — the mechanics of every optimization.
 - [Pithead Integration](pithead-integration.md) — the worker ↔ dashboard contract.

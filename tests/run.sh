@@ -10,6 +10,15 @@
 # all faked in a stub directory placed first on PATH. The fakes read STUB_* env vars, so one test run
 # can exercise the generic-Linux (incl. EPYC / Ryzen X3D inputs) and macOS code paths back to back.
 #
+# Suites below run top to bottom (search for 'echo "== '); grouped:
+#   parse_config & first-run config · field sanitization · append_once / remove_line
+#   config-gen matrix (generic Linux · EPYC · Ryzen X3D · macOS · multi-pool)
+#   util/proposed-grub.sh math · GRUB cmdline merge/strip · compile pin · build jobs & workspace
+#   command surface (upgrade / help / apply / bench) · macOS process control & login agent
+#   full deployment run + idempotency · doctor (health · capping · BIOS · MSR · service)
+#   uninstall revert · tune (hill-climb · grid · noise/variance gates · power/efficiency · live/confirm)
+#   reservation-aware threads · backup/restore · VERSION & config templates
+#
 # We source the script-under-test from a dynamic path, and set many globals that the sourced rigforge
 # functions consume (shellcheck can't see across the source boundary). Disable the two warnings that
 # are inherent to that black-box pattern, file-wide (this directive must precede the first command).
@@ -1178,7 +1187,7 @@ assert_contains "disable unloaded the agent" "$(cat "$LCL")" "[launchctl] unload
 # The run uses the HOST's OS path: the Linux deploy path uses GNU `sed -i` (no suffix), which BSD/macOS
 # sed rejects, so simulating Linux natively on a Mac is impossible. On Linux we exercise the full
 # kernel/limits/service path here; on macOS we exercise the macOS deploy path natively, and the Linux
-# /etc idempotency is validated from any host by the Docker E2E (tests/e2e/run.sh) and by Linux CI.
+# /etc idempotency is validated from any host by the Docker E2E (tests/e2e/linux.sh) and by Linux CI.
 HOST_OS="$(uname -s)"
 
 e2e_setup() { # echoes the work dir

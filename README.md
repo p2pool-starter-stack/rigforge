@@ -71,7 +71,7 @@ HugePages tuning — the `xmrig` service then starts automatically.
 | **[Hardware Requirements](docs/hardware.md)** | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles. |
 | **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
-| **[How It Works](docs/tuning.md)** | What the script actually does — compile, HugePages, MSR, NUMA, governor, service. |
+| **[How It Works](docs/how-it-works.md)** | What the script actually does — compile, HugePages, MSR, NUMA, governor, service. |
 | **[Pithead Integration](docs/pithead-integration.md)** | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080`, and the token rules. |
 | **[FAQ](docs/faq.md)** | Common questions, plus why RigForge vs. doing it by hand. |
 

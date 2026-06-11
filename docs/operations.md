@@ -50,7 +50,7 @@ the MSR mod blocked by Secure Boot. See [Troubleshooting](#troubleshooting).
 
 ### Auto-tuning
 
-Most of the hashrate-critical settings are already chosen for you (see [How It Works](tuning.md)), but a
+Most of the hashrate-critical settings are already chosen for you (see [How It Works](how-it-works.md)), but a
 few knobs are genuinely CPU-specific. `tune` measures rather than guesses:
 
 ```bash
