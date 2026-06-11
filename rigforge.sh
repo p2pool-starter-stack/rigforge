@@ -63,7 +63,10 @@ _script_dir() {
 # (keeping per-test state isolated) instead of a copy of it, which lets coverage credit the real
 # script for black-box runs too (#68).
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
-REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+# The operator to hand root-written files back to. Under interactive `sudo` that's SUDO_USER. The
+# periodic autotune runs from systemd as root with NO SUDO_USER — so its unit bakes in RIGFORGE_OPERATOR
+# (the operator captured at setup time), keeping the nightly run from re-owning files to root.
+REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
@@ -749,26 +752,14 @@ install_autotune() {
         return 0
     fi
     log "Enabling periodic autotune (${AUTOTUNE_ONCALENDAR:-daily})..."
-    sudo tee "$svc" >/dev/null <<EOF
-[Unit]
-Description=RigForge live autotune trial
-After=$SERVICE_NAME.service
-
-[Service]
-Type=oneshot
-ExecStart=$SCRIPT_DIR/rigforge.sh autotune
-EOF
-    sudo tee "$tmr" >/dev/null <<EOF
-[Unit]
-Description=Periodic RigForge autotune
-
-[Timer]
-OnCalendar=${AUTOTUNE_ONCALENDAR:-daily}
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
+    # Render the unit templates from systemd/ (kept alongside xmrig.service.template, not inline). The
+    # service bakes in RIGFORGE_OPERATOR=$REAL_USER so the root timer hands files back to the operator.
+    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
+        envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR' \
+        <"$SCRIPT_DIR/systemd/rigforge-autotune.service.template" | sudo tee "$svc" >/dev/null
+    AUTOTUNE_ONCALENDAR="${AUTOTUNE_ONCALENDAR:-daily}" \
+        envsubst '$AUTOTUNE_ONCALENDAR' \
+        <"$SCRIPT_DIR/systemd/rigforge-autotune.timer.template" | sudo tee "$tmr" >/dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable --now rigforge-autotune.timer 2>/dev/null || true
 }
