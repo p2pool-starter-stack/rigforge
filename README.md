@@ -81,16 +81,23 @@ Browse the full index at **[docs/](docs/README.md)**.
 
 ## 🛠️ Common commands
 
+The everyday tasks — each is one command (task-by-task cheat sheet:
+[Operations › Common tasks](docs/operations.md#common-tasks)):
+
 ```bash
-sudo ./rigforge.sh              # provision (or re-provision) the worker — idempotent
-sudo ./rigforge.sh apply        # apply config.json edits: regenerate + restart (no rebuild)
-sudo ./rigforge.sh upgrade      # rebuild + restart only if the pinned XMRig changed
+# Change a setting — edit config.json first, then:
+sudo ./rigforge.sh apply        # regenerate config + restart (no rebuild)
+
+# Redeploy after pulling updates:
+git pull && sudo ./rigforge.sh upgrade   # rebuild + restart if the XMRig pin moved
+
+sudo ./rigforge.sh tune --now   # run a live tune now — keep the best prefetch mode
 sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service
-sudo ./rigforge.sh status       # service status      (also: logs / start / stop / restart)
-./rigforge.sh version           # print the version   (also: help)
+sudo ./rigforge.sh logs         # follow live logs   (also: status / start / stop / restart)
+sudo ./rigforge.sh              # provision (or re-provision) the worker — idempotent
 ```
 
-See [Operations & Maintenance](docs/operations.md) for the full reference.
+See [Operations › Commands](docs/operations.md#commands) for the full reference.
 
 ---
 

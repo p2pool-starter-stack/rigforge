@@ -24,6 +24,9 @@ For how RigForge is versioned and released, see [`RELEASING.md`](../RELEASING.md
 ## Quick links
 
 - **Just want to start mining?** → [Getting Started](getting-started.md)
+- **What do I run day to day?** → [Operations › Common tasks](operations.md#common-tasks)
+- **Redeploy after a `git pull`?** → [Operations › Upgrading](operations.md#upgrading-xmrig-redeploy-after-a-git-pull)
+- **Run a live tune now?** → [Operations › Live auto-tuning](operations.md#live-auto-tuning-opt-in)
 - **Will my CPU do well?** → [Hardware Requirements](hardware.md)
 - **Change a setting?** → [Configuration](configuration.md)
 - **Connecting to a Pithead stack?** → [Pithead Integration](pithead-integration.md)

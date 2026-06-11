@@ -98,7 +98,7 @@ and reboot. See [Operations › Troubleshooting](operations.md#troubleshooting).
 Yes — `setup` is idempotent. It skips the recompile when the pinned XMRig is already built, never
 duplicates system-file edits (`fstab`, `limits.conf`, `/etc/modules`), merges (not overwrites) GRUB
 parameters, and archives a prior install rather than clobbering it. To rebuild only when the pinned
-version changes, use [`upgrade`](operations.md#upgrading-xmrig).
+version changes, use [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull).
 
 ---
 

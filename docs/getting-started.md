@@ -78,7 +78,7 @@ sudo ./rigforge.sh
 Re-running `setup` is **idempotent**: it skips the (slow) recompile when the pinned XMRig is already
 built, and it won't duplicate the kernel/limits edits. Later on, to apply a `config.json` edit use
 [`apply`](operations.md#applying-configuration-changes); to rebuild only when the pinned version
-changed, use [`upgrade`](operations.md#upgrading-xmrig).
+changed, use [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull).
 
 **Optional — a `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and setup
 installs a `rigforge` symlink in `/usr/local/bin`, so you can run it from any directory — `sudo rigforge
