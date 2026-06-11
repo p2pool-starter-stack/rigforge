@@ -1831,9 +1831,13 @@ _tune_history() { # <overrides_file> <log_file>
     fi
 }
 
-# Auto-elevate only at an interactive TTY, so sudo can actually prompt. RIGFORGE_FORCE_ELEVATE=1 forces it
-# (used by the coverage test to drive the path from a real child process).
-_tune_can_elevate() { [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] || [ -t 0 ]; }
+# Whether `tune` should re-exec itself under sudo: non-root + interactive (TTY) only, so sudo can actually
+# prompt and we never surprise non-interactive callers (tests/cron/pipes). RIGFORGE_FORCE_ELEVATE=1 forces
+# it regardless (the coverage test drives this path from a real child process).
+_tune_should_elevate() {
+    [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] && return 0
+    [ "$(id -u)" -ne 0 ] && [ -t 0 ]
+}
 
 tune() {
     # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
@@ -1843,7 +1847,7 @@ tune() {
     # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
     local _hist=0 clear=0 target_set=0
     case " $* " in *" --history "*) _hist=1 ;; esac
-    if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && [ "$(id -u)" -ne 0 ] && _tune_can_elevate; then
+    if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
         log "tune needs root — re-running with sudo..."
         exec sudo "$0" tune "$@"
     fi

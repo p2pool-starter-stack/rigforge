@@ -2162,17 +2162,15 @@ assert_contains "--perf overrides config efficiency (#tunefix)" "$(tune_target e
 # the sudo auto-elevate is gated on an interactive TTY, so a non-interactive (</dev/null) tune never re-execs.
 assert_eq "non-interactive tune does not auto-elevate (#tunefix)" "$(tune_target performance | grep -c 're-running with sudo')" "0"
 # Cover the interactive auto-elevate path. Run it as a real child process (so coverage sees the exec) with
-# RIGFORGE_FORCE_ELEVATE=1 forcing the TTY gate, and a PATH `sudo` stub so exec captures the re-exec instead
-# of looping. Skipped if the suite itself runs as root (then tune never needs to elevate).
-if [ "$(id -u)" -ne 0 ]; then
-    ELB="$(mktemp -d "$SANDBOX/elev.XXXXXX")"
-    printf '#!/usr/bin/env bash\necho "REEXEC: $*"\n' >"$ELB/sudo"
-    chmod +x "$ELB/sudo"
-    elev_out="$(cd "$TT" && PATH="$ELB:$STUBS:$PATH" RIGFORGE_FORCE_ELEVATE=1 STUB_UNAME_S=Linux \
-        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
-    assert_contains "tune auto-elevates with sudo when interactive (#tunefix)" "$elev_out" "REEXEC:"
-    assert_contains "tune re-execs the same tune command (#tunefix)" "$elev_out" "tune --live"
-fi
+# RIGFORGE_FORCE_ELEVATE=1 forcing the gate regardless of the runner's uid, and a PATH `sudo` stub so exec
+# captures the re-exec instead of looping.
+ELB="$(mktemp -d "$SANDBOX/elev.XXXXXX")"
+printf '#!/usr/bin/env bash\necho "REEXEC: $*"\n' >"$ELB/sudo"
+chmod +x "$ELB/sudo"
+elev_out="$(cd "$TT" && PATH="$ELB:$STUBS:$PATH" RIGFORGE_FORCE_ELEVATE=1 STUB_UNAME_S=Linux \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
+assert_contains "tune auto-elevates with sudo when interactive (#tunefix)" "$elev_out" "REEXEC:"
+assert_contains "tune re-execs the same tune command (#tunefix)" "$elev_out" "tune --live"
 
 # tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
 # above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
