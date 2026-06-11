@@ -87,7 +87,7 @@ so you specify only what you care about:
 |---|---|
 | `url` | _(required)_ — `host:port` (e.g. `your-stack:3333`; Pithead's proxy listens on `3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
 | `user` | the machine hostname — this is the rig's **label** on the dashboard; set it to name the rig |
-| `pass` | `"x"` |
+| `pass` | `"x"` — the stratum password. The default works for an **open** stack; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
 | `keepalive` | `true` |
 | `tls` | `false` |
 | `enabled` | `true` |

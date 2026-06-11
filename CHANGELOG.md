@@ -8,6 +8,13 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Docs: stratum authentication against a Pithead stack.** Pithead can now require a stratum
+  password (`p2pool.stratum_password`); when it's on, a rig must send the matching pool `pass` or the
+  proxy rejects it (`Permission denied`). [Pithead Integration](docs/pithead-integration.md#stratum-authentication-optional)
+  and the [`pass` config reference](docs/configuration.md#pools-full-control) now explain how to set
+  it — no code change, the existing `pools[].pass` field carries the secret. Added tests asserting a
+  Pithead-style password (hex and `._:@-` literals) flows through verbatim and an invalid pass (with a
+  space) is rejected.
 - **`tune --history`** — a readable summary of this rig's tuning: the **winning tune options** applied
   right now (from `tune-overrides.json`), the last full `tune` run (target, best H/s, candidates tried),
   and — on Linux — the periodic auto-tuner's **schedule, next scheduled run**, and recent keep/rollback
