@@ -1693,6 +1693,7 @@ _gridsearch() {
 # from what the generated config actually uses (both default false). Shared by the seeds.
 _seed_hj() { jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE"; }
 _seed_cq() { jq -r '.randomx.cache_qos // false' "$TUNE_BASE"; }
+_seed_g() { jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE"; } # base 1gb-pages value (default true)
 # wrmsr seed: the base config's value as a single token (true/false/number). An array (advanced custom
 # MSRs) isn't a sweepable scalar, so seed from the safe default 'true' and let the operator set TUNE_WRMSR.
 _seed_wr() { jq -r '(.randomx.wrmsr // true) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
@@ -1701,7 +1702,7 @@ _seed_wr() { jq -r '(.randomx.wrmsr // true) | if (type=="boolean" or type=="num
 _seed_auto() {
     S_p=$(jq -r '.randomx.scratchpad_prefetch_mode // 1' "$TUNE_BASE")
     S_y=$(jq -r '.cpu.yield // false' "$TUNE_BASE")
-    S_g=$(jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE")
+    S_g=$(_seed_g)
     S_pr=$(jq -r '.cpu.priority // 2' "$TUNE_BASE")
     S_t="-1"
     S_hj=$(_seed_hj)
@@ -1714,7 +1715,7 @@ _seed_guess() {
     S_p="${TUNE_GUESS_PREFETCH:-2}"
     S_y=false
     S_pr=2
-    S_g=$(jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE")
+    S_g=$(_seed_g)
     S_t="${TUNE_GUESS_THREADS:-${THREAD_CENTER:--1}}"
     [ -n "$S_t" ] || S_t="-1"
     S_hj=$(_seed_hj)
@@ -1847,8 +1848,8 @@ tune() {
     # Off-by-default knobs (single value => not searched). huge-pages-jit can help some Ryzen but XMRig
     # warns it makes hashrate unstable; cache_qos is an Intel L3-CAT lever. Sweep with e.g.
     # TUNE_HPJIT="false true" (it then gets pinned only if it actually wins).
-    TUNE_HPJIT="${TUNE_HPJIT:-$(jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE")}"
-    TUNE_CACHEQOS="${TUNE_CACHEQOS:-$(jq -r '.randomx.cache_qos // false' "$TUNE_BASE")}"
+    TUNE_HPJIT="${TUNE_HPJIT:-$(_seed_hj)}"
+    TUNE_CACHEQOS="${TUNE_CACHEQOS:-$(_seed_cq)}"
     # randomx.wrmsr (#66): off by default (single value = base config's). XMRig auto-picks a per-family MSR
     # preset for `true`; sweep alternatives with e.g. TUNE_WRMSR="true false" or a preset number
     # (TUNE_WRMSR="true 1"). Applied at miner start (no reboot), so it's a fair per-bench candidate.
@@ -1884,7 +1885,7 @@ tune() {
     if [ "${nr:-0}" -gt 0 ] 2>/dev/null; then
         TUNE_ONEGB="${TUNE_ONEGB:-true false}"
     else
-        TUNE_ONEGB="$(jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE")"
+        TUNE_ONEGB="$(_seed_g)"
         log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
     fi
 
@@ -2800,7 +2801,7 @@ Usage: $0 [command]
   setup      (default) provision the worker: dependencies, build, kernel tuning, service
   upgrade    rebuild + restart only if the pinned XMRig version/commit changed
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild)
-  uninstall  remove the service and revert all system changes (add --yes to skip the prompt)
+  uninstall  remove the service and revert all system changes (add --yes/-y to skip the prompt)
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   bench      run a one-off 'xmrig --bench' and report the hashrate
   tune       iteratively search the XMRig knobs (prefetch, yield, threads, 1gb-pages) and keep the
