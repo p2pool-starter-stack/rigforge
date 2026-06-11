@@ -238,6 +238,10 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`setup` no longer prints a garbled CPU model.** Run as root, modern `lscpu` also emits a DMI-derived
+  `BIOS Model name:` line (e.g. `…  Unknown CPU @ 4.2GHz`), and the unanchored `grep "Model name"`
+  concatenated both — so every `setup` logged `Detected CPU: <model> <model> Unknown CPU @ 4.2GHz`.
+  The model parse (and `doctor`'s) now anchor to `^Model name:`, showing just the clean model.
 - **The nightly auto-tune no longer re-owns your files to root.** The `autotune` systemd timer runs as
   root with no `SUDO_USER`, so its post-run re-own was handing `data/worker` + `config.json` back to
   `root:root` each night — undoing the operator-ownership fix and forcing `sudo` to edit `config.json`.

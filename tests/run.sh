@@ -96,6 +96,8 @@ EOF
 echo "Model name:            ${STUB_CPU_MODEL:-Generic CPU}"
 echo "L3 cache:              ${STUB_L3:-8 MiB}"
 echo "Socket(s):             ${STUB_SOCKETS:-1}"
+# Modern lscpu (as root) also prints a DMI-derived BIOS line; the model parse must NOT pick this up.
+echo "BIOS Model name:       ${STUB_CPU_MODEL:-Generic CPU}            Unknown CPU @ 4.2GHz"
 EOF
     cat >"$bin/sysctl" <<'EOF'
 #!/usr/bin/env bash
@@ -1282,6 +1284,10 @@ assert_eq "deploy: donate-level = 7" "$(J "$BUILD/config.json" '.["donate-level"
 assert_eq "cli: NOT on PATH by default — add_to_path off (#cli)" "$([ -L "$BIN_DIR/rigforge" ] && echo present || echo absent)" "absent"
 if [ "$HOST_OS" = Linux ]; then
     assert_eq "deploy: EPYC numa applied" "$(J "$BUILD/config.json" '.randomx.numa')" "true"
+    # #cpu: the lscpu stub emits a "BIOS Model name:" line (as root lscpu does). The detected-CPU line
+    # must show the clean model, NOT concatenate the BIOS line's "Unknown CPU @ 4.2GHz" garbage.
+    assert_contains "deploy: detected CPU is the clean model (#cpu)" "$E2E_OUT" "Detected CPU: AMD EPYC 7763 64-Core Processor —"
+    assert_absent "deploy: detected CPU drops the BIOS-line garbage (#cpu)" "$E2E_OUT" "Unknown CPU @"
     svc="$(cat "$W/etc/systemd/xmrig.service")"
     assert_contains "service: rendered with build dir" "$svc" "$BUILD"
     # #13: hardening directives present, and ReadWritePaths got WORKER_ROOT substituted (not literal).
