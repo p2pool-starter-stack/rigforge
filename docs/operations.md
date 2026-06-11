@@ -14,13 +14,13 @@ run `sudo rigforge [command]` from any directory; `uninstall` removes it.)_
 | Command | What it does |
 |---|---|
 | `setup` _(default)_ | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent — safe to re-run; skips the recompile when the pinned XMRig is already built. |
-| `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. |
-| `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. |
+| `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. If periodic autotune is enabled, it also **re-tunes the new build** (the fastest knobs can shift between versions). |
+| `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. On Linux it also reports the configured periodic-autotune target (efficiency / performance / disabled). |
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). **Critical** findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the **MSR mod actually applied** — confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). **Advisory** findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), **hashrate-capping hardware** RigForge can't fix but you can — single-channel or slow RAM (via `dmidecode`) and a power/boost-capped CPU clock — and **BIOS/firmware** recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
 | `tune` | Measure the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) and keep them — an **optional, one-time** step. Flags: `--live`, `--efficiency`, `--confirm`, `--history`, `--clear`. See [Tuning](#tuning). |
-| `autotune` | One live trial against the running miner. **Enable periodic runs** by setting `"autotune": true` in `config.json` (setup installs a systemd timer). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
+| `autotune` | One live trial against the running miner. **Schedule periodic runs** by setting `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` (setup installs a systemd timer; also re-tuned on `upgrade`). Conservative — keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
 | `status` | Show the systemd service status. |
@@ -87,21 +87,37 @@ power/efficiency and reservation-aware details are all in
 
 ### Live auto-tuning (opt-in)
 
-Prefer it hands-off? Set `"autotune": true` in `config.json` and re-run `setup` — RigForge installs a
-**systemd timer** that periodically optimizes the prefetch mode against your *live* miner.
+Prefer it hands-off? Set `autotune` in `config.json` to a target and re-run `setup` — RigForge installs a
+**systemd timer** that periodically optimizes the prefetch mode against your *live* miner:
+
+| `autotune` | What the scheduled run optimizes for |
+| --- | --- |
+| `"disabled"` _(default)_ | Nothing — no timer is installed. |
+| `"performance"` | **Raw hashrate** (H/s). |
+| `"efficiency"` | **Hashrate-per-watt** (H/s/W) — for power-cost-, heat-, or PSU-limited rigs. Needs a power source (built-in RAPL, or a `TUNE_POWER_CMD` for a smart plug / IPMI); without one it falls back to `performance` with a warning. |
+
+(Legacy booleans still work: `true` → `performance`, `false` → `disabled`.) The chosen target is baked
+into the systemd unit at setup, so the scheduled run optimizes for what you picked — and `tune --history`
+shows it.
 
 **Each run converges in one pass (~minutes).** It reads the current hashrate from the miner's API
-(median of a few samples), then sweeps every prefetch mode — applying each, restarting, and re-measuring
-over a warmup window — and adopts the fastest, but **only if it beats the baseline by a margin** (else it
-keeps the current mode). So a single run settles on the best prefetch mode; you don't wait days. The
-change is merged on top of any offline `tune` result, so your tuned thread count and `cpu.yield` are
-preserved.
+(median of a few samples — plus average watts when the target is `efficiency`), then sweeps every prefetch
+mode — applying each, restarting, and re-measuring over a warmup window — and adopts the best by the
+target's metric, but **only if it beats the baseline by a margin** (else it keeps the current mode). So a
+single run settles on the best prefetch mode; you don't wait days. The change is merged on top of any
+offline `tune` result, so your tuned thread count and `cpu.yield` are preserved.
 
-**Cadence.** The timer fires **daily** by default (it re-verifies and catches drift, e.g. after an
-`upgrade`). Set `AUTOTUNE_ONCALENDAR` to any [systemd calendar](https://www.freedesktop.org/software/systemd/man/systemd.time.html)
-spec before `setup` to change it — e.g. `AUTOTUNE_ONCALENDAR=weekly sudo ./rigforge.sh setup` for less
-restart churn now that one run already converges. Review the schedule, the next run, and recent decisions
-any time with **`rigforge tune --history`** (or `journalctl -u rigforge-autotune`).
+**When it re-tunes.** Once the prefetch mode converges it's stable — so re-tuning is **event-driven**, not
+a blind daily loop that churns the miner to re-confirm a result that rarely changes:
+
+- **After an `upgrade`** — the real trigger. The fastest knobs can shift between XMRig versions, so once a
+  rebuild finishes (and the new build is live) RigForge re-tunes it automatically.
+- **A monthly safety-net timer** — the default cadence is **monthly**, to catch slow drift (thermal,
+  ambient temperature, fan/dust). Change it with `AUTOTUNE_ONCALENDAR` (any [systemd calendar](https://www.freedesktop.org/software/systemd/man/systemd.time.html)
+  spec) before `setup` — e.g. `AUTOTUNE_ONCALENDAR=weekly sudo ./rigforge.sh setup`.
+
+Review the schedule, the next run, and recent decisions any time with **`rigforge tune --history`** (or
+`journalctl -u rigforge-autotune`).
 
 Auto-tune only touches the prefetch mode (the knob most worth re-checking live). For a **definitive,
 one-time sweep of every knob**, run the offline [`tune`](#tuning) above. Linux only.
@@ -265,7 +281,9 @@ sudo ./rigforge.sh upgrade      # rebuild + restart only if the pin changed
 
 `upgrade` is a no-op when the pinned XMRig is already built, so it's cheap to run. A plain
 `sudo ./rigforge.sh` (setup) also picks up a changed pin, but `upgrade` is the explicit, restart-aware
-path.
+path. If you've enabled periodic [autotune](#live-auto-tuning-opt-in), `upgrade` **re-tunes the new build
+automatically** once it's live — the optimal prefetch mode can change between XMRig versions, so the
+upgrade is the moment that actually warrants a re-tune (the monthly timer is just a slow safety net).
 
 > Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk.
 
