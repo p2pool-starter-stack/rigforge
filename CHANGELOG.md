@@ -8,6 +8,11 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`tune --history`** — a readable summary of this rig's tuning: the **winning tune options** applied
+  right now (from `tune-overrides.json`), the last full `tune` run (target, best H/s, candidates tried),
+  and — on Linux — the periodic auto-tuner's **schedule, next scheduled run**, and recent keep/rollback
+  decisions (from the systemd journal). Read-only and best-effort; works without a built worker and
+  degrades gracefully when nothing's been tuned yet.
 - **Optional `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and `setup`
   installs a `rigforge` command — a symlink in `/usr/local/bin` pointing at the script — so you can run
   `sudo rigforge doctor` / `tune` / `apply` from any directory instead of `./rigforge.sh`. The script
@@ -168,6 +173,20 @@ All notable changes to RigForge are documented here. The format is based on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
+- **Live auto-tuning now converges in one run.** Instead of trying one prefetch mode per daily run
+  (~4 days to sweep all four), each `autotune` run **live-sweeps every prefetch mode** and adopts the
+  fastest (median measurement + a margin gate, else it keeps the current mode) — converging in a single
+  ~minutes-long pass. The timer still fires daily by default to re-verify/catch drift; `AUTOTUNE_ONCALENDAR`
+  changes the cadence and `AUTOTUNE_MODES` the modes swept. For a definitive all-knob sweep, run `tune`.
+- **`status` and `logs` no longer prompt for sudo.** They're read-only — `systemctl status` is
+  world-readable and the operator (in the `adm` group) can follow the service journal — so neither runs
+  `sudo` anymore. The privileged verbs (`start`/`stop`/`restart`/`enable`/`disable`) still elevate as
+  needed.
+- Simplified the tuning docs for first-time users: `docs/operations.md` now leads with the one-time
+  `tune` → `apply` path, a short "useful variants" table, and `tune --history`, with a pointer to
+  `docs/how-it-works.md` for the rest. The search internals, the full `TUNE_*` environment-variable
+  reference, and the power/efficiency and reservation-aware details moved to `how-it-works.md` (next to
+  the mechanics they belong with), removing the duplication that made the section hard to follow.
 - Repo readability polish: renamed `docs/tuning.md` → `docs/how-it-works.md` (matching the page title
   and every inbound link), the Linux container e2e `tests/e2e/run.sh` → `tests/e2e/linux.sh` (parallel to
   `tests/e2e/macos.sh`), and the `make test-stack` target → `make test-suite`. Added section banners + a
@@ -219,6 +238,12 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **The nightly auto-tune no longer re-owns your files to root.** The `autotune` systemd timer runs as
+  root with no `SUDO_USER`, so its post-run re-own was handing `data/worker` + `config.json` back to
+  `root:root` each night — undoing the operator-ownership fix and forcing `sudo` to edit `config.json`.
+  The autotune service unit now bakes in `RIGFORGE_OPERATOR` (the operator captured at setup time) and
+  the re-own honours it, so the timer hands files back to you. (The autotune `.service`/`.timer` are now
+  rendered from templates in `systemd/`, alongside `xmrig.service.template`, instead of inline heredocs.)
 - **`doctor` no longer aborts when run without `sudo`.** The RAM-layout probe runs `dmidecode` (root-only),
   so a non-root `doctor` made `dmidecode | awk` non-zero under `set -o pipefail` — tripping errexit and
   aborting the whole health check with a spurious "rigforge aborted" message right after the governor
