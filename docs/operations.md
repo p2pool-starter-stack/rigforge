@@ -88,12 +88,23 @@ power/efficiency and reservation-aware details are all in
 ### Live auto-tuning (opt-in)
 
 Prefer it hands-off? Set `"autotune": true` in `config.json` and re-run `setup` — RigForge installs a
-**systemd timer** that periodically runs one **live trial**: it reads the current hashrate from the miner's
-API, tries the next prefetch mode, and **keeps the change only if it beats the baseline by a margin** —
-otherwise it rolls back. The change is merged on top of any offline `tune` result, so your tuned thread
-count and `cpu.yield` are preserved. It's deliberately conservative; review its decisions any time with
-`tune --history` (or `journalctl -u rigforge-autotune`). Linux only — for a definitive sweep, prefer the
-offline `tune` above.
+**systemd timer** that periodically optimizes the prefetch mode against your *live* miner.
+
+**Each run converges in one pass (~minutes).** It reads the current hashrate from the miner's API
+(median of a few samples), then sweeps every prefetch mode — applying each, restarting, and re-measuring
+over a warmup window — and adopts the fastest, but **only if it beats the baseline by a margin** (else it
+keeps the current mode). So a single run settles on the best prefetch mode; you don't wait days. The
+change is merged on top of any offline `tune` result, so your tuned thread count and `cpu.yield` are
+preserved.
+
+**Cadence.** The timer fires **daily** by default (it re-verifies and catches drift, e.g. after an
+`upgrade`). Set `AUTOTUNE_ONCALENDAR` to any [systemd calendar](https://www.freedesktop.org/software/systemd/man/systemd.time.html)
+spec before `setup` to change it — e.g. `AUTOTUNE_ONCALENDAR=weekly sudo ./rigforge.sh setup` for less
+restart churn now that one run already converges. Review the schedule, the next run, and recent decisions
+any time with **`rigforge tune --history`** (or `journalctl -u rigforge-autotune`).
+
+Auto-tune only touches the prefetch mode (the knob most worth re-checking live). For a **definitive,
+one-time sweep of every knob**, run the offline [`tune`](#tuning) above. Linux only.
 
 ### MSR mod verification
 
