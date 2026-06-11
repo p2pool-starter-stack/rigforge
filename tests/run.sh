@@ -134,10 +134,12 @@ case "$*" in
 esac
 exit 0
 EOF
-    # envsubst stub: substitute exactly the two vars the systemd template uses (gettext may be absent on macOS).
+    # envsubst stub: substitute exactly the vars the systemd templates use (gettext may be absent on macOS).
     cat >"$bin/envsubst" <<'EOF'
 #!/usr/bin/env bash
-sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g"
+sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
+    -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
+    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -1048,12 +1050,15 @@ assert_contains "HOME_DIR with .. traversal is refused" "$(wrc "$WV/trav.json")"
 echo "== black-box: install_autotune timer enable/disable =="
 AT="$(mktemp -d "$SANDBOX/at.XXXXXX")"
 mkdir -p "$AT/systemd"
+# install_autotune renders the unit TEMPLATES from systemd/ (like xmrig.service), so they must be present.
+cp "$ROOT/systemd/rigforge-autotune.service.template" "$ROOT/systemd/rigforge-autotune.timer.template" "$AT/systemd/"
 run_autotune() { # <true|false> [oncalendar]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
         SCRIPT_DIR="$AT"
         SYSTEMD_DIR="$AT/systemd"
+        REAL_USER=rfop # the operator captured at setup time; baked into the service unit
         AUTOTUNE="$1"
         AUTOTUNE_ONCALENDAR="${2:-daily}"
         set +e
@@ -1065,9 +1070,29 @@ assert_eq "autotune enable writes the .timer" "$([ -f "$AT/systemd/rigforge-auto
 assert_eq "autotune enable writes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "y"
 assert_contains "autotune timer honours the OnCalendar override" "$(cat "$AT/systemd/rigforge-autotune.timer")" "OnCalendar=hourly"
 assert_contains "autotune service invokes the autotune verb" "$(cat "$AT/systemd/rigforge-autotune.service")" "rigforge.sh autotune"
+# #reown: the service bakes in the operator so the root timer hands files back to them (not to root).
+assert_contains "autotune service bakes in RIGFORGE_OPERATOR (#reown)" "$(cat "$AT/systemd/rigforge-autotune.service")" "RIGFORGE_OPERATOR=rfop"
 out="$(run_autotune false)"
 assert_eq "autotune disable removes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "n"
 assert_eq "autotune disable removes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "n"
+
+# #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
+# no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
+ru_op="$( (
+    unset SUDO_USER
+    export RIGFORGE_OPERATOR=opuser
+    source "$SCRIPT"
+    set +eu
+    printf '%s' "$REAL_USER"
+))"
+assert_eq "REAL_USER uses RIGFORGE_OPERATOR when SUDO_USER is unset (#reown)" "$ru_op" "opuser"
+ru_sudo="$( (
+    export SUDO_USER=sudoer RIGFORGE_OPERATOR=opuser
+    source "$SCRIPT"
+    set +eu
+    printf '%s' "$REAL_USER"
+))"
+assert_eq "REAL_USER prefers SUDO_USER over RIGFORGE_OPERATOR (#reown)" "$ru_sudo" "sudoer"
 
 # #11/#46: the shared hashrate parser picks the peak H/s figure.
 echo "== unit: _parse_hashrate (#11) =="

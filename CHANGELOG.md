@@ -219,6 +219,12 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **The nightly auto-tune no longer re-owns your files to root.** The `autotune` systemd timer runs as
+  root with no `SUDO_USER`, so its post-run re-own was handing `data/worker` + `config.json` back to
+  `root:root` each night — undoing the operator-ownership fix and forcing `sudo` to edit `config.json`.
+  The autotune service unit now bakes in `RIGFORGE_OPERATOR` (the operator captured at setup time) and
+  the re-own honours it, so the timer hands files back to you. (The autotune `.service`/`.timer` are now
+  rendered from templates in `systemd/`, alongside `xmrig.service.template`, instead of inline heredocs.)
 - **`doctor` no longer aborts when run without `sudo`.** The RAM-layout probe runs `dmidecode` (root-only),
   so a non-root `doctor` made `dmidecode | awk` non-zero under `set -o pipefail` — tripping errexit and
   aborting the whole health check with a spurious "rigforge aborted" message right after the governor
