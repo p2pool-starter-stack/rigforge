@@ -893,7 +893,7 @@ out="$(cd "$UPG" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$UPG/logrotate" SYSTEMD_D
 rc=$?
 assert_rc "upgrade rebuild exits 0" "$rc" "0"
 assert_contains "upgrade rebuilds on a changed pin" "$out" "Upgraded to XMRig vNEW"
-assert_contains "upgrade nudges to re-tune when overrides exist (#10)" "$out" "consider re-running 'sudo"
+assert_contains "upgrade nudges to re-tune when overrides exist (#10)" "$out" "re-run 'sudo"
 # The nudge is only half the promise — assert the actual carry-over: tune-overrides.json SURVIVES the
 # upgrade and its tuned knob is merged into the regenerated config (the substance of the warning) (#10).
 assert_eq "upgrade keeps tune-overrides.json (tuning carried over) (#10)" \
@@ -1090,7 +1090,7 @@ run_autotune() { # <disabled|performance|efficiency> [oncalendar]
         REAL_USER=rfop # the operator captured at setup time; baked into the service unit
         AUTOTUNE_MODE="$1"
         case "$1" in efficiency) AUTOTUNE_TARGET=efficiency ;; *) AUTOTUNE_TARGET=perf ;; esac
-        AUTOTUNE_ONCALENDAR="${2:-daily}"
+        [ -n "${2:-}" ] && AUTOTUNE_ONCALENDAR="$2" # else leave unset to exercise the product default
         set +e
         PATH="$STUBS:$PATH" install_autotune 2>&1
     )
@@ -1104,8 +1104,11 @@ assert_contains "autotune service invokes the autotune verb" "$(cat "$AT/systemd
 assert_contains "autotune service bakes in RIGFORGE_OPERATOR (#reown)" "$(cat "$AT/systemd/rigforge-autotune.service")" "RIGFORGE_OPERATOR=rfop"
 # #95: the chosen target is baked into the unit so scheduled runs match what the operator configured.
 assert_contains "performance mode bakes AUTOTUNE_TARGET=perf (#95)" "$(cat "$AT/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=perf"
-out="$(run_autotune efficiency)"
+out="$(run_autotune efficiency)" # no OnCalendar -> product default
 assert_contains "efficiency mode bakes AUTOTUNE_TARGET=efficiency (#95)" "$(cat "$AT/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=efficiency"
+# #95: the default cadence is monthly (not daily) — once the tune converges it's stable, so re-tuning is
+# event-driven (on upgrade); the timer is just a slow safety net.
+assert_contains "default autotune cadence is monthly, not daily (#95)" "$(cat "$AT/systemd/rigforge-autotune.timer")" "OnCalendar=monthly"
 out="$(run_autotune disabled)"
 assert_eq "autotune disable removes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "n"
 assert_eq "autotune disable removes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "n"
@@ -1213,6 +1216,59 @@ rapl_smp="$(
     )
 )"
 assert_eq "autotune efficiency sampler reads RAPL + returns the hashrate (#95)" "$(printf '%s' "$rapl_smp" | cut -f1)" "1234"
+
+# #95: `upgrade` re-tunes the new build — the real trigger, since the fastest knobs can shift between
+# XMRig versions (the monthly timer is just a slow safety net). Exercise _post_upgrade_retune's decision
+# logic with stubbed systemctl (service state), miner readiness, and autotune.
+echo "== black-box: upgrade re-tunes the new build (#95) =="
+PUR="$(mktemp -d "$SANDBOX/pur.XXXXXX")"
+mkdir -p "$PUR/worker"
+printf '{}' >"$PUR/worker/tune-overrides.json"
+post_retune() { # <mode> <service_active:y|n> <miner_live:y|n>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SERVICE_NAME=xmrig
+        WORKER_ROOT="$PUR/worker"
+        AUTOTUNE_MODE="$1"
+        _ACT="$2"
+        _LIVE="$3"
+        systemctl() { case "$*" in *is-active*) [ "$_ACT" = y ] ;; *) return 0 ;; esac }
+        _wait_miner_live() { [ "$_LIVE" = y ]; }
+        autotune() { echo "AUTOTUNE_RAN"; }
+        set +e
+        _post_upgrade_retune 2>&1
+    )
+}
+o="$(post_retune performance y y)"
+assert_contains "upgrade re-tunes when autotune enabled + miner live (#95)" "$o" "Re-tuning the new build"
+assert_contains "upgrade actually invokes autotune (#95)" "$o" "AUTOTUNE_RAN"
+o="$(post_retune performance y n)"
+assert_eq "upgrade does not autotune a cold miner (#95)" "$(printf '%s' "$o" | grep -c AUTOTUNE_RAN)" "0"
+assert_contains "upgrade explains the skipped re-tune (#95)" "$o" "skipping the post-upgrade re-tune"
+o="$(post_retune disabled y y)"
+assert_eq "upgrade does NOT re-tune when autotune disabled (#95)" "$(printf '%s' "$o" | grep -c AUTOTUNE_RAN)" "0"
+assert_contains "upgrade warns to re-tune manually when disabled (#95)" "$o" "carried over from the previous build"
+o="$(post_retune performance n y)"
+assert_eq "upgrade does NOT re-tune when the service is inactive (#95)" "$(printf '%s' "$o" | grep -c AUTOTUNE_RAN)" "0"
+
+# #95: _wait_miner_live polls the API until a live hashrate appears, so a freshly-restarted miner (still
+# allocating the RandomX dataset) is warm before the post-upgrade re-tune measures it.
+echo "== unit: _wait_miner_live (#95) =="
+wlive="$( (
+    source "$SCRIPT"
+    _read_api_hashrate() { echo 10741; }
+    set +e
+    _wait_miner_live 2 && echo LIVE || echo DEAD
+))"
+assert_eq "_wait_miner_live: true once the API reports a hashrate (#95)" "$wlive" "LIVE"
+wdead="$( (
+    source "$SCRIPT"
+    _read_api_hashrate() { echo 0; }
+    set +e
+    _wait_miner_live 1 && echo LIVE || echo DEAD
+))"
+assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
 
 # #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
 # no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
