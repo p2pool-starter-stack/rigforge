@@ -1177,6 +1177,26 @@ np_out="$(
 assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
 assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
 
+# #95: the efficiency sampler's RAPL path (efficiency target, no TUNE_POWER_CMD) brackets the live window
+# with the CPU-package energy counter. Fake powercap tree; assert the hashrate field comes back (the watts
+# field is timing-dependent on a static counter, so we don't pin its value — just that the path ran).
+mkdir -p "$ATD/rapl/intel-rapl:0"
+printf package-0 >"$ATD/rapl/intel-rapl:0/name"
+printf 1000000 >"$ATD/rapl/intel-rapl:0/energy_uj"
+printf 9000000 >"$ATD/rapl/intel-rapl:0/max_energy_range_uj"
+rapl_smp="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        RAPL_DIR="$ATD/rapl"
+        unset TUNE_POWER_CMD
+        API_CMD='echo 1234'
+        set +e
+        _autotune_sample 1 0 efficiency
+    )
+)"
+assert_eq "autotune efficiency sampler reads RAPL + returns the hashrate (#95)" "$(printf '%s' "$rapl_smp" | cut -f1)" "1234"
+
 # #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
 # no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
 ru_op="$( (
