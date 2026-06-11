@@ -523,7 +523,9 @@ generate_xmrig_config() {
     if [ "$OS_TYPE" == "Darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
     else
-        CPU_MODEL=$(lscpu | grep "Model name" | cut -d':' -f2 | xargs)
+        # Anchor to "^Model name:" — as root, lscpu also prints a "BIOS Model name:" line (a DMI string
+        # like "...  Unknown CPU @ 4.2GHz"), and an unanchored grep would concatenate both into one line.
+        CPU_MODEL=$(lscpu | grep -E '^Model name:' | cut -d':' -f2 | xargs)
     fi
     LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
 
@@ -2757,7 +2759,7 @@ EOF
     board=$(_dmi board_name)
     bios=$(_dmi bios_version)
     bdate=$(_dmi bios_date)
-    cpu=$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || true) # guard INSIDE $()
+    cpu=$(lscpu 2>/dev/null | awk -F: '/^Model name:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || true) # ^anchored: skip "BIOS Model name:"; guard INSIDE $()
     if [ -n "$bvendor$board$bios" ]; then
         _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the items below in BIOS/UEFI; RigForge can't change them from the OS."
     fi
