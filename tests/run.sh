@@ -1227,6 +1227,45 @@ np_out="$(
 assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
 assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
 
+# `tune --now` is the on-demand spelling of the autotune engine: it must reach autotune() AND map the
+# --perf/--efficiency flag onto the target. Drive the same stubbed sweep as above through `tune --now`.
+tune_now_decide() { # <flag> -> final prefetch mode
+    printf '{"randomx":{"scratchpad_prefetch_mode":0}}\n' >"$ovf"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$ATD/worker"
+        AUTOTUNE_MODES="0 1"
+        AUTOTUNE_SAMPLES=1
+        AUTOTUNE_INTERVAL=0
+        AUTOTUNE_WARMUP=0
+        AUTOTUNE_MARGIN=0.001
+        API_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 1100 || echo 1000'
+        TUNE_POWER_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 125 || echo 100'
+        parse_config() { :; }                # keep the test's WORKER_ROOT/target; skip real config parsing
+        _apply_runtime() { :; }              # no real restart
+        sudo() { "$@"; }                     # _autotune_set_prefetch uses `sudo cp`
+        _tune_should_elevate() { return 1; } # non-interactive: never re-exec under sudo
+        set +e
+        PATH="$STUBS:$PATH" tune --now "$1" >/dev/null 2>&1
+    )
+    jq -r '.randomx.scratchpad_prefetch_mode' "$ovf"
+}
+assert_eq "tune --now delegates to autotune; --perf picks raw-fastest" "$(tune_now_decide --perf)" "1"
+assert_eq "tune --now --efficiency keeps the most-efficient mode" "$(tune_now_decide --efficiency)" "0"
+
+# `tune --now` drives the live service, so it's Linux-only — refuse with a clear message elsewhere.
+tune_now_mac="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Darwin
+        _tune_should_elevate() { return 1; }
+        set +e
+        PATH="$STUBS:$PATH" tune --now 2>&1
+    )
+)"
+assert_contains "tune --now is Linux-only off Linux" "$tune_now_mac" "Linux-only"
+
 # #95: the efficiency sampler's RAPL path (efficiency target, no TUNE_POWER_CMD) brackets the live window
 # with the CPU-package energy counter. Fake powercap tree; assert the hashrate field comes back (the watts
 # field is timing-dependent on a static counter, so we don't pin its value — just that the path ran).
