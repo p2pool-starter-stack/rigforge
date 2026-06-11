@@ -74,8 +74,10 @@ hugepages_total() { awk '/^HugePages_Total:/ {print $2; exit}' /proc/meminfo 2>/
 find_worker_bin() { find "$HERE" -type f -path '*xmrig/build/xmrig' 2>/dev/null | head -1; }
 
 ensure_config() {
-    # setup needs a valid config.json. A release e2e benches OFFLINE, so any valid pool entry works;
-    # default to an unroutable TEST-NET-3 (RFC 5737) host so the installed service never actually mines.
+    # setup needs a valid config.json. Benching is OFFLINE so any valid pool entry suffices for the build +
+    # bench + tune phases; default to an unroutable TEST-NET-3 (RFC 5737) host so the installed service
+    # never mines to a real destination. NOTE: verify's live-pool round-trip is mandatory and FAILS on this
+    # placeholder — set a real pool, or E2E_ALLOW_OFFLINE_POOL=1 for a deliberate offline run.
     if [ ! -f "$HERE/config.json" ]; then
         printf '{ "pools": [{ "url": "203.0.113.1:3333" }], "DONATION": 1, "add_to_path": true }\n' >"$HERE/config.json"
         ok "wrote a placeholder config.json (offline bench; the service won't mine; add_to_path on to exercise the CLI)"
@@ -160,12 +162,19 @@ verify() {
         bad "doctor printed no firmware context line (#78) — is /sys/class/dmi/id readable?"
 
     phase "verify — live pool (the worker actually connects and submits a share)"
-    # This needs a REACHABLE pool. The default ensure_config writes an unroutable TEST-NET-3 placeholder
-    # (203.0.113.x) so the installed service never mines to a real destination — with that, the connect/
-    # share round-trip CANNOT run, so SKIP it rather than failing the gate. To exercise the full mining
-    # round-trip before tagging, put a real reachable pool in config.json first (see RELEASING.md).
+    # Proving the rig REALLY mines is the whole point of the gate, so this round-trip is MANDATORY by
+    # default. It needs a REACHABLE pool: ensure_config writes an unroutable TEST-NET-3 placeholder
+    # (203.0.113.x) when no config.json exists, so the installed service never mines to a real destination.
+    # If that placeholder is still in place the releaser simply forgot to point at a real pool — so FAIL
+    # loudly rather than silently skipping the one check that proves end-to-end mining. Point pools[0].url
+    # at a real reachable pool before tagging (see RELEASING.md). For a deliberate offline smoke run (no
+    # pool on hand), set E2E_ALLOW_OFFLINE_POOL=1 to turn this into an explicit, on-purpose skip.
     if grep -q '203\.0\.113\.' "$HERE/config.json" 2>/dev/null; then
-        ok "SKIP live-pool round-trip — offline placeholder pool in config.json (set a real pool to test connect+share)"
+        if [ "${E2E_ALLOW_OFFLINE_POOL:-0}" = 1 ]; then
+            ok "SKIP live-pool round-trip — offline placeholder pool, E2E_ALLOW_OFFLINE_POOL=1 set (deliberate offline run)"
+        else
+            bad "live-pool round-trip can't run: config.json still has the offline placeholder pool (203.0.113.x) — point pools[0].url at a real reachable pool to prove end-to-end mining, or set E2E_ALLOW_OFFLINE_POOL=1 for a deliberate offline run."
+        fi
     else
         systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
         local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0
