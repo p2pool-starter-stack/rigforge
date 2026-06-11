@@ -65,7 +65,7 @@ _script_dir() {
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 # The operator to hand root-written files back to. Under interactive `sudo` that's SUDO_USER. The
 # periodic autotune runs from systemd as root with NO SUDO_USER — so its unit bakes in RIGFORGE_OPERATOR
-# (the operator captured at setup time), keeping the nightly run from re-owning files to root.
+# (the operator captured at setup time), keeping the scheduled run from re-owning files to root.
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 REBOOT_REQUIRED=false
@@ -342,9 +342,18 @@ parse_config() {
         error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
     fi
 
-    # Opt-in periodic live auto-tuning (#46): when true, setup installs a systemd timer that runs
-    # `autotune` on a schedule.
-    AUTOTUNE=$(jq -r '.autotune // false' "$CONFIG_JSON")
+    # Opt-in periodic live auto-tuning (#46, #95): tri-state. "disabled" (default) installs no timer;
+    # "performance" schedules a periodic tune for raw H/s; "efficiency" schedules one for hashrate-per-watt.
+    # Legacy booleans still parse (true -> performance, false -> disabled); a typo hard-errors rather than
+    # silently disabling tuning. AUTOTUNE_TARGET (perf|efficiency) is what autotune() and the unit consume.
+    _at=$(jq -r '.autotune // "disabled"' "$CONFIG_JSON")
+    case "$_at" in
+    disabled | false | off | none | null | "") AUTOTUNE_MODE=disabled ;;
+    performance | perf | true | on) AUTOTUNE_MODE=performance ;;
+    efficiency | eff) AUTOTUNE_MODE=efficiency ;;
+    *) error "Invalid \"autotune\" value '$_at' in config.json — use \"disabled\", \"performance\", or \"efficiency\"." ;;
+    esac
+    case "$AUTOTUNE_MODE" in efficiency) AUTOTUNE_TARGET=efficiency ;; *) AUTOTUNE_TARGET=perf ;; esac
 
     # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
     # no system-wide convenience change you didn't ask for.
@@ -744,7 +753,7 @@ install_service() {
 install_autotune() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-autotune.service" tmr="$SYSTEMD_DIR/rigforge-autotune.timer"
-    if [ "${AUTOTUNE:-false}" != "true" ]; then
+    if [ "${AUTOTUNE_MODE:-disabled}" = "disabled" ]; then
         if [ -f "$tmr" ]; then
             sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
             sudo rm -f "$svc" "$tmr"
@@ -753,13 +762,14 @@ install_autotune() {
         fi
         return 0
     fi
-    log "Enabling periodic autotune (${AUTOTUNE_ONCALENDAR:-daily})..."
+    log "Enabling periodic autotune: $(_autotune_desc "$AUTOTUNE_MODE"), runs ${AUTOTUNE_ONCALENDAR:-monthly}..."
     # Render the unit templates from systemd/ (kept alongside xmrig.service.template, not inline). The
-    # service bakes in RIGFORGE_OPERATOR=$REAL_USER so the root timer hands files back to the operator.
-    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
-        envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR' \
+    # service bakes in RIGFORGE_OPERATOR=$REAL_USER so the root timer hands files back to the operator,
+    # and AUTOTUNE_TARGET (#95) so the scheduled run optimizes for the target the operator chose.
+    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" AUTOTUNE_TARGET="${AUTOTUNE_TARGET:-perf}" \
+        envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR $AUTOTUNE_TARGET' \
         <"$SCRIPT_DIR/systemd/rigforge-autotune.service.template" | sudo tee "$svc" >/dev/null
-    AUTOTUNE_ONCALENDAR="${AUTOTUNE_ONCALENDAR:-daily}" \
+    AUTOTUNE_ONCALENDAR="${AUTOTUNE_ONCALENDAR:-monthly}" \
         envsubst '$AUTOTUNE_ONCALENDAR' \
         <"$SCRIPT_DIR/systemd/rigforge-autotune.timer.template" | sudo tee "$tmr" >/dev/null
     sudo systemctl daemon-reload
@@ -976,6 +986,35 @@ main() {
 
 # --- Lifecycle: upgrade & uninstall ---
 
+# Wait until the worker API reports a live (non-zero) hashrate, up to ~90s — used after a restart so a
+# freshly-started miner (still allocating the RandomX dataset) is warm before we measure it. True once live.
+_wait_miner_live() { # [tries]
+    local i hr tries="${1:-30}"
+    for i in $(seq 1 "$tries"); do
+        hr=$(_read_api_hashrate)
+        [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null && return 0
+        sleep 3
+    done
+    return 1
+}
+
+# After `upgrade` rebuilds XMRig, the fastest knobs can shift between versions — so re-tune the new build
+# now if periodic autotune is enabled (the upgrade is the REAL trigger; the monthly timer is just a slow
+# safety net). Otherwise point at a manual re-tune, since the carried-over overrides were measured on the
+# old build. Extracted from upgrade() so it's unit-testable without the (heavy) rebuild path.
+_post_upgrade_retune() {
+    if [ "$OS_TYPE" = Linux ] && [ "${AUTOTUNE_MODE:-disabled}" != disabled ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        log "Re-tuning the new build (autotune: $(_autotune_desc "$AUTOTUNE_MODE")) — knobs can shift between XMRig versions..."
+        if _wait_miner_live; then
+            autotune || warn "Post-upgrade autotune didn't complete — re-run 'sudo $0 autotune' once the miner is warm."
+        else
+            warn "Miner isn't reporting a live hashrate yet — skipping the post-upgrade re-tune. Run 'sudo $0 autotune' manually, or wait for the scheduled run."
+        fi
+    elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
+        warn "Saved tuning (tune-overrides.json) carried over from the previous build. The fastest knobs can shift between XMRig versions — re-run 'sudo $0 tune' (or 'tune --clear' to discard), or enable periodic autotune in config.json."
+    fi
+}
+
 # Upgrade flow: rebuild + restart ONLY if the pinned XMRig version/commit changed. Skips the
 # setup-only steps (dependency install, kernel tuning) — those don't change on a version bump.
 upgrade() {
@@ -991,9 +1030,7 @@ upgrade() {
     generate_xmrig_config
     install_service
     log "Upgraded to XMRig $XMRIG_VERSION."
-    if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        warn "Saved tuning (tune-overrides.json) carried over from the previous build. The fastest knobs can shift between XMRig versions — consider re-running 'sudo $0 tune' (or 'tune --clear' to discard)."
-    fi
+    _post_upgrade_retune
     _reown_worker
 }
 
@@ -1375,7 +1412,11 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
         fi
         printf '%s' "$wout" >"$BENCH_WATTS_FILE"
     fi
-    kill "$xpid" 2>/dev/null
+    # `|| true`: xmrig --bench exits ON ITS OWN when the benchmark finishes, so by here it's often already
+    # gone — an unguarded kill then returns non-zero and, under set -Eeuo, fires the ERR trap INSIDE this
+    # measurement subshell, aborting it before it echoes the result (→ spurious "aborted" spam + a 0 H/s
+    # reading). Guarding it keeps the bench result intact whether or not xmrig is still alive.
+    kill "$xpid" 2>/dev/null || true
     wait "$xpid" 2>/dev/null || true
     # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
     # min would mistake for thermal throttling (#62).
@@ -1400,7 +1441,7 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     tmp=$(mktemp)
     _tune_knobs_json "$@" >"$tmp" && sudo cp "$tmp" "$TUNE_OVERRIDES"
     rm -f "$tmp"
-    apply >/dev/null 2>&1 || true
+    _apply_runtime >/dev/null 2>&1 || true
     sleep "${TUNE_LIVE_WARMUP:-60}"
     local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
     # #81: bracket the steady-state window for power — RAPL energy delta over the window, or the mean of
@@ -1731,11 +1772,23 @@ _seed_guess() {
 
 # --- Auto-tuning: 'tune' command + live confirm / scheduled autotune ---
 
+# User-facing description of a periodic-autotune target, in the SAME vocabulary the operator types in
+# config.json ("performance"/"efficiency"/"disabled"). Accepts either the config mode or the internal
+# target (perf -> performance), so every autotune surface — setup, apply, tune --history, the run log —
+# speaks one consistent language (the offline `tune` command keeps its own "perf"/"--perf" vocabulary).
+_autotune_desc() {
+    case "$1" in
+    efficiency) printf 'efficiency (hashrate-per-watt)' ;;
+    disabled) printf 'disabled' ;;
+    *) printf 'performance (raw hashrate)' ;;
+    esac
+}
+
 # `tune --history`: a readable summary of this rig's tuning — what knobs are applied now, the last full
-# `tune` run, and (Linux) the periodic auto-tune timer's recent decisions. Read-only and best-effort:
+# `tune` run, and (Linux) the periodic autotune timer's recent decisions. Read-only and best-effort:
 # every probe is guarded so it never aborts, and it degrades gracefully when nothing's been tuned yet.
 _tune_history() { # <overrides_file> <log_file>
-    local ovr="$1" logf="$2" when target best n recent sched next has_log=0
+    local ovr="$1" logf="$2" when target best n recent sched next tgt has_log=0
     # Read the last full run's summary up front (the best hashrate goes with the winning knobs).
     if [ -s "$logf" ] && jq -e . "$logf" >/dev/null 2>&1; then
         has_log=1
@@ -1763,7 +1816,9 @@ _tune_history() { # <overrides_file> <log_file>
     fi
     echo ""
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
-        echo "  Periodic auto-tune: enabled ($(systemctl is-active rigforge-autotune.timer 2>/dev/null || echo unknown))."
+        echo "  Periodic autotune: enabled ($(systemctl is-active rigforge-autotune.timer 2>/dev/null || echo unknown))."
+        tgt=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=AUTOTUNE_TARGET=//p' | head -1)
+        [ -n "$tgt" ] && echo "    optimizing for: $(_autotune_desc "$tgt")"
         sched=$(systemctl cat rigforge-autotune.timer 2>/dev/null | sed -nE 's/^OnCalendar=//p' | head -1)
         next=$(systemctl show rigforge-autotune.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
         [ -n "$sched" ] && echo "    schedule: $sched${next:+ — next run: $next}"
@@ -1776,23 +1831,49 @@ _tune_history() { # <overrides_file> <log_file>
         fi
         echo "    full log: journalctl -u rigforge-autotune"
     else
-        echo "  Periodic auto-tune: off. Set \"autotune\": true in config.json, then re-run 'sudo $0 setup' to enable it."
+        echo "  Periodic autotune: off. Set \"autotune\": \"performance\" (or \"efficiency\") in config.json, then re-run 'sudo $0 setup' to enable it."
     fi
 }
 
+# Whether `tune` should re-exec itself under sudo: non-root + interactive (TTY) only, so sudo can actually
+# prompt and we never surprise non-interactive callers (tests/cron/pipes). RIGFORGE_FORCE_ELEVATE=1 forces
+# it regardless (the coverage test drives this path from a real child process).
+_tune_should_elevate() {
+    [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] && return 0
+    [ "$(id -u)" -ne 0 ] && [ -t 0 ]
+}
+
 tune() {
-    local clear=0
+    # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
+    # when run without sudo — a plain `rigforge tune` then just works (sudo prompts) instead of failing
+    # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
+    # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
+    # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
+    local _hist=0 clear=0 target_set=0
+    case " $* " in *" --history "*) _hist=1 ;; esac
+    if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
+        log "tune needs root — re-running with sudo..."
+        exec sudo "$0" tune "$@"
+    fi
     TUNE_MODE="${TUNE_MODE:-bench}"
-    TUNE_CONFIRM="${TUNE_CONFIRM:-0}"  # #64: A/B-confirm the winner against the previous config, live
-    TUNE_TARGET="${TUNE_TARGET:-perf}" # #79: perf (raw H/s) or efficiency (hashrate-per-watt)
+    TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
+    # #95: the optimization target defaults to the `autotune` config value (resolved by parse_config below);
+    # a TUNE_TARGET env override or an explicit --perf/--efficiency flag wins.
+    [ -n "${TUNE_TARGET:-}" ] && target_set=1
     while [ $# -gt 0 ]; do
         case "$1" in
         --clear) clear=1 ;;
         --live) TUNE_MODE=live ;;
         --bench) TUNE_MODE=bench ;;
         --confirm) TUNE_CONFIRM=1 ;;
-        --efficiency) TUNE_TARGET=efficiency ;; # #79: optimize hashrate-per-watt
-        --perf) TUNE_TARGET=perf ;;
+        --efficiency)
+            TUNE_TARGET=efficiency
+            target_set=1
+            ;; # #79: optimize hashrate-per-watt
+        --perf)
+            TUNE_TARGET=perf
+            target_set=1
+            ;;
         --history) TUNE_HISTORY=1 ;; # show current tuning + last run + auto-tune decisions, then exit
         *) error "Unknown tune option: $1 (use --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
         esac
@@ -1800,6 +1881,8 @@ tune() {
     done
 
     parse_config # resolves WORKER_ROOT (and validates the config)
+    # #95: default the target to what `autotune` is set to in config, unless the user was explicit above.
+    [ "$target_set" = 1 ] || TUNE_TARGET="${AUTOTUNE_TARGET:-perf}"
     TUNE_OVERRIDES="$WORKER_ROOT/tune-overrides.json"
     local logf="$WORKER_ROOT/rigforge-tune.json"
     local pre_overrides="" # #64: the overrides in place BEFORE this run, to A/B against and revert to
@@ -1836,7 +1919,9 @@ tune() {
         warn "tune --efficiency needs a power source (built-in RAPL or TUNE_POWER_CMD) — none available; optimizing for raw hashrate (perf) instead."
         TUNE_TARGET=perf
     fi
-    [ "$TUNE_TARGET" = efficiency ] && log "Optimization target: efficiency (hashrate-per-watt)."
+    local tgt_src=""
+    [ "$target_set" = 1 ] || tgt_src=" (from your autotune config; override with --perf/--efficiency)"
+    log "Optimization target: $(_autotune_desc "$TUNE_TARGET")${tgt_src}."
     # #62: a candidate whose effective clock dipped below this during its window thermally throttled and is
     # skipped. Default ~80% of max boost (all-core RandomX should hold well above that); 0 disables it.
     if [ -z "${TUNE_MIN_FREQ_MHZ:-}" ]; then
@@ -2017,7 +2102,7 @@ tune() {
     if [ "$TUNE_CONFIRM" = 1 ] && [ "$OS_TYPE" = Linux ]; then
         _tune_confirm_live "$ovr" "$pre_overrides"
     elif [ "$TUNE_MODE" = live ]; then
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
         log "Applied the winning config to the live miner."
     else
         log "Apply it: sudo $0 apply    (reset anytime with: sudo $0 tune --clear)"
@@ -2035,18 +2120,18 @@ _tune_confirm_live() { # <winner_overrides_json> <previous_overrides_json>
     local n="${TUNE_LIVE_SAMPLES:-3}" iv="${TUNE_LIVE_INTERVAL:-30}" warm="${TUNE_LIVE_WARMUP:-60}"
     local margin="${TUNE_CONFIRM_MARGIN:-${TUNE_MIN_DELTA:-0.01}}" win_hr base_hr
     log "Confirming the tuned config against the previous one on the live miner (A/B)..."
-    apply >/dev/null 2>&1 || true # the winner is already in TUNE_OVERRIDES from the search
+    _apply_runtime >/dev/null 2>&1 || true # the winner is already in TUNE_OVERRIDES from the search
     sleep "$warm"
     win_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$win_hr" ] || win_hr=0
     if [ -n "$pre_ovr" ]; then printf '%s\n' "$pre_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null; else sudo rm -f "$TUNE_OVERRIDES"; fi
-    apply >/dev/null 2>&1 || true
+    _apply_runtime >/dev/null 2>&1 || true
     sleep "$warm"
     base_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$base_hr" ] || base_hr=0
     if awk "BEGIN{exit !($win_hr > $base_hr * (1 + $margin))}"; then
         printf '%s\n' "$win_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
         log "Confirmed: the tuned config wins live ($win_hr vs $base_hr H/s) — kept and applied."
     else
         log "Reverted: the tuned config did NOT beat the previous one live ($win_hr vs $base_hr H/s) — restored the previous config."
@@ -2067,63 +2152,138 @@ _autotune_set_prefetch() { # <overrides_file> <mode>
     rm -f "$tmp"
 }
 
-# autotune (#46): ONE convergent live pass against the running miner. It reads the current hashrate from
-# the worker's HTTP API (median of a few samples — live numbers are noisy), then sweeps EVERY prefetch
-# mode it isn't already on — applying each (MERGED into the overrides file, preserving any offline-`tune`
-# knobs), restarting, and measuring over a warmup window — and adopts the fastest, but only if it beats
-# the baseline by a margin (else it keeps the current mode). So a single run converges the prefetch knob
-# (~minutes), rather than one-mode-per-day. Meant to be run periodically: with `autotune: true` in
-# config.json, setup installs a systemd timer that calls this (default daily; AUTOTUNE_ONCALENDAR).
-# Median + margin keep noisy readings from sticking. For a thorough sweep of ALL knobs, run `tune`.
+# Sample the live miner for one candidate: median H/s over the window and, for the efficiency target,
+# the average package watts over that SAME window — prints "hr<TAB>watts" (watts empty for perf or when
+# no power source). RAPL brackets the sampling window; a TUNE_POWER_CMD override is polled once per
+# sample and averaged (parity with tune's _measure_live, #81). Perf skips power entirely (no overhead).
+_autotune_sample() { # <n> <interval> <target>
+    local n="${1:-3}" iv="${2:-10}" target="${3:-perf}" hr watts="" i s out=() polls=() e0 e1 mx t0 t1
+    if [ "$target" != efficiency ]; then
+        printf '%s\t' "$(_sample_api_median "$n" "$iv")"
+        return 0
+    fi
+    if [ -n "${TUNE_POWER_CMD:-}" ]; then
+        for i in $(seq 1 "$n"); do
+            s=$(_read_api_hashrate)
+            [ -n "$s" ] || s=0
+            out+=("$s")
+            s=$(_read_watts_now)
+            [ -n "$s" ] && polls+=("$s")
+            [ "$i" -lt "$n" ] && [ "$iv" -gt 0 ] 2>/dev/null && sleep "$iv"
+        done
+        hr=$(_median "${out[@]}")
+        [ "${#polls[@]}" -gt 0 ] && watts=$(_mean "${polls[@]}")
+    else
+        e0=$(_rapl_sum energy_uj || true)
+        t0=$(_now_s)
+        hr=$(_sample_api_median "$n" "$iv")
+        if [ -n "$e0" ]; then
+            e1=$(_rapl_sum energy_uj || true)
+            mx=$(_rapl_sum max_energy_range_uj || true)
+            t1=$(_now_s)
+            watts=$(_watts_from_energy "$e0" "$e1" "$mx" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", (b - a)}')")
+        fi
+    fi
+    printf '%s\t%s' "${hr:-0}" "$watts"
+}
+# Score a sample for the active target: efficiency -> hashrate-per-watt (falls back to raw H/s if watts
+# are missing so the sweep still progresses); perf -> raw H/s. Drives both ranking and the margin gate.
+_autotune_score() { # <target> <hr> <watts>
+    if [ "$1" = efficiency ] && [ -n "$3" ] && awk "BEGIN{exit !($3 > 0)}"; then
+        awk -v h="$2" -v w="$3" 'BEGIN{printf "%.4f", h / w}'
+    else
+        printf '%s' "${2:-0}"
+    fi
+}
+# Human-readable sample for the log line: "10700 H/s" or "10700 H/s, 83.10 W, 128.84 H/s/W".
+_autotune_fmt() { # <target> <hr> <watts>
+    if [ "$1" = efficiency ] && [ -n "$3" ] && awk "BEGIN{exit !($3 > 0)}"; then
+        awk -v h="$2" -v w="$3" 'BEGIN{printf "%s H/s, %.2f W, %.2f H/s/W", h, w, h / w}'
+    else
+        printf '%s H/s' "${2:-0}"
+    fi
+}
+
+# autotune (#46, #95): ONE convergent live pass against the running miner. It reads the current hashrate
+# from the worker's HTTP API (median of a few samples — live numbers are noisy), then sweeps EVERY
+# prefetch mode it isn't already on — applying each (MERGED into the overrides file, preserving any
+# offline-`tune` knobs), restarting, and measuring over a warmup window — and adopts the best, but only
+# if it beats the baseline by a margin (else it keeps the current mode). The target (#95) decides what
+# "best" means: "performance" ranks raw H/s; "efficiency" ranks hashrate-per-watt (falling back to perf
+# with a warning when no power source exists, like `tune --efficiency`). So a single run converges the
+# prefetch knob (~minutes). Once converged it's stable, so re-tuning is event-driven: `upgrade` runs it
+# after a rebuild (the fastest knobs can shift between XMRig versions — the real trigger), and a slow
+# safety-net timer catches drift. With `autotune: "performance"|"efficiency"` in config.json, setup
+# installs that timer (default monthly; AUTOTUNE_ONCALENDAR) with the target baked into the unit. Median +
+# margin keep noisy readings from sticking. For a thorough sweep of ALL knobs, run `tune`.
 autotune() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "autotune drives the live systemd service and is only supported on Linux."
     fi
+    # The scheduled run gets AUTOTUNE_TARGET from the systemd unit's env (baked at setup); capture it
+    # before parse_config re-derives one from config.json so the unit's choice wins. An interactive run
+    # (no unit env) falls through to the config value.
+    local target_env="${AUTOTUNE_TARGET:-}"
     parse_config
     local overrides="$WORKER_ROOT/tune-overrides.json"
     local n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}"
     local margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
-    local cur base_hr best_mode best_hr m hr last_applied
+    local target="${target_env:-${AUTOTUNE_TARGET:-perf}}"
+    local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s unit
+
+    # #95: efficiency ranks by hashrate-per-watt, which needs a power source; without one, optimize raw
+    # H/s instead (same fallback as `tune --efficiency`).
+    if [ "$target" = efficiency ] && ! _power_supported; then
+        warn "autotune: efficiency target needs a power source (RAPL or TUNE_POWER_CMD) — none available; falling back to performance (raw hashrate) instead."
+        target=perf
+    fi
+    [ "$target" = efficiency ] && unit="H/s/W" || unit="H/s"
     cur=$(jq -r '.randomx.scratchpad_prefetch_mode // 1' "$overrides" 2>/dev/null || echo 1)
 
     # Baseline = the mode running right now (no restart needed to measure it).
-    base_hr=$(_sample_api_median "$n" "$iv")
+    s=$(_autotune_sample "$n" "$iv" "$target")
+    base_hr=${s%%$'\t'*}
+    base_w=${s#*$'\t'}
     [ -n "$base_hr" ] && [ "$base_hr" != 0 ] || {
         warn "autotune: could not read a live hashrate from the API — is the miner running? Skipping."
         return 0
     }
+    base_score=$(_autotune_score "$target" "$base_hr" "$base_w")
     best_mode="$cur"
-    best_hr="$base_hr"
+    best_score="$base_score"
     last_applied="$cur"
-    log "autotune: live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $base_hr H/s (median of $n)."
+    log "autotune: optimizing for $(_autotune_desc "$target"); live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $(_autotune_fmt "$target" "$base_hr" "$base_w") (median of $n)."
 
-    # Try every OTHER mode once, live; track the running best.
+    # Try every OTHER mode once, live; track the running best by the target's score.
     for m in $modes; do
         [ "$m" = "$cur" ] && continue
         _autotune_set_prefetch "$overrides" "$m"
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
         last_applied="$m"
         sleep "$warm"
-        hr=$(_sample_api_median "$n" "$iv")
+        s=$(_autotune_sample "$n" "$iv" "$target")
+        hr=${s%%$'\t'*}
+        w=${s#*$'\t'}
         [ -n "$hr" ] || hr=0
-        log "autotune: prefetch_mode=$m measured $hr H/s."
-        if awk "BEGIN{exit !($hr > $best_hr)}"; then
+        sc=$(_autotune_score "$target" "$hr" "$w")
+        log "autotune: prefetch_mode=$m measured $(_autotune_fmt "$target" "$hr" "$w")."
+        if awk "BEGIN{exit !($sc > $best_score)}"; then
             best_mode="$m"
-            best_hr="$hr"
+            best_score="$sc"
         fi
     done
 
     # Adopt the winner only if it beats the baseline by the margin (noise guard); else keep the current mode.
-    if [ "$best_mode" != "$cur" ] && awk "BEGIN{exit !($best_hr > $base_hr * (1 + $margin))}"; then
-        log "autotune: best is prefetch_mode=$best_mode at $best_hr H/s (vs $base_hr baseline) — applying it."
+    if [ "$best_mode" != "$cur" ] && awk "BEGIN{exit !($best_score > $base_score * (1 + $margin))}"; then
+        log "autotune: best is prefetch_mode=$best_mode at $best_score $unit (vs $base_score baseline) — applying it."
     else
         best_mode="$cur"
-        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($base_hr H/s)."
+        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($base_score $unit)."
     fi
     # Leave the chosen mode running (the sweep may have ended on a different one).
     if [ "$last_applied" != "$best_mode" ]; then
         _autotune_set_prefetch "$overrides" "$best_mode"
-        apply >/dev/null 2>&1 || true
+        _apply_runtime >/dev/null 2>&1 || true
     fi
 }
 
@@ -2468,9 +2628,18 @@ _parse_hashrate() {
     grep -oiE '[0-9]+(\.[0-9]+)?[[:space:]]*H/s' | grep -oE '[0-9]+(\.[0-9]+)?' | sort -nr | head -n1
 }
 
-# apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
-# recompiling. The fast path after editing config.json.
-apply() {
+# Surface the periodic-autotune target on a top-level `apply` (#95) so the operator can see what the
+# scheduled run optimizes for. Linux-only (the timer is Linux-only); tune/autotune invoke apply with output
+# redirected, so this only shows on a direct `apply`. Reflects the `autotune` value apply just parsed.
+_autotune_apply_notice() {
+    [ "$OS_TYPE" = Linux ] || return 0
+    log "Periodic autotune: $(_autotune_desc "${AUTOTUNE_MODE:-disabled}")."
+}
+
+# The config-regen + restart core of `apply`, WITHOUT touching the autotune timer. Used directly by
+# tune/autotune — which call it in a loop and own the timer themselves — so they don't re-render the unit
+# on every prefetch trial.
+_apply_runtime() {
     parse_config
     local build="$WORKER_ROOT/xmrig/build"
     [ -d "$build" ] || error "No built worker at $build. Run 'setup' first."
@@ -2481,6 +2650,19 @@ apply() {
         log "Config regenerated. Restart the miner to apply."
     fi
     _reown_worker
+}
+
+# apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
+# recompiling. The fast path after editing config.json. As the config-change path it also RECONCILES the
+# periodic-autotune timer with config (#95) — so changing the `autotune` target and running `apply`
+# actually takes effect (not just shows the new value) — then reports the target. install_autotune is the
+# autotune analog of restarting the service; its own log is suppressed in favour of the single status line.
+apply() {
+    _apply_runtime
+    if [ "$OS_TYPE" = Linux ]; then
+        install_autotune >/dev/null 2>&1 || true
+        _autotune_apply_notice
+    fi
 }
 
 # bench (#11): run a one-off xmrig --bench and report the hashrate. A quick perf/health check.
@@ -2822,8 +3004,8 @@ Usage: $0 [command]
              fastest; '--live' tunes against the running miner, '--confirm' A/B-checks the winner live
              before keeping it, '--efficiency' optimizes hashrate-per-watt (default '--perf' = raw H/s),
              '--history' shows the current tuning + recent runs, 'tune --clear' resets
-  autotune   live-sweep the prefetch modes against the running miner and keep the fastest (one
-             convergent pass; enable periodic runs with autotune:true in config)
+  autotune   live-sweep the prefetch modes against the running miner and keep the best (one convergent
+             pass; schedule periodic runs with autotune:"performance"|"efficiency" in config)
   backup     save config.json + tuning to a timestamped archive in ./backups
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
   status     show whether the miner is running

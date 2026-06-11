@@ -141,7 +141,8 @@ EOF
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
-    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g"
+    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
+    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -892,7 +893,7 @@ out="$(cd "$UPG" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$UPG/logrotate" SYSTEMD_D
 rc=$?
 assert_rc "upgrade rebuild exits 0" "$rc" "0"
 assert_contains "upgrade rebuilds on a changed pin" "$out" "Upgraded to XMRig vNEW"
-assert_contains "upgrade nudges to re-tune when overrides exist (#10)" "$out" "consider re-running 'sudo"
+assert_contains "upgrade nudges to re-tune when overrides exist (#10)" "$out" "re-run 'sudo"
 # The nudge is only half the promise — assert the actual carry-over: tune-overrides.json SURVIVES the
 # upgrade and its tuned knob is merged into the regenerated config (the substance of the warning) (#10).
 assert_eq "upgrade keeps tune-overrides.json (tuning carried over) (#10)" \
@@ -971,6 +972,53 @@ assert_contains "logrotate has a minsize guard" "$(cat "$LRF")" "minsize 50M"
 out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" SUDO_USER=rfoperator \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
 assert_contains "logrotate recreates the log owned by the operator, not whoami (#16)" "$(cat "$LRF")" "create 0644 rfoperator rfoperator"
+
+# #95: a top-level `apply` reports the configured periodic-autotune target so the operator can see what
+# the nightly run optimizes for. Linux-only (the timer is Linux-only). Drive the notice directly with
+# OS_TYPE forced so the assertion is host-independent (the macOS suite runs this same file).
+echo "== unit: apply reports the autotune target (#95) =="
+apply_notice() { (
+    source "$SCRIPT"
+    OS_TYPE="${2:-Linux}"
+    AUTOTUNE_MODE="$1"
+    set +e
+    _autotune_apply_notice 2>&1
+); }
+assert_contains "apply notice names the efficiency target (#95)" "$(apply_notice efficiency)" "efficiency"
+assert_contains "apply notice names the performance target (#95)" "$(apply_notice performance)" "performance"
+assert_contains "apply notice reports disabled (#95)" "$(apply_notice disabled)" "disabled"
+assert_eq "apply notice is silent on non-Linux (#95)" "$(apply_notice efficiency Darwin)" ""
+
+# #95 (regression): `apply` RECONCILES the autotune timer with config — so changing the target and running
+# apply actually re-bakes the installed unit. Previously apply only PRINTED the new target while the timer
+# kept the old one (config said efficiency, but tune --history still read the stale performance unit).
+echo "== black-box: apply reconciles the autotune timer to config (#95) =="
+ARC="$(mktemp -d "$SANDBOX/arec.XXXXXX")"
+mkdir -p "$ARC/systemd"
+cp "$ROOT/systemd/rigforge-autotune.service.template" "$ROOT/systemd/rigforge-autotune.timer.template" "$ARC/systemd/"
+# A stale unit from a prior setup, baked as performance — the exact state behind the reported bug.
+printf 'Environment=AUTOTUNE_TARGET=perf\n' >"$ARC/systemd/rigforge-autotune.service"
+printf 'OnCalendar=monthly\n' >"$ARC/systemd/rigforge-autotune.timer"
+arc_apply() {
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ARC"
+        SYSTEMD_DIR="$ARC/systemd"
+        SERVICE_NAME=xmrig
+        REAL_USER=rfop
+        AUTOTUNE_MODE=efficiency
+        AUTOTUNE_TARGET=efficiency
+        _apply_runtime() { :; } # skip the heavy config regen + restart; we're testing the reconcile
+        sudo() { "$@"; }        # install_autotune writes the unit via sudo tee
+        set +e
+        PATH="$STUBS:$PATH" apply 2>&1
+    )
+}
+arc_out="$(arc_apply)"
+assert_contains "apply re-bakes the stale timer to the configured target (#95)" "$(cat "$ARC/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=efficiency"
+assert_contains "apply reports the reconciled target (#95)" "$arc_out" "Periodic autotune: efficiency"
+
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
@@ -1055,36 +1103,202 @@ assert_eq "valid HOME_DIR resolves to the worker root" "$(wrc "$WV/good.json")" 
 assert_contains "HOME_DIR with shell metacharacters is refused" "$(wrc "$WV/meta.json")" "Refusing to act"
 assert_contains "HOME_DIR with .. traversal is refused" "$(wrc "$WV/trav.json")" "Refusing to act"
 
-# The periodic-autotune systemd timer: enabling it (AUTOTUNE=true) writes the .service + .timer; disabling
-# it (AUTOTUNE=false, files present) removes them — both via the SYSTEMD_DIR override the real units use.
-echo "== black-box: install_autotune timer enable/disable =="
+# The periodic-autotune systemd timer (#95): a non-"disabled" mode (performance|efficiency) writes the
+# .service + .timer and bakes the target into the unit; "disabled" (files present) removes them — both via
+# the SYSTEMD_DIR override the real units use.
+echo "== black-box: install_autotune timer enable/disable (#95 tri-state) =="
 AT="$(mktemp -d "$SANDBOX/at.XXXXXX")"
 mkdir -p "$AT/systemd"
 # install_autotune renders the unit TEMPLATES from systemd/ (like xmrig.service), so they must be present.
 cp "$ROOT/systemd/rigforge-autotune.service.template" "$ROOT/systemd/rigforge-autotune.timer.template" "$AT/systemd/"
-run_autotune() { # <true|false> [oncalendar]
+run_autotune() { # <disabled|performance|efficiency> [oncalendar]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
         SCRIPT_DIR="$AT"
         SYSTEMD_DIR="$AT/systemd"
         REAL_USER=rfop # the operator captured at setup time; baked into the service unit
-        AUTOTUNE="$1"
-        AUTOTUNE_ONCALENDAR="${2:-daily}"
+        AUTOTUNE_MODE="$1"
+        case "$1" in efficiency) AUTOTUNE_TARGET=efficiency ;; *) AUTOTUNE_TARGET=perf ;; esac
+        [ -n "${2:-}" ] && AUTOTUNE_ONCALENDAR="$2" # else leave unset to exercise the product default
         set +e
         PATH="$STUBS:$PATH" install_autotune 2>&1
     )
 }
-out="$(run_autotune true hourly)"
+out="$(run_autotune performance hourly)"
 assert_eq "autotune enable writes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "y"
 assert_eq "autotune enable writes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "y"
 assert_contains "autotune timer honours the OnCalendar override" "$(cat "$AT/systemd/rigforge-autotune.timer")" "OnCalendar=hourly"
 assert_contains "autotune service invokes the autotune verb" "$(cat "$AT/systemd/rigforge-autotune.service")" "rigforge.sh autotune"
 # #reown: the service bakes in the operator so the root timer hands files back to them (not to root).
 assert_contains "autotune service bakes in RIGFORGE_OPERATOR (#reown)" "$(cat "$AT/systemd/rigforge-autotune.service")" "RIGFORGE_OPERATOR=rfop"
-out="$(run_autotune false)"
+# #95: the chosen target is baked into the unit so scheduled runs match what the operator configured.
+assert_contains "performance mode bakes AUTOTUNE_TARGET=perf (#95)" "$(cat "$AT/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=perf"
+out="$(run_autotune efficiency)" # no OnCalendar -> product default
+assert_contains "efficiency mode bakes AUTOTUNE_TARGET=efficiency (#95)" "$(cat "$AT/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=efficiency"
+# #95: the default cadence is monthly (not daily) — once the tune converges it's stable, so re-tuning is
+# event-driven (on upgrade); the timer is just a slow safety net.
+assert_contains "default autotune cadence is monthly, not daily (#95)" "$(cat "$AT/systemd/rigforge-autotune.timer")" "OnCalendar=monthly"
+out="$(run_autotune disabled)"
 assert_eq "autotune disable removes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "n"
 assert_eq "autotune disable removes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "n"
+
+# #95: the tri-state `autotune` value normalizes to a mode (+ a perf|efficiency target). Legacy booleans
+# still map (true->performance, false->disabled); an unknown value hard-errors so a typo can't silently
+# disable scheduled tuning.
+echo "== unit: parse_config — autotune tri-state (#95) =="
+at_mode() { parse_and_print "$1" "$ROOT" AUTOTUNE_MODE; }
+at_tgt() { parse_and_print "$1" "$ROOT" AUTOTUNE_TARGET; }
+c="$(mkconf at_dis "{ $POOL, \"autotune\": \"disabled\" }")"
+assert_eq "autotune disabled -> mode disabled" "$(at_mode "$c")" "disabled"
+c="$(mkconf at_perf "{ $POOL, \"autotune\": \"performance\" }")"
+assert_eq "autotune performance -> mode performance" "$(at_mode "$c")" "performance"
+assert_eq "autotune performance -> target perf" "$(at_tgt "$c")" "perf"
+c="$(mkconf at_eff "{ $POOL, \"autotune\": \"efficiency\" }")"
+assert_eq "autotune efficiency -> mode efficiency" "$(at_mode "$c")" "efficiency"
+assert_eq "autotune efficiency -> target efficiency" "$(at_tgt "$c")" "efficiency"
+c="$(mkconf at_def "{ $POOL }")"
+assert_eq "autotune omitted -> default disabled" "$(at_mode "$c")" "disabled"
+c="$(mkconf at_true "{ $POOL, \"autotune\": true }")"
+assert_eq "legacy autotune true -> performance" "$(at_mode "$c")" "performance"
+c="$(mkconf at_false "{ $POOL, \"autotune\": false }")"
+assert_eq "legacy autotune false -> disabled" "$(at_mode "$c")" "disabled"
+c="$(mkconf at_bad "{ $POOL, \"autotune\": \"turbo\" }")"
+parse_rc "$c" "$ROOT" && at_rc=0 || at_rc=$?
+assert_eq "invalid autotune value hard-errors (#95)" "$([ "${at_rc:-0}" -ne 0 ] && echo errored || echo ok)" "errored"
+
+# #95: the autotune TARGET decides the winner. Two modes where raw-fastest != most-efficient:
+#   mode0 = 1000 H/s @ 100 W (10.0 H/s/W) ; mode1 = 1100 H/s @ 125 W (8.8 H/s/W).
+# perf must pick mode1 (raw fastest); efficiency must keep mode0 (best H/s/W). The stubbed API + power
+# read the active prefetch mode from the overrides file the sweep rewrites, so each mode reports its pair.
+echo "== black-box: autotune ranks by target (#95) =="
+ATD="$(mktemp -d "$SANDBOX/atd.XXXXXX")"
+mkdir -p "$ATD/worker" "$ATD/no-rapl"
+ovf="$ATD/worker/tune-overrides.json"
+autotune_decide() { # <target> -> final prefetch mode
+    printf '{"randomx":{"scratchpad_prefetch_mode":0}}\n' >"$ovf"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$ATD/worker"
+        AUTOTUNE_TARGET="$1"
+        AUTOTUNE_MODES="0 1"
+        AUTOTUNE_SAMPLES=1
+        AUTOTUNE_INTERVAL=0
+        AUTOTUNE_WARMUP=0
+        AUTOTUNE_MARGIN=0.001
+        API_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 1100 || echo 1000'
+        TUNE_POWER_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 125 || echo 100'
+        parse_config() { :; }   # keep the test's WORKER_ROOT/target; skip real config parsing
+        _apply_runtime() { :; } # autotune applies each mode via _apply_runtime; no real restart
+        sudo() { "$@"; }        # _autotune_set_prefetch uses `sudo cp`
+        set +e
+        PATH="$STUBS:$PATH" autotune >/dev/null 2>&1
+    )
+    jq -r '.randomx.scratchpad_prefetch_mode' "$ovf"
+}
+assert_eq "autotune perf picks the raw-fastest mode (#95)" "$(autotune_decide perf)" "1"
+assert_eq "autotune efficiency keeps the most-efficient mode (#95)" "$(autotune_decide efficiency)" "0"
+
+# #95: efficiency with NO power source warns and falls back to perf — it still optimizes (raw-fastest),
+# rather than dividing by a missing watts reading.
+printf '{"randomx":{"scratchpad_prefetch_mode":0}}\n' >"$ovf"
+np_out="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$ATD/worker"
+        AUTOTUNE_TARGET=efficiency
+        AUTOTUNE_MODES="0 1"
+        AUTOTUNE_SAMPLES=1
+        AUTOTUNE_INTERVAL=0
+        AUTOTUNE_WARMUP=0
+        AUTOTUNE_MARGIN=0.001
+        RAPL_DIR="$ATD/no-rapl" # empty -> _rapl_sum returns nothing
+        unset TUNE_POWER_CMD
+        API_CMD='[ "$(jq -r ".randomx.scratchpad_prefetch_mode" "'"$ovf"'")" = 1 ] && echo 1100 || echo 1000'
+        parse_config() { :; }
+        _apply_runtime() { :; }
+        sudo() { "$@"; }
+        set +e
+        PATH="$STUBS:$PATH" autotune 2>&1
+    )
+)"
+assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
+assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
+
+# #95: the efficiency sampler's RAPL path (efficiency target, no TUNE_POWER_CMD) brackets the live window
+# with the CPU-package energy counter. Fake powercap tree; assert the hashrate field comes back (the watts
+# field is timing-dependent on a static counter, so we don't pin its value — just that the path ran).
+mkdir -p "$ATD/rapl/intel-rapl:0"
+printf package-0 >"$ATD/rapl/intel-rapl:0/name"
+printf 1000000 >"$ATD/rapl/intel-rapl:0/energy_uj"
+printf 9000000 >"$ATD/rapl/intel-rapl:0/max_energy_range_uj"
+rapl_smp="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        RAPL_DIR="$ATD/rapl"
+        unset TUNE_POWER_CMD
+        API_CMD='echo 1234'
+        set +e
+        _autotune_sample 1 0 efficiency
+    )
+)"
+assert_eq "autotune efficiency sampler reads RAPL + returns the hashrate (#95)" "$(printf '%s' "$rapl_smp" | cut -f1)" "1234"
+
+# #95: `upgrade` re-tunes the new build — the real trigger, since the fastest knobs can shift between
+# XMRig versions (the monthly timer is just a slow safety net). Exercise _post_upgrade_retune's decision
+# logic with stubbed systemctl (service state), miner readiness, and autotune.
+echo "== black-box: upgrade re-tunes the new build (#95) =="
+PUR="$(mktemp -d "$SANDBOX/pur.XXXXXX")"
+mkdir -p "$PUR/worker"
+printf '{}' >"$PUR/worker/tune-overrides.json"
+post_retune() { # <mode> <service_active:y|n> <miner_live:y|n>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SERVICE_NAME=xmrig
+        WORKER_ROOT="$PUR/worker"
+        AUTOTUNE_MODE="$1"
+        _ACT="$2"
+        _LIVE="$3"
+        systemctl() { case "$*" in *is-active*) [ "$_ACT" = y ] ;; *) return 0 ;; esac }
+        _wait_miner_live() { [ "$_LIVE" = y ]; }
+        autotune() { echo "AUTOTUNE_RAN"; }
+        set +e
+        _post_upgrade_retune 2>&1
+    )
+}
+o="$(post_retune performance y y)"
+assert_contains "upgrade re-tunes when autotune enabled + miner live (#95)" "$o" "Re-tuning the new build"
+assert_contains "upgrade actually invokes autotune (#95)" "$o" "AUTOTUNE_RAN"
+o="$(post_retune performance y n)"
+assert_eq "upgrade does not autotune a cold miner (#95)" "$(printf '%s' "$o" | grep -c AUTOTUNE_RAN)" "0"
+assert_contains "upgrade explains the skipped re-tune (#95)" "$o" "skipping the post-upgrade re-tune"
+o="$(post_retune disabled y y)"
+assert_eq "upgrade does NOT re-tune when autotune disabled (#95)" "$(printf '%s' "$o" | grep -c AUTOTUNE_RAN)" "0"
+assert_contains "upgrade warns to re-tune manually when disabled (#95)" "$o" "carried over from the previous build"
+o="$(post_retune performance n y)"
+assert_eq "upgrade does NOT re-tune when the service is inactive (#95)" "$(printf '%s' "$o" | grep -c AUTOTUNE_RAN)" "0"
+
+# #95: _wait_miner_live polls the API until a live hashrate appears, so a freshly-restarted miner (still
+# allocating the RandomX dataset) is warm before the post-upgrade re-tune measures it.
+echo "== unit: _wait_miner_live (#95) =="
+wlive="$( (
+    source "$SCRIPT"
+    _read_api_hashrate() { echo 10741; }
+    set +e
+    _wait_miner_live 2 && echo LIVE || echo DEAD
+))"
+assert_eq "_wait_miner_live: true once the API reports a hashrate (#95)" "$wlive" "LIVE"
+wdead="$( (
+    source "$SCRIPT"
+    _read_api_hashrate() { echo 0; }
+    set +e
+    _wait_miner_live 1 && echo LIVE || echo DEAD
+))"
+assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
 
 # #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
 # no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
@@ -1914,6 +2128,50 @@ assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
+
+# #tunefix: the optimization target defaults to the `autotune` config value (overridable with
+# --perf/--efficiency) and is announced at the start of the run. Isolated sandbox so it doesn't disturb the
+# ordered $TN tests above. TUNE_POWER_CMD makes a power source available so efficiency doesn't fall back.
+echo "== black-box: tune target follows autotune config + is announced (#tunefix) =="
+TT="$(mktemp -d "$SANDBOX/tunetgt.XXXXXX")"
+cp "$ROOT/VERSION" "$TT/"
+mkdir -p "$TT/util" "$TT/home/worker/xmrig/build" "$TT/cpuok/cpu0/cpufreq"
+cp "$ROOT/util/proposed-grub.sh" "$TT/util/" 2>/dev/null
+printf '5000000\n' >"$TT/cpu_max"
+printf '4800000\n' >"$TT/cpuok/cpu0/cpufreq/scaling_cur_freq"
+printf '{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": false }, "cpu": { "yield": false, "priority": 2 } }\n' >"$TT/home/worker/xmrig/build/config.json"
+printf '#!/usr/bin/env bash\necho "miner speed 10s 1100.0 H/s max 1100.0 H/s"\n' >"$TT/home/worker/xmrig/build/xmrig"
+chmod +x "$TT/home/worker/xmrig/build/xmrig"
+tune_target() { # <autotune-config-value> [tune-flags...]
+    local atv="$1"
+    shift
+    printf '{ "HOME_DIR": "%s/home", "autotune": "%s", "pools": [{"url":"h:3333"}] }\n' "$TT" "$atv" >"$TT/config.json"
+    (cd "$TT" && PATH="$STUBS:$PATH" CPUFREQ_MAX="$TT/cpu_max" CPU_SYSFS="$TT/cpuok" \
+        TUNE_ITERS=1 TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+        TUNE_POWER_CMD='echo 90' RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune "$@" </dev/null 2>&1) | grep -i "Optimization target"
+}
+tt_eff="$(tune_target efficiency)"
+assert_contains "tune defaults to efficiency from autotune=efficiency (#tunefix)" "$tt_eff" "Optimization target: efficiency"
+assert_contains "tune notes the target came from config (#tunefix)" "$tt_eff" "from your autotune config"
+assert_contains "tune defaults to performance from autotune=performance (#tunefix)" "$(tune_target performance)" "Optimization target: performance"
+assert_contains "tune defaults to performance from autotune=disabled (#tunefix)" "$(tune_target disabled)" "Optimization target: performance"
+tt_ovr="$(tune_target performance --efficiency)"
+assert_contains "--efficiency overrides config performance (#tunefix)" "$tt_ovr" "Optimization target: efficiency"
+assert_eq "an explicit target has no 'from config' note (#tunefix)" "$(printf '%s' "$tt_ovr" | grep -c 'from your autotune config')" "0"
+assert_contains "--perf overrides config efficiency (#tunefix)" "$(tune_target efficiency --perf)" "Optimization target: performance"
+# the sudo auto-elevate is gated on an interactive TTY, so a non-interactive (</dev/null) tune never re-execs.
+assert_eq "non-interactive tune does not auto-elevate (#tunefix)" "$(tune_target performance | grep -c 're-running with sudo')" "0"
+# Cover the interactive auto-elevate path. Run it as a real child process (so coverage sees the exec) with
+# RIGFORGE_FORCE_ELEVATE=1 forcing the gate regardless of the runner's uid, and a PATH `sudo` stub so exec
+# captures the re-exec instead of looping.
+ELB="$(mktemp -d "$SANDBOX/elev.XXXXXX")"
+printf '#!/usr/bin/env bash\necho "REEXEC: $*"\n' >"$ELB/sudo"
+chmod +x "$ELB/sudo"
+elev_out="$(cd "$TT" && PATH="$ELB:$STUBS:$PATH" RIGFORGE_FORCE_ELEVATE=1 STUB_UNAME_S=Linux \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
+assert_contains "tune auto-elevates with sudo when interactive (#tunefix)" "$elev_out" "REEXEC:"
+assert_contains "tune re-execs the same tune command (#tunefix)" "$elev_out" "tune --live"
+
 # tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
 # above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
 hout="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
@@ -1943,12 +2201,23 @@ cat >"$HL/config.json" <<EOF
 EOF
 printf '{ "randomx": { "scratchpad_prefetch_mode": 1 } }\n' >"$HL/home/worker/tune-overrides.json"
 printf '{ "best": { "hashrate": 10741 }, "target": "perf", "results": [1,2] }\n' >"$HL/home/worker/rigforge-tune.json"
-printf '#!/usr/bin/env bash\ncase "$*" in *"cat rigforge-autotune.timer"*) echo "OnCalendar=daily" ;; *"is-active"*) echo active ;; *NextElapseUSecRealtime*) echo "Mon 2099-01-01 00:00:00 UTC" ;; esac\nexit 0\n' >"$HL/bin/systemctl"
+cat >"$HL/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+*"cat rigforge-autotune.service"*) printf 'Environment=AUTOTUNE_TARGET=perf\n' ;; # #95: drives the target line
+*"cat rigforge-autotune.timer"*) echo "OnCalendar=daily" ;;
+*"is-active"*) echo active ;;
+*NextElapseUSecRealtime*) echo "Mon 2099-01-01 00:00:00 UTC" ;;
+esac
+exit 0
+EOF
 printf '#!/usr/bin/env bash\nprintf "[INFO] autotune: prefetch_mode=2 not better (10758 vs 10741 H/s) — rolling back to 1.\\n"\n' >"$HL/bin/journalctl"
 chmod +x "$HL/bin/systemctl" "$HL/bin/journalctl"
 hout="$(cd "$HL" && PATH="$HL/bin:$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --history </dev/null 2>&1)"
 assert_rc "tune --history (Linux) exits 0 (#hist)" "$?" "0"
-assert_contains "tune --history: auto-tune shown as enabled (#hist)" "$hout" "Periodic auto-tune: enabled"
+assert_contains "tune --history: autotune shown as enabled (#hist)" "$hout" "Periodic autotune: enabled"
+# #95: the target reads in the config's vocabulary ("performance"), not the internal "perf".
+assert_contains "tune --history: target in config vocabulary (#95)" "$hout" "optimizing for: performance (raw hashrate)"
 assert_contains "tune --history: shows the schedule (#hist)" "$hout" "schedule: daily"
 assert_contains "tune --history: shows the next scheduled run (#hist)" "$hout" "next run: Mon 2099-01-01"
 assert_contains "tune --history: surfaces a recent decision (#hist)" "$hout" "rolling back to 1"

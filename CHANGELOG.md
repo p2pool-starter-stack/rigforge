@@ -32,6 +32,26 @@ All notable changes to RigForge are documented here. The format is based on
   or heat/PSU-constrained rigs. The variance gate (#63) carries over proportionally, and efficiency mode
   requires a power source (built-in RAPL or `TUNE_POWER_CMD`), falling back to `perf` with a warning when
   none is available. The chosen target is recorded in `rigforge-tune.json`. Default stays `perf`.
+- **Periodic `autotune` target — `disabled` / `performance` / `efficiency` (#95).** The hands-off
+  auto-tuner is now a single tri-state `autotune` key (advanced config only; **default `"disabled"`**).
+  `"performance"` schedules a live tune for raw hashrate; `"efficiency"` schedules one for
+  **hashrate-per-watt** — sampling watts over the same live window and ranking by H/s/W, extending the
+  `tune --efficiency` target (#79) to the scheduled run. The target is baked into the systemd unit at setup
+  so timer-driven runs optimize for what you chose; with no power source it falls back to `performance` and
+  warns. `tune --history` shows the active target, and `apply` **reconciles the installed timer with
+  config** (so changing the `autotune` target and running `apply` actually takes effect, not just shows the
+  new value) and prints it. Legacy booleans still parse (`true` → `performance`,
+  `false` → `disabled`); an unknown value hard-errors rather than silently disabling tuning.
+  - **Re-tuning is event-driven.** Once the prefetch mode converges it's stable, so re-tuning happens when
+    it actually matters: **`upgrade` re-tunes the new build** (the fastest knobs can shift between XMRig
+    versions) once the rebuilt miner is live. The safety-net timer's default cadence is now **monthly**
+    (was daily) — it only catches slow drift, so it no longer churns the miner nightly to re-confirm a
+    stable result. Override with `AUTOTUNE_ONCALENDAR` as before.
+  - **Manual `tune` follows the same target.** A plain `tune` (or `tune --live`) now defaults its
+    optimization target to the `autotune` config value, so "efficiency" means efficiency everywhere instead
+    of the manual command silently optimizing raw hashrate. Override per-run with `--perf`/`--efficiency`.
+    `tune` now **announces the target** at the start (`Optimization target: …`) and, run without `sudo`,
+    **re-runs itself with `sudo`** (interactive only) instead of failing partway.
 - **`doctor` BIOS/firmware advisory (#78).** `doctor` now reads what the booted OS exposes — board + BIOS
   version/date from `/sys/class/dmi/id`, the memory profile (rated vs. configured speed via `dmidecode`),
   and SMT state — and turns it into concrete, manual BIOS recommendations: enable **XMP/EXPO/DOCP** when
@@ -245,6 +265,12 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`tune` no longer spuriously aborts mid-benchmark (and read 0 H/s).** `xmrig --bench` exits on its own
+  when the benchmark finishes, so an unguarded `kill` of the (already-gone) process returned non-zero and,
+  under `set -Eeuo pipefail`, fired the ERR trap **inside** the measurement subshell — aborting it before
+  it returned the result. The symptom was a burst of `rigforge aborted while starting up (exit 1)` lines
+  (one per `TUNE_ITERS` benchmark) and `measured 0 H/s` candidates. The kill is now guarded, so the result
+  survives whether or not xmrig is still alive. A timing race, which is why it surfaced only on some hosts.
 - **`doctor` no longer says "apply the items below" when there's nothing to apply.** The firmware/BIOS
   context line always promised "apply the items below in BIOS/UEFI", even when no XMP/EXPO or SMT
   recommendation followed (RAM already at its rated speed, SMT on). It now works out the recommendations
