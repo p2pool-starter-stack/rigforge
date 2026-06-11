@@ -25,6 +25,34 @@ split centrally, so the worker config stays minimal and you **never put a wallet
 - The endpoint must be reachable from the worker; if the stack host has a firewall, allow the Stratum
   port (3333) on the LAN.
 
+### Stratum authentication (optional)
+
+By default the stack's `:3333` is **open** — any rig that can reach it may mine, and the pool `pass`
+is ignored (RigForge defaults it to `"x"`). If the operator turns authentication **on** by setting
+[`p2pool.stratum_password`](https://github.com/p2pool-starter-stack/pithead/blob/main/docs/workers.md#authentication)
+on the stack, the proxy then **rejects any rig whose `pass` doesn't match** — XMRig logs
+`Permission denied` and the rig won't mine. Put that same secret in the rig's pool `pass`:
+
+```jsonc
+// config.json — set "pass" to the stack's p2pool.stratum_password
+{
+    "pools": [
+        { "url": "your-stack:3333", "pass": "the-stratum-password" }
+    ]
+}
+```
+
+Then `./rigforge.sh apply` (or `setup`) regenerates the worker config with the new password.
+
+- It's the **same secret on every rig**. The operator finds it on the stack side — it's printed after
+  `pithead apply`/`setup`, stored in the stack's `.env` as `PROXY_STRATUM_PASSWORD`, and shown by
+  `pithead status`.
+- The password travels **cleartext** over your LAN's plain Stratum, so this is access control —
+  *who may mine* — **not** encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind`
+  / a firewall do the rest).
+- This is unrelated to the `DONATION` knob (that's *this rig's* dev-fee donation) and to the API
+  `ACCESS_TOKEN` below (that's the read-only stats auth on `:8080`).
+
 ---
 
 ## 2. Stats connection — the Worker API (`:8080`)
@@ -63,6 +91,7 @@ matching configuration on **both** sides — that cross-side coordination is lat
 
 | Symptom | Fix |
 |---|---|
+| **Rig won't mine / XMRig logs `Permission denied` at login** | The stack has stratum authentication on (`p2pool.stratum_password`) — set the pool `pass` to that secret. See [Stratum authentication](#stratum-authentication-optional). |
 | **Worker missing from the dashboard** | The dashboard discovers rigs from their stratum `user` label — confirm the worker is actually connected to the pool and mining. |
 | **Rig shows as connected but no stats** | The HTTP API token must equal the rig name (or be unset). If you set a custom `ACCESS_TOKEN`, the dashboard can't read it — clear it and re-run setup. |
 | **Stats unreachable from the stack host** | Confirm the worker's `:8080` is reachable from the stack host over the LAN (firewall, correct IP). RigForge binds `0.0.0.0` by default. |

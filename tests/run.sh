@@ -251,6 +251,14 @@ c="$(mkconf p_full "{ \"pools\": [{\"url\":\"pool.example:443\",\"tls\":true,\"p
 assert_eq "explicit url kept" "$(PJ "$c" | jq -r '.[0].url')" "pool.example:443"
 assert_eq "explicit tls kept" "$(PJ "$c" | jq -c '.[0].tls')" "true"
 assert_eq "explicit pass kept" "$(PJ "$c" | jq -r '.[0].pass')" "w"
+# A Pithead stratum password (p2pool.stratum_password) flows through verbatim as the pool pass — the
+# cross-repo contract for an authenticated stack. Covers an auto-generated hex secret and a literal
+# with the punctuation Pithead allows (. _ : @ -); both are valid XMRig passes.
+c="$(mkconf p_pw "{ \"pools\": [{\"url\":\"stack:3333\",\"pass\":\"a1b2c3d4e5f6a7b8\"}] }")"
+assert_eq "stratum password (hex) kept as pass" "$(PJ "$c" | jq -r '.[0].pass')" "a1b2c3d4e5f6a7b8"
+c="$(mkconf p_pw2 "{ \"pools\": [{\"url\":\"stack:3333\",\"pass\":\"Stack_Pass.1:2@3-x\"}] }")"
+assert_eq "stratum password (symbols) kept as pass" "$(PJ "$c" | jq -r '.[0].pass')" "Stack_Pass.1:2@3-x"
+# (a pass with a space is rejected — see the validation block below.)
 # A non-default port is honoured verbatim.
 c="$(mkconf p_port "{ \"pools\": [{\"url\":\"stack.lan:14444\"}] }")"
 assert_eq "non-default port kept" "$(PJ "$c" | jq -r '.[0].url')" "stack.lan:14444"
