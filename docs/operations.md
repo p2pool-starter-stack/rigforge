@@ -7,7 +7,9 @@ upgrading, and troubleshooting.
 
 ## Commands
 
-RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`:
+RigForge is a single script. Run it as `sudo ./rigforge.sh [command]` — or, **after the first
+`setup`**, simply as `sudo rigforge [command]` from any directory (setup symlinks `rigforge` into
+`/usr/local/bin`; `uninstall` removes it):
 
 | Command | What it does |
 |---|---|

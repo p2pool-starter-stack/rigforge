@@ -129,6 +129,12 @@ if [ "$ARCH" = x86_64 ]; then
 else
     echo "  • $ARCH container: MSR module path is x86-only, skipped (run linux/amd64 for full coverage)"
 fi
+# #cli: setup put a `rigforge` command on PATH. Assert the REAL symlink, and — the important part —
+# that invoking it THROUGH the symlink still resolves the repo: `rigforge version` reads /work/VERSION
+# via the resolved SCRIPT_DIR, not /usr/local/bin. (PATH has the stubs first, but none stub `rigforge`.)
+assert_eq "cli: /usr/local/bin/rigforge is a symlink" "$([ -L /usr/local/bin/rigforge ] && echo y || echo n)" "y"
+assert_eq "cli: symlink targets the repo script" "$(readlink /usr/local/bin/rigforge)" "$WORK/rigforge.sh"
+assert_contains "cli: 'rigforge' runs from PATH and resolves the repo" "$(rigforge version 2>&1)" "$(cat "$WORK/VERSION")"
 cp "$BUILD/config.json" "$WORK/config-run1.json"
 
 echo "== second run (idempotency) =="
@@ -220,6 +226,7 @@ assert_absent "uninstall: GRUB hugepages stripped" "$(cat /etc/default/grub)" "d
 assert_absent "uninstall: GRUB msr param stripped" "$(cat /etc/default/grub)" "msr.allow_writes"
 assert_contains "uninstall: GRUB keeps base params" "$(cat /etc/default/grub)" "quiet splash"
 assert_eq "uninstall: config.json left in place" "$([ -f ./config.json ] && echo y || echo n)" "y"
+assert_eq "uninstall: removed the 'rigforge' command from PATH" "$([ -L /usr/local/bin/rigforge ] && echo present || echo gone)" "gone"
 ./rigforge.sh uninstall --yes </dev/null >/dev/null 2>&1
 assert_rc "uninstall is idempotent" "$?" "0"
 

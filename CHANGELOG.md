@@ -8,6 +8,11 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`rigforge` on your PATH.** `setup` now installs a `rigforge` command — a symlink in `/usr/local/bin`
+  pointing at the script — so you can run `sudo rigforge doctor` / `tune` / `apply` from any directory
+  instead of `./rigforge.sh`. The script resolves itself through the symlink, so the repo (config.json,
+  `util/`, the worker build) is still found. Best-effort and idempotent: it never fails a deploy, won't
+  clobber a non-RigForge file already at that path, and `uninstall` removes it.
 - **`tune` optimization target — raw hashrate vs. efficiency (#79).** `tune --efficiency` (or
   `TUNE_TARGET=efficiency`) ranks candidates by **hashrate-per-watt** instead of raw H/s — for power-cost
   or heat/PSU-constrained rigs. The variance gate (#63) carries over proportionally, and efficiency mode

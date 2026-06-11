@@ -42,12 +42,27 @@ on_err() {
 
 # --- Global Variables ---
 OS_TYPE="$(uname -s)"
+# Resolve a path through any symlink chain and echo the directory that holds the real file (absolute).
+# This is what lets an on-PATH symlink (e.g. /usr/local/bin/rigforge -> the checkout) still locate the
+# repo it points into, so config.json / util/ / data/ resolve to the checkout, not the symlink's dir.
+# Portable (no `readlink -f`, which BSD/macOS lacks): follow links one hop at a time.
+_script_dir() {
+    local src="${1:-${BASH_SOURCE[0]}}" dir
+    while [ -L "$src" ]; do
+        dir=$(cd -P "$(dirname "$src")" &>/dev/null && pwd)
+        src=$(readlink "$src")
+        case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+    done
+    cd -P "$(dirname "$src")" &>/dev/null && pwd
+}
+
 # Base directory for the script's bundled assets (VERSION, systemd/, util/) and its runtime state
-# (config.json, data/, backups/). Defaults to the directory the script lives in — so a normal deploy
-# is unchanged. Overridable via RIGFORGE_HOME so the test suite can run THIS file against a throwaway
-# sandbox (keeping per-test state isolated) instead of a copy of it, which lets coverage credit the
-# real script for black-box runs too (#68).
-SCRIPT_DIR="${RIGFORGE_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)}"
+# (config.json, data/, backups/). Defaults to the directory the script lives in — resolved through any
+# symlink, so a normal deploy is unchanged AND a `rigforge` symlink on PATH still finds the repo.
+# Overridable via RIGFORGE_HOME so the test suite can run THIS file against a throwaway sandbox
+# (keeping per-test state isolated) instead of a copy of it, which lets coverage credit the real
+# script for black-box runs too (#68).
+SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 REBOOT_REQUIRED=false
@@ -71,6 +86,8 @@ MODULES_LOAD_DIR="${MODULES_LOAD_DIR:-/etc/modules-load.d}"
 MODULES_FILE="${MODULES_FILE:-/etc/modules}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
+# Directory on PATH where `setup` installs the `rigforge` command (a symlink back to this script).
+BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 
 # Read-only system paths the `doctor` health check inspects (overridable for tests).
 MEMINFO="${MEMINFO:-/proc/meminfo}"
@@ -843,6 +860,35 @@ configure_limits() {
     append_once "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
 }
 
+# Put a `rigforge` command on PATH: a symlink in BIN_DIR pointing at this script, so the operator can
+# run `sudo rigforge <cmd>` from anywhere instead of `./rigforge.sh`. Best-effort and idempotent — it
+# never fails the deploy. `uninstall` removes it, but only while it's still our symlink.
+link_cli() {
+    local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge" ok=1
+    if [ ! -d "$BIN_DIR" ]; then
+        warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
+        return 0
+    fi
+    if [ -L "$link" ] && [ "$(readlink "$link" 2>/dev/null)" = "$target" ]; then
+        return 0 # already our symlink — keep idempotent re-runs quiet
+    fi
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        warn "Didn't add the 'rigforge' command — $link already exists and isn't a RigForge symlink."
+        return 0
+    fi
+    # Use sudo only when BIN_DIR isn't writable (it is when setup runs as root on Linux); empty prefix
+    # otherwise. shellcheck SC2086: the unquoted prefix is intentional (it must vanish when empty).
+    local sudo_pfx=""
+    [ -w "$BIN_DIR" ] || sudo_pfx="sudo"
+    # shellcheck disable=SC2086
+    $sudo_pfx rm -f "$link" 2>/dev/null && $sudo_pfx ln -s "$target" "$link" 2>/dev/null || ok=0
+    if [ "$ok" = 1 ]; then
+        log "Installed the 'rigforge' command -> $link (try: 'sudo rigforge doctor' from anywhere)."
+    else
+        warn "Couldn't add the 'rigforge' command at $link (permissions?). Run it as './rigforge.sh' instead."
+    fi
+}
+
 finish_deployment() {
     echo ""
     log "--------------------------------------------------------"
@@ -921,6 +967,8 @@ main() {
     install_service
     CURRENT_STEP="configuring autotune"
     install_autotune
+    CURRENT_STEP="linking the rigforge command"
+    link_cli # put `rigforge` on PATH so the operator can run it from anywhere
     CURRENT_STEP="reconciling file ownership"
     _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
     CURRENT_STEP="finishing up"
@@ -1058,6 +1106,12 @@ uninstall() {
     if [ -n "$worker_root" ] && [ -d "$worker_root" ]; then
         sudo rm -rf "$worker_root"
         log "Removed worker build/logs at $worker_root."
+    fi
+
+    # 9. the `rigforge` CLI symlink — only if it's still ours (never touch a file we didn't create)
+    if [ -L "$BIN_DIR/rigforge" ] && [ "$(readlink "$BIN_DIR/rigforge" 2>/dev/null)" = "$SCRIPT_DIR/rigforge.sh" ]; then
+        sudo rm -f "$BIN_DIR/rigforge"
+        log "Removed the 'rigforge' command ($BIN_DIR/rigforge)."
     fi
 
     log "Uninstall complete. config.json was left in place."

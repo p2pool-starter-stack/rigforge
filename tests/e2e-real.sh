@@ -75,6 +75,15 @@ provision() {
     bin="$(find_worker_bin)"
     [ -n "$bin" ] && [ -x "$bin" ] && ok "XMRig binary was built ($bin)" || bad "no built XMRig binary found"
     systemctl cat xmrig >/dev/null 2>&1 && ok "systemd unit 'xmrig' installed" || bad "xmrig.service not installed"
+    # #cli: setup put a `rigforge` command on PATH; prove invoking it THROUGH the symlink resolves the repo.
+    if [ -L /usr/local/bin/rigforge ]; then
+        ok "the 'rigforge' command is on PATH (-> $(readlink /usr/local/bin/rigforge))"
+        [ "$(rigforge version 2>&1)" = "$("$RIGFORGE" version 2>&1)" ] &&
+            ok "'rigforge' (via PATH) matches ./rigforge.sh — symlink resolves the repo" ||
+            bad "'rigforge' on PATH didn't resolve the repo (version mismatch vs ./rigforge.sh)"
+    else
+        bad "setup didn't install the 'rigforge' command on PATH (/usr/local/bin/rigforge)"
+    fi
 
     if [ "$(hugepages_total)" -gt 0 ]; then
         ok "HugePages already reserved — no reboot needed; you can run 'verify' now"
@@ -263,6 +272,7 @@ teardown() {
     grep -q 'hugepages1G' /proc/mounts 2>/dev/null && bad "/dev/hugepages1G still mounted" || ok "1G HugePage mount unmounted"
     [ -d "$HERE/data/worker/xmrig" ] && bad "worker build dir still present at $HERE/data/worker/xmrig" || ok "worker build/logs removed"
     [ -f "$HERE/config.json" ] && ok "config.json preserved (uninstall keeps it)" || bad "config.json was removed — uninstall must keep it"
+    [ -L /usr/local/bin/rigforge ] && bad "/usr/local/bin/rigforge symlink still present" || ok "the 'rigforge' command was removed from PATH"
 
     phase "teardown — uninstall is idempotent (a second run is a clean no-op)"
     "$RIGFORGE" uninstall --yes >/tmp/e2e-uninstall2.log 2>&1 &&
