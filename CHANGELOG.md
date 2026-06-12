@@ -8,11 +8,14 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- **Docs: benchmarks — measured stock-vs-tuned results.** A new [Benchmarks](docs/benchmarks.md) page
-  (and a README highlight) reports hashrate **and** efficiency (H/s per watt) for stock XMRig vs.
-  RigForge's system tuning vs. a full `tune`, all measured **mining live** on a real 7800X3D — with the
-  method, the hardware, and honest caveats (modern kernels' Transparent HugePages narrow the gap; on this
-  rig efficiency and performance tuning converge because RandomX pins ~84 W in any config). No code change.
+- **Docs: benchmarks — measured stock-vs-tuned results on two CPUs.** A new [Benchmarks](docs/benchmarks.md)
+  page (and a README highlight) reports hashrate **and** efficiency (H/s per watt) for stock XMRig vs.
+  RigForge, measured **mining live** on a desktop **Ryzen 7800X3D** (+3.5% H/s, +7.6% efficiency) and a
+  48-core **EPYC 7642** (+6.6% / +6.0%). On the EPYC RigForge also **matched an operator's hand-tuned
+  config** and the per-CPU live tune **avoided a landmine** — prefetch mode 2 *halves* RandomX on the EPYC
+  but *wins* on the X3D, which a fixed profile would get wrong. Honest caveats included (Transparent
+  HugePages narrow the stock gap on modern kernels; efficiency and performance tuning converge because
+  RandomX power is ~flat across configs on both chips). No code change.
 - **`tune --now --short` / `--long` — pick the depth of an on-demand live re-tune.** `tune --now` (now
   also spelled `--short`) stays the quick prefetch-only pass the scheduled timer runs; `tune --now --long`
   runs the **full all-knob** live sweep (prefetch, `cpu.yield`, thread count, 1G-pages) against the running

@@ -1,83 +1,91 @@
 # Benchmarks — what the tuning actually buys you
 
 RigForge's whole pitch is "stock XMRig, but with the setup and tuning that are fiddly to get right by
-hand." So: how much does that tuning actually move the needle? These numbers are **measured on real
-hardware, mining live** — not synthetic `--bench` runs — so they reflect what you'd see in the wild.
+hand." So: how much does that tuning actually move the needle? Every number here is **measured on real
+hardware, mining live** — not synthetic `--bench` runs — so it reflects what you'd see in the wild.
 
-> **TL;DR** — on the rig below, RigForge's tuning lifts a stock XMRig from **~10,416 H/s** to
-> **~10,779 H/s** (**+3.5%**) while *dropping* power draw from **86.8 W to 83.5 W**, for a
-> **+7.6%** jump in efficiency (**120.1 → 129.2 H/s per watt**). All free, in one command. The honest
-> nuance is below — most of the win is the system tuning (HugePages + MSR), and modern kernels narrow
-> the gap, but it's real and it costs you nothing.
+> **TL;DR** — across two very different CPUs, RigForge's one-command tuning beats stock XMRig by
+> **+3.5%** (desktop Ryzen 7800X3D) to **+6.6%** (48-core EPYC 7642) in hashrate, and **+7.6% / +6.0%**
+> in efficiency (H/s per watt). On the EPYC it also **matched an expert's hand-tuned config**, and
+> auto-dodged a CPU-specific landmine — a prefetch setting that *halves* RandomX there but *wins* on the
+> X3D. All free, in one command, with the honest nuance kept in.
 
-## The rig
+## How it's measured
+
+Each configuration runs as its own XMRig process **mining to the live pool**. After a warm-up to steady
+state, we sample the **hashrate** (XMRig's HTTP API, 60-second average) and **CPU-package power** (RAPL
+energy counter) over several-minute windows, repeated across rounds. RandomX is low-variance and both
+rigs were thermally steady, so the means are solid (hashrate within ~0.1%).
+
+The baselines:
+
+- **Stock XMRig** — upstream `./xmrig` on a fresh box: **no explicit HugePages**, prefetcher **MSRs at
+  firmware default**, **default governor**. (Transparent HugePages stay at Ubuntu's `madvise` default, as
+  a real user would have.)
+- **RigForge** — `setup`'s kernel work (2 MB + 1 GB **HugePages**, the per-family **MSR prefetcher**
+  preset, **`performance`** governor) plus the winning knobs from a full live `tune`.
+
+## Rig 1 — Ryzen 7800X3D (desktop)
 
 | | |
 |---|---|
-| **CPU** | AMD Ryzen 7 **7800X3D** — 8 cores / 16 threads, 96 MiB L3 (V-Cache), max boost 5050 MHz, AVX-512 |
-| **RAM** | 2 × 16 GB G.Skill DDR5-**6000** (EXPO active, dual-channel, single-rank) |
-| **OS** | Ubuntu 24.04.3 LTS, kernel 6.8 |
-| **Pool / algo** | live Monero pool, **RandomX (rx/0)** |
-
-## Method
-
-Each configuration runs as its own XMRig process **mining to the live pool**. After a warm-up to
-steady state, we sample the **hashrate** (XMRig's HTTP API, 60-second average) and **CPU-package
-power** (Intel RAPL energy counter) every 20 s across a 5-minute window, then rotate to the next
-config — repeated across multiple rotation rounds of continuous mining (~45 samples per config). The
-rig was thermally rock-steady, so run-to-run variance was negligible (hashrate within ~0.1%, power
-within ~0.3%) and the means below are solid.
-
-The four configurations isolate each layer of what RigForge does:
-
-- **Stock XMRig** — what you get running upstream `./xmrig` on a fresh box: **no explicit HugePages**,
-  the **prefetcher MSRs at firmware default** (no mod), and the **default CPU governor**. (Transparent
-  HugePages left at Ubuntu's default of `madvise`, as any real user would have — see the caveat below.)
-- **RigForge — system tuning** — `setup`'s kernel work: 2 MB + 1 GB **HugePages**, the **`ryzen_19h_zen4`
-  MSR prefetcher** preset, and the **`performance`** governor. XMRig's own auto-detected knobs otherwise.
-- **RigForge — tuned (performance)** — the above plus the winning knobs from `tune --perf`.
-- **RigForge — tuned (efficiency)** — the above plus the winning knobs from `tune --efficiency`.
-
-## Results
+| **CPU** | AMD Ryzen 7 **7800X3D** — 8C/16T, 96 MiB L3 (V-Cache), 5050 MHz boost, AVX-512 |
+| **RAM** | 2 × 16 GB G.Skill DDR5-**6000** (EXPO, dual-channel) |
+| **OS / algo** | Ubuntu 24.04, kernel 6.8 · live Monero **rx/0** |
 
 | Configuration | Hashrate (H/s) | Power (W) | Efficiency (H/s per W) |
 |---|--:|--:|--:|
 | **Stock XMRig** (no tuning) | 10,416 | 86.8 | 120.1 |
 | **RigForge** — system tuning only | 10,756 | 83.6 | 128.7 |
-| **RigForge** — tuned for **performance** | **10,779** | 83.5 | 129.2 |
-| **RigForge** — tuned for **efficiency** | 10,779 | 83.5 | **129.2** |
-| | | | |
-| **Stock → fully tuned** | **+3.5%** | **−3.8%** | **+7.6%** |
+| **RigForge** — tuned (performance) | **10,779** | 83.5 | 129.2 |
+| **RigForge** — tuned (efficiency) | 10,779 | 83.5 | **129.2** |
+| **Stock → tuned** | **+3.5%** | **−3.8%** | **+7.6%** |
 
-## What to take away
+Stock XMRig here burns *more* watts for *less* work — without HugePages the CPU stalls on memory, drawing
+~87 W to produce *fewer* hashes; tuned is faster **and** cooler. Performance and efficiency tuning landed
+on the **same** config: RigForge measured the power and found this chip pins ~84 W in any all-core setup,
+so there's no hashrate-for-watts trade-off to make — and it correctly didn't invent one.
 
-- **It's a free, measured win.** ~+3.5% hashrate *and* ~+7.6% efficiency, applied in one command —
-  with the proof above rather than a marketing number.
-- **Stock XMRig burns *more* watts for *less* work.** Without HugePages the CPU stalls on memory
-  (TLB walks chewing cycles), so it draws ~87 W to produce *fewer* hashes; with HugePages it's faster
-  **and** cooler at ~83 W. Efficiency improves more than raw speed.
-- **Most of the gain is the system tuning** (HugePages + the MSR prefetcher), which `setup` applies for
-  you. The `tune` knob search then squeezes out the last fraction — small here because XMRig's
-  cache-aware auto-detection is already strong on this CPU, but it's the step that *confirms* you're at
-  the optimum rather than guessing.
-- **Performance and efficiency tuning landed on the *same* config** on this chip — and that's the
-  honest result, not a missing feature. RigForge measured the actual power draw and found RandomX pins
-  this 7800X3D at ~84 W in **any** all-core configuration (even halving the thread count barely moves
-  it), so there's simply **no hashrate-for-watts trade-off to make here**. On hardware where the knobs
-  *do* move power, `tune --efficiency` picks the lower-power config; here it correctly declines to
-  invent a trade-off that doesn't exist.
+## Rig 2 — EPYC 7642 (48-core server) · RigForge vs an expert hand-tune
 
-## Caveats (read this before quoting the number)
+This box is the interesting one: it was already running a **hand-tuned** miner (the worker an operator had
+configured for this EPYC by hand) at 36,860 H/s. So it's not just "RigForge vs naive XMRig" — it's
+**RigForge's one-command auto-tune vs a human who tuned it themselves**.
 
-- **One CPU, one system.** This is a single 7800X3D on Ubuntu 24.04. RandomX gains vary a lot by CPU,
-  RAM speed, and kernel — treat the percentages as illustrative, not a guarantee.
-- **Modern kernels narrow the HugePages gap.** Ubuntu 24.04 enables **Transparent HugePages**
-  (`madvise`), which transparently backs some of XMRig's allocation with 2 MB pages even in the "stock"
-  run — so the stock baseline here is *closer* to tuned than it would be on an older kernel or a system
-  with THP off. RigForge's explicit HugePages + MSR mod still win measurably; just don't expect the 20–30%
-  some older write-ups quote.
-- **`setup` does the heavy lifting; `tune` refines.** If you skip `tune`, you still get the bulk of the
-  benefit from `setup` alone.
+| | |
+|---|---|
+| **CPU** | AMD **EPYC 7642** — 48C/96T, 256 MiB L3, **4 NUMA nodes**, 2300 MHz |
+| **RAM / OS / algo** | 62 GB · Ubuntu 24.04, kernel 6.8 · live Monero **rx/0** |
+
+| Configuration | Hashrate (H/s) | Power (W) | Efficiency (H/s per W) |
+|---|--:|--:|--:|
+| **Stock XMRig** (no tuning) | 34,599 | 228.4 | 151.5 |
+| **Expert hand-tuned** worker (XMRig 6.25) | 36,860 | 230.2 | 160.1 |
+| **RigForge** — tuned (XMRig 6.26) | **36,866** | 229.5 | **160.6** |
+| **Stock → RigForge** | **+6.6%** | ~flat | **+6.0%** |
+
+- **RigForge matched the human expert** (within 0.02%) — and did it with a *newer* XMRig (6.26 vs 6.25),
+  `cpu.yield` off (the expert left it on), and **5× fewer HugePages** (266 vs 1,280 reserved, both hitting
+  100%) — i.e. the same result with ~2 GB less RAM tied up.
+- **The auto-tune dodged a landmine.** On this EPYC, **prefetch mode 2 *halves* the hashrate** (~17,900
+  H/s) — the *exact opposite* of the 7800X3D, where mode 2 is the winner. A fixed "golden profile" would
+  get one of these two chips badly wrong; the per-CPU live tune measured it and stayed on the right mode
+  for each.
+- The HugePages win is **bigger here** (+6.6% vs the X3D's +3.5%) — a 4-NUMA EPYC with a per-node dataset
+  leans much harder on huge pages than a single-die desktop chip. Efficiency and performance tuning again
+  converged (power ~230 W in any config).
+
+## Caveats (read before quoting a number)
+
+- **Two CPUs, two systems — RandomX gains vary a lot.** A desktop X3D and a 48-core EPYC already differ by
+  more than 3× in raw hashrate; your CPU, RAM speed, NUMA layout, and kernel all matter. Treat the
+  percentages as illustrative, not a guarantee.
+- **Modern kernels narrow the stock gap.** Ubuntu 24.04's Transparent HugePages (`madvise`) back some of
+  even the "stock" allocation with 2 MB pages, so the stock baseline is *closer* to tuned than on an older
+  kernel or with THP off — don't expect the 20–30% some older write-ups quote.
+- **`setup` does the heavy lifting; `tune` refines.** Most of the win is the system tuning; the knob
+  search confirms you're at the optimum (and, as the EPYC shows, keeps you off the landmines) rather than
+  adding a big jump on top.
 
 ## Reproduce it
 

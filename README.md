@@ -55,8 +55,9 @@ Measured on a Ryzen **7800X3D**, **mining live** to a real pool (not a synthetic
 | **Efficiency** | 120.1 H/s/W | **129.2 H/s/W** | **+7.6%** |
 
 Stock XMRig burns *more* power for *less* work — without HugePages the CPU stalls on memory. RigForge is
-faster **and** cooler, free, in one command. Full method, hardware, and honest caveats:
-**[Benchmarks →](docs/benchmarks.md)**
+faster **and** cooler, free, in one command. On a **48-core EPYC** the gap is bigger (**+6.6%**), and
+RigForge even **matched an expert's hand-tuned config** while dodging a prefetch setting that *halves*
+RandomX on that chip. Full method, both CPUs, and honest caveats: **[Benchmarks →](docs/benchmarks.md)**
 
 ---
 
