@@ -62,9 +62,11 @@ but it's not required. See [Configuration › Pools](configuration.md#pools-full
 
 ## Do I put my wallet address in the worker?
 
-**Not with Pithead** — the stack handles payouts centrally, so the worker only needs the pool host. The
-XMRig `user` field is just a rig label. If you point RigForge at a pool that expects a wallet address in
-the `user` field directly, set `pools[].user` to your wallet address.
+**It depends on the pool.** With **Pithead** the stack handles payouts centrally, so you don't — the
+worker only needs the stack host and the `user` field is just a rig label. With a **public pool**
+(SupportXMR and the like) you do: the pool pays whoever logs in, so set `pools[].user` to your **Monero
+wallet address**. There's a copy-paste example in
+[Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc).
 
 ---
 

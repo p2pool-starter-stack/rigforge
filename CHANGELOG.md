@@ -8,6 +8,12 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Docs: connecting to a public pool (SupportXMR, etc.).** [Configuration › Pools](docs/configuration.md#connecting-to-a-public-pool-supportxmr-etc)
+  now has two side-by-side, copy-paste recipes — a Pithead stack vs. a public pool — so it's obvious what
+  to put where. The public-pool one spells out the one thing that trips people up: your **Monero wallet
+  goes in `pools[].user`** (the pool pays whoever logs in), plus a worker name in `pass` and the pool's
+  **TLS port** with `"tls": true`. Discoverability links added from the README, the docs index, Getting
+  Started, and the FAQ; the pool-field reference is no longer framed as Pithead-only. No code change.
 - **Docs: stratum authentication against a Pithead stack.** Pithead can now require a stratum
   password (`p2pool.stratum_password`); when it's on, a rig must send the matching pool `pass` or the
   proxy rejects it (`Permission denied`). [Pithead Integration](docs/pithead-integration.md#stratum-authentication-optional)

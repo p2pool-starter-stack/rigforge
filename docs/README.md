@@ -29,5 +29,6 @@ For how RigForge is versioned and released, see [`RELEASING.md`](../RELEASING.md
 - **Run a live tune now?** → [Operations › Live auto-tuning](operations.md#live-auto-tuning-opt-in)
 - **Will my CPU do well?** → [Hardware Requirements](hardware.md)
 - **Change a setting?** → [Configuration](configuration.md)
+- **Mining to a public pool (SupportXMR, etc.)?** → [Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc)
 - **Connecting to a Pithead stack?** → [Pithead Integration](pithead-integration.md)
 - **Something's not working?** → [Operations › Troubleshooting](operations.md#troubleshooting)

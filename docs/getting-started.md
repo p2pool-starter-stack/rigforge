@@ -46,11 +46,12 @@ Have your **pool URL** ready — a `host:port`. For a Pithead stack that's the s
 and its proxy port `3333` (e.g. `stack.lan:3333`); with Pithead you do **not** need a wallet — the stack
 handles payouts centrally.
 
-> **Mining to a public pool instead of Pithead?** Most public pools (e.g. `pool.example.com:3333`) expect
-> your **Monero wallet address as the login**. The quick setup only asks for the pool URL, so afterwards
-> set `pools[].user` to your wallet and run `sudo ./rigforge.sh apply` — see
-> [Configuration › Pools](configuration.md#pools-full-control). Otherwise your hashes credit the rig's
-> hostname, not you.
+> **Mining to a public pool (SupportXMR, etc.) instead of Pithead?** Public pools pay **you**, so they
+> expect your **Monero wallet address as the login** (and usually a TLS port). The first-run prompt only
+> asks for the pool URL, so afterwards set `pools[].user` to your wallet (and `tls`) and run
+> `sudo ./rigforge.sh apply` — there's a copy-paste example in
+> [Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc).
+> Otherwise your hashes credit the rig's hostname, not you.
 
 ---
 

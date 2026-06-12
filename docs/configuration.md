@@ -30,6 +30,11 @@ only needs its `url` (a `host:port`). Everything else falls back to a sensible d
 That's a complete config — replace `<YOUR_POOL_HOST>:3333` with your pool's host and port (Pithead's
 proxy listens on `3333`). The interactive first-run setup writes exactly this minimal shape.
 
+> **Mining to a public pool like [SupportXMR](https://www.supportxmr.com)?** A `url` alone isn't
+> enough — public pools also need your **Monero wallet** as the pool `user` (and usually a TLS port).
+> Jump to [Connecting to a public pool](#connecting-to-a-public-pool-supportxmr-etc) for a copy-paste
+> example.
+
 > **Two-tier config (like Pithead).** Keep `config.json` minimal and only add the keys you actually
 > want to change. [`config.advanced.example.json`](../config.advanced.example.json) is a reference that
 > lists **every** key with its default — copy in only what you need; anything you omit keeps the
@@ -80,27 +85,66 @@ hand is pointless — change your repo-root `config.json` (or `tune`) and re-run
 ## Pools (full control)
 
 The pool target is XMRig's native **`pools`** array, passed straight through to XMRig — you can use any
-field XMRig supports. **Only `url` matters; everything else falls back to a Pithead-friendly default**,
-so you specify only what you care about:
+field XMRig supports. Only `url` is **required**; every other field has a default, so you specify only
+what you care about:
 
 | Field | Default if blank/omitted |
 |---|---|
-| `url` | _(required)_ — `host:port` (e.g. `your-stack:3333`; Pithead's proxy listens on `3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
-| `user` | the machine hostname — this is the rig's **label** on the dashboard; set it to name the rig |
-| `pass` | `"x"` — the stratum password. The default works for an **open** stack; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
+| `url` | _(required)_ — `host:port` (e.g. `pool.supportxmr.com:443` or `your-stack:3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
+| `user` | the machine hostname. For **Pithead** this is just the rig's dashboard **label**; for a **public pool** set it to your **Monero wallet address** (see below). |
+| `pass` | `"x"` — the stratum password / worker name. For an **open** Pithead stack the default works; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
 | `keepalive` | `true` |
-| `tls` | `false` |
+| `tls` | `false` — set `true` when you connect on the pool's TLS/SSL port. |
 | `enabled` | `true` |
 
-- **With [Pithead](https://github.com/p2pool-starter-stack/pithead)** — point `url` at the stack host
-  and its proxy port (e.g. `"stack.lan:3333"`); the stack handles pool selection, payouts, and the
-  P2Pool/XvB split centrally, so you never put a wallet address in the worker. See
-  [Pithead Integration](pithead-integration.md).
-- **With any other RandomX pool** — point `url` at that pool's stratum endpoint (with its port and
-  `tls` as needed). RigForge builds stock upstream XMRig, so it speaks standard Stratum to any pool.
+There are two common setups — pick the one that matches where you're mining.
 
-The host must be an IP or DNS-resolvable hostname; for a stable LAN address, set a DHCP reservation or
-a static IP, and allow the Stratum port through any firewall.
+### Connecting to a Pithead stack
+
+[Pithead](https://github.com/p2pool-starter-stack/pithead) handles pool selection, payouts, and the
+P2Pool/XvB split centrally, so the worker only needs the stack host and its proxy port (`3333`). The
+`user` is just a **label** for the dashboard — **don't put a wallet address here**:
+
+```json
+{
+    "pools": [
+        { "url": "stack.lan:3333", "user": "garage-rig" }
+    ]
+}
+```
+
+`user` is optional (it defaults to the hostname); set it to tell workers apart on the dashboard. That's
+the whole story — see [Pithead Integration](pithead-integration.md) for discovery and the API token.
+
+### Connecting to a public pool (SupportXMR, etc.)
+
+A public pool pays **you**, so it needs your **Monero wallet address** as the login (`user`) and almost
+always a **TLS port**. RigForge builds stock upstream XMRig, so it speaks standard Stratum to any
+RandomX pool — just fill in the pool's endpoint and your wallet:
+
+```json
+{
+    "pools": [
+        {
+            "url": "pool.supportxmr.com:443",
+            "user": "YOUR_MONERO_WALLET_ADDRESS",
+            "pass": "garage-rig",
+            "tls": true
+        }
+    ]
+}
+```
+
+- **`user` = your Monero wallet address** — this is who gets paid. Many pools also accept
+  `WALLET.workername` here to label the rig in their dashboard.
+- **`pass` = a worker name** (or just `"x"` — most public pools ignore the password).
+- **`url` + `tls` = the pool's stratum endpoint.** Use the pool's **TLS/SSL port** (often `:443` or
+  `:5555`) with `"tls": true`; a plain, unencrypted port needs no `tls`. Your pool's *Getting started* /
+  *Connect* page lists its exact host, ports, and whether it wants `wallet` or `wallet.worker`.
+
+Save that as `config.json`, then `sudo ./rigforge.sh apply` (a fresh `setup` picks it up too).
+
+The pool host must be an IP or DNS-resolvable hostname; allow its Stratum port through any firewall.
 
 ### Backup pools (failover)
 
