@@ -1229,7 +1229,7 @@ assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r 
 
 # `tune --now` is the on-demand spelling of the autotune engine: it must reach autotune() AND map the
 # --perf/--efficiency flag onto the target. Drive the same stubbed sweep as above through `tune --now`.
-tune_now_decide() { # <flag> -> final prefetch mode
+tune_now_decide() { # <flags...> -> final prefetch mode
     printf '{"randomx":{"scratchpad_prefetch_mode":0}}\n' >"$ovf"
     (
         source "$SCRIPT"
@@ -1247,12 +1247,14 @@ tune_now_decide() { # <flag> -> final prefetch mode
         sudo() { "$@"; }                     # _autotune_set_prefetch uses `sudo cp`
         _tune_should_elevate() { return 1; } # non-interactive: never re-exec under sudo
         set +e
-        PATH="$STUBS:$PATH" tune --now "$1" >/dev/null 2>&1
+        PATH="$STUBS:$PATH" tune "$@" >/dev/null 2>&1
     )
     jq -r '.randomx.scratchpad_prefetch_mode' "$ovf"
 }
-assert_eq "tune --now delegates to autotune; --perf picks raw-fastest" "$(tune_now_decide --perf)" "1"
-assert_eq "tune --now --efficiency keeps the most-efficient mode" "$(tune_now_decide --efficiency)" "0"
+assert_eq "tune --now delegates to autotune; --perf picks raw-fastest" "$(tune_now_decide --now --perf)" "1"
+assert_eq "tune --now --efficiency keeps the most-efficient mode" "$(tune_now_decide --now --efficiency)" "0"
+# '--short' is the explicit spelling of the default quick '--now' pass — same autotune delegation.
+assert_eq "tune --short is the quick prefetch pass (alias of --now)" "$(tune_now_decide --short --perf)" "1"
 
 # `tune --now` drives the live service, so it's Linux-only — refuse with a clear message elsewhere.
 tune_now_mac="$(
@@ -2537,6 +2539,15 @@ assert_eq "live log records mode=live" "$(J "$TLOG" '.mode')" "live"
 assert_contains "live tune applies the winner" "$out" "Applied the winning config to the live miner"
 # --live measures the real pool algorithm, so it must NOT print the rx/0-only bench caveat.
 assert_absent "live mode omits the rx/0 bench note" "$out" "measures Monero's RandomX"
+# 'tune --now --long' is the full all-knob LIVE sweep (vs '--now'/'--short''s quick prefetch pass): it
+# must fall through to the full tune in live mode, not short-circuit to the quick autotune engine.
+out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" RAPL_DIR="$PWR" \
+    API_CMD='echo 1500' TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
+    TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --now --long </dev/null 2>&1)"
+assert_rc "tune --now --long exits 0" "$?" "0"
+assert_eq "tune --now --long runs the full live sweep (mode=live)" "$(J "$TLOG" '.mode')" "live"
+assert_contains "tune --now --long applies the winner live" "$out" "Applied the winning config to the live miner"
 # #81: live mode also samples power — with TUNE_POWER_CMD it averages watts alongside the API samples.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
     API_CMD='echo 1500' TUNE_POWER_CMD='echo 90' TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=2 \
