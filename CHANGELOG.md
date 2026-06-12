@@ -8,6 +8,14 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`tune --now --short` / `--long` — pick the depth of an on-demand live re-tune.** `tune --now` (now
+  also spelled `--short`) stays the quick prefetch-only pass the scheduled timer runs; `tune --now --long`
+  runs the **full all-knob** live sweep (prefetch, `cpu.yield`, thread count, 1G-pages) against the running
+  miner — the same search as `tune --live`, which remains as an alias. This gives one mental model for
+  on-demand tuning: `tune --now` with a `--short`/`--long` depth, instead of remembering `--now` vs
+  `--live`. (Offline `tune` / `tune --bench` is unchanged — fastest and cleanest, but rx/0 only; the live
+  `--long` is the one to use when you mine a non-Monero RandomX variant whose algorithm `--bench` can't
+  measure.)
 - **Docs: connecting to a public pool (SupportXMR, etc.).** [Configuration › Pools](docs/configuration.md#connecting-to-a-public-pool-supportxmr-etc)
   now has two side-by-side, copy-paste recipes — a Pithead stack vs. a public pool — so it's obvious what
   to put where. The public-pool one spells out the one thing that trips people up: your **Monero wallet

@@ -1849,7 +1849,7 @@ tune() {
     # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
     # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
     # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
-    local _hist=0 clear=0 target_set=0 now=0
+    local _hist=0 clear=0 target_set=0 now=0 now_long=0
     case " $* " in *" --history "*) _hist=1 ;; esac
     if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
         log "tune needs root — re-running with sudo..."
@@ -1874,18 +1874,22 @@ tune() {
             TUNE_TARGET=perf
             target_set=1
             ;;
-        --now) now=1 ;;              # quick on-demand live re-tune (the 'autotune' engine, under 'tune')
-        --history) TUNE_HISTORY=1 ;; # show current tuning + last run + auto-tune decisions, then exit
-        *) error "Unknown tune option: $1 (use --now, --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
+        --now) now=1 ;;                      # quick on-demand live re-tune (= --short); the 'autotune' engine
+        --short) now=1 ;;                    # explicit quick pass — the default depth for --now
+        --long) TUNE_MODE=live now_long=1 ;; # full all-knob LIVE sweep (= --live), the thorough re-tune
+        --history) TUNE_HISTORY=1 ;;         # show current tuning + last run + auto-tune decisions, then exit
+        *) error "Unknown tune option: $1 (use --now, --short, --long, --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
         esac
         shift
     done
 
-    # 'tune --now' is the on-demand live re-tune: a quick convergent pass against the *running* miner
-    # (it IS the 'autotune' engine). Exposing it under 'tune' gives one mental model — all manual tuning
-    # lives under 'tune' — and reserves the word "autotune" for the scheduled feature (config key + timer).
-    # Nothing is lost: the 'autotune' verb still works as an alias, and is the verb the timer runs.
-    if [ "$now" = 1 ]; then
+    # 'tune --now' (a.k.a. --short) is the on-demand live re-tune: a quick convergent pass against the
+    # *running* miner (it IS the 'autotune' engine). 'tune --now --long' instead runs the FULL all-knob
+    # live sweep — --long set TUNE_MODE=live and now_long above, so we fall through to the full tune below
+    # rather than the quick engine. Exposing all of this under 'tune' gives one mental model — every manual
+    # tune lives under 'tune' — and reserves "autotune" for the scheduled feature (config key + timer). The
+    # 'autotune' verb still works as an alias for the quick pass, and is the verb the timer runs.
+    if [ "$now" = 1 ] && [ "$now_long" != 1 ]; then
         [ "$OS_TYPE" = Linux ] || error "tune --now runs a live re-tune against the systemd service and is Linux-only."
         [ "$target_set" = 1 ] && AUTOTUNE_TARGET="$TUNE_TARGET" # honor --perf/--efficiency for this run
         autotune
@@ -3019,11 +3023,12 @@ Day to day:
   restart    restart the miner
 
 Tuning:
-  tune       measure the fastest XMRig knobs and keep them. Live re-tunes: '--now' a quick pass vs the
-             running miner (run a live tune now — keeps the best prefetch mode), '--live' a full live
-             search, '--confirm' A/B-checks the winner live before keeping it. '--efficiency' optimizes
-             hashrate-per-watt (default '--perf' = raw H/s), '--history' shows the current tuning +
-             recent runs, '--clear' resets
+  tune       measure the fastest XMRig knobs and keep them. Live re-tunes against the running miner:
+             '--now' (= '--short') a quick pass that keeps the best prefetch mode, '--now --long' a full
+             all-knob live sweep (= '--live'). Offline: plain 'tune' (or '--bench') sweeps every knob on
+             the whole machine — fastest/cleanest, but rx/0 only. '--confirm' A/B-checks the winner live
+             before keeping it. '--efficiency' optimizes hashrate-per-watt (default '--perf' = raw H/s),
+             '--history' shows the current tuning + recent runs, '--clear' resets
   bench      run a one-off 'xmrig --bench' and report the hashrate
   autotune   alias of 'tune --now' (and the verb the scheduled timer runs); turn on the schedule with
              autotune:"performance"|"efficiency" in config.json
