@@ -8,6 +8,11 @@ All notable changes to RigForge are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Docs: benchmarks — measured stock-vs-tuned results.** A new [Benchmarks](docs/benchmarks.md) page
+  (and a README highlight) reports hashrate **and** efficiency (H/s per watt) for stock XMRig vs.
+  RigForge's system tuning vs. a full `tune`, all measured **mining live** on a real 7800X3D — with the
+  method, the hardware, and honest caveats (modern kernels' Transparent HugePages narrow the gap; on this
+  rig efficiency and performance tuning converge because RandomX pins ~84 W in any config). No code change.
 - **`tune --now --short` / `--long` — pick the depth of an on-demand live re-tune.** `tune --now` (now
   also spelled `--short`) stays the quick prefetch-only pass the scheduled timer runs; `tune --now --long`
   runs the **full all-knob** live sweep (prefetch, `cpu.yield`, thread count, 1G-pages) against the running

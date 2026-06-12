@@ -44,6 +44,22 @@ you like to your stack's single endpoint.
 
 ---
 
+## 📊 Does it actually help?
+
+Measured on a Ryzen **7800X3D**, **mining live** to a real pool (not a synthetic `--bench`):
+
+| | Stock XMRig | RigForge | |
+|---|--:|--:|:--|
+| **Hashrate** | 10,416 H/s | **10,779 H/s** | **+3.5%** |
+| **Power** | 86.8 W | **83.5 W** | **−3.8%** |
+| **Efficiency** | 120.1 H/s/W | **129.2 H/s/W** | **+7.6%** |
+
+Stock XMRig burns *more* power for *less* work — without HugePages the CPU stalls on memory. RigForge is
+faster **and** cooler, free, in one command. Full method, hardware, and honest caveats:
+**[Benchmarks →](docs/benchmarks.md)**
+
+---
+
 ## 🚀 Quick Start
 
 On the machine you want to turn into a miner:
@@ -75,6 +91,7 @@ HugePages tuning — the `xmrig` service then starts automatically.
 |---|---|
 | **[Getting Started](docs/getting-started.md)** | Prerequisites, install, first-run setup, the Linux reboot, and verification. |
 | **[Hardware Requirements](docs/hardware.md)** | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles. |
+| **[Benchmarks](docs/benchmarks.md)** | Measured stock-vs-tuned hashrate and efficiency on real hardware, with the method and caveats. |
 | **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | **[How It Works](docs/how-it-works.md)** | What the script actually does — compile, HugePages, MSR, NUMA, governor, service. |

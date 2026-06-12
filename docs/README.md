@@ -12,6 +12,7 @@ individual topics once you're up and running.
 |---|---|
 | [Getting Started](getting-started.md) | Prerequisites, installation, first-run setup, the Linux reboot, and how to verify the worker is mining. |
 | [Hardware Requirements](hardware.md) | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles RigForge applies. |
+| [Benchmarks](benchmarks.md) | Measured stock-vs-tuned hashrate and efficiency (H/s per watt) on real hardware, mining live — with the method and honest caveats. |
 | [Configuration](configuration.md) | Every `config.json` key and default, minimal vs. advanced setups, and how the XMRig config is generated. |
 | [Operations & Maintenance](operations.md) | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | [How It Works](how-it-works.md) | What the script actually does — dependencies, compile-from-source, HugePages, MSR, NUMA, the governor, and the systemd service. |
@@ -28,6 +29,7 @@ For how RigForge is versioned and released, see [`RELEASING.md`](../RELEASING.md
 - **Redeploy after a `git pull`?** → [Operations › Upgrading](operations.md#upgrading-xmrig-redeploy-after-a-git-pull)
 - **Run a live tune now?** → [Operations › Live auto-tuning](operations.md#live-auto-tuning-opt-in)
 - **Will my CPU do well?** → [Hardware Requirements](hardware.md)
+- **How much does the tuning help?** → [Benchmarks](benchmarks.md)
 - **Change a setting?** → [Configuration](configuration.md)
 - **Mining to a public pool (SupportXMR, etc.)?** → [Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc)
 - **Connecting to a Pithead stack?** → [Pithead Integration](pithead-integration.md)
