@@ -59,6 +59,12 @@ The script needs root to install packages and tune the system. On first run it a
 and writes a minimal `config.json`. On **Linux**, reboot once afterwards to apply the
 HugePages tuning — the `xmrig` service then starts automatically.
 
+> **Mining to a public pool like SupportXMR?** Point `url` at the pool and set your **Monero wallet**
+> as the pool `user` (most pools also want their TLS port) — see
+> [Configuration › Connecting to a public pool](docs/configuration.md#connecting-to-a-public-pool-supportxmr-etc).
+> With a [Pithead](https://github.com/p2pool-starter-stack/pithead) stack you need no wallet — just the
+> stack's `host:3333`.
+
 ➡️ **Full walkthrough:** [docs/getting-started.md](docs/getting-started.md)
 
 ---
