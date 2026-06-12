@@ -2719,16 +2719,21 @@ _dmi() {
 }
 
 # #67/#78 helper. _mem_summary parses `dmidecode -t memory` into "<populated-DIMMs> <channels>
-# <min configured MT/s> <max rated MT/s>" — channels from the Bank Locator, the configured speed is the
-# RUNNING one, the rated speed is the module's SPD/XMP "Speed". #78 compares the two to spot a memory
-# profile that isn't enabled. _cpu_eff_khz averages the per-core scaling_cur_freq (clock under load).
+# <min configured MT/s> <max rated MT/s>" — channels from BOTH the Locator and Bank Locator (whichever
+# yields more), the configured speed is the RUNNING one, the rated speed is the module's SPD/XMP "Speed".
+# #78 compares the two speeds to spot a memory profile that isn't enabled. _cpu_eff_khz averages the
+# per-core scaling_cur_freq (clock under load).
 _mem_summary() {
     # One-line awk (kcov can't see coverage of a multi-line program inside a string): per Memory Device,
     # count populated DIMMs + distinct channels, and track the min configured (cf) and max rated (rt) speed.
+    # Channels: desktop boards encode the channel in Bank Locator (`BANK 0`/`P0 CHANNEL A`); server boards
+    # (EPYC/Threadripper) repeat one Bank Locator (`BANK 0`) for every DIMM and instead carry the channel in
+    # the Locator's letter group (`DIMM_P0_A0`..`DIMM_P0_H0` = channels A..H). Count distinct channels in
+    # EACH field and take whichever is larger, so server boards aren't mis-flagged as single-channel (#108).
     # Trailing `|| true`: dmidecode needs root, so a non-root `doctor` makes the pipeline non-zero under
     # `set -o pipefail`; without this the command substitution in doctor would trip errexit and abort the
     # whole health check. Always exit 0 — empty/zeroed output (handled as "run as root") instead.
-    "$DMIDECODE" -t memory 2>/dev/null | awk 'function flush(){if(sz~/[0-9]+ *[GMgm][Bb]/){pop++;if(ch!="")chans[ch]=1;if(cf+0>0&&(minc==0||cf+0<minc))minc=cf+0;if(rt+0>maxr)maxr=rt+0};sz="";ch="";cf="";rt=""} /^Memory Device/{flush();next} /^[ \t]*Size:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);sz=v} /Bank Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);ch=v} /^[ \t]*Speed:/{if(match($0,/[0-9]+/))rt=substr($0,RSTART,RLENGTH)} /Configured Memory Speed:/{if(match($0,/[0-9]+/))cf=substr($0,RSTART,RLENGTH)} END{flush();nc=0;for(c in chans)nc++;printf "%d %d %d %d",pop+0,nc+0,minc+0,maxr+0}' || true
+    "$DMIDECODE" -t memory 2>/dev/null | awk 'function flush(){if(sz~/[0-9]+ *[GMgm][Bb]/){pop++;if(ch!="")chans[ch]=1;if(lc!="")lchans[lc]=1;if(cf+0>0&&(minc==0||cf+0<minc))minc=cf+0;if(rt+0>maxr)maxr=rt+0};sz="";ch="";lc="";cf="";rt=""} /^Memory Device/{flush();next} /^[ \t]*Size:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);sz=v} /Bank Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);ch=v} /^[ \t]*Locator:/{v=$0;sub(/^[^:]*:[ \t]*/,"",v);if(match(v,/[A-Za-z][0-9]+$/))lc=toupper(substr(v,RSTART,1))} /^[ \t]*Speed:/{if(match($0,/[0-9]+/))rt=substr($0,RSTART,RLENGTH)} /Configured Memory Speed:/{if(match($0,/[0-9]+/))cf=substr($0,RSTART,RLENGTH)} END{flush();nc=0;for(c in chans)nc++;nl=0;for(c in lchans)nl++;if(nl>nc)nc=nl;printf "%d %d %d %d",pop+0,nc+0,minc+0,maxr+0}' || true
 }
 _cpu_eff_khz() {
     local f v sum=0 n=0

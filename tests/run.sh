@@ -1707,6 +1707,31 @@ out="$(DMIDECODE="$DOC/dmidecode_dual" CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS=
 assert_contains "doctor: dual-channel RAM OK (#67)" "$out" "2 channels"
 assert_contains "doctor: RAM speed reported (#67)" "$out" "6000 MT/s"
 assert_contains "doctor: healthy clock OK (#67)" "$out" "91% of max boost"
+# #108: server boards (EPYC/Threadripper) repeat one Bank Locator (`BANK 0`) for every DIMM and carry the
+# channel in the Locator's letter group instead. 8 DIMMs across channels A..H must read as 8 channels, NOT
+# a false single-channel warning. The fixture loops A..H so every DIMM shares `BANK 0` but has a distinct
+# `DIMM_P0_<letter>0` Locator (mirrors a fully-populated 8-channel EPYC 7642).
+cat >"$DOC/dmidecode_epyc" <<'EOF'
+#!/usr/bin/env bash
+for ch in A B C D E F G H; do
+    printf 'Memory Device\n\tSize: 32 GB\n\tLocator: DIMM_P0_%s0\n\tBank Locator: BANK 0\n\tSpeed: 3200 MT/s\n\tConfigured Memory Speed: 3200 MT/s\n' "$ch"
+done
+EOF
+# Desktop board that encodes the channel ONLY in the Locator (`DIMM A1`/`DIMM B1`) with an uninformative
+# shared Bank Locator — proves the Locator path detects dual-channel independent of Bank Locator.
+cat >"$DOC/dmidecode_loc2ch" <<'EOF'
+#!/usr/bin/env bash
+printf 'Memory Device\n\tSize: 16 GB\n\tLocator: DIMM A1\n\tBank Locator: BANK 0\n\tSpeed: 6000 MT/s\n\tConfigured Memory Speed: 6000 MT/s\nMemory Device\n\tSize: 16 GB\n\tLocator: DIMM B1\n\tBank Locator: BANK 0\n\tSpeed: 6000 MT/s\n\tConfigured Memory Speed: 6000 MT/s\n'
+EOF
+chmod +x "$DOC/dmidecode_epyc" "$DOC/dmidecode_loc2ch"
+out="$(DMIDECODE="$DOC/dmidecode_epyc" CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS="$DOC/cpu_ok" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: EPYC 8-channel counted from Locator (#108)" "$out" "8 modules across 8 channels"
+assert_absent "doctor: no false single-channel warning on EPYC (#108)" "$out" "single-channel"
+out="$(DMIDECODE="$DOC/dmidecode_loc2ch" CPUFREQ_MAX="$DOC/cpufreq_max" CPU_SYSFS="$DOC/cpu_ok" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: dual-channel detected from Locator field (#108)" "$out" "2 channels"
+assert_absent "doctor: no single-channel warning when Locator shows 2 channels (#108)" "$out" "single-channel"
 # dmidecode unavailable -> graceful advisory note (not a hard failure)
 out="$(DMIDECODE="/nonexistent" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_contains "doctor: degrades gracefully w/o dmidecode (#67)" "$out" "dmidecode not found"
