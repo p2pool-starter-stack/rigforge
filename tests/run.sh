@@ -387,7 +387,8 @@ miss="$( (
 assert_contains "missing config -> 'run setup first' (not bad-JSON) (#audit)" "$miss" "No configuration at"
 
 # Interactive first-run: ensure_config_exists prompts (y, then the host:port pool URL) and writes a
-# minimal { "pools": [{ "url": ... }] }. A blank or port-less URL aborts and writes nothing.
+# minimal { "pools": [{ "url": ... }] }. A blank, port-less, or host-less URL aborts and writes nothing
+# (validating the host before the write keeps a broken config off disk so the prompt isn't suppressed).
 echo "== unit: ensure_config_exists interactive first-run =="
 ecd="$(mktemp -d "$SANDBOX/ec.XXXXXX")"
 (
@@ -397,7 +398,7 @@ ecd="$(mktemp -d "$SANDBOX/ec.XXXXXX")"
     printf 'y\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
 )
 assert_eq "first-run writes minimal pools config" "$(jq -c '.pools' "$ecd/config.json" 2>/dev/null)" '[{"url":"stack.lan:3333"}]'
-for bad in '' 'stack.lan'; do
+for bad in '' 'stack.lan' ':3333'; do
     ecd2="$(mktemp -d "$SANDBOX/ec2.XXXXXX")"
     (
         source "$SCRIPT"
@@ -486,6 +487,10 @@ export STUB_CPU_MODEL="Intel(R) Xeon(R) Silver 4310" STUB_NPROC=8 STUB_HOSTNAME=
 SIM_OS=Linux SIM_DON=5 SIM_TOK=tok123 SIM_ADDR=myrig.local
 d="$(gen_config)"
 cfg="$d/config.json"
+# Security: the live config holds the pool/wallet + API token, so it must be owner-only (0600), not the
+# world-readable 0644 a root jq redirect would otherwise leave. stat differs GNU vs BSD, so branch on OS.
+if [ "$(uname -s)" = Darwin ]; then cfg_mode="$(stat -f '%Lp' "$cfg")"; else cfg_mode="$(stat -c '%a' "$cfg")"; fi
+assert_eq "generated config is owner-only (0600)" "$cfg_mode" "600"
 assert_eq "generic: rx auto (-1)" "$(J "$cfg" '.cpu.rx')" "-1"
 assert_eq "generic: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
 assert_eq "generic: numa on (XMRig default)" "$(J "$cfg" '.randomx.numa')" "true"

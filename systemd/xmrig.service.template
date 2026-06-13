@@ -11,8 +11,12 @@ Type=simple
 User=root
 
 # --- Performance Optimization ---
-# Force CPU governor to 'performance' mode to prevent frequency scaling latency
-ExecStartPre=$CPUPOWER_PATH frequency-set -g performance
+# Force CPU governor to 'performance' mode to prevent frequency scaling latency. Best-effort (leading
+# `-`): on VMs/cloud kernels with no active cpufreq driver, or distros that ship no `cpupower`, this
+# call fails — and with Restart=always below, a non-optional ExecStartPre failure would wedge the miner
+# in a restart loop. The governor is a tuning nicety, not a correctness requirement, so a failed set
+# must never stop mining.
+ExecStartPre=-$CPUPOWER_PATH frequency-set -g performance
 
 # --- Execution Configuration ---
 # Set working directory to ensure relative paths in config.json resolve correctly

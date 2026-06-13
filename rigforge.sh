@@ -239,11 +239,26 @@ ensure_config_exists() {
             if ! [[ "$IN_URL" =~ :[0-9]+$ ]]; then
                 error "Pool URL must include a port, e.g. $IN_URL:3333. Aborting."
             fi
+            # Validate the host now, the same way parse_config will in a moment — otherwise a host-less URL
+            # like ":3333" passes the port check, gets written, and then parse_config hard-errors on it,
+            # leaving a broken config.json on disk that suppresses this prompt on the re-run (the file now
+            # exists). Failing before the write keeps the user re-promptable.
+            _host="${IN_URL%:*}"
+            case "$_host" in
+            \[*\]) [[ "$_host" =~ ^\[[0-9A-Fa-f:]+\]$ ]] || error "Pool URL '$IN_URL' has an invalid IPv6 literal (use [addr]:port). Aborting." ;;
+            *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool URL host '$_host' is not a valid hostname or IP. Aborting." ;;
+            esac
 
             # Minimal config: just the native pools array. jq writes it so the URL is safely quoted.
             jq -n --arg url "$IN_URL" '{pools: [{url: $url}]}' >"$CONFIG_JSON"
             _reown_worker # hand the freshly-created config.json to the operator, even if setup later fails
             log "Created $CONFIG_JSON successfully."
+            # New-user safety net: the minimal config has no wallet, so a PUBLIC-pool miner who stops here
+            # would credit hashes to the hostname, not themselves — and nothing later (doctor included)
+            # flags it, since it's a pool-side auth detail. Pithead users correctly need no wallet.
+            warn "Mining to a PUBLIC pool (SupportXMR, etc.)? Add your Monero wallet as the pool \"user\" in"
+            warn "$CONFIG_JSON and run 'sudo $0 apply', or your hashes credit '$(hostname)', not you."
+            warn "Connecting to a Pithead stack instead? You're all set — no wallet needed."
         else
             error "Configuration file required to proceed."
         fi
@@ -477,6 +492,13 @@ install_dependencies() {
 compile_xmrig() {
     if [ "$XMRIG_REBUILD" != true ]; then
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
+        # Enter the build dir the rebuild path also ends in, so generate_xmrig_config (which writes a
+        # relative config.json) emits it where the service actually reads it: --config=$BUILD_DIR/config.json
+        # with BUILD_DIR=$WORKER_ROOT/xmrig/build. Without this, a no-rebuild setup re-run would drop the
+        # regenerated config.json in $WORKER_ROOT and the miner would keep loading the stale build/config.json
+        # — config edits would silently never take effect. The dir is guaranteed to exist here (a no-rebuild
+        # decision requires the built binary under it). `apply` and the rebuild path already cd here.
+        cd "$WORKER_ROOT/xmrig/build"
         return 0
     fi
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
@@ -688,6 +710,11 @@ generate_xmrig_config() {
             rm -f "$_ovr"
         fi
     fi
+
+    # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
+    # redirect would otherwise leave it world-readable). _reown_worker hands ownership to the operator
+    # later; chmod here is preserved across that chown, and root (the service) reads it regardless.
+    chmod 600 config.json
 
     if [ "$OS_TYPE" == "Linux" ]; then
         log "Configuring log rotation policy..."
