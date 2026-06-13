@@ -7,7 +7,23 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-13
+
+First stable release — RigForge provisions a hardware-tuned, commit-verified XMRig worker in one command,
+runs it as a managed service, and tunes it for your CPU. Validated end to end on a real Ryzen 7800X3D rig.
+
 ### Added
+- **Privacy & security, documented up front (#109).** A new README "Privacy & security" section and a
+  SECURITY.md "What RigForge exposes (and what it doesn't)" section state it plainly: **no telemetry** (the
+  only outbound traffic is your pool, the commit-verified XMRig clone, and your distro's package mirrors);
+  an **honest 1% dev fee** that is XMRig's own upstream default and is turned off with `"DONATION": 0`; and
+  a **read-only, token-gated stats API** on `:8080` that binds the LAN for the Pithead dashboard — with the
+  exact `ufw` commands to firewall it off when you don't run Pithead.
+- **Release gate covers the live auto-tune engine, the periodic-tune timer, and every verb alias (#110).**
+  The real-hardware gate (`tests/e2e-real.sh`) now drives `autotune` — the live prefetch sweep the monthly
+  timer runs — against the running miner, asserts the autotune **timer install and teardown**, and
+  exercises the `up`/`down`, `-v`/`--version`, `-h`/`--help` aliases, closing the gaps where the gate
+  claimed "every verb" but skipped these.
 - **Docs: benchmarks — measured stock-vs-tuned results on two CPUs.** A new [Benchmarks](docs/benchmarks.md)
   page (and a README highlight) reports hashrate **and** efficiency (H/s per watt) for stock XMRig vs.
   RigForge, measured **mining live** on a desktop **Ryzen 7800X3D** (+3.5% H/s, +7.6% efficiency) and a
@@ -287,6 +303,19 @@ All notable changes to RigForge are documented here. The format is based on
   fixes across the docs.
 
 ### Fixed
+- **`setup` re-run now applies your `config.json` edits (#109).** On a no-rebuild re-run, the regenerated
+  config was written to the worker root instead of the build directory the service loads
+  (`--config=$BUILD_DIR/config.json`), so an edit-then-`setup` silently kept mining the old config. setup
+  now writes it where the service reads it, matching `apply` and the rebuild path.
+- **A missing or failing `cpupower` can no longer wedge the miner (#109).** The performance-governor
+  `ExecStartPre` is now best-effort (leading `-`); on VMs/cloud kernels with no active cpufreq driver — or
+  distros that ship no `cpupower` — a failed governor-set no longer aborts startup into a `Restart=always`
+  loop.
+- **The first-run prompt validates the pool host before writing (#109).** A host-less URL like `:3333`
+  used to pass the port check, get written, then fail `parse_config` — leaving a broken `config.json` that
+  suppressed the prompt on the re-run. It's now rejected before anything is written.
+- **The generated live config is written owner-only (`0600`) (#109).** It holds the pool/wallet and the
+  HTTP API token, so a root `jq` redirect no longer leaves it world-readable.
 - **`tune` no longer spuriously aborts mid-benchmark (and read 0 H/s).** `xmrig --bench` exits on its own
   when the benchmark finishes, so an unguarded `kill` of the (already-gone) process returned non-zero and,
   under `set -Eeuo pipefail`, fired the ERR trap **inside** the measurement subshell — aborting it before
@@ -350,4 +379,5 @@ All notable changes to RigForge are documented here. The format is based on
 - `rigforge.sh` aborted under `set -u` when neither `SUDO_USER` nor `USER` was set (containers, cron,
   minimal CI); `REAL_USER` now falls back to `id -un` (#5).
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/commits/main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.0.0...main
+[1.0.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.0
