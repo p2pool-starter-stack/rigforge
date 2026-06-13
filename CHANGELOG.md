@@ -9,10 +9,69 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [1.0.0] - 2026-06-13
 
-First stable release — RigForge provisions a hardware-tuned, commit-verified XMRig worker in one command,
-runs it as a managed service, and tunes it for your CPU. Validated end to end on a real Ryzen 7800X3D rig.
+First stable release. RigForge turns a fresh Ubuntu/Debian (or macOS) machine into a fully tuned
+[XMRig](https://github.com/xmrig/xmrig) mining worker in **one command** — it compiles stock, upstream
+XMRig from a pinned, commit-verified source, applies kernel- and CPU-level tuning for maximum RandomX
+hashrate, and runs it as a managed service. Point it at any RandomX Stratum pool and walk away.
+MIT-licensed, and validated end to end on a real Ryzen 7800X3D rig.
 
-### Added
+### What you get
+
+- **One-command setup.** `sudo ./rigforge.sh` installs the build toolchain, compiles XMRig, tunes the
+  kernel and CPU, writes a config from your pool URL, and starts a managed service. Idempotent and
+  safe to re-run.
+- **Real, measured gains.** Mining live on a Ryzen 7800X3D: **+3.5% hashrate and +7.6% efficiency** over
+  stock XMRig — faster *and* cooler, because HugePages stop the CPU stalling on memory. On a 48-core EPYC
+  the gap is **+6.6%**, where the per-CPU live tune also dodged a prefetch setting that *halves* RandomX
+  on that chip. Method and honest caveats in [Benchmarks](docs/benchmarks.md).
+- **Tuned for your CPU.** Builds on XMRig's cache-aware auto-detection (threads, asm, MSR, NUMA) with
+  dedicated-miner defaults; `tune` then searches the fastest knobs for your exact silicon, and opt-in
+  `autotune` keeps it dialed in on a monthly, hands-off schedule.
+- **Simple to run.** `doctor` (one-stop health check), `status` / `logs` / `start` / `stop` / `restart`,
+  `apply` (apply a config edit, no rebuild), `upgrade` (rebuild when the XMRig pin moves), and
+  `backup` / `restore`.
+- **Any RandomX pool** — solo, P2Pool, or a public pool like SupportXMR — and it's the companion miner
+  for [Pithead](https://github.com/p2pool-starter-stack/pithead) if you run a stack.
+
+### What it does to your machine — and how to undo it
+
+RigForge runs as **root**, so here is exactly what you are getting into:
+
+- **It is not a custom miner.** It builds *stock* upstream XMRig at a pinned commit that is verified
+  against a hardcoded hash before it compiles — the same binary you would build yourself, minus the
+  fiddly setup.
+- **No telemetry, ever.** The only outbound traffic is your pool, that XMRig clone from GitHub, and your
+  distro's package mirrors. No analytics, no version ping, no beacon.
+- **Honest 1% dev fee.** XMRig's donation is left at its **1% upstream default** and goes to the XMRig
+  project — RigForge substitutes no wallet of its own into the mining path. Set `"DONATION": 0` to turn
+  it off entirely.
+- **System changes, all reversible.** A `systemd` service, GRUB HugePage kernel parameters (one
+  **reboot** required on Linux), MSR module access, `fstab` / `limits` entries, a `cpupower` performance
+  governor, and a **read-only, token-gated stats API on `:8080`** that binds the LAN for the Pithead
+  dashboard — firewall it off if you mine solo (see [SECURITY.md](SECURITY.md)). `uninstall` reverts
+  every one of these and keeps your `config.json`.
+
+### Platforms
+
+Ubuntu 22.04+ / Debian 12 is the supported target; other apt/dnf/pacman distros work as a courtesy.
+macOS is supported for development and light use — it builds and configures, but does no kernel tuning
+and installs no service.
+
+### Get started
+
+```bash
+git clone https://github.com/p2pool-starter-stack/rigforge.git
+cd rigforge && chmod +x rigforge.sh
+sudo ./rigforge.sh
+```
+
+The full walkthrough — prerequisites, the Linux reboot, and verification — is in
+[Getting Started](docs/getting-started.md).
+
+<details>
+<summary><strong>Full 1.0.0 feature list</strong> — every capability and hardening that went into this release</summary>
+
+#### Added
 - **Privacy & security, documented up front (#109).** A new README "Privacy & security" section and a
   SECURITY.md "What RigForge exposes (and what it doesn't)" section state it plainly: **no telemetry** (the
   only outbound traffic is your pool, the commit-verified XMRig clone, and your distro's package mirrors);
@@ -237,7 +296,7 @@ runs it as a managed service, and tunes it for your CPU. Validated end to end on
 - `VERSION`, this changelog, `RELEASING.md`, and a tag-driven release pipeline that publishes a GitHub
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
-### Changed
+#### Changed
 - **Live auto-tuning converges in one run.** Each `autotune` run **live-sweeps every prefetch mode**
   against the running miner and adopts the fastest (median measurement + a margin gate, else it keeps the
   current mode), converging in a single ~minutes-long pass. The safety-net timer fires **monthly** by
@@ -302,7 +361,7 @@ runs it as a managed service, and tunes it for your CPU. Validated end to end on
   miner, which commands are Linux-only), a build-failure troubleshooting entry, and assorted accuracy
   fixes across the docs.
 
-### Fixed
+#### Fixed
 - **`setup` re-run now applies your `config.json` edits (#109).** On a no-rebuild re-run, the regenerated
   config was written to the worker root instead of the build directory the service loads
   (`--config=$BUILD_DIR/config.json`), so an edit-then-`setup` silently kept mining the old config. setup
@@ -378,6 +437,8 @@ runs it as a managed service, and tunes it for your CPU. Validated end to end on
   config the systemd service actually uses (#20).
 - `rigforge.sh` aborted under `set -u` when neither `SUDO_USER` nor `USER` was set (containers, cron,
   minimal CI); `REAL_USER` now falls back to `id -un` (#5).
+
+</details>
 
 [Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.0.0...main
 [1.0.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.0
