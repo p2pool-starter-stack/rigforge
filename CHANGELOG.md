@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-13
+
 ### Fixed
 - **HugePage sizing is now NUMA-aware (1 GB pages) (#111).** RandomX fast mode keeps a NUMA-local copy of the
   ~2080 MB dataset **per NUMA node**, but the reservation math multiplied the per-dataset 1 GB pages by the
@@ -449,5 +451,6 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.0.0...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.0.1...main
+[1.0.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.1
 [1.0.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.0
