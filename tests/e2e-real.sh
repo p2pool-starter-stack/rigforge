@@ -143,6 +143,18 @@ provision() {
 
 verify() {
     require_linux_root verify
+    # On a freshly rebooted rig the service has only just auto-started, so give it a moment to come fully
+    # up — allocate the per-NUMA datasets, apply the MSR mod, and LOG it — before the doctor #66 check
+    # below greps that log line. Without this, running `verify` immediately after the reboot races the
+    # miner's startup logging and spuriously fails the MSR assertions (the mod is applied a beat later).
+    # Best-effort: wait up to ~90s for a live API hashrate, then proceed regardless so a genuinely dead
+    # miner still surfaces as a doctor failure rather than hanging.
+    local _w _hr
+    for _w in $(seq 1 30); do
+        _hr=$(curl -fsS --max-time 4 -H "Authorization: Bearer $(hostname)" http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
+        { [ -n "$_hr" ] && awk "BEGIN{exit !($_hr > 0)}" 2>/dev/null; } && break
+        sleep 3
+    done
     phase "verify — doctor (tuning actually applied)"
     local doc
     doc="$("$RIGFORGE" doctor 2>&1 || true)" # doctor is advisory; we assert the specifics ourselves below
