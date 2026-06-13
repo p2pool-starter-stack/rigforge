@@ -9,7 +9,8 @@ tracked in [`VERSION`](./VERSION) and the history in [`CHANGELOG.md`](./CHANGELO
 - **MINOR** — new, backwards-compatible functionality.
 - **PATCH** — backwards-compatible fixes.
 
-Pre-1.0 (`0.x`), minor versions may include breaking changes while the interface settles.
+From `1.0.0` on, the `config.json` and CLI surface is stable — a breaking change bumps **MAJOR**. (Pre-1.0
+`0.x` releases could break the interface between minor versions while it settled.)
 
 ## Cutting a release
 
@@ -57,9 +58,13 @@ That's it — pushing the tag triggers the **release pipeline**
   `rigforge-vX.Y.Z.zip` **and** `.tar.gz` — `tests/`, `.github/`, and other dev files are excluded,
 - generates `SHA256SUMS` for the artifacts,
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
-- publishes the GitHub Release (0.x tags are marked pre-release).
+- creates the GitHub Release as a **draft** — review the generated notes and bundles, then click
+  **Publish** (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
 
 To verify a downloaded bundle: `sha256sum -c SHA256SUMS`.
+
+> The release is created as a **draft** so a human reviews it before it goes public — a deliberate gate
+> for a tool that installs a root miner. Drop `--draft` from `release.yml` to auto-publish on tag instead.
 
 ## Notes
 

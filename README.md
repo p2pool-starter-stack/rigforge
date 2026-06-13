@@ -105,8 +105,8 @@ Browse the full index at **[docs/](docs/README.md)**.
 
 ## 🛠️ Common commands
 
-The everyday tasks — each is one command (task-by-task cheat sheet:
-[Operations › Common tasks](docs/operations.md#common-tasks)):
+The everyday tasks, each a single command — there's a task-by-task cheat sheet in
+[Operations › Common tasks](docs/operations.md#common-tasks):
 
 ```bash
 # Change a setting — edit config.json first, then:

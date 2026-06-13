@@ -82,9 +82,9 @@ runs it as a managed service, and tunes it for your CPU. Validated end to end on
   `false` → `disabled`); an unknown value hard-errors rather than silently disabling tuning.
   - **Re-tuning is event-driven.** Once the prefetch mode converges it's stable, so re-tuning happens when
     it actually matters: **`upgrade` re-tunes the new build** (the fastest knobs can shift between XMRig
-    versions) once the rebuilt miner is live. The safety-net timer's default cadence is now **monthly**
-    (was daily) — it only catches slow drift, so it no longer churns the miner nightly to re-confirm a
-    stable result. Override with `AUTOTUNE_ONCALENDAR` as before.
+    versions) once the rebuilt miner is live. The safety-net timer's default cadence is **monthly** — it
+    only catches slow drift, so it doesn't churn the miner nightly to re-confirm a stable result. Override
+    with `AUTOTUNE_ONCALENDAR`.
   - **Manual `tune` follows the same target.** A plain `tune` (or `tune --live`) now defaults its
     optimization target to the `autotune` config value, so "efficiency" means efficiency everywhere instead
     of the manual command silently optimizing raw hashrate. Override per-run with `--perf`/`--efficiency`.
@@ -142,9 +142,9 @@ runs it as a managed service, and tunes it for your CPU. Validated end to end on
   `<WORKER_ROOT>/rigforge-tune.json`; the winning knobs go to a separate `tune-overrides.json` that's
   merged into the generated config, so your `config.json` is never touched. `tune --live` measures
   against the running miner over steady-state API windows instead of `--bench`; `tune --clear` resets.
-  Opt-in periodic live tuning: set `autotune: true` in config to install a systemd timer that runs
-  `autotune` (one live trial against the running miner via its API; keeps a change only if it beats the
-  baseline by a margin, else rolls back).
+  Opt-in periodic live tuning via the `autotune` config key installs a systemd timer that runs `autotune`
+  against the running miner, keeping a change only when it beats the baseline by a margin (else it rolls
+  back).
 - Auto-tuning robustness: `tune --bench` now **stops the miner service for the benchmark run** (and
   restarts it after, even on error) so readings aren't contended; the thread search is **SMT-aware**
   (tries the physical- and logical-core counts, not just an L3 ± window); `TUNE_SEARCH=grid` adds an
@@ -238,11 +238,11 @@ runs it as a managed service, and tunes it for your CPU. Validated end to end on
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 ### Changed
-- **Live auto-tuning now converges in one run.** Instead of trying one prefetch mode per daily run
-  (~4 days to sweep all four), each `autotune` run **live-sweeps every prefetch mode** and adopts the
-  fastest (median measurement + a margin gate, else it keeps the current mode) — converging in a single
-  ~minutes-long pass. The timer still fires daily by default to re-verify/catch drift; `AUTOTUNE_ONCALENDAR`
-  changes the cadence and `AUTOTUNE_MODES` the modes swept. For a definitive all-knob sweep, run `tune`.
+- **Live auto-tuning converges in one run.** Each `autotune` run **live-sweeps every prefetch mode**
+  against the running miner and adopts the fastest (median measurement + a margin gate, else it keeps the
+  current mode), converging in a single ~minutes-long pass. The safety-net timer fires **monthly** by
+  default to catch slow drift; `AUTOTUNE_ONCALENDAR` changes the cadence and `AUTOTUNE_MODES` the modes
+  swept. For a definitive all-knob sweep, run `tune`.
 - **`status` and `logs` no longer prompt for sudo.** They're read-only — `systemctl status` is
   world-readable and the operator (in the `adm` group) can follow the service journal — so neither runs
   `sudo` anymore. The privileged verbs (`start`/`stop`/`restart`/`enable`/`disable`) still elevate as
@@ -330,9 +330,9 @@ runs it as a managed service, and tunes it for your CPU. Validated end to end on
   `BIOS Model name:` line (e.g. `…  Unknown CPU @ 4.2GHz`), and the unanchored `grep "Model name"`
   concatenated both — so every `setup` logged `Detected CPU: <model> <model> Unknown CPU @ 4.2GHz`.
   The model parse (and `doctor`'s) now anchor to `^Model name:`, showing just the clean model.
-- **The nightly auto-tune no longer re-owns your files to root.** The `autotune` systemd timer runs as
+- **The periodic auto-tune no longer re-owns your files to root.** The `autotune` systemd timer runs as
   root with no `SUDO_USER`, so its post-run re-own was handing `data/worker` + `config.json` back to
-  `root:root` each night — undoing the operator-ownership fix and forcing `sudo` to edit `config.json`.
+  `root:root` on each run — undoing the operator-ownership fix and forcing `sudo` to edit `config.json`.
   The autotune service unit now bakes in `RIGFORGE_OPERATOR` (the operator captured at setup time) and
   the re-own honours it, so the timer hands files back to you. (The autotune `.service`/`.timer` are now
   rendered from templates in `systemd/`, alongside `xmrig.service.template`, instead of inline heredocs.)
