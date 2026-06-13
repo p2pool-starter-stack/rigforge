@@ -125,6 +125,24 @@ See [Operations › Commands](docs/operations.md#commands) for the full referenc
 
 ---
 
+## 🔒 Privacy & security
+
+RigForge runs as root, so it's worth being explicit about what it does and doesn't do:
+
+- **No telemetry, ever.** No analytics, no version ping, no usage beacon. The only outbound traffic is
+  to *your* pool, to the pinned XMRig source on GitHub (cloned and **commit-verified** before building),
+  and to your distro's package mirrors.
+- **Honest dev fee.** The XMRig donation defaults to **1%** — XMRig's own upstream default, not a
+  RigForge markup — and goes to the XMRig project. Set `"DONATION": 0` to turn it off.
+- **Read-only stats API.** Each worker exposes XMRig's HTTP API on `:8080` for the
+  [Pithead](https://github.com/p2pool-starter-stack/pithead) dashboard. It's `restricted` (read-only,
+  can't control the miner) and token-gated. It binds the LAN by default; if you mine solo or to a public
+  pool you don't need it at all and can firewall the port off.
+
+Full detail — and the exact `ufw` commands to lock down `:8080` — are in [SECURITY.md](./SECURITY.md).
+
+---
+
 ## 🧪 Testing & development
 
 RigForge ships a dependency-free test suite plus an opt-in container end-to-end run. Both mirror the
