@@ -398,7 +398,7 @@ ecd="$(mktemp -d "$SANDBOX/ec.XXXXXX")"
     printf 'y\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
 )
 assert_eq "first-run writes minimal pools config" "$(jq -c '.pools' "$ecd/config.json" 2>/dev/null)" '[{"url":"stack.lan:3333"}]'
-for bad in '' 'stack.lan' ':3333'; do
+for bad in '' 'stack.lan' ':3333' '[zz]:3333'; do
     ecd2="$(mktemp -d "$SANDBOX/ec2.XXXXXX")"
     (
         source "$SCRIPT"
