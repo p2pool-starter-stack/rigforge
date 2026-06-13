@@ -96,6 +96,9 @@ EOF
 echo "Model name:            ${STUB_CPU_MODEL:-Generic CPU}"
 echo "L3 cache:              ${STUB_L3:-8 MiB}"
 echo "Socket(s):             ${STUB_SOCKETS:-1}"
+# NUMA nodes can exceed sockets (NPS / L3-as-NUMA on EPYC); default to the socket count so existing
+# single-value tests are unchanged, and let STUB_NUMA_NODES drive the multi-NUMA cases.
+echo "NUMA node(s):          ${STUB_NUMA_NODES:-${STUB_SOCKETS:-1}}"
 # Modern lscpu (as root) also prints a DMI-derived BIOS line; the model parse must NOT pick this up.
 echo "BIOS Model name:       ${STUB_CPU_MODEL:-Generic CPU}            Unknown CPU @ 4.2GHz"
 EOF
@@ -672,6 +675,29 @@ assert_eq "grub --runtime: RX_THREADS fallback (#65)" "$out" "1242"
 # A non-positive / garbage RX_THREADS is ignored -> the L3 estimate stands (threads=16 -> 154).
 out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RX_THREADS=0 HUGEPAGES_1G_NR="$SANDBOX/nr_4" bash "$PG" --runtime)"
 assert_eq "grub --runtime: RX_THREADS=0 falls back to L3 (#65)" "$out" "154"
+
+# --- NUMA-aware 1G sizing: RandomX keeps a NUMA-LOCAL dataset copy per node, so 1G pages scale with NUMA
+# nodes, NOT sockets. A single-socket EPYC with 4 NUMA nodes needs 12 (3*4), not 3 — the bug that starved
+# 3 of 4 nodes after a reboot. (256 MiB L3 -> threads 128 -> 2M scratchpads 128+128+10 = 266.)
+out="$(PATH="$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=1 STUB_NUMA_NODES=4 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: 1G scales with NUMA nodes not sockets (1S/4N -> 12)" "$out" "hugepagesz=1G hugepages=12"
+assert_contains "grub: 2M scratchpads are per-thread total, not NUMA-multiplied" "$out" "hugepagesz=2M hugepages=266"
+# The pure-2M fallback (no pdpe1gb) also holds a dataset copy per node: 1168*4 + 128 + 50 = 4850.
+out="$(PATH="$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=1 STUB_NUMA_NODES=4 CPUINFO="$SANDBOX/cpuinfo_no1g" bash "$PG" -q)"
+assert_contains "grub: 2M fallback dataset scales per NUMA node (1168*4+...)" "$out" "hugepages=4850"
+# Detection fallbacks when lscpu lacks a "NUMA node(s)" line: count sysfs nodes, then sockets, then 1.
+mkdir -p "$SANDBOX/nonuma" "$SANDBOX/numa4/node0" "$SANDBOX/numa4/node1" "$SANDBOX/numa4/node2" "$SANDBOX/numa4/node3" "$SANDBOX/numa_empty"
+cat >"$SANDBOX/nonuma/lscpu" <<'EOF'
+#!/usr/bin/env bash
+echo "Model name:            EPYC test"
+echo "L3 cache:              ${STUB_L3:-256 MiB}"
+echo "Socket(s):             ${STUB_SOCKETS:-1}"
+EOF
+chmod +x "$SANDBOX/nonuma/lscpu"
+out="$(PATH="$SANDBOX/nonuma:$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=1 NODE_SYS="$SANDBOX/numa4" CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: NUMA from sysfs node count when lscpu silent (4 -> 12)" "$out" "hugepagesz=1G hugepages=12"
+out="$(PATH="$SANDBOX/nonuma:$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=2 NODE_SYS="$SANDBOX/numa_empty" CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: NUMA falls back to sockets when undetectable (2 -> 6)" "$out" "hugepagesz=1G hugepages=6"
 
 # ---------------------------------------------------------------------------
 # tune_kernel must MERGE its HugePage/MSR params into the existing GRUB cmdline, not overwrite it

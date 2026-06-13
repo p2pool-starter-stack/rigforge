@@ -7,6 +7,15 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **HugePage sizing is now NUMA-aware (1 GB pages).** RandomX fast mode keeps a NUMA-local copy of the
+  ~2080 MB dataset **per NUMA node**, but the reservation math multiplied the per-dataset 1 GB pages by the
+  **socket** count, not the NUMA-node count. On a single-socket, multi-NUMA CPU — e.g. an EPYC 7642 with 4
+  NUMA nodes — `setup` reserved 3× 1 GB instead of 12×, so after a reboot three of four nodes lost 1 GB
+  backing and hashrate dropped hard. Sizing now scales the 1 GB reservation (and the pure-2 MB fallback)
+  by NUMA nodes, detected via `lscpu` then `/sys/devices/system/node`, falling back to the socket count.
+  2 MB scratchpad sizing is per-thread total and unaffected. Verified on a 4-NUMA EPYC (now reserves 12).
+
 ## [1.0.0] - 2026-06-13
 
 First stable release. RigForge turns a fresh Ubuntu/Debian (or macOS) machine into a fully tuned
