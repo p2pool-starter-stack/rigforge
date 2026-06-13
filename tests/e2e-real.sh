@@ -426,7 +426,10 @@ verify() {
     # RIGFORGE_OPERATOR for the re-own to hand files back to the operator (not root). Assert the unit
     # carries it, then exercise the re-own exactly the way the root timer does (no SUDO_USER + that operator).
     local wr="$HERE/data/worker" op=""
-    op=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=RIGFORGE_OPERATOR=//p' | head -1)
+    # `|| true`: when autotune is disabled the unit doesn't exist, so `systemctl cat` exits non-zero —
+    # which, under this script's `set -Eeuo pipefail`, would abort the whole gate before the SKIP branch
+    # below. Swallow it so a worker with autotune off cleanly reaches the skip.
+    op=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=RIGFORGE_OPERATOR=//p' | head -1 || true)
     if [ -n "$op" ]; then
         ok "autotune unit bakes in RIGFORGE_OPERATOR=$op (#reown)"
         if [ -d "$wr" ]; then
