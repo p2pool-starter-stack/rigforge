@@ -682,6 +682,10 @@ assert_eq "grub --runtime: RX_THREADS=0 falls back to L3 (#65)" "$out" "154"
 out="$(PATH="$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=1 STUB_NUMA_NODES=4 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
 assert_contains "grub: 1G scales with NUMA nodes not sockets (1S/4N -> 12)" "$out" "hugepagesz=1G hugepages=12"
 assert_contains "grub: 2M scratchpads are per-thread total, not NUMA-multiplied" "$out" "hugepagesz=2M hugepages=266"
+# Verbose mode reports the NUMA node count it sized against (distinct from sockets).
+out="$(PATH="$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=1 STUB_NUMA_NODES=4 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG")"
+assert_contains "grub: verbose reports NUMA node count" "$out" "NUMA Nodes:    4"
+assert_contains "grub: verbose still reports sockets separately" "$out" "CPU Sockets:   1"
 # The pure-2M fallback (no pdpe1gb) also holds a dataset copy per node: 1168*4 + 128 + 50 = 4850.
 out="$(PATH="$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=1 STUB_NUMA_NODES=4 CPUINFO="$SANDBOX/cpuinfo_no1g" bash "$PG" -q)"
 assert_contains "grub: 2M fallback dataset scales per NUMA node (1168*4+...)" "$out" "hugepages=4850"
