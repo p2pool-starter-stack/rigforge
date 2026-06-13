@@ -39,10 +39,24 @@ if [[ -z "$L3_MB" ]]; then
     L3_MB=4
 fi
 
-# Detect Physical CPU Sockets (NUMA Nodes)
+# Detect Physical CPU Sockets (for display / NUMA fallback).
 SOCKETS=$(lscpu | grep "Socket(s):" | awk '{print $2}')
 if [[ -z "$SOCKETS" ]]; then
     SOCKETS=1
+fi
+
+# Detect NUMA nodes. RandomX fast mode (with XMRig's numa=on) keeps a NUMA-LOCAL copy of the ~2080MB
+# dataset PER NODE, so the 1GB-page reservation must scale with NUMA NODES, not sockets: a single-socket
+# EPYC can expose 2/4/8 NUMA nodes (NPS / L3-as-NUMA), so counting sockets reserves only one node's worth
+# and starves every other node of 1GB backing after a reboot (a large RandomX hashrate hit). Prefer
+# lscpu's count, then count sysfs nodes, then fall back to the socket count, then 1.
+NODE_SYS="${NODE_SYS:-/sys/devices/system/node}"
+NUMA_NODES=$(lscpu 2>/dev/null | awk -F: '/^NUMA node\(s\):/ {gsub(/[^0-9]/, "", $2); print $2; exit}')
+if ! { [ -n "$NUMA_NODES" ] && [ "$NUMA_NODES" -gt 0 ]; } 2>/dev/null; then
+    NUMA_NODES=$(find "$NODE_SYS" -maxdepth 1 -name 'node[0-9]*' 2>/dev/null | wc -l | tr -d ' ')
+fi
+if ! { [ -n "$NUMA_NODES" ] && [ "$NUMA_NODES" -gt 0 ]; } 2>/dev/null; then
+    NUMA_NODES="$SOCKETS"
 fi
 
 # --- 2. Resource Calculation ---
@@ -56,16 +70,17 @@ else
     THREADS=$((L3_MB / 2))
 fi
 
-# 1GB HugePages: Reserve 3GB per socket for the RandomX dataset (~2080MB) + overhead
-TOTAL_GB_PAGES=$((3 * SOCKETS))
+# 1GB HugePages: 3 per NUMA node — each node holds its own ~2080MB RandomX dataset copy (rounds up to 3GB).
+TOTAL_GB_PAGES=$((3 * NUMA_NODES))
 
 # 2MB HugePages: Reserve for JIT compiler and scratchpads (128 base + 1 per thread + buffer)
 TOTAL_2MB_PAGES=$((128 + THREADS + 10))
 
 # Fallback Strategy (Pure 2MB): Covers Dataset (2080MB) + Overhead + JIT
-# 1168 pages * 2MB = ~2336MB per socket (Provides ~250MB buffer for fragmentation)
+# 1168 pages * 2MB = ~2336MB per NUMA node (Provides ~250MB buffer for fragmentation). Scales per node
+# because, like the 1GB path, each NUMA node holds its own dataset copy.
 BASE_2MB_PAGES=1168
-TOTAL_2MB_FALLBACK=$(((BASE_2MB_PAGES * SOCKETS) + THREADS + 50))
+TOTAL_2MB_FALLBACK=$(((BASE_2MB_PAGES * NUMA_NODES) + THREADS + 50))
 
 if [ "$RUNTIME" -eq 1 ]; then
     # Check if 1GB pages are already allocated
@@ -101,6 +116,7 @@ else
     echo "--- Hardware Analysis ---"
     echo "L3 Cache:      ${L3_MB} MB"
     echo "CPU Sockets:   $SOCKETS"
+    echo "NUMA Nodes:    $NUMA_NODES (1GB dataset reservation scales with this)"
     echo "Max Threads:   $THREADS (Based on 2MB L3/thread)"
     echo "-------------------------"
     echo "Proposed GRUB Configuration:"

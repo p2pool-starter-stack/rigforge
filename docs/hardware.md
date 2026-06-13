@@ -58,7 +58,7 @@ auto-detection and layers on a few defaults that make sense because the box is a
 | `cpu.rx` | `-1` (auto) | XMRig sizes the thread count to L3 cache (~2 MB/thread) from detected topology — correct on EPYC, Ryzen, Intel hybrid, and X3D (incl. dual-CCD parts) alike. |
 | `cpu.asm` | `auto` | XMRig picks the Ryzen / Intel / Bulldozer assembly path for the detected CPU. |
 | `randomx.wrmsr` | `true` | Auto-applies the correct per-family MSR preset (needs root + the `msr` module). |
-| `randomx.numa` | `true` | A no-op on single-socket; spreads the dataset per node on multi-socket / EPYC. |
+| `randomx.numa` | `true` | A no-op on single-NUMA machines; on multi-NUMA CPUs it gives each node its own dataset copy. Note a single-socket EPYC can still expose several NUMA nodes — so RigForge sizes the 1 GB HugePage reservation per NUMA node, not per socket. |
 | `cpu.yield` | `false` | Busy-wait for maximum hashrate (we own the whole machine). |
 | `cpu.priority` | `2` | Wins scheduling vs. background daemons (XMRig warns >2 can hang a desktop). |
 | `cpu.huge-pages` / `randomx.1gb-pages` | `true` (Linux) | The single biggest lever; see below. |
