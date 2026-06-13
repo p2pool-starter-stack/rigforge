@@ -21,7 +21,7 @@ Pre-1.0 (`0.x`), minor versions may include breaking changes while the interface
    ```bash
    sudo bash tests/e2e-real.sh provision   # real deps + XMRig build + tuning + kernel tuning + service
    sudo reboot                             # HugePages (1G + GRUB cmdline) take effect on boot; reconnect
-   sudo bash tests/e2e-real.sh verify      # doctor (HugePages/MSR/governor/service) + bench (real H/s) + a short tune
+   sudo bash tests/e2e-real.sh verify      # doctor (HugePages/MSR/governor/service) + bench (real H/s) + a short tune + a live auto-tune pass
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
    Each phase must report `E2E-REAL (<phase>): PASS`. This is what proves a release bundle actually
