@@ -12,8 +12,10 @@
 #   provision : sudo ./rigforge.sh setup   -> deps + real XMRig build + tuning + kernel tuning + service
 #   (reboot)  : HugePages (1G + the GRUB cmdline) only take effect on boot
 #   verify    : doctor (HugePages/MSR/governor/service) + bench (real H/s) + tune (perf/efficiency/confirm)
-#               + tune --history + the systemd re-own + EVERY verb (version/help/status/logs/start/stop/
-#               restart/enable/disable/upgrade/backup/restore/apply + non-root doctor)
+#               + autotune (the LIVE re-tune engine the monthly timer drives) + tune --history + the
+#               systemd re-own + EVERY verb & alias (version/-v/--version, help/-h/--help, status, logs,
+#               start|up, stop|down, restart, enable, disable, upgrade, backup, restore, apply, autotune
+#               + non-root doctor)
 #   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
@@ -79,8 +81,8 @@ ensure_config() {
     # never mines to a real destination. NOTE: verify's live-pool round-trip is mandatory and FAILS on this
     # placeholder — set a real pool, or E2E_ALLOW_OFFLINE_POOL=1 for a deliberate offline run.
     if [ ! -f "$HERE/config.json" ]; then
-        printf '{ "pools": [{ "url": "203.0.113.1:3333" }], "DONATION": 1, "add_to_path": true }\n' >"$HERE/config.json"
-        ok "wrote a placeholder config.json (offline bench; the service won't mine; add_to_path on to exercise the CLI)"
+        printf '{ "pools": [{ "url": "203.0.113.1:3333" }], "DONATION": 1, "add_to_path": true, "autotune": "performance" }\n' >"$HERE/config.json"
+        ok "wrote a placeholder config.json (offline bench; the service won't mine; add_to_path + autotune on to exercise the CLI and the periodic-tune timer)"
     else
         ok "using the existing config.json"
     fi
@@ -105,6 +107,17 @@ provision() {
     bin="$(find_worker_bin)"
     [ -n "$bin" ] && [ -x "$bin" ] && ok "XMRig binary was built ($bin)" || bad "no built XMRig binary found"
     systemctl cat xmrig >/dev/null 2>&1 && ok "systemd unit 'xmrig' installed" || bad "xmrig.service not installed"
+    # #autotune: when config.json enables periodic autotune, setup must install the timer that drives the
+    # monthly live re-tune (teardown later asserts it's removed). Mirror parse_config's enabled set; skip
+    # cleanly when the operator's config didn't opt in.
+    case "$(jq -r '.autotune // "disabled"' "$HERE/config.json" 2>/dev/null)" in
+    performance | perf | efficiency | eff | true | on)
+        systemctl cat rigforge-autotune.timer >/dev/null 2>&1 &&
+            ok "periodic-autotune timer installed (config opted in)" ||
+            bad "autotune is enabled in config.json but setup didn't install rigforge-autotune.timer"
+        ;;
+    *) ok "SKIP autotune-timer check — periodic autotune not enabled in config.json" ;;
+    esac
     # #cli: opt-in. With "add_to_path": true, setup put a `rigforge` command on PATH; prove invoking it
     # THROUGH the symlink resolves the repo. Skip when the operator's config.json hasn't opted in.
     if [ "$(jq -r '.add_to_path // false' "$HERE/config.json" 2>/dev/null)" != "true" ]; then
@@ -201,6 +214,37 @@ verify() {
                 ok "submitted an accepted share ($(grep -c 'accepted (' "$wlog") accepted so far)" ||
                 bad "no accepted share within ${share_to}s — check pool reachability / difficulty"
         fi
+    fi
+
+    phase "verify — live auto-tune engine (the 'autotune' verb / 'tune --now'; the unattended monthly re-tune)"
+    # autotune() is a SEPARATE engine from the offline `tune --bench` search below: it samples the RUNNING
+    # miner over the HTTP API and live-sweeps prefetch modes against it (no service stop). It's exactly what
+    # the monthly systemd timer and `tune --now`/`--short`/`--long` drive, so the gate must prove it on real
+    # silicon — the stubbed suites can't read a live API hashrate. It needs a live rate to sample, so (like
+    # the round-trip above) it only runs with a real pool; the offline placeholder is an explicit skip.
+    # Runs right after the round-trip, while the miner is confirmed warm and mining.
+    if grep -q '203\.0\.113\.' "$HERE/config.json" 2>/dev/null; then
+        ok "SKIP live auto-tune — offline placeholder pool (the engine needs a live hashrate to sample)"
+    else
+        systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
+        # Keep it quick: sweep two short modes with a brief warmup/sampling — enough to prove the live sweep
+        # applies a mode, re-samples the running miner, and reaches a keep/switch verdict. A real re-tune is
+        # longer; the knobs below just bound the gate's runtime.
+        if AUTOTUNE_MODES="${E2E_AUTOTUNE_MODES:-0 1}" AUTOTUNE_WARMUP="${E2E_AUTOTUNE_WARMUP:-20}" \
+            AUTOTUNE_SAMPLES=2 AUTOTUNE_INTERVAL=5 "$RIGFORGE" autotune >/tmp/e2e-autotune.log 2>&1; then
+            if grep -q 'autotune: optimizing for' /tmp/e2e-autotune.log &&
+                grep -qE 'applying it|keeping prefetch_mode' /tmp/e2e-autotune.log; then
+                ok "live auto-tune swept prefetch modes against the running miner ($(grep -oE 'applying it|keeping prefetch_mode=[0-9]+' /tmp/e2e-autotune.log | tail -1))"
+            elif grep -q 'could not read a live hashrate' /tmp/e2e-autotune.log; then
+                bad "autotune couldn't read a live hashrate — the miner wasn't warm/mining (see /tmp/e2e-autotune.log)"
+            else
+                bad "autotune ran but produced no live-sweep verdict (see /tmp/e2e-autotune.log)"
+            fi
+        else
+            bad "autotune (live engine) exited non-zero (see /tmp/e2e-autotune.log)"
+        fi
+        "$RIGFORGE" tune --clear >/dev/null 2>&1 || true # back to baseline for the offline tune phases below
+        "$RIGFORGE" apply >/dev/null 2>&1 || true
     fi
 
     phase "verify — bench (real hashing, off the running service)"
@@ -300,6 +344,14 @@ verify() {
     local op="${SUDO_USER:-root}"
     "$RIGFORGE" version 2>&1 | grep -q RigForge && ok "version prints the version" || bad "version failed"
     "$RIGFORGE" help 2>&1 | grep -qi usage && ok "help prints usage" || bad "help failed"
+    # aliases must resolve to the same verbs (dispatch synonyms): -v/--version=version, -h/--help=help
+    if [ "$("$RIGFORGE" -v 2>&1)" = "$("$RIGFORGE" version 2>&1)" ] &&
+        [ "$("$RIGFORGE" --version 2>&1)" = "$("$RIGFORGE" version 2>&1)" ]; then
+        ok "-v / --version alias the version verb"
+    else
+        bad "-v / --version didn't match the version verb"
+    fi
+    "$RIGFORGE" --help 2>&1 | grep -qi usage && ok "-h / --help alias the help verb" || bad "--help didn't print usage"
     # doctor as the OPERATOR (non-root) must run clean — no abort (#89: non-root dmidecode)
     local nrdoc nrrc
     nrdoc=$(sudo -u "$op" "$RIGFORGE" doctor 2>&1) && nrrc=0 || nrrc=$?
@@ -320,6 +372,12 @@ verify() {
     "$RIGFORGE" restart >/dev/null 2>&1 || true
     sleep 2
     systemctl is-active --quiet xmrig && ok "restart -> service active" || bad "restart left it inactive"
+    # up/down are dispatch aliases of start/stop — exercise those arms too
+    "$RIGFORGE" down >/dev/null 2>&1 || true
+    systemctl is-active --quiet xmrig && bad "down (alias of stop) left the service active" || ok "down -> service inactive (alias of stop)"
+    "$RIGFORGE" up >/dev/null 2>&1 || true
+    sleep 2
+    systemctl is-active --quiet xmrig && ok "up -> service active (alias of start)" || bad "up (alias of start) didn't start the service"
     # enable / disable on boot (settle-tolerant: systemctl can lag/flake under the gate's load)
     _set_boot disable disabled && ok "disable -> not started on boot" ||
         bad "disable didn't take (is-enabled=$(systemctl is-enabled xmrig 2>/dev/null || true))"
