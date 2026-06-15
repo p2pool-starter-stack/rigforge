@@ -198,7 +198,7 @@ For how RigForge is versioned and released, see [RELEASING.md](./RELEASING.md) a
 
 If RigForge saved you time and you'd like to support it, donations to this XMR wallet are appreciated:
 
-    89VGXHYEYdTJ4qQPoSZSD4BQsXCm6vCjUF2y2Vm42mA8ESLXA4XpmsvWMFB2stQw7p5UXnyZ81EMtgkCYqjYBPow8v7btKv
+    486aGn4qhH1MkaASjnEWMDN7stD1SVtPF5fvihmjffeBE5ACL1u1jU95KxiqmoiaPZMexi4R4W11MLXut66XWVVF8wjAE5R
 
 ---
 
