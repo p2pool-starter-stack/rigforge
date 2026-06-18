@@ -7,6 +7,20 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **Supply-chain & secret-scanning CI gates (#117).** Three cross-cutting hardening gates on top of
+  the existing SHA-pinned actions and commit-verified XMRig build:
+  - **gitleaks** — a new `Security` workflow scans the full git history for committed secrets (pool
+    credentials, tokens, the stratum access-password) on every push and PR, plus a matching
+    [`.pre-commit-config.yaml`](./.pre-commit-config.yaml) hook so a leak is caught before it's pushed.
+    The binary is version- and checksum-pinned, like the existing shellcheck/shfmt installs.
+  - **Dependabot** ([`.github/dependabot.yml`](./.github/dependabot.yml)) — keeps the hand-pinned
+    GitHub Actions current (`github-actions` ecosystem only; RigForge has no pip/npm/docker deps) and
+    surfaces action security advisories.
+  - **zizmor** — static-audits the workflows for template injection, over-broad `GITHUB_TOKEN`, and
+    credential persistence. Hardened the existing `ci.yml`/`release.yml` to a read-only default token
+    and `persist-credentials: false` on checkout to make the audit clean.
+
 ## [1.0.1] - 2026-06-13
 
 ### Fixed

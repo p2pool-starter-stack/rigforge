@@ -1,0 +1,64 @@
+name: Security
+
+# Supply-chain & secrets gates (#117):
+#   - gitleaks: scan the full git history for committed secrets (pool creds, the stratum
+#     access-password from #113, tokens) on every push and PR.
+#   - zizmor: static-audit the GitHub Actions workflows themselves (template injection,
+#     over-broad GITHUB_TOKEN, unpinned actions, credential persistence).
+# Dependabot (github-actions) lives in .github/dependabot.yml; the matching gitleaks pre-commit
+# hook lives in .pre-commit-config.yaml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Both jobs only read the tree to scan it. Pin the floor to read-only (zizmor: excessive-permissions).
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned + checksum-verified, same as the shellcheck/shfmt installs in ci.yml — reproducible and
+      # immune to runner-image drift. Keep GITLEAKS_VERSION in lockstep with .pre-commit-config.yaml.
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0 # scan EVERY commit, not just the tip — a secret is still a leak once pushed
+          persist-credentials: false # zizmor: artipacked
+      - name: Install pinned gitleaks
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}" -o "$tarball"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      # Full-history scan with the built-in ruleset. --redact keeps any match out of the public logs;
+      # the job still fails (non-zero exit) so a leak blocks the merge.
+      - name: Scan git history for secrets
+        run: gitleaks git . --redact --no-banner --verbose
+
+  zizmor:
+    name: Workflow audit (zizmor)
+    runs-on: ubuntu-24.04
+    env:
+      ZIZMOR_VERSION: "1.25.2"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # zizmor: artipacked
+      # pipx is preinstalled on ubuntu-24.04; same install path as diff-cover in ci.yml's coverage job.
+      - name: Install pinned zizmor
+        run: pipx install "zizmor==${ZIZMOR_VERSION}"
+      # --no-online-audits keeps the gate deterministic (no advisory-DB drift, no token plumbing); the
+      # offline audits already cover what #117 asks for — template injection, excessive permissions,
+      # unpinned actions, credential persistence. Surfacing action advisories is Dependabot's job.
+      - name: Audit GitHub Actions workflows
+        run: zizmor --no-online-audits .github/workflows/

@@ -31,6 +31,17 @@ RigForge is portable Bash that has to run on Ubuntu/Debian and macOS, so:
   `shfmt` formatting.)
 - Update the README or other docs when you change behaviour or add options.
 
+## Secret scanning
+
+CI runs [gitleaks](https://github.com/gitleaks/gitleaks) over the full history on every push and PR,
+so an accidentally committed token or pool credential blocks the merge. Catch it locally first by
+installing the pre-commit hook (it runs the same pinned gitleaks on staged changes):
+
+```bash
+pipx install pre-commit   # or: pip install pre-commit
+pre-commit install
+```
+
 ## Submitting a pull request
 
 1. Fork the repo and create a topic branch off `main`.
