@@ -4,7 +4,8 @@ name: Security
 #   - gitleaks: scan the full git history for committed secrets (pool creds, the stratum
 #     access-password from #113, tokens) on every push and PR.
 #   - zizmor: static-audit the GitHub Actions workflows themselves (template injection,
-#     over-broad GITHUB_TOKEN, unpinned actions, credential persistence).
+#     over-broad GITHUB_TOKEN, unpinned actions, credential persistence) AND cross-reference the
+#     actions we pin against the GitHub Advisory Database (online audit).
 # Dependabot (github-actions) lives in .github/dependabot.yml; the matching gitleaks pre-commit
 # hook lives in .pre-commit-config.yaml.
 
@@ -12,6 +13,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Re-audit main on a schedule so a newly-published advisory against an action we pin trips the gate
+  # even during quiet periods with no pushes — the online zizmor audit is time-varying by design.
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
 
 # Both jobs only read the tree to scan it. Pin the floor to read-only (zizmor: excessive-permissions).
 permissions:
@@ -21,6 +26,9 @@ jobs:
   gitleaks:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-24.04
+    # The weekly tick exists for zizmor's advisory re-audit; history doesn't change between pushes, so
+    # there's nothing new for gitleaks to scan on a schedule.
+    if: github.event_name != 'schedule'
     env:
       # Pinned + checksum-verified, same as the shellcheck/shfmt installs in ci.yml — reproducible and
       # immune to runner-image drift. Keep GITLEAKS_VERSION in lockstep with .pre-commit-config.yaml.
@@ -57,8 +65,11 @@ jobs:
       # pipx is preinstalled on ubuntu-24.04; same install path as diff-cover in ci.yml's coverage job.
       - name: Install pinned zizmor
         run: pipx install "zizmor==${ZIZMOR_VERSION}"
-      # --no-online-audits keeps the gate deterministic (no advisory-DB drift, no token plumbing); the
-      # offline audits already cover what #117 asks for — template injection, excessive permissions,
-      # unpinned actions, credential persistence. Surfacing action advisories is Dependabot's job.
+      # Online audits ON (zizmor's default): GH_TOKEN lets the `known-vulnerable-actions` audit query
+      # the GitHub Advisory Database, so a CVE disclosed against an action we pin fails the gate. The
+      # built-in token (read-only here) is enough — advisory data is public; it's only for API access.
+      # This complements Dependabot: zizmor blocks the merge, Dependabot opens the bump.
       - name: Audit GitHub Actions workflows
-        run: zizmor --no-online-audits .github/workflows/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: zizmor .github/workflows/

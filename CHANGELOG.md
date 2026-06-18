@@ -18,8 +18,10 @@ All notable changes to RigForge are documented here. The format is based on
     GitHub Actions current (`github-actions` ecosystem only; RigForge has no pip/npm/docker deps) and
     surfaces action security advisories.
   - **zizmor** — static-audits the workflows for template injection, over-broad `GITHUB_TOKEN`, and
-    credential persistence. Hardened the existing `ci.yml`/`release.yml` to a read-only default token
-    and `persist-credentials: false` on checkout to make the audit clean.
+    credential persistence, and (online) cross-references the actions we pin against the GitHub
+    Advisory Database. Runs on push/PR plus a weekly schedule, so a CVE disclosed against a pinned
+    action trips the gate even with no open PRs. Hardened the existing `ci.yml`/`release.yml` to a
+    read-only default token and `persist-credentials: false` on checkout to make the audit clean.
 
 ## [1.0.1] - 2026-06-13
 
