@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-18
+
 ### Added
 
 - **Supply-chain & secret-scanning CI gates (#117).** Three cross-cutting hardening gates on top of
@@ -34,6 +36,8 @@ All notable changes to RigForge are documented here. The format is based on
     workflows/configs and the docs, each with a tuned config (`.yamllint`, `.markdownlint-cli2.yaml`).
   - **lychee** — a link-checker (`make lint-links`) that runs on a weekly schedule rather than per-PR,
     since external links are flaky-by-nature.
+- **Contributing: inbound contributions are MIT-licensed (#119).** `CONTRIBUTING.md` now states that
+  contributions are licensed under the project's MIT License — a lightweight alternative to a CLA.
 
 ## [1.0.1] - 2026-06-13
 
