@@ -1,0 +1,30 @@
+# markdownlint-cli2 config for RigForge docs. Run via `make lint-md`.
+# Structural rules (blank lines around headings/lists/fences, code-fence languages, heading levels)
+# are kept and the docs fixed to satisfy them; purely stylistic rules that fight the repo's
+# deliberate house style are turned off below.
+config:
+  default: true
+  # Long, deliberate prose/command lines — length is a review concern, not a linter one.
+  MD013: false
+  # Inline HTML is used on purpose: <details> in issue templates, <img>/badges in the README.
+  MD033: false
+  # Bold lead-ins like **HugePages** are inline labels, not headings.
+  MD036: false
+  # Templates and partials legitimately don't open with a top-level H1.
+  MD041: false
+  # Adjacent-but-separate blockquote callouts are intentional; don't force them to merge.
+  MD028: false
+  # Table pipe-spacing is cosmetic; the existing tables are readable and consistent as written.
+  MD060: false
+  # Keep-a-Changelog repeats "### Added"/"### Fixed" across version sections — allow non-sibling dups.
+  MD024:
+    siblings_only: true
+  # The repo uses *asterisk* emphasis and **asterisk** strong consistently.
+  MD049:
+    style: asterisk
+  MD050:
+    style: asterisk
+globs:
+  - "**/*.md"
+ignores:
+  - "node_modules"

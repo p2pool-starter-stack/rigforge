@@ -27,14 +27,14 @@ A clear description of the bug — what you expected and what actually happened.
 
 Relevant output from the setup script and/or the miner. On Linux:
 
-```
+```bash
 sudo journalctl -u xmrig --no-pager | tail -n 50
 ```
 
 <details>
 <summary>Logs</summary>
 
-```
+```text
 paste logs here
 ```
 

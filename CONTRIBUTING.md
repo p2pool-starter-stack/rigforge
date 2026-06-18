@@ -31,16 +31,33 @@ RigForge is portable Bash that has to run on Ubuntu/Debian and macOS, so:
   `shfmt` formatting.)
 - Update the README or other docs when you change behaviour or add options.
 
-## Secret scanning
+## Pre-commit hooks
 
-CI runs [gitleaks](https://github.com/gitleaks/gitleaks) over the full history on every push and PR,
-so an accidentally committed token or pool credential blocks the merge. Catch it locally first by
-installing the pre-commit hook (it runs the same pinned gitleaks on staged changes):
+Install the hooks once and they run on every commit, catching issues before they reach CI:
 
 ```bash
 pipx install pre-commit   # or: pip install pre-commit
 pre-commit install
 ```
+
+This runs `make lint` (ShellCheck + shfmt over the Makefile's `SHELL_FILES`),
+[gitleaks](https://github.com/gitleaks/gitleaks) secret scanning (the same pinned version CI runs, so
+a committed token or pool credential is caught before it's pushed), and a few hygiene checks
+(private-key detection, a large-file guard, final-newline and trailing-whitespace fixers).
+
+### Config & docs linting
+
+The YAML, Markdown, and link checks gate in CI and have matching Make targets for local runs:
+
+```bash
+make lint-yaml     # yamllint the workflows + configs   (.yamllint)
+make lint-md       # markdownlint the docs              (.markdownlint-cli2.yaml; needs node)
+make lint-links    # lychee link-check the docs         (.lychee.toml; needs lychee — runs weekly in CI)
+make lint-all      # shell + yaml + markdown in one go
+```
+
+An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final
+newline) so most editors match these checks automatically.
 
 ## Branching
 

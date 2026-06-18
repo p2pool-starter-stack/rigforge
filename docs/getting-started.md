@@ -4,12 +4,14 @@ This guide takes you from a fresh machine to a tuned, running XMRig worker. The 
 driven by a single script — `rigforge.sh` — and most of it is automated.
 
 > **TL;DR**
+>
 > ```bash
 > git clone https://github.com/p2pool-starter-stack/rigforge.git
 > cd rigforge
 > chmod +x rigforge.sh
 > sudo ./rigforge.sh
 > ```
+>
 > Answer one prompt (your pool URL), let it build, and — on Linux — reboot once to apply the
 > kernel tuning. The `xmrig` service starts automatically after the reboot.
 

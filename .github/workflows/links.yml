@@ -1,0 +1,41 @@
+name: Links
+
+# Link-checking the docs is kept OFF the PR path on purpose: external links are flaky-by-nature
+# (rate limits, transient downtime) and shouldn't block unrelated PRs (#118). Instead it runs on a
+# weekly schedule against the default branch, plus on demand via the Actions tab. Run it locally any
+# time with `make lint-links`.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lychee:
+    name: Link check (lychee)
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned + checksum-verified, like the gitleaks/shellcheck installs. Keep in lockstep with the
+      # version `make lint-links` expects locally.
+      LYCHEE_VERSION: "0.24.2"
+      LYCHEE_SHA256: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+      # lychee uses GITHUB_TOKEN to make authenticated GitHub requests and dodge the anon rate limit.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install pinned lychee
+        run: |
+          set -euo pipefail
+          tarball="lychee-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/${tarball}" -o "$tarball"
+          echo "${LYCHEE_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball"
+          sudo install "lychee-x86_64-unknown-linux-gnu/lychee" /usr/local/bin/lychee
+          lychee --version
+      # Via `make lint-links` so the file set + .lychee.toml config are the same locally and in CI.
+      - name: Link-check docs (make lint-links)
+        run: make lint-links

@@ -46,7 +46,7 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 
 | Key | Default | What it does |
 |---|---|---|
-| `pools` | _(required)_ | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
+| `pools` | *(required)* | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
 | `ACCESS_TOKEN` | the rig name (first pool's `user`) | The XMRig HTTP API bearer token. Leave it unset so it defaults to the rig name — **Pithead authenticates as `Bearer <rig name>`**, so the token must equal the rig name (or be unset). See [Pithead Integration](pithead-integration.md). |
 | `DONATION` | `1` | XMRig donate level, an integer **0–100** (percent). Patched into the build (`donate.h`) **and** written to the generated config, so it must be a valid integer or setup fails fast. |
 | `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
@@ -90,7 +90,7 @@ what you care about:
 
 | Field | Default if blank/omitted |
 |---|---|
-| `url` | _(required)_ — `host:port` (e.g. `pool.supportxmr.com:443` or `your-stack:3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
+| `url` | *(required)* — `host:port` (e.g. `pool.supportxmr.com:443` or `your-stack:3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
 | `user` | the machine hostname. For **Pithead** this is just the rig's dashboard **label**; for a **public pool** set it to your **Monero wallet address** (see below). |
 | `pass` | `"x"` — the stratum password / worker name. For an **open** Pithead stack the default works; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
 | `keepalive` | `true` |

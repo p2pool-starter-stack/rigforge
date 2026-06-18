@@ -23,12 +23,14 @@ promoted to **`main`** and tagged. The steps below build the release commit on `
    dependency-free suite, the Docker `/etc` e2e, the coverage gate) — but it can't compile XMRig,
    reserve HugePages, write MSRs, set the governor, or actually hash. So on a **real Linux rig**, run
    the genuine deploy end to end and assert each step:
+
    ```bash
    sudo bash tests/e2e-real.sh provision   # real deps + XMRig build + tuning + kernel tuning + service
    sudo reboot                             # HugePages (1G + GRUB cmdline) take effect on boot; reconnect
    sudo bash tests/e2e-real.sh verify      # doctor (HugePages/MSR/governor/service) + bench (real H/s) + a short tune + a live auto-tune pass
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
+
    Each phase must report `E2E-REAL (<phase>): PASS`. This is what proves a release bundle actually
    builds, tunes, and hashes on real hardware — the suites all stub XMRig and can't.
    - **Put a real, reachable pool in `config.json` first.** Without one, `setup` writes an unroutable
@@ -44,15 +46,20 @@ promoted to **`main`** and tagged. The steps below build the release commit on `
    `## [X.Y.Z] - YYYY-MM-DD` heading, then leave a fresh empty `## [Unreleased]` above it.
 4. Bump [`VERSION`](./VERSION) to `X.Y.Z`.
 5. Commit the two together on `develop`:
+
    ```bash
    git commit -am "release: vX.Y.Z"
    git push origin develop
    ```
+
 6. Promote `develop` to `main`:
+
    ```bash
    git checkout main && git merge --ff-only develop && git push origin main
    ```
+
 7. Tag and push from `main` (annotated tag, **matching `VERSION`**):
+
    ```bash
    git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
    git push origin main --follow-tags

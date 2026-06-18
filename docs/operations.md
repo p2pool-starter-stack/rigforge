@@ -32,13 +32,13 @@ reference](#commands) is below.
 The complete surface — most days you only need the handful in [Common tasks](#common-tasks) above; the
 rest are here for completeness.
 
-RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`. _(Optional: set
+RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`. *(Optional: set
 `"add_to_path": true` in `config.json` and setup installs a `rigforge` command on your PATH, so you can
-run `sudo rigforge [command]` from any directory; `uninstall` removes it.)_
+run `sudo rigforge [command]` from any directory; `uninstall` removes it.)*
 
 | Command | What it does |
 |---|---|
-| `setup` _(default)_ | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent — safe to re-run; skips the recompile when the pinned XMRig is already built. |
+| `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent — safe to re-run; skips the recompile when the pinned XMRig is already built. |
 | `upgrade` | Rebuild **and** restart **only if** the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. If periodic autotune is enabled, it also **re-tunes the new build** (the fastest knobs can shift between versions). |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart — **without** recompiling. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled). |
 | `uninstall` | Remove the service and **revert all system changes** (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
@@ -132,7 +132,7 @@ Prefer it hands-off? Set `autotune` in `config.json` to a target and re-run `set
 
 | `autotune` | What the scheduled run optimizes for |
 | --- | --- |
-| `"disabled"` _(default)_ | Nothing — no timer is installed. |
+| `"disabled"` *(default)* | Nothing — no timer is installed. |
 | `"performance"` | **Raw hashrate** (H/s). |
 | `"efficiency"` | **Hashrate-per-watt** (H/s/W) — for power-cost-, heat-, or PSU-limited rigs. Needs a power source (built-in RAPL, or a `TUNE_POWER_CMD` for a smart plug / IPMI); without one it falls back to `performance` with a warning. |
 

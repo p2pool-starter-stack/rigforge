@@ -1,0 +1,27 @@
+# EditorConfig — https://editorconfig.org. Encodes RigForge's house style so editors match CI
+# (shfmt -i 4, yamllint, markdownlint) without per-editor setup.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Shell is the core of the repo: 4-space indent, matching `shfmt -i 4` (see the Makefile lint target).
+[*.sh]
+indent_size = 4
+
+# Make needs real tabs in recipes.
+[Makefile]
+indent_style = tab
+
+# YAML and JSON conventionally use 2-space indent.
+[*.{yml,yaml,json,json.template}]
+indent_size = 2
+
+# In Markdown, two trailing spaces is a hard line break — don't strip it.
+[*.md]
+trim_trailing_whitespace = false

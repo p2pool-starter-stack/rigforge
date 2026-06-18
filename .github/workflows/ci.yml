@@ -12,6 +12,33 @@ permissions:
   contents: read
 
 jobs:
+  lint-yaml:
+    name: Lint (yamllint)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # zizmor: artipacked
+      # pipx is preinstalled on ubuntu-24.04 (same path as diff-cover/zizmor); pin the version so the
+      # ruleset can't drift with the runner image.
+      - name: Install pinned yamllint
+        run: pipx install "yamllint==1.38.0"
+      # Via `make lint-yaml` so the file set + .yamllint config live in one place and can't drift from local.
+      - name: Run yamllint (make lint-yaml)
+        run: make lint-yaml
+
+  lint-md:
+    name: Lint (markdownlint)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # zizmor: artipacked
+      # node is preinstalled on ubuntu-24.04; `make lint-md` runs the version-pinned markdownlint-cli2
+      # via npx, reading .markdownlint-cli2.yaml — same invocation as local.
+      - name: Run markdownlint (make lint-md)
+        run: make lint-md
+
   lint:
     name: Lint (shellcheck + shfmt)
     runs-on: ubuntu-24.04

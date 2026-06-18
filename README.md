@@ -4,7 +4,7 @@
 
 # RigForge
 
-### Provision a hardware-tuned XMRig miner in one command.
+<h3 align="center">Provision a hardware-tuned XMRig miner in one command</h3>
 
 [![CI](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml/badge.svg)](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -198,7 +198,9 @@ For how RigForge is versioned and released, see [RELEASING.md](./RELEASING.md) a
 
 If RigForge saved you time and you'd like to support it, donations to this XMR wallet are appreciated:
 
-    486aGn4qhH1MkaASjnEWMDN7stD1SVtPF5fvihmjffeBE5ACL1u1jU95KxiqmoiaPZMexi4R4W11MLXut66XWVVF8wjAE5R
+```text
+486aGn4qhH1MkaASjnEWMDN7stD1SVtPF5fvihmjffeBE5ACL1u1jU95KxiqmoiaPZMexi4R4W11MLXut66XWVVF8wjAE5R
+```
 
 ---
 
