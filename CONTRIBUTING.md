@@ -60,4 +60,7 @@ RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-st
 Keep PRs focused and the description clear about *what* changed and *why*. Small,
 reviewable changes get merged faster.
 
+By contributing, you agree that your contributions are licensed under the project's
+[MIT License](LICENSE).
+
 Thanks again for contributing! 🔥
