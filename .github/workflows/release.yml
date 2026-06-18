@@ -22,6 +22,10 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Releasing goes through `gh` with GH_TOKEN below, not `git push`, so the checkout never
+          # needs the token left in .git/config (zizmor: artipacked).
+          persist-credentials: false
 
       - name: Verify the tag matches VERSION
         run: |

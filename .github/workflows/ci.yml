@@ -2,8 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop] # develop is the integration branch; main is the release branch
   pull_request:
+
+# Least privilege: every job here only reads the repo to lint/test/build — nothing publishes or
+# writes. Set the floor once at the top so all jobs inherit a read-only GITHUB_TOKEN (zizmor:
+# excessive-permissions).
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -16,6 +22,8 @@ jobs:
       SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # no pushes from CI; don't leave the token in .git/config (zizmor: artipacked)
       # Install PINNED, checksum-verified shellcheck + shfmt instead of the runner's preinstalled
       # builds, so lint/format results are reproducible and don't drift with the runner image (#6).
       # Downloaded straight from the upstream releases — no `apt-get update`, avoiding the mirror
@@ -46,6 +54,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # zizmor: artipacked
       # Ubuntu is RigForge's supported target. The suite still exercises the macOS code path here via
       # stubs (OS_TYPE=Darwin + faked sysctl), so the macOS config profile is covered without a Mac
       # runner; contributors on macOS can also run `make test` locally. jq is preinstalled on the runner.
@@ -57,6 +67,8 @@ jobs:
     runs-on: macos-14 # Apple silicon; pinned (not macos-latest) to avoid image drift
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # zizmor: artipacked
       # The Linux job only SIMULATES macOS (STUB_UNAME_S=Darwin + stubbed sed/launchctl). Here the suite
       # runs on real macOS, natively exercising the Darwin paths — BSD `sed` (the donate.h patch), the
       # macOS config profile, `mac_*` process control + the launchd login agent, and BSD `tar`/`date`
@@ -79,6 +91,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # zizmor: artipacked
       # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
       # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
       - name: Run end-to-end suite
@@ -91,12 +105,16 @@ jobs:
       # Pin diff-cover (the patch-coverage gate); kcov + jq are pinned inside tests/coverage.sh.
       DIFF_COVER_VERSION: "10.3.0"
       PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
+      # Diff the PR against the branch it targets (develop or main). On a push, github.base_ref is empty,
+      # so fall back to the pushed branch itself — that's an empty diff that trivially passes.
+      BASE_REF: ${{ github.base_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 0 # diff-cover needs history to diff the PR against origin/main
+          fetch-depth: 0 # diff-cover needs history to diff the PR against its base branch
+          persist-credentials: false # the fetch below is read-only on a public repo (zizmor: artipacked)
       - name: Fetch base branch for diff-cover
-        run: git fetch --no-tags origin main
+        run: git fetch --no-tags origin "$BASE_REF"
       # Runs tests/run.sh under a digest-pinned kcov image, reports rigforge.sh + util/proposed-grub.sh
       # coverage, and fails if the total drops below the committed floor (tests/coverage-floor.txt).
       - name: Measure coverage (kcov) + enforce the total floor
@@ -106,4 +124,4 @@ jobs:
       - name: Install pinned diff-cover
         run: pipx install "diff-cover==${DIFF_COVER_VERSION}"
       - name: Enforce patch coverage on changed lines
-        run: diff-cover coverage/cobertura.xml --compare-branch=origin/main --fail-under="${PATCH_COVERAGE_MIN}"
+        run: diff-cover coverage/cobertura.xml --compare-branch="origin/$BASE_REF" --fail-under="${PATCH_COVERAGE_MIN}"

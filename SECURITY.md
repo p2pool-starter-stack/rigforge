@@ -37,6 +37,19 @@ sudo ufw deny 8080/tcp          # block it outright …
 sudo ufw allow from <DASHBOARD_IP> to any port 8080 proto tcp   # … or scope it to one host
 ```
 
+## Supply chain & secret scanning
+
+RigForge is built to be reproducible and tamper-evident:
+
+- **Pinned, verified inputs.** XMRig is cloned at a pinned commit and verified against a hardcoded
+  hash before it builds; GitHub Actions are SHA-pinned; CI tool installs (shellcheck, shfmt, gitleaks)
+  are version- and checksum-verified. **Dependabot** keeps the action pins current and flags advisories.
+- **Secret scanning.** [gitleaks](https://github.com/gitleaks/gitleaks) scans the full git history on
+  every push and PR, and runs as a pre-commit hook, so credentials can't slip into the repo.
+- **Workflow auditing.** [zizmor](https://github.com/zizmorcore/zizmor) static-audits the CI workflows
+  for template injection, over-broad token scopes, and credential persistence; jobs run with a
+  least-privilege, read-only `GITHUB_TOKEN` by default.
+
 ## Supported versions
 
 Only the latest `main` is supported. Please reproduce against current `main`

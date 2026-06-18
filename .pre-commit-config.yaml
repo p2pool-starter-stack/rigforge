@@ -1,0 +1,14 @@
+# RigForge pre-commit hooks. Install once per clone:
+#
+#   pipx install pre-commit   # or: pip install pre-commit
+#   pre-commit install
+#
+# Scope here is the secret-scanning gate from #117: gitleaks, pinned to the SAME version CI runs
+# (.github/workflows/security.yml) so local catches a leak before it's ever pushed. The broader
+# hook set — shellcheck, shfmt, yamllint, markdownlint, and the freebies — is tracked in #118 and
+# will be added to this file, keeping the Makefile's SHELL_FILES the source of truth.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1 # keep in lockstep with GITLEAKS_VERSION in .github/workflows/security.yml
+    hooks:
+      - id: gitleaks

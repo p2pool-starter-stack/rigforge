@@ -31,11 +31,30 @@ RigForge is portable Bash that has to run on Ubuntu/Debian and macOS, so:
   `shfmt` formatting.)
 - Update the README or other docs when you change behaviour or add options.
 
+## Secret scanning
+
+CI runs [gitleaks](https://github.com/gitleaks/gitleaks) over the full history on every push and PR,
+so an accidentally committed token or pool credential blocks the merge. Catch it locally first by
+installing the pre-commit hook (it runs the same pinned gitleaks on staged changes):
+
+```bash
+pipx install pre-commit   # or: pip install pre-commit
+pre-commit install
+```
+
+## Branching
+
+RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-starter-stack/pithead)):
+
+- **`develop`** — the default, integration branch. All PRs target `develop`.
+- **`main`** — the release branch. `develop` is merged into `main` at each release, and version tags
+  are cut from `main`.
+
 ## Submitting a pull request
 
-1. Fork the repo and create a topic branch off `main`.
+1. Fork the repo and create a topic branch off `develop`.
 2. Make your change and confirm `shellcheck` passes.
-3. Open a PR against `main` and fill out the template.
+3. Open a PR against `develop` and fill out the template.
 4. **All PRs require review** before merging — a code owner will take a look.
 
 Keep PRs focused and the description clear about *what* changed and *why*. Small,
