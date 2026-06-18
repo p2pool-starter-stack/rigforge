@@ -14,7 +14,11 @@ From `1.0.0` on, the `config.json` and CLI surface is stable — a breaking chan
 
 ## Cutting a release
 
-1. Ensure `main` is green: `make test` (and `make test-e2e` if Docker is available).
+Work lands on **`develop`** (the integration branch); a release is the point where `develop` is
+promoted to **`main`** and tagged. The steps below build the release commit on `develop`, merge it to
+`main`, and tag from `main`.
+
+1. Ensure `develop` is green: `make test` (and `make test-e2e` if Docker is available).
 2. **Full real-hardware e2e (the release gate).** CI exercises everything it can (lint, the
    dependency-free suite, the Docker `/etc` e2e, the coverage gate) — but it can't compile XMRig,
    reserve HugePages, write MSRs, set the governor, or actually hash. So on a **real Linux rig**, run
@@ -39,11 +43,16 @@ From `1.0.0` on, the `config.json` and CLI surface is stable — a breaking chan
 3. In [`CHANGELOG.md`](./CHANGELOG.md), move the `## [Unreleased]` entries under a new
    `## [X.Y.Z] - YYYY-MM-DD` heading, then leave a fresh empty `## [Unreleased]` above it.
 4. Bump [`VERSION`](./VERSION) to `X.Y.Z`.
-5. Commit the two together:
+5. Commit the two together on `develop`:
    ```bash
    git commit -am "release: vX.Y.Z"
+   git push origin develop
    ```
-6. Tag and push (annotated tag, **matching `VERSION`**):
+6. Promote `develop` to `main`:
+   ```bash
+   git checkout main && git merge --ff-only develop && git push origin main
+   ```
+7. Tag and push from `main` (annotated tag, **matching `VERSION`**):
    ```bash
    git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
    git push origin main --follow-tags
