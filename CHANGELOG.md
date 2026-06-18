@@ -7,8 +7,6 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-06-18
-
 ### Added
 
 - **Supply-chain & secret-scanning CI gates (#117).** Three cross-cutting hardening gates on top of
