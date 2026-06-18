@@ -1,7 +1,7 @@
 # Getting Started
 
-This guide takes you from a fresh machine to a tuned, running XMRig worker. The whole process is
-driven by a single script — `rigforge.sh` — and most of it is automated.
+This guide takes you from a fresh machine to a tuned, running XMRig worker. A single script,
+`rigforge.sh`, drives the whole process, and most of it is automated.
 
 > **TL;DR**
 >
@@ -12,7 +12,7 @@ driven by a single script — `rigforge.sh` — and most of it is automated.
 > sudo ./rigforge.sh
 > ```
 >
-> Answer one prompt (your pool URL), let it build, and — on Linux — reboot once to apply the
+> Answer one prompt (your pool URL), let it build, and on Linux reboot once to apply the
 > kernel tuning. The `xmrig` service starts automatically after the reboot.
 
 ---
@@ -23,8 +23,8 @@ driven by a single script — `rigforge.sh` — and most of it is automated.
 |---|---|
 | **Operating system** | Ubuntu Server **22.04+** (or Debian 12) is the officially supported target. macOS works for development and light use; other Linux distros are courtesy. |
 | **CPU** | 64-bit x86 with **AVX2** is strongly recommended for RandomX performance. More and faster cores mean more hashrate. |
-| **RAM** | **~2.3 GB free** for RandomX *fast mode* (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread. **4 GB+** recommended. |
-| **Privileges** | `root` (the script installs packages and tunes the kernel — run it with `sudo`). |
+| **RAM** | **~2.3 GB free** for RandomX fast mode (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread. **4 GB+** recommended. |
+| **Privileges** | `root`. The script installs packages and tunes the kernel, so run it with `sudo`. |
 | **Network** | The worker must reach your pool / stack host on its Stratum port (Pithead uses **3333**). Workers run on a trusted LAN and do **not** need Tor. |
 
 > 📐 **Full sizing guidance** — minimum vs. recommended specs and the per-CPU tuning profiles — is in
@@ -51,9 +51,9 @@ handles payouts centrally.
 > **Mining to a public pool (SupportXMR, etc.) instead of Pithead?** Public pools pay **you**, so they
 > expect your **Monero wallet address as the login** (and usually a TLS port). The first-run prompt only
 > asks for the pool URL, so afterwards set `pools[].user` to your wallet (and `tls`) and run
-> `sudo ./rigforge.sh apply` — there's a copy-paste example in
+> `sudo ./rigforge.sh apply`. There's a copy-paste example in
 > [Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc).
-> Otherwise your hashes credit the rig's hostname, not you.
+> Otherwise your hashes credit the rig's hostname instead of you.
 
 ---
 
@@ -66,8 +66,8 @@ sudo ./rigforge.sh
 `setup` is the default command and is safe to re-run. On a fresh machine it walks through:
 
 1. **Dependencies.** Installs the build toolchain and runtime libraries for your OS.
-2. **First-run config.** If there's no `config.json`, it asks for the one thing it needs — your
-   **pool URL** — and writes a minimal config. (You can also pre-create one; see
+2. **First-run config.** If there's no `config.json`, it asks for the one thing it needs, your
+   **pool URL**, and writes a minimal config. (You can also pre-create one; see
    [Configuration](configuration.md).)
 3. **Build.** Clones and compiles XMRig from source, pinned to a known version/commit and patched to
    your `DONATION` level. Build output is captured to a logfile.
@@ -83,16 +83,16 @@ built, and it won't duplicate the kernel/limits edits. Later on, to apply a `con
 [`apply`](operations.md#applying-configuration-changes); to rebuild only when the pinned version
 changed, use [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull).
 
-**Optional — a `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and setup
-installs a `rigforge` symlink in `/usr/local/bin`, so you can run it from any directory — `sudo rigforge
-doctor`, `sudo rigforge tune`, … — instead of `./rigforge.sh`. It's **off by default**, so this guide
+**Optional: a `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and setup
+installs a `rigforge` symlink in `/usr/local/bin`, so you can run it from any directory (`sudo rigforge
+doctor`, `sudo rigforge tune`, …) instead of `./rigforge.sh`. It's **off by default**, so this guide
 uses `./rigforge.sh` throughout. (`uninstall` removes the symlink.)
 
 ---
 
 ## 4. Reboot (Linux only)
 
-To apply HugePages and the other kernel tuning, a reboot is **required** on Linux — the script tells
+To apply HugePages and the other kernel tuning, a reboot is **required** on Linux. The script tells
 you when:
 
 ```bash
@@ -119,9 +119,9 @@ grep -i msr data/worker/xmrig.log               # MSR mod applied (no errors)
 ```
 
 `<WORKER_ROOT>` is `data/worker` inside the repo by default. If you see MSR errors, you may need to
-**disable Secure Boot** in your BIOS/UEFI — see [Operations › Troubleshooting](operations.md#troubleshooting).
+**disable Secure Boot** in your BIOS/UEFI; see [Operations › Troubleshooting](operations.md#troubleshooting).
 
-> **On macOS** the steps above (the `systemd` service and the HugePages/MSR checks) don't apply —
+> **On macOS** the steps above (the `systemd` service and the HugePages/MSR checks) don't apply:
 > there's no service and no kernel tuning. Start the miner yourself with `./rigforge.sh start` (then
 > `status` / `logs` / `stop`); see [Operations › Running on macOS](operations.md#running-on-macos).
 

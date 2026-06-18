@@ -8,7 +8,7 @@ assignees: ''
 
 ## What happened
 
-A clear description of the bug — what you expected and what actually happened.
+A clear description of the bug: what you expected and what actually happened.
 
 ## Environment
 

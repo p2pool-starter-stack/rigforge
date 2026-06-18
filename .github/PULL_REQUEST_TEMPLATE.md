@@ -6,5 +6,5 @@
 
 - [ ] `make lint` (ShellCheck + shfmt) passes locally
 - [ ] Changes are portable bash (Ubuntu/Debian and macOS)
-- [ ] Docs updated (README / other) if behaviour or options changed
+- [ ] Docs updated (README / other) if behavior or options changed
 - [ ] PR is focused and ready for review

@@ -8,7 +8,7 @@ On first run, if there's no `config.json`, `setup` creates a minimal one interac
 your pool URL). You can also pre-create one from
 [`config.json.template`](../config.json.template).
 
-Every field is **validated** when setup parses the config — a malformed pool URL, an out-of-range port,
+Every field is **validated** when setup parses the config. A malformed pool URL, an out-of-range port,
 a bad hostname, a non-boolean flag, or an unsafe `HOME_DIR` stops setup with a clear message rather than
 producing a config the miner would reject.
 
@@ -16,7 +16,7 @@ producing a config the miner would reject.
 
 ## Minimal config
 
-The only thing you must set is the **pool** — RigForge uses XMRig's native `pools` array, and a pool
+The only thing you must set is the **pool**. RigForge uses XMRig's native `pools` array, and a pool
 only needs its `url` (a `host:port`). Everything else falls back to a sensible default:
 
 ```json
@@ -27,18 +27,18 @@ only needs its `url` (a `host:port`). Everything else falls back to a sensible d
 }
 ```
 
-That's a complete config — replace `<YOUR_POOL_HOST>:3333` with your pool's host and port (Pithead's
+That's a complete config. Replace `<YOUR_POOL_HOST>:3333` with your pool's host and port (Pithead's
 proxy listens on `3333`). The interactive first-run setup writes exactly this minimal shape.
 
 > **Mining to a public pool like [SupportXMR](https://www.supportxmr.com)?** A `url` alone isn't
-> enough — public pools also need your **Monero wallet** as the pool `user` (and usually a TLS port).
+> enough: public pools also need your **Monero wallet** as the pool `user` (and usually a TLS port).
 > Jump to [Connecting to a public pool](#connecting-to-a-public-pool-supportxmr-etc) for a copy-paste
 > example.
 
 > **Two-tier config (like Pithead).** Keep `config.json` minimal and only add the keys you actually
 > want to change. [`config.advanced.example.json`](../config.advanced.example.json) is a reference that
-> lists **every** key with its default — copy in only what you need; anything you omit keeps the
-> default. The reference table below documents each key.
+> lists every key with its default. Copy in only what you need; anything you omit keeps the default.
+> The reference table below documents each key.
 
 ---
 
@@ -57,7 +57,7 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 
 ## How the generated XMRig config is built
 
-You don't write XMRig's config — RigForge generates the whole thing in-script and writes it into the
+You don't write XMRig's config. RigForge generates the whole thing in-script and writes it into the
 worker root as the live `config.json` the service runs from. There's no template file to keep in sync
 and no config key for it. Every run (re-runs included) rebuilds the config from four sources:
 
@@ -74,7 +74,7 @@ and no config key for it. Every run (re-runs included) rebuilds the config from 
    it sets and your `config.json` is never edited.
 
 Because the config is rebuilt from these sources every time, editing the generated `config.json` by
-hand is pointless — change your repo-root `config.json` (or `tune`) and re-run instead.
+hand is pointless. Change your repo-root `config.json` (or `tune`) and re-run instead.
 
 > ⚠️ **Don't put a wallet address in the worker `user` when using Pithead.** The stack handles
 > payouts centrally; the pool `user` is just a rig **label** (it defaults to the hostname so you can
@@ -84,7 +84,7 @@ hand is pointless — change your repo-root `config.json` (or `tune`) and re-run
 
 ## Pools (full control)
 
-The pool target is XMRig's native **`pools`** array, passed straight through to XMRig — you can use any
+The pool target is XMRig's native **`pools`** array, passed straight through to XMRig, so you can use any
 field XMRig supports. Only `url` is **required**; every other field has a default, so you specify only
 what you care about:
 
@@ -97,13 +97,13 @@ what you care about:
 | `tls` | `false` — set `true` when you connect on the pool's TLS/SSL port. |
 | `enabled` | `true` |
 
-There are two common setups — pick the one that matches where you're mining.
+There are two common setups; pick the one that matches where you're mining.
 
 ### Connecting to a Pithead stack
 
 [Pithead](https://github.com/p2pool-starter-stack/pithead) handles pool selection, payouts, and the
 P2Pool/XvB split centrally, so the worker only needs the stack host and its proxy port (`3333`). The
-`user` is just a **label** for the dashboard — **don't put a wallet address here**:
+`user` is just a **label** for the dashboard, so **don't put a wallet address here**:
 
 ```json
 {
@@ -113,14 +113,14 @@ P2Pool/XvB split centrally, so the worker only needs the stack host and its prox
 }
 ```
 
-`user` is optional (it defaults to the hostname); set it to tell workers apart on the dashboard. That's
-the whole story — see [Pithead Integration](pithead-integration.md) for discovery and the API token.
+`user` is optional (it defaults to the hostname); set it to tell workers apart on the dashboard. See
+[Pithead Integration](pithead-integration.md) for discovery and the API token.
 
 ### Connecting to a public pool (SupportXMR, etc.)
 
 A public pool pays **you**, so it needs your **Monero wallet address** as the login (`user`) and almost
 always a **TLS port**. RigForge builds stock upstream XMRig, so it speaks standard Stratum to any
-RandomX pool — just fill in the pool's endpoint and your wallet:
+RandomX pool. Fill in the pool's endpoint and your wallet:
 
 ```json
 {
@@ -135,9 +135,9 @@ RandomX pool — just fill in the pool's endpoint and your wallet:
 }
 ```
 
-- **`user` = your Monero wallet address** — this is who gets paid. Many pools also accept
+- **`user` = your Monero wallet address.** This is who gets paid. Many pools also accept
   `WALLET.workername` here to label the rig in their dashboard.
-- **`pass` = a worker name** (or just `"x"` — most public pools ignore the password).
+- **`pass` = a worker name** (or just `"x"`; most public pools ignore the password).
 - **`url` + `tls` = the pool's stratum endpoint.** Use the pool's **TLS/SSL port** (often `:443` or
   `:5555`) with `"tls": true`; a plain, unencrypted port needs no `tls`. Your pool's *Getting started* /
   *Connect* page lists its exact host, ports, and whether it wants `wallet` or `wallet.worker`.
@@ -148,7 +148,7 @@ The pool host must be an IP or DNS-resolvable hostname; allow its Stratum port t
 
 ### Backup pools (failover)
 
-List multiple entries — XMRig tries them **in order** and fails over to the next if one is unreachable,
+List multiple entries. XMRig tries them **in order** and fails over to the next if one is unreachable,
 handy for a primary stack with a public-pool fallback:
 
 ```json
@@ -173,20 +173,20 @@ Edit `config.json`, then apply it in one step:
 sudo ./rigforge.sh apply
 ```
 
-`apply` re-reads `config.json`, regenerates the live XMRig config, and **restarts the service** — no
+`apply` re-reads `config.json`, regenerates the live XMRig config, and **restarts the service**, with no
 recompile. It's the fast, purpose-built path for a `pools` change, a new rig label, TLS, failover
 pools, and the like. (On macOS there's no service, so `apply` regenerates the config and you restart
-the miner yourself — see [Operations › Running on macOS](operations.md#running-on-macos).)
+the miner yourself; see [Operations › Running on macOS](operations.md#running-on-macos).)
 
 You can also re-run full setup (`sudo ./rigforge.sh`), but that's meant for **re-provisioning** the
 whole worker (dependencies, build, kernel tuning, service). To avoid interrupting a running miner, a
-setup re-run on an already-built worker regenerates the config **without restarting** — so the new
+setup re-run on an already-built worker regenerates the config **without restarting**, so the new
 config only takes effect on the next restart. When you just want to apply an edit, reach for `apply`;
 it does the restart for you. Both are idempotent and skip the recompile when the pinned XMRig is
 already built.
 
 > **Note on `DONATION`:** the donate level is also compiled into the XMRig binary at build time, so on
-> an already-built worker neither `apply` nor a setup re-run changes it — both update only the runtime
+> an already-built worker neither `apply` nor a setup re-run changes it; both update only the runtime
 > config. To re-patch the binary, force a rebuild: remove `<WORKER_ROOT>/xmrig` (or bump the pinned
 > XMRig) and run setup, or run [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull) after bumping the pin.
 

@@ -1,7 +1,7 @@
 # Pithead Integration
 
 RigForge works against any RandomX pool, but it's built as the companion miner for
-**[Pithead](https://github.com/p2pool-starter-stack/pithead)** — a self-hosted Monero + P2Pool + Tari
+**[Pithead](https://github.com/p2pool-starter-stack/pithead)**, a self-hosted Monero + P2Pool + Tari
 mining stack. This page describes the contract between a RigForge worker and the Pithead dashboard, so
 the two read as one product.
 
@@ -14,23 +14,23 @@ There are two connections between a worker and the stack:
 
 ## 1. Mining connection (`:3333`)
 
-Point a pool at the stack — `{ "pools": [{ "url": "your-stack:3333" }] }`, the stack's `xmrig-proxy`
+Point a pool at the stack: `{ "pools": [{ "url": "your-stack:3333" }] }`, the stack's `xmrig-proxy`
 endpoint (its proxy listens on `3333`). The stack handles pool selection, payouts, and the P2Pool/XvB
 split centrally, so the worker config stays minimal and you **never put a wallet address in it**.
 
-- The XMRig pool `user` field is just a **label** for the rig — it defaults to the hostname (set
+- The XMRig pool `user` field is just a **label** for the rig. It defaults to the hostname (set
   `pools[].user` to name it) so you can tell workers apart on the dashboard.
 - Point as many workers as you like at the same stack endpoint; the stack aggregates them.
-- Workers talk to the pool over plain Stratum on your local network — they do **not** need Tor.
+- Workers talk to the pool over plain Stratum on your local network; they do **not** need Tor.
 - The endpoint must be reachable from the worker; if the stack host has a firewall, allow the Stratum
   port (3333) on the LAN.
 
 ### Stratum authentication (optional)
 
-By default the stack's `:3333` is **open** — any rig that can reach it may mine, and the pool `pass`
+By default the stack's `:3333` is **open**: any rig that can reach it may mine, and the pool `pass`
 is ignored (RigForge defaults it to `"x"`). If the operator turns authentication **on** by setting
 [`p2pool.stratum_password`](https://github.com/p2pool-starter-stack/pithead/blob/main/docs/workers.md#authentication)
-on the stack, the proxy then **rejects any rig whose `pass` doesn't match** — XMRig logs
+on the stack, the proxy then **rejects any rig whose `pass` doesn't match**: XMRig logs
 `Permission denied` and the rig won't mine. Put that same secret in the rig's pool `pass`:
 
 ```jsonc
@@ -44,13 +44,13 @@ on the stack, the proxy then **rejects any rig whose `pass` doesn't match** — 
 
 Then `./rigforge.sh apply` (or `setup`) regenerates the worker config with the new password.
 
-- It's the **same secret on every rig**. The operator finds it on the stack side — it's printed after
+- It's the **same secret on every rig**. The operator finds it on the stack side: it's printed after
   `pithead apply`/`setup`, stored in the stack's `.env` as `PROXY_STRATUM_PASSWORD`, and shown by
   `pithead status`.
-- The password travels **cleartext** over your LAN's plain Stratum, so this is access control —
-  *who may mine* — **not** encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind`
+- The password travels **cleartext** over your LAN's plain Stratum, so this is access control (who may
+  mine), **not** encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind`
   / a firewall do the rest).
-- This is unrelated to the `DONATION` knob (that's *this rig's* dev-fee donation) and to the API
+- This is unrelated to the `DONATION` knob (that's this rig's dev-fee donation) and to the API
   `ACCESS_TOKEN` below (that's the read-only stats auth on `:8080`).
 
 ---
@@ -69,7 +69,7 @@ set up stack-side:
 | **Auth token** | the rig name — the first pool's `user` (default hostname), or an explicit `ACCESS_TOKEN` | Pithead authenticates as `Bearer <rig name>`, so the token defaults to the rig name and stays in sync even when you set a custom `pools[].user`. |
 
 Pithead discovers workers from the stratum proxy's connection list (the pool `user` label, which is the
-rig name) — there's **nothing to register** stack-side. Workers run on a trusted LAN and need no Tor.
+rig name), so there's **nothing to register** stack-side. Workers run on a trusted LAN and need no Tor.
 
 ---
 
@@ -81,7 +81,7 @@ rig name) — there's **nothing to register** stack-side. Workers run on a trust
 
 Likewise, **don't** bind the API to localhost only and **don't** change the port: a custom token, a
 non-`8080` API port, or a worker reachable at a different host than the one it connects from all require
-matching configuration on **both** sides — that cross-side coordination is later Pithead-side work
+matching configuration on **both** sides, and that cross-side coordination is later Pithead-side work
 (Pithead [#171](https://github.com/p2pool-starter-stack/pithead/issues/171) /
 [#172](https://github.com/p2pool-starter-stack/pithead/issues/172)).
 

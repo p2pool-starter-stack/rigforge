@@ -12,13 +12,12 @@
 [![Miner: XMRig](https://img.shields.io/badge/Miner-XMRig-F26822?logo=monero&logoColor=white)](https://github.com/xmrig/xmrig)
 [![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 
-RigForge turns a fresh Ubuntu/Debian (or macOS) machine into a fully tuned [XMRig](https://github.com/xmrig/xmrig)
-mining worker — it installs the toolchain, compiles XMRig from source, applies kernel- and CPU-level
-tuning for maximum RandomX hashrate, and runs it as a managed service. You point it at a pool and
-walk away.
+RigForge turns a fresh Ubuntu/Debian (or macOS) machine into a tuned [XMRig](https://github.com/xmrig/xmrig)
+mining worker. It installs the toolchain, compiles XMRig from source, applies kernel- and CPU-level
+tuning for RandomX hashrate, and runs it as a managed service. Point it at a pool and you're done.
 
-It works against **any RandomX Stratum pool**, and it's built as the companion miner for
-**[Pithead](https://github.com/p2pool-starter-stack/pithead)** — connect as many RigForge workers as
+It works against any RandomX Stratum pool, and it's the companion miner for
+[Pithead](https://github.com/p2pool-starter-stack/pithead): connect as many RigForge workers as
 you like to your stack's single endpoint.
 
 </div>
@@ -54,10 +53,10 @@ Measured on a Ryzen **7800X3D**, **mining live** to a real pool (not a synthetic
 | **Power** | 86.8 W | **83.5 W** | **−3.8%** |
 | **Efficiency** | 120.1 H/s/W | **129.2 H/s/W** | **+7.6%** |
 
-Stock XMRig burns *more* power for *less* work — without HugePages the CPU stalls on memory. RigForge is
-faster **and** cooler, free, in one command. On a **48-core EPYC** the gap is bigger (**+6.6%**), and
-RigForge even **matched an expert's hand-tuned config** while dodging a prefetch setting that *halves*
-RandomX on that chip. Full method, both CPUs, and honest caveats: **[Benchmarks →](docs/benchmarks.md)**
+Without HugePages the CPU stalls on memory, so stock XMRig draws more power for less work. RigForge is
+faster and runs cooler, in one command. On a 48-core EPYC the gap is bigger (+6.6%), and RigForge
+matched an expert's hand-tuned config while avoiding a prefetch setting that halves RandomX on that
+chip. Full method, both CPUs, and the caveats: [Benchmarks](docs/benchmarks.md).
 
 ---
 
@@ -73,8 +72,8 @@ sudo ./rigforge.sh
 ```
 
 The script needs root to install packages and tune the system. On first run it asks for your pool URL
-and writes a minimal `config.json`. On **Linux**, reboot once afterwards to apply the
-HugePages tuning — the `xmrig` service then starts automatically.
+and writes a minimal `config.json`. On Linux, reboot once afterward to apply the HugePages tuning;
+the `xmrig` service then starts automatically.
 
 > **Mining to a public pool like SupportXMR?** Point `url` at the pool and set your **Monero wallet**
 > as the pool `user` (most pools also want their TLS port) — see
@@ -105,7 +104,7 @@ Browse the full index at **[docs/](docs/README.md)**.
 
 ## 🛠️ Common commands
 
-The everyday tasks, each a single command — there's a task-by-task cheat sheet in
+The everyday tasks, each a single command. There's a task-by-task cheat sheet in
 [Operations › Common tasks](docs/operations.md#common-tasks):
 
 ```bash
