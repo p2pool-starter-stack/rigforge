@@ -1,0 +1,18 @@
+---
+# yamllint config for RigForge, tuned to the repo's house style rather than yamllint's strict
+# defaults: workflows carry long, deliberate explanatory comments, and inline comments use a single
+# leading space (the same `key: value # note` style as the shell code). Run via `make lint-yaml`.
+extends: default
+
+rules:
+  # The workflows intentionally wrap explanation into long inline comments; enforcing 80 cols here
+  # would mean butchering them. Length is already governed by review, not a linter.
+  line-length: disable
+  # Single-document files — the leading `---` adds nothing, so don't require it.
+  document-start: disable
+  comments:
+    # Match the repo style of one space before an inline comment (yamllint defaults to two).
+    min-spaces-from-content: 1
+  truthy:
+    # Don't flag GitHub Actions' `on:` key as a "truthy" value.
+    check-keys: false
