@@ -47,7 +47,7 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 | Key | Default | What it does |
 |---|---|---|
 | `pools` | *(required)* | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
-| `ACCESS_TOKEN` | the rig name (first pool's `user`) | The XMRig HTTP API bearer token. Leave it unset so it defaults to the rig name — **Pithead authenticates as `Bearer <rig name>`**, so the token must equal the rig name (or be unset). See [Pithead Integration](pithead-integration.md). |
+| `ACCESS_TOKEN` | `""` *(open)* | Optional bearer token for the XMRig HTTP API. **Unset (default) leaves the read-only API open** — which matches Pithead's default no-auth probe, so it just works. Set a value to require a `Bearer` token; then match it on the dashboard (`workers.api_auth: token` + `workers.api_token`, or `name` if you set it to the rig name). See [Pithead Integration](pithead-integration.md). |
 | `DONATION` | `1` | XMRig donate level, an integer **0–100** (percent). Patched into the build (`donate.h`) **and** written to the generated config, so it must be a valid integer or setup fails fast. |
 | `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
 | `autotune` | `"disabled"` | Periodic live tuning, as a target: `"disabled"` (default) installs no timer; `"performance"` schedules a periodic tune for **raw hashrate**; `"efficiency"` schedules one for **hashrate-per-watt** (needs a power source — built-in RAPL or `TUNE_POWER_CMD` — else it falls back to `performance` with a warning). Legacy booleans still parse (`true` → `performance`, `false` → `disabled`). This key controls the *schedule*; to run one live pass by hand, use `tune --now` (or `tune --now --long` for a full all-knob sweep). See [Operations › Live auto-tuning](operations.md#live-auto-tuning-opt-in). |
@@ -63,7 +63,8 @@ and no config key for it. Every run (re-runs included) rebuilds the config from 
 
 1. **Your `config.json`** — the `pools` array (with `user`/`pass`/`keepalive`/`tls` and failover
    defaults filled in), the `donate-level`, and the `http` API block (bound to the LAN, read-only,
-   token = rig name). These are the keys documented in the [reference table](#configuration-reference).
+   open by default — set `ACCESS_TOKEN` for a bearer token). These are the keys documented in the
+   [reference table](#configuration-reference).
 2. **Detected hardware** — the per-CPU `cpu`/`randomx` tuning (thread count, `asm`, MSR, NUMA,
    HugePages). RigForge leans on XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
