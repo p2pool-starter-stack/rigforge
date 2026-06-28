@@ -343,17 +343,16 @@ parse_config() {
         done
     done < <(jq -c '.[]' <<<"$POOLS_JSON")
 
-    # HTTP API token. The rig's label is the pool `user` (#22; defaults to the hostname — see
-    # generate_xmrig_config). The token defaults to that same rig name, so the Pithead contract
-    # (the dashboard authenticates as `Bearer <rig name>`) holds out of the box. An explicit
-    # ACCESS_TOKEN overrides it.
+    # HTTP API token (OPTIONAL). By default the rig's read-only xmrig API is left OPEN — no token.
+    # Pithead's stock contract is a no-auth probe of GET http://<rig>:8080/1/summary, so an
+    # untokened, `restricted` (read-only) API works out of the box. Set ACCESS_TOKEN to require a
+    # Bearer token instead — then match it on the dashboard side (Pithead `workers.api_auth: token`
+    # + `workers.api_token`; or `name` if you set ACCESS_TOKEN to the rig name). See
+    # docs/pithead-integration.md.
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
-    if [ -z "$ACCESS_TOKEN" ]; then
-        ACCESS_TOKEN=$(jq -r '.[0].user' <<<"$POOLS_JSON")
-        [ -n "$ACCESS_TOKEN" ] || ACCESS_TOKEN=$(hostname)
-    fi
-    # The token is sent as an HTTP Authorization header, so keep it to safe, header-clean characters.
-    if ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
+    # When set, the token is sent as an HTTP Authorization header, so keep it to safe, header-clean
+    # characters. Empty is allowed and means "open API" (the default).
+    if [ -n "$ACCESS_TOKEN" ] && ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
         error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
     fi
 
@@ -590,9 +589,9 @@ generate_xmrig_config() {
     INIT_AVX2="-1"
     # Lock down the HTTP API to READ-ONLY (restricted) so it can't be used to *control* the miner
     # remotely. Keep it bound to all interfaces, NOT localhost: Pithead reads per-rig stats from the
-    # stack host via GET http://<rig>:8080/1/summary (read-only, authenticated by the per-rig access
-    # token = rig name). Binding localhost would break that integration — see issue #24. Workers are
-    # expected to live on a trusted LAN.
+    # stack host via GET http://<rig>:8080/1/summary (read-only; OPEN by default — see ACCESS_TOKEN
+    # above). Binding localhost would break that integration — see issue #24. Workers are expected to
+    # live on a trusted LAN, which is why a read-only API with no token is a safe default there.
     HTTP_RESTRICTED="true"
     HTTP_HOST="0.0.0.0"
 
