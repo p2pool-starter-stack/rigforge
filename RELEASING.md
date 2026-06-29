@@ -5,23 +5,23 @@ tracked in [`VERSION`](./VERSION) and the history in [`CHANGELOG.md`](./CHANGELO
 
 ## Versioning
 
-- **MAJOR** — incompatible `config.json` / CLI / behavior changes.
-- **MINOR** — new, backwards-compatible functionality.
-- **PATCH** — backwards-compatible fixes.
+- MAJOR: incompatible `config.json` / CLI / behavior changes.
+- MINOR: new, backwards-compatible functionality.
+- PATCH: backwards-compatible fixes.
 
-From `1.0.0` on, the `config.json` and CLI surface is stable, so a breaking change bumps **MAJOR**. (Pre-1.0
+From `1.0.0` on, the `config.json` and CLI surface is stable, so a breaking change bumps MAJOR. (Pre-1.0
 `0.x` releases could break the interface between minor versions while it settled.)
 
 ## Cutting a release
 
-Work lands on **`develop`** (the integration branch); a release is the point where `develop` is
+Work lands on `develop` (the integration branch); a release is the point where `develop` is
 promoted to `main` and tagged. The steps below build the release commit on `develop`, merge it to
 `main`, and tag from `main`.
 
 1. Ensure `develop` is green: `make test` (and `make test-e2e` if Docker is available).
-2. **Full real-hardware e2e (the release gate).** CI exercises everything it can (lint, the
+2. Full real-hardware e2e (the release gate). CI exercises everything it can (lint, the
    dependency-free suite, the Docker `/etc` e2e, the coverage gate), but it can't compile XMRig,
-   reserve HugePages, write MSRs, set the governor, or actually hash. So on a **real Linux rig**, run
+   reserve HugePages, write MSRs, set the governor, or actually hash. So on a real Linux rig, run
    the genuine deploy end to end and assert each step:
 
    ```bash
@@ -31,16 +31,16 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
 
-   Each phase must report `E2E-REAL (<phase>): PASS`. This is what proves a release bundle actually
+   Each phase must report `E2E-REAL (<phase>): PASS`. This proves a release bundle actually
    builds, tunes, and hashes on real hardware, which the suites can't since they all stub XMRig.
-   - **Put a real, reachable pool in `config.json` first.** Without one, `setup` writes an unroutable
-     placeholder and `verify` **fails** the connect + share-submission round-trip. That round-trip is
+   - Put a real, reachable pool in `config.json` first. Without one, `setup` writes an unroutable
+     placeholder and `verify` fails the connect + share-submission round-trip. That round-trip is
      mandatory, since proving the rig really mines is the whole point of the gate. Point `pools[0].url` at
      a real low-difficulty pool you control (e.g. the stack's test pool). For a deliberate offline smoke
      run with no pool on hand, set `E2E_ALLOW_OFFLINE_POOL=1` to downgrade it to an explicit skip.
-   - **Quick subset:** `make smoke` (bench-only) is the fast version when you just need to confirm a
+   - Quick subset: `make smoke` (bench-only) is the fast version when you just need to confirm a
      built worker still hashes; the full `e2e-real` flow above supersedes it for a real release.
-   - Kept **out of CI** on purpose (a real build + HugePages + mining are flaky by nature and against
+   - Kept out of CI on purpose (a real build + HugePages + mining are flaky by nature and against
      Actions' ToS); it's a manual pre-tag gate the releaser runs.
 3. In [`CHANGELOG.md`](./CHANGELOG.md), move the `## [Unreleased]` entries under a new
    `## [X.Y.Z] - YYYY-MM-DD` heading, then leave a fresh empty `## [Unreleased]` above it.
@@ -58,28 +58,28 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    git checkout main && git merge --ff-only develop && git push origin main
    ```
 
-7. Tag and push from `main` (annotated tag, **matching `VERSION`**):
+7. Tag and push from `main` (annotated tag, matching `VERSION`):
 
    ```bash
    git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
    git push origin main --follow-tags
    ```
 
-Pushing the tag triggers the **release pipeline**
+Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
 
-- **verifies** the tag matches `VERSION` (the build fails otherwise),
+- verifies the tag matches `VERSION` (the build fails otherwise),
 - packages the deploy bundle (`rigforge.sh`, `util/`, `systemd/`, `config.json.template`,
   `config.advanced.example.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`) as
   `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev files are excluded),
 - generates `SHA256SUMS` for the artifacts,
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
-- creates the GitHub Release as a **draft** — review the generated notes and bundles, then click
-  **Publish** (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
+- creates the GitHub Release as a draft. Review the generated notes and bundles, then click
+  Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
 
 To verify a downloaded bundle: `sha256sum -c SHA256SUMS`.
 
-> The release is created as a **draft** so a human reviews it before it goes public, a deliberate gate
+> The release is created as a draft so a human reviews it before it goes public, a deliberate gate
 > for a tool that installs a root miner. Drop `--draft` from `release.yml` to auto-publish on tag instead.
 
 ## Notes
