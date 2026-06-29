@@ -37,6 +37,15 @@ All notable changes to RigForge are documented here. The format is based on
 - **Contributing: inbound contributions are MIT-licensed (#119).** `CONTRIBUTING.md` now states that
   contributions are licensed under the project's MIT License — a lightweight alternative to a CLA.
 
+### Changed
+
+- **Worker HTTP API is now OPEN (read-only) by default.** `ACCESS_TOKEN` no longer defaults to the rig
+  name; left unset, the rig's `:8080` API is served `restricted` (read-only) with **no token** — which
+  matches Pithead's new default no-auth stats probe, so a stock rig needs zero token coordination. Set
+  `ACCESS_TOKEN` to require a `Bearer` token (then match it on the dashboard with `workers.api_auth:
+  token`/`name`). Pairs with pithead [#171](https://github.com/p2pool-starter-stack/pithead/issues/171)
+  / [#172](https://github.com/p2pool-starter-stack/pithead/issues/172).
+
 ## [1.0.1] - 2026-06-13
 
 ### Fixed

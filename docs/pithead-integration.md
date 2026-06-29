@@ -50,8 +50,8 @@ Then `./rigforge.sh apply` (or `setup`) regenerates the worker config with the n
 - The password travels **cleartext** over your LAN's plain Stratum, so this is access control (who may
   mine), **not** encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind`
   / a firewall do the rest).
-- This is unrelated to the `DONATION` knob (that's this rig's dev-fee donation) and to the API
-  `ACCESS_TOKEN` below (that's the read-only stats auth on `:8080`).
+- This is unrelated to the `DONATION` knob (that's this rig's dev-fee donation) and to the optional
+  API `ACCESS_TOKEN` below (that gates the read-only stats API on `:8080`, which is open by default).
 
 ---
 
@@ -66,7 +66,7 @@ set up stack-side:
 | **Port** | `8080` | Pithead reads `GET http://<rig>:8080/1/summary`; the port is fixed dashboard-side. |
 | **Bind** | `0.0.0.0` (all interfaces) | The dashboard polls each worker from the stack host over the LAN. |
 | **Mode** | `restricted: true` (read-only) | The API can be **read** but not used to **control** the miner remotely. |
-| **Auth token** | the rig name — the first pool's `user` (default hostname), or an explicit `ACCESS_TOKEN` | Pithead authenticates as `Bearer <rig name>`, so the token defaults to the rig name and stays in sync even when you set a custom `pools[].user`. |
+| **Auth token** | **none (open) by default**; set `ACCESS_TOKEN` to require a Bearer token | Pithead's stock probe is **no-auth**, so an open, read-only API works out of the box. Setting `ACCESS_TOKEN` turns auth on — see below. |
 
 Pithead discovers workers from the stratum proxy's connection list (the pool `user` label, which is the
 rig name), so there's **nothing to register** stack-side. Workers run on a trusted LAN and need no Tor.
@@ -75,13 +75,19 @@ rig name), so there's **nothing to register** stack-side. Workers run on a trust
 
 ## The token rule (important)
 
-> ⚠️ **Don't set a random/custom API token for a Pithead-connected worker.** The dashboard
-> authenticates as `Bearer <rig name>`, so a decoupled token means it can't read the worker. Leave
-> `ACCESS_TOKEN` unset (it defaults to the rig name) unless you've matched it on both sides.
+> ✅ **By default the worker API is open** (read-only, no token), which matches Pithead's default
+> probe (`workers.api_auth: none`) — nothing to coordinate. Leave `ACCESS_TOKEN` unset and it just
+> works.
 
-Likewise, **don't** bind the API to localhost only and **don't** change the port: a custom token, a
-non-`8080` API port, or a worker reachable at a different host than the one it connects from all require
-matching configuration on **both** sides, and that cross-side coordination is later Pithead-side work
+If you **do** want a token (e.g. you don't fully trust the LAN), set `ACCESS_TOKEN` here **and** match
+it on the dashboard side:
+
+- a single shared token → Pithead `workers.api_auth: token` + `workers.api_token: <the token>`;
+- the rig name as the token (`ACCESS_TOKEN` = the first pool's `user`) → Pithead `workers.api_auth: name`.
+
+Likewise, **don't** bind the API to localhost only and **don't** change the port without matching it
+on the stack side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host
+than the one it connects from, also need matching configuration on **both** sides
 (Pithead [#171](https://github.com/p2pool-starter-stack/pithead/issues/171) /
 [#172](https://github.com/p2pool-starter-stack/pithead/issues/172)).
 
@@ -93,7 +99,7 @@ matching configuration on **both** sides, and that cross-side coordination is la
 |---|---|
 | **Rig won't mine / XMRig logs `Permission denied` at login** | The stack has stratum authentication on (`p2pool.stratum_password`) — set the pool `pass` to that secret. See [Stratum authentication](#stratum-authentication-optional). |
 | **Worker missing from the dashboard** | The dashboard discovers rigs from their stratum `user` label — confirm the worker is actually connected to the pool and mining. |
-| **Rig shows as connected but no stats** | The HTTP API token must equal the rig name (or be unset). If you set a custom `ACCESS_TOKEN`, the dashboard can't read it — clear it and re-run setup. |
+| **Rig shows as connected but no stats** | By default the API is open and the dashboard reads it with no token. If you set an `ACCESS_TOKEN` here, the dashboard must match it (`workers.api_auth: token` + `workers.api_token`, or `name` if the token is the rig name) — otherwise clear `ACCESS_TOKEN` and re-run setup. |
 | **Stats unreachable from the stack host** | Confirm the worker's `:8080` is reachable from the stack host over the LAN (firewall, correct IP). RigForge binds `0.0.0.0` by default. |
 
 ---

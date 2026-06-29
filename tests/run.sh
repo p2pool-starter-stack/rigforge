@@ -365,16 +365,16 @@ assert_eq "ACCESS_TOKEN honoured" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)"
 assert_eq "no bundled XMRig template file" "$([ -e "$ROOT/worker-config" ] && echo present || echo gone)" "gone"
 
 # #22: the rig's label is the pool `user` (folded in from the old WORKER_NAME); blank -> hostname (at
-# config-gen). The HTTP API token follows the rig name (the first pool's user), so the Pithead
-# "Bearer <rig name>" contract holds out of the box; an explicit ACCESS_TOKEN overrides it.
-echo "== unit: rig label = pool user, token follows it (#22) =="
+# config-gen). The HTTP API token is OPTIONAL and defaults to empty (an open, read-only API — the
+# stock Pithead no-auth contract); an explicit ACCESS_TOKEN turns auth on.
+echo "== unit: rig label = pool user; API token off by default (#22) =="
 c="$(mkconf userset "{ \"pools\": [{\"url\":\"h:3333\",\"user\":\"rig-07\"}] }")"
 assert_eq "pool user honoured" "$(parse_and_print "$c" "$ROOT" POOLS_JSON | jq -r '.[0].user')" "rig-07"
-assert_eq "token defaults to the pool user" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rig-07"
+assert_eq "token empty (open API) by default" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" ""
 c="$(mkconf userblank "{ $POOL }")"
-assert_eq "token falls back to hostname when user blank" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "rigbox"
+assert_eq "token stays empty even when user blank" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" ""
 c="$(mkconf usertok "{ \"pools\": [{\"url\":\"h:3333\",\"user\":\"rig-07\"}], \"ACCESS_TOKEN\": \"custom\" }")"
-assert_eq "explicit token overrides the rig name" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "custom"
+assert_eq "explicit token turns auth on" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKEN)" "custom"
 
 echo "== unit: parse_config — error paths =="
 printf '{ not json ' >"$SANDBOX/bad.json"
@@ -512,8 +512,9 @@ assert_eq "generic: no dead cpu.hwloc key" "$(J "$cfg" '.cpu.hwloc')" "null"
 assert_eq "generic: huge-pages-jit off (matches XMRig default)" "$(J "$cfg" '.cpu."huge-pages-jit"')" "false"
 # HTTP API locked down on Linux (#7 / #17): made READ-ONLY (restricted) so it can't control the
 # miner remotely. It stays bound to 0.0.0.0 (NOT localhost) on purpose: Pithead reads per-rig stats
-# from the stack host at http://<rig>:8080 (read-only, token = rig name) — localhost would break that
-# integration (issue #24). The access-token assertion below is the auth half of the lockdown.
+# from the stack host at http://<rig>:8080 (read-only; OPEN by default) — localhost would break that
+# integration (issue #24). This generic profile sets an explicit ACCESS_TOKEN (tok123), so the
+# access-token assertion below covers the opt-in auth path; the open default is asserted separately.
 assert_eq "generic: http restricted" "$(J "$cfg" '.http.restricted')" "true"
 assert_eq "generic: http reachable (LAN)" "$(J "$cfg" '.http.host')" "0.0.0.0"
 assert_eq "contract: http port 8080 (#24)" "$(J "$cfg" '.http.port')" "8080"
@@ -525,6 +526,29 @@ assert_eq "pool user = hostname" "$(J "$cfg" '.pools[0].user')" "rigbox"
 assert_eq "access-token applied" "$(J "$cfg" '.http."access-token"')" "tok123"
 assert_eq "donate-level = DONATION" "$(J "$cfg" '.["donate-level"]')" "5"
 assert_eq "donate-over-proxy = DONATION" "$(J "$cfg" '.["donate-over-proxy"]')" "5"
+
+echo "== config-gen: open API by default (no ACCESS_TOKEN) =="
+# Default (ACCESS_TOKEN unset/empty): the read-only API is left OPEN — access-token renders as null.
+# This is the stock Pithead no-auth contract (the dashboard probes :8080 with no Authorization);
+# setting ACCESS_TOKEN turns Bearer auth back on (the explicit-token render is asserted above).
+export STUB_CPU_MODEL="Intel(R) Xeon(R) Silver 4310" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+d_open="$(mktemp -d "$SANDBOX/open.XXXXXX")"
+(
+    cd "$d_open" || exit 1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$d_open"
+    POOL_ADDRESS=myrig.local
+    POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
+    ACCESS_TOKEN=""
+    DONATION=1
+    LOGROTATE_DIR="$d_open"
+    set +e
+    PATH="$STUBS:$PATH" generate_xmrig_config >/dev/null 2>&1
+)
+cfg_open="$d_open/config.json"
+assert_eq "open API by default: access-token null" "$(J "$cfg_open" '.http."access-token"')" "null"
+assert_eq "open API by default: still restricted (read-only)" "$(J "$cfg_open" '.http.restricted')" "true"
 
 echo "== config-gen: AMD EPYC (server) =="
 # Run directly (not via gen_config) so we can also capture the profile log line from stdout.
