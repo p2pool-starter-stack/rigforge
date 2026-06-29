@@ -16,7 +16,7 @@ jobs:
     name: Lint (yamllint)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false # zizmor: artipacked
       # pipx is preinstalled on ubuntu-24.04 (same path as diff-cover/zizmor); pin the version so the
@@ -31,7 +31,7 @@ jobs:
     name: Lint (markdownlint)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false # zizmor: artipacked
       # node is preinstalled on ubuntu-24.04; `make lint-md` runs the version-pinned markdownlint-cli2
@@ -48,7 +48,7 @@ jobs:
       SHFMT_VERSION: "3.13.1"
       SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false # no pushes from CI; don't leave the token in .git/config (zizmor: artipacked)
       # Install PINNED, checksum-verified shellcheck + shfmt instead of the runner's preinstalled
@@ -80,7 +80,7 @@ jobs:
     name: Test suite
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false # zizmor: artipacked
       # Ubuntu is RigForge's supported target. The suite still exercises the macOS code path here via
@@ -93,7 +93,7 @@ jobs:
     name: Test suite (macOS)
     runs-on: macos-14 # Apple silicon; pinned (not macos-latest) to avoid image drift
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false # zizmor: artipacked
       # The Linux job only SIMULATES macOS (STUB_UNAME_S=Darwin + stubbed sed/launchctl). Here the suite
@@ -117,7 +117,7 @@ jobs:
     name: End-to-end (Docker)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false # zizmor: artipacked
       # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
@@ -136,7 +136,7 @@ jobs:
       # so fall back to the pushed branch itself — that's an empty diff that trivially passes.
       BASE_REF: ${{ github.base_ref || github.ref_name }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0 # diff-cover needs history to diff the PR against its base branch
           persist-credentials: false # the fetch below is read-only on a public repo (zizmor: artipacked)
