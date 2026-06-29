@@ -12,40 +12,41 @@
 [![Miner: XMRig](https://img.shields.io/badge/Miner-XMRig-F26822?logo=monero&logoColor=white)](https://github.com/xmrig/xmrig)
 [![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 
-RigForge turns a fresh Ubuntu/Debian (or macOS) machine into a tuned [XMRig](https://github.com/xmrig/xmrig)
-mining worker. It installs the toolchain, compiles XMRig from source, applies kernel- and CPU-level
-tuning for RandomX hashrate, and runs it as a managed service. Point it at a pool and you're done.
+RigForge provisions a tuned [XMRig](https://github.com/xmrig/xmrig) mining worker on a fresh
+Ubuntu/Debian (or macOS) machine. It installs the toolchain, compiles XMRig from source, applies
+kernel- and CPU-level tuning for RandomX hashrate, and runs it as a managed service. Point it at a
+pool to start mining.
 
 It works against any RandomX Stratum pool, and it's the companion miner for
-[Pithead](https://github.com/p2pool-starter-stack/pithead): connect as many RigForge workers as
+[Pithead](https://github.com/p2pool-starter-stack/pithead). Connect as many RigForge workers as
 you like to your stack's single endpoint.
 
 </div>
 
-> **RigForge is not a custom miner.** It compiles stock, upstream XMRig and wraps it in the setup,
+> RigForge is not a custom miner. It compiles stock, upstream XMRig and wraps it in the setup,
 > hardware tuning, and service management that are otherwise fiddly to get right by hand.
 
 ---
 
 ## ✨ What it does
 
-- **Automated setup** — installs build dependencies (`cmake`, `libuv`, `hwloc`, …) and compiles a
-  pinned, commit-verified XMRig from source.
-- **Hardware-aware tuning** — leans on XMRig's cache-aware auto-detection (thread count, assembly
-  path, MSR preset, NUMA) and layers on dedicated-miner defaults for maximum hashrate.
-- **Kernel & system tuning (Linux)** — topology-aware HugePages (1 GB and 2 MB), MSR access for
-  hardware-prefetcher control, and `hugetlbfs` mounts + memlock limits.
-- **Service management (Linux)** — runs XMRig as a `systemd` service with a `cpupower` performance
-  governor and automatic log rotation.
-- **Interactive config** — if no config exists, it asks for the one thing it needs: your pool URL.
-- **Idempotent** — re-running skips the recompile when the pinned XMRig is already built and never
+- Installs build dependencies (`cmake`, `libuv`, `hwloc`, …) and compiles a pinned, commit-verified
+  XMRig from source.
+- Tunes for the detected CPU: XMRig's cache-aware auto-detection (thread count, assembly path, MSR
+  preset, NUMA), plus dedicated-miner defaults.
+- Applies kernel and system tuning on Linux: topology-aware HugePages (1 GB and 2 MB), MSR access
+  for hardware-prefetcher control, and `hugetlbfs` mounts + memlock limits.
+- Runs XMRig as a `systemd` service on Linux, with a `cpupower` performance governor and log
+  rotation.
+- Asks for your pool URL on first run if no config exists.
+- Is idempotent: re-running skips the recompile when the pinned XMRig is already built and never
   double-applies system tuning.
 
 ---
 
 ## 📊 Does it actually help?
 
-Measured on a Ryzen **7800X3D**, **mining live** to a real pool (not a synthetic `--bench`):
+Measured on a Ryzen **7800X3D**, mining live to a real pool (not a synthetic `--bench`):
 
 | | Stock XMRig | RigForge | |
 |---|--:|--:|:--|
@@ -54,9 +55,9 @@ Measured on a Ryzen **7800X3D**, **mining live** to a real pool (not a synthetic
 | **Efficiency** | 120.1 H/s/W | **129.2 H/s/W** | **+7.6%** |
 
 Without HugePages the CPU stalls on memory, so stock XMRig draws more power for less work. RigForge is
-faster and runs cooler, in one command. On a 48-core EPYC the gap is bigger (+6.6%), and RigForge
-matched an expert's hand-tuned config while avoiding a prefetch setting that halves RandomX on that
-chip. Full method, both CPUs, and the caveats: [Benchmarks](docs/benchmarks.md).
+faster and runs cooler. On a 48-core EPYC the gap is +6.6%, and RigForge matched an expert's
+hand-tuned config while avoiding a prefetch setting that halves RandomX on that chip. Full method,
+both CPUs, and the caveats: [Benchmarks](docs/benchmarks.md).
 
 ---
 
@@ -75,10 +76,10 @@ The script needs root to install packages and tune the system. On first run it a
 and writes a minimal `config.json`. On Linux, reboot once afterward to apply the HugePages tuning;
 the `xmrig` service then starts automatically.
 
-> **Mining to a public pool like SupportXMR?** Point `url` at the pool and set your **Monero wallet**
-> as the pool `user` (most pools also want their TLS port) — see
+> Mining to a public pool like SupportXMR? Point `url` at the pool and set your Monero wallet
+> as the pool `user` (most pools also want their TLS port). See
 > [Configuration › Connecting to a public pool](docs/configuration.md#connecting-to-a-public-pool-supportxmr-etc).
-> With a [Pithead](https://github.com/p2pool-starter-stack/pithead) stack you need no wallet — just the
+> With a [Pithead](https://github.com/p2pool-starter-stack/pithead) stack you need no wallet, just the
 > stack's `host:3333`.
 
 ➡️ **Full walkthrough:** [docs/getting-started.md](docs/getting-started.md)
@@ -94,7 +95,7 @@ the `xmrig` service then starts automatically.
 | **[Benchmarks](docs/benchmarks.md)** | Measured stock-vs-tuned hashrate and efficiency on real hardware, with the method and caveats. |
 | **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
-| **[How It Works](docs/how-it-works.md)** | What the script actually does — compile, HugePages, MSR, NUMA, governor, service. |
+| **[How It Works](docs/how-it-works.md)** | What the script actually does: compile, HugePages, MSR, NUMA, governor, service. |
 | **[Pithead Integration](docs/pithead-integration.md)** | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080`, and the token rules. |
 | **[FAQ](docs/faq.md)** | Common questions, plus why RigForge vs. doing it by hand. |
 
@@ -105,7 +106,7 @@ Browse the full index at **[docs/](docs/README.md)**.
 ## 🛠️ Common commands
 
 The everyday tasks, each a single command. There's a task-by-task cheat sheet in
-[Operations › Common tasks](docs/operations.md#common-tasks):
+[Operations › Common tasks](docs/operations.md#common-tasks).
 
 ```bash
 # Change a setting — edit config.json first, then:
@@ -128,17 +129,17 @@ See [Operations › Commands](docs/operations.md#commands) for the full referenc
 
 RigForge runs as root, so it's worth being explicit about what it does and doesn't do:
 
-- **No telemetry, ever.** No analytics, no version ping, no usage beacon. The only outbound traffic is
-  to *your* pool, to the pinned XMRig source on GitHub (cloned and **commit-verified** before building),
+- No telemetry. No analytics, no version ping, no usage beacon. The only outbound traffic is
+  to *your* pool, to the pinned XMRig source on GitHub (cloned and commit-verified before building),
   and to your distro's package mirrors.
-- **Honest dev fee.** The XMRig donation defaults to **1%** — XMRig's own upstream default, not a
-  RigForge markup — and goes to the XMRig project. Set `"DONATION": 0` to turn it off.
-- **Read-only stats API.** Each worker exposes XMRig's HTTP API on `:8080` for the
+- The XMRig donation defaults to **1%**. That's XMRig's own upstream default, not a RigForge markup,
+  and it goes to the XMRig project. Set `"DONATION": 0` to turn it off.
+- Each worker exposes XMRig's HTTP API on `:8080` for the
   [Pithead](https://github.com/p2pool-starter-stack/pithead) dashboard. It's `restricted` (read-only,
   can't control the miner) and token-gated. It binds the LAN by default; if you mine solo or to a public
   pool you don't need it at all and can firewall the port off.
 
-Full detail — and the exact `ufw` commands to lock down `:8080` — are in [SECURITY.md](./SECURITY.md).
+Full detail, and the exact `ufw` commands to lock down `:8080`, are in [SECURITY.md](./SECURITY.md).
 
 ---
 
@@ -157,21 +158,21 @@ make smoke       # release pre-tag gate (quick): real xmrig --bench proves the b
 make e2e-real    # release pre-tag gate (full): real build+tune+bench+doctor+uninstall on a rig (root)
 ```
 
-**What `make test` covers** — it sources `rigforge.sh` and exercises its functions in isolation, with
+**What `make test` covers.** It sources `rigforge.sh` and exercises its functions in isolation, with
 every external/privileged command (`git`, `make`, `cmake`, `sudo`, `systemctl`, `modprobe`,
 `apt-get`, …) and all hardware detection (`uname`, `lscpu`, `sysctl`, `nproc`, `hostname`) replaced by
-fakes on `PATH`. Because the hardware is faked, **one run on any machine simulates every supported
-platform** — it asserts the generated XMRig config for EPYC / Ryzen X3D / generic-Linux inputs and the
+fakes on `PATH`. Because the hardware is faked, one run on any machine simulates every supported
+platform. It asserts the generated XMRig config for EPYC / Ryzen X3D / generic-Linux inputs and the
 macOS path, plus config parsing, `DONATION` validation, host resolution, and a full stubbed
 deployment run (executed twice to prove idempotency).
 
-**What `make test-e2e` adds** — it runs the *real* `rigforge.sh` end-to-end inside a throwaway
+**What `make test-e2e` adds.** It runs the *real* `rigforge.sh` end-to-end inside a throwaway
 `ubuntu` container (RigForge's documented Linux target, `linux/amd64`), against a real, disposable
-`/etc`. This validates the Linux-only deploy path with genuine tools — GNU `sed`, `envsubst`, the
-`fstab`/`limits`/GRUB edits and their idempotency — which can't run natively on a macOS host. Only the
+`/etc`. This validates the Linux-only deploy path with genuine tools (GNU `sed`, `envsubst`, the
+`fstab`/`limits`/GRUB edits and their idempotency) which can't run natively on a macOS host. Only the
 heavy XMRig compile and the package install are stubbed. It skips cleanly if Docker isn't available.
 
-No XMRig binary is compiled by the tests — the heavy native build is stubbed; the suite asserts the
+No XMRig binary is compiled by the tests; the heavy native build is stubbed. The suite asserts the
 *orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
 
 **`make coverage`** measures line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running the
@@ -179,13 +180,13 @@ suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned co
 Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`,
 so both the sourced functions and the command-dispatch paths are credited. CI enforces two gates: a
 committed **total floor** ([`tests/coverage-floor.txt`](tests/coverage-floor.txt), ratcheted up over
-time) and, the important lever, **patch coverage** — new/changed lines must be tested (`diff-cover`
-against `main`). Neither needs an external service.
+time) and, the important lever, **patch coverage** (`diff-cover` against `main`) so new/changed lines
+must be tested. Neither needs an external service.
 
 **`make smoke`** closes that gap at release time. Because the suites never compile or run XMRig, they
 can't prove the shipped binary actually starts and hashes. `make smoke` benches a real worker
 (`xmrig --bench`, fully offline) on a real rig and passes only if a hashrate is reported and the run is
-clean — it's a manual, Linux-only-for-full-effect pre-tag gate, not a CI job. See
+clean. It's a manual, Linux-only-for-full-effect pre-tag gate, not a CI job. See
 [RELEASING.md](./RELEASING.md).
 
 For how RigForge is versioned and released, see [RELEASING.md](./RELEASING.md) and
