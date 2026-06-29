@@ -5,7 +5,7 @@ rest (CPU profile, thread count, HugePage sizing) is detected and applied for yo
 
 On first run, if there's no `config.json`, `setup` creates a minimal one interactively (it asks for
 your pool URL). You can also pre-create one from
-[`config.json.template`](../config.json.template).
+[`config.minimal.json`](../config.minimal.json).
 
 Setup validates every field when it parses the config. A malformed pool URL, an out-of-range port, a
 bad hostname, a non-boolean flag, or an unsafe `HOME_DIR` stops setup with a message rather than
@@ -34,7 +34,7 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 > [Connecting to a public pool](#connecting-to-a-public-pool-supportxmr-etc) for a copy-paste example.
 
 > Two-tier config (like Pithead): keep `config.json` minimal and add only the keys you want to change.
-> [`config.advanced.example.json`](../config.advanced.example.json) lists every key with its default.
+> [`config.reference.json`](../config.reference.json) lists every key with its default.
 > Copy in what you need; anything you omit keeps the default. The reference table below documents each
 > key.
 
