@@ -595,21 +595,14 @@ generate_xmrig_config() {
     HTTP_RESTRICTED="true"
     HTTP_HOST="0.0.0.0"
 
-    # macOS Specific Overrides
+    # macOS Specific Overrides (only the values that differ from the shared defaults above)
     if [ "$OS_TYPE" == "Darwin" ]; then
-        YIELD="false"
-        # Match the Linux dedicated-miner default (2). XMRig warns a priority above 2 can make the
-        # machine unresponsive, and macOS is a light-use/dev target — don't pin it to the most
-        # aggressive level here.
-        PRIORITY="2"
         ASM="true"
         WRMSR="false"
         RDMSR="false"
         HUGE_PAGES="false"
         MEMORY_POOL="false"
         ONE_GB_PAGES="false"
-        NUMA="true"
-        HTTP_RESTRICTED="true"
         HTTP_HOST="::"
 
         # Generate rx array [-1, -1, ...] based on core count
@@ -899,7 +892,7 @@ configure_limits() {
 # removes it regardless, but only while it's still our symlink.
 link_cli() {
     [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
-    local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge" ok=1
+    local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge"
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
         return 0
@@ -916,8 +909,7 @@ link_cli() {
     local sudo_pfx=""
     [ -w "$BIN_DIR" ] || sudo_pfx="sudo"
     # shellcheck disable=SC2086
-    $sudo_pfx rm -f "$link" 2>/dev/null && $sudo_pfx ln -s "$target" "$link" 2>/dev/null || ok=0
-    if [ "$ok" = 1 ]; then
+    if $sudo_pfx rm -f "$link" 2>/dev/null && $sudo_pfx ln -s "$target" "$link" 2>/dev/null; then
         log "Installed the 'rigforge' command -> $link (try: 'sudo rigforge doctor' from anywhere)."
     else
         warn "Couldn't add the 'rigforge' command at $link (permissions?). Run it as './rigforge.sh' instead."
