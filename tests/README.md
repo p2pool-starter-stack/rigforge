@@ -1,7 +1,7 @@
 # RigForge tests
 
-RigForge is one self-contained script, so its tests are layered by **how much they exercise for
-real**, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
+RigForge is one self-contained script, so its tests are layered by how much they exercise for
+real, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
 
 > The split exists so CI proves everything it can on a GitHub runner, while the things a runner
@@ -20,29 +20,29 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 | **Release e2e (full)** | [`e2e-real.sh`](e2e-real.sh) | Real Linux rig, **manual, root**. Not in CI. | The real thing end to end: build + tune + kernel tuning + service + a real hash, then a clean uninstall. **The release gate.** | `make e2e-real` (see [`RELEASING.md`](../RELEASING.md)) |
 
 The first four run automatically on every push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
-The last two are deliberately kept **out of CI**, because a real build, HugePages, and live mining are
-flaky-by-nature and against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
+The last two are deliberately kept out of CI, because a real build, HugePages, and live mining are
+flaky by nature and against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
 
 ## Where does my test go?
 
-- **New logic, config-gen behaviour, a CPU/OS profile, or command behaviour** → [`run.sh`](run.sh).
+- New logic, config-gen behaviour, a CPU/OS profile, or command behaviour → [`run.sh`](run.sh).
   It's the default home for almost everything; hardware and OS are simulated with PATH stubs, so it
   stays hardware-independent and runs the same on any machine.
-- **A new real-`/etc` system effect** (fstab, memlock limits, an MSR/modules edit, a mount) → assert it
+- A new real-`/etc` system effect (fstab, memlock limits, an MSR/modules edit, a mount) → assert it
   in [`e2e/in-container.sh`](e2e/in-container.sh), which runs against a throwaway filesystem.
-- **macOS-specific behaviour** (BSD tools, launchd, the mac process control) → [`e2e/macos.sh`](e2e/macos.sh).
-- **Something only provable on real hardware** (it actually hashes, MSRs really applied, HugePages
+- macOS-specific behaviour (BSD tools, launchd, the mac process control) → [`e2e/macos.sh`](e2e/macos.sh).
+- Something only provable on real hardware (it actually hashes, MSRs really applied, HugePages
   really reserved) → [`e2e-real.sh`](e2e-real.sh).
 
 ## Conventions
 
-- `run.sh` is **dependency-free**: no bats, no frameworks. Tiny `assert_*` helpers, and every external
+- `run.sh` is dependency-free: no bats, no frameworks. Tiny `assert_*` helpers, and every external
   or privileged command is faked in a stub dir placed first on `PATH`. Keep it that way: a contributor
   must be able to run `bash tests/run.sh` on a stock machine.
-- It's **hardware-independent on purpose**: all hardware-probe env hooks are pointed at non-existent
+- It's hardware-independent on purpose: all hardware-probe env hooks are pointed at non-existent
   paths up top, so the same run exercises EPYC / Ryzen-X3D / macOS inputs back to back and gives the
   same result on any host. Don't read real `/sys` or `/proc`; drive behaviour through the stubs.
-- The suite must pass under both modern bash and **Apple's bash 3.2** (CI runs `/bin/bash tests/run.sh`
+- The suite must pass under both modern bash and Apple's bash 3.2 (CI runs `/bin/bash tests/run.sh`
   on macOS); avoid bash-4-only syntax.
 - Lint everything: `make lint` (shellcheck + shfmt). The file list lives in the Makefile's
   `SHELL_FILES` so CI and local stay in sync — add new `tests/*.sh` there.
