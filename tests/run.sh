@@ -633,6 +633,37 @@ cfg="$d/config.json"
 unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
 assert_eq "explicit pool user kept" "$(J "$cfg" '.pools[0].user')" "fancy-rig"
 
+# #21/#24: fields that must survive generate_xmrig_config unmangled. parse_config-side acceptance is
+# covered above; here we prove the EMITTED config.json (what XMRig actually loads) preserves them — a jq
+# re-emit is exactly where a bracketed IPv6 host or a lone TLS flag could get dropped or reshaped.
+echo "== config-gen: IPv6 host / single-pool TLS / empty-token round-trip =="
+export STUB_CPU_MODEL="Intel(R) Xeon" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+SIM_OS=Linux SIM_DON=1
+SIM_POOLS='[{"url":"[2001:db8::1]:3333","user":"","pass":"x","keepalive":true,"tls":true,"enabled":true}]'
+d="$(gen_config)"
+cfg="$d/config.json"
+unset SIM_POOLS
+assert_eq "bracketed IPv6 pool url round-trips unmangled" "$(J "$cfg" '.pools[0].url')" "[2001:db8::1]:3333"
+assert_eq "single-pool tls:true reaches config.json" "$(J "$cfg" '.pools[0].tls')" "true"
+# An empty ACCESS_TOKEN must emit JSON `null` (auth-disabled), not "" or the string "null". gen_config's
+# `${SIM_TOK:-tok123}` can't express an empty token, so drive generate_xmrig_config directly.
+dn="$(mktemp -d "$SANDBOX/tok.XXXXXX")"
+(
+    cd "$dn" || exit 1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$dn"
+    POOL_ADDRESS=myrig.local
+    POOLS_JSON='[{"url":"myrig.local:3333","user":"r","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
+    ACCESS_TOKEN=""
+    DONATION=1
+    LOGROTATE_DIR="$dn"
+    set +e
+    PATH="$STUBS:$PATH" generate_xmrig_config >/dev/null 2>&1
+)
+assert_eq "empty token emits JSON null (not \"\" or \"null\")" "$(J "$dn/config.json" '.http."access-token" == null')" "true"
+unset STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+
 echo "== config-gen: idempotent (same inputs -> identical output) =="
 export STUB_CPU_MODEL="Intel(R) Xeon(R)" STUB_NPROC=8 STUB_HOSTNAME=rigbox
 SIM_OS=Linux SIM_DON=1
@@ -793,6 +824,22 @@ out="$(pin_compile "tamperedsha1111111111111111111111111111")"
 rc=$?
 assert_rc "tampered commit fails build" "$rc" "1"
 assert_contains "tampered commit is reported" "$out" "commit mismatch"
+# The mismatch path also drops the clone (rm -rf xmrig) so the NEXT run starts clean instead of tripping
+# git's "destination 'xmrig' already exists and is not empty" (#18). Assert the dir is gone — a regression
+# that removed the cleanup would still print the mismatch error and pass every assertion above.
+pc="$(mktemp -d "$SANDBOX/pinclean.XXXXXX")"
+(
+    cd "$pc" || exit 1
+    source "$SCRIPT"
+    OS_TYPE="$(uname -s)"
+    DONATION=1
+    WORKER_ROOT="$pc"
+    export XMRIG_COMMIT="pinnedsha000000000000000000000000000000"
+    export STUB_GIT_HEAD="tamperedsha1111111111111111111111111111"
+    set +e
+    PATH="$STUBS:$PATH" compile_xmrig >/dev/null 2>&1
+)
+assert_eq "commit mismatch removes the clone so the next run starts clean (#18)" "$([ -e "$pc/xmrig" ] && echo present || echo gone)" "gone"
 
 # ---------------------------------------------------------------------------
 # Build robustness (#9): cap -j by RAM (~1 job / 2 GB) and report the failing step on error.
@@ -817,6 +864,12 @@ assert_eq "unknown RAM -> all cores" "$(
     source "$SCRIPT"
     MEMINFO=/nonexistent compute_build_jobs 6
 )" "6"
+# The `max < 1 -> 1` floor: a ~1.5 GB host computes max = 1/2 = 0, which must clamp to 1 job (not 0, which
+# would make `make -j0` fail). The 2 GB case above lands on max=1 already, so it never exercises this clamp.
+assert_eq "sub-2GB host floors to 1 job (never 0)" "$(
+    source "$SCRIPT"
+    MEMINFO="$(mk_meminfo 1572864 mi1_5)" compute_build_jobs 8
+)" "1"
 
 echo "== unit: on_err reports the failing step (#9) =="
 out="$(
@@ -1454,6 +1507,116 @@ assert_rc "install_dependencies exits 0 on a non-tty stdin (#74)" "$rc" "0"
 assert_contains "auto-installs the missing dep (#74)" "$(cat "$APT_LOG")" "build-essential"
 assert_contains "apt waits for the lock, not fail (#74)" "$(cat "$APT_LOG")" "DPkg::Lock::Timeout=300"
 
+# The apt path adds the versioned kernel-tools package ONLY when `apt-cache show` finds it. The #74 test
+# stubs apt-cache to exit 1 (absent), so the present-branch (dep list gains linux-tools-<rel>) is untested.
+echo "== unit: install_dependencies adds versioned linux-tools when apt-cache has it (#74) =="
+LT="$(mktemp -d "$SANDBOX/lt.XXXXXX")"
+# Stubs use an ABSOLUTE `#!/bin/sh` shebang, not `#!/usr/bin/env bash`: these scenarios restrict PATH to
+# the stub dir alone (so `command -v` picks the intended package manager), which would leave `env` unable
+# to find bash on PATH. The stub bodies are POSIX-simple, so /bin/sh runs them directly.
+printf '#!/bin/sh\nexit 1\n' >"$LT/dpkg"      # every dep "missing" -> all go to the install list
+printf '#!/bin/sh\nexit 0\n' >"$LT/apt-cache" # linux-tools-<rel> IS available
+printf '#!/bin/sh\necho "[apt-get] $*" >>"$CALL_LOG"\n' >"$LT/apt-get"
+printf '#!/bin/sh\nwhile [ "${1#*=}" != "$1" ]; do export "$1"; shift; done\nexec "$@"\n' >"$LT/sudo"
+printf '#!/bin/sh\necho 6.0.0-rig\n' >"$LT/uname"
+chmod +x "$LT"/*
+: >"$LT/calls.log"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux REAL_USER=test
+    PATH="$LT" CALL_LOG="$LT/calls.log" install_dependencies </dev/null
+) >/dev/null 2>&1
+assert_contains "apt install list includes linux-tools-<rel> (#74)" "$(cat "$LT/calls.log")" "linux-tools-6.0.0-rig"
+
+# check_prerequisites (the jq bootstrap) had NO test. jq is deliberately kept OFF the scenario PATH so the
+# install branch runs; each dir holds ONLY the package manager(s) under test, so `command -v` selects the
+# intended per-distro branch from any host. sudo is a passthrough so the (stubbed) installer actually runs.
+echo "== unit: check_prerequisites installs jq per package manager =="
+mk_pm_bin() { # <dir> <cmd...>: a passthrough sudo (strips any VAR=val prefix) + a logging stub per command.
+    # Absolute /bin/sh shebangs so the stubs run under a PATH restricted to <dir> alone (no bash/env lookup).
+    local d="$1" c
+    shift
+    mkdir -p "$d"
+    printf '#!/bin/sh\nwhile [ "${1#*=}" != "$1" ]; do export "$1"; shift; done\nexec "$@"\n' >"$d/sudo"
+    for c in "$@"; do printf '#!/bin/sh\necho "[%s] $*" >>"$CALL_LOG"\nexit 0\n' "$c" >"$d/$c"; done
+    chmod +x "$d"/*
+}
+prereq_run() { # <bin_dir> <os>: echoes the function output, an rc line, then the recorded calls
+    local d="$1" os="$2" o rc
+    : >"$d/calls.log"
+    o="$(
+        source "$SCRIPT"
+        OS_TYPE="$os"
+        set +e
+        PATH="$d" CALL_LOG="$d/calls.log" check_prerequisites 2>&1
+    )"
+    rc=$?
+    printf '%s\nrc=%s\n%s\n' "$o" "$rc" "$(cat "$d/calls.log")"
+}
+PB="$SANDBOX/prereq"
+out="$(mk_pm_bin "$PB/apt" apt-get && prereq_run "$PB/apt" Linux)"
+assert_contains "apt: installs jq via apt-get" "$out" "[apt-get] install"
+assert_contains "apt: the installed package is jq" "$out" "jq"
+out="$(mk_pm_bin "$PB/dnf" dnf && prereq_run "$PB/dnf" Linux)"
+assert_contains "dnf: installs jq via dnf" "$out" "[dnf] install -y -q jq"
+out="$(mk_pm_bin "$PB/pac" pacman && prereq_run "$PB/pac" Linux)"
+assert_contains "pacman: installs jq via pacman" "$out" "[pacman] -Sy --noconfirm jq"
+out="$(mk_pm_bin "$PB/none" && prereq_run "$PB/none" Linux)" # sudo only, no package manager
+assert_contains "no package manager: hard error" "$out" "no supported package manager"
+assert_contains "no package manager: exits non-zero" "$out" "rc=1"
+out="$(mk_pm_bin "$PB/mac" brew && prereq_run "$PB/mac" Darwin)"
+assert_contains "macOS with brew: installs jq via brew" "$out" "[brew] install jq"
+out="$(mk_pm_bin "$PB/macnobrew" && prereq_run "$PB/macnobrew" Darwin)" # no brew
+assert_contains "macOS without brew: hard error" "$out" "Homebrew is required"
+# jq already present -> no install attempted at all.
+out="$(mk_pm_bin "$PB/have" jq apt-get && prereq_run "$PB/have" Linux)"
+assert_absent "jq present: does not reinstall it" "$out" "Installing prerequisite"
+assert_absent "jq present: no package manager touched" "$out" "[apt-get]"
+
+# install_dependencies only had the apt path tested (#74). The dnf and pacman branches — different package
+# sets, different check/install commands — are our dispatch logic and were never run. apt-get is kept OFF
+# PATH so `command -v` falls through to the intended manager; the check command reports every dep missing
+# so the install command actually runs. (Third-party install internals aren't our concern — we assert only
+# that the RIGHT command installs a distro-appropriate package.)
+echo "== unit: install_dependencies dnf / pacman / no-manager branches =="
+deps_run() { # <bin_dir> <os>: echoes the function output, an rc line, then the recorded calls
+    local d="$1" os="$2" o rc
+    : >"$d/calls.log"
+    o="$(
+        source "$SCRIPT"
+        OS_TYPE="$os" REAL_USER=test
+        set +e
+        PATH="$d" CALL_LOG="$d/calls.log" install_dependencies </dev/null 2>&1
+    )"
+    rc=$?
+    printf '%s\nrc=%s\n%s\n' "$o" "$rc" "$(cat "$d/calls.log")"
+}
+DB="$SANDBOX/deps"
+# dnf: rpm is the check command (report missing), dnf the installer.
+mkdir -p "$DB/dnf"
+printf '#!/bin/sh\nexit 1\n' >"$DB/dnf/rpm" # `rpm -q <pkg>` -> missing
+printf '#!/bin/sh\necho "[dnf] $*" >>"$CALL_LOG"\n' >"$DB/dnf/dnf"
+printf '#!/bin/sh\nexec "$@"\n' >"$DB/dnf/sudo"
+chmod +x "$DB/dnf"/*
+out="$(deps_run "$DB/dnf" Linux)"
+assert_contains "dnf: installs via 'dnf install -y'" "$out" "[dnf] install -y"
+assert_contains "dnf: pulls a dnf-flavoured package (gcc-c++)" "$out" "gcc-c++"
+# pacman is BOTH the check (`-Qi` -> missing) and the installer (`-Sy` -> log).
+mkdir -p "$DB/pac"
+cat >"$DB/pac/pacman" <<'EOF'
+#!/bin/sh
+case "$1" in -Qi) exit 1 ;; *) echo "[pacman] $*" >>"$CALL_LOG" ;; esac
+EOF
+printf '#!/bin/sh\nexec "$@"\n' >"$DB/pac/sudo"
+chmod +x "$DB/pac"/*
+out="$(deps_run "$DB/pac" Linux)"
+assert_contains "pacman: installs via 'pacman -Sy --noconfirm --needed'" "$out" "[pacman] -Sy --noconfirm --needed"
+assert_contains "pacman: pulls base-devel" "$out" "base-devel"
+# No supported package manager: warn and return 0 (must NOT abort the whole setup run).
+out="$(mk_pm_bin "$DB/none" && deps_run "$DB/none" Linux)"
+assert_contains "no manager: warns instead of failing" "$out" "No supported package manager"
+assert_contains "no manager: returns 0 (setup continues)" "$out" "rc=0"
+
 # ---------------------------------------------------------------------------
 # When no service was installed (macOS), finish_deployment points the user at 'start' — not a raw
 # screen/xmrig command (the build-dir config #20 guaranteed is now handled inside mac_start, asserted
@@ -1508,6 +1671,17 @@ assert_contains "macOS status shows stopped after stop" "$out" "not running"
 [ -f "$PIDF" ] && kill "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
 rm -f "$PIDF"
 
+# Guard: `start` before `setup` (no built binary) must fail with a clear "run setup first", NOT spawn a
+# broken PID. Uses a worker root with no build dir at all.
+NOB="$(mktemp -d "$SANDBOX/nobuilt.XXXXXX")"
+cp "$ROOT/VERSION" "$NOB/"
+cat >"$NOB/config.json" <<EOF
+{ "HOME_DIR": "$NOB/home", "pools": [{"url": "h:3333"}] }
+EOF
+out="$( (cd "$NOB" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$NOB" RIGFORGE_HOME="$PWD" bash "$SCRIPT" start </dev/null 2>&1))"
+assert_rc "macOS start with no built worker fails" "$?" "1"
+assert_contains "macOS start with no worker points at setup" "$out" "Run 'setup' first"
+
 # macOS login auto-start: enable installs a launchd LaunchAgent ($HOME sandboxed to $MC so the plist
 # never touches the real ~/Library/LaunchAgents). With it installed, launchd owns the miner and
 # start/stop/status delegate to launchctl (the stub records calls + reports a PID via STUB_LAUNCHD_PID).
@@ -1527,12 +1701,54 @@ assert_contains "enable loaded the agent" "$(cat "$LCL")" "[launchctl] load"
 out="$(mac_lr bash "$SCRIPT" start)"
 assert_contains "start delegates to launchctl when enabled" "$(cat "$LCL")" "[launchctl] start"
 assert_contains "start reports login-agent control" "$out" "login agent"
+: >"$LCL"
+out="$(mac_lr bash "$SCRIPT" stop)"
+assert_contains "stop delegates to launchctl when enabled" "$(cat "$LCL")" "[launchctl] stop"
 out="$( (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" CALL_LOG="$LCL" STUB_LAUNCHD_PID=4321 RIGFORGE_HOME="$PWD" bash "$SCRIPT" status </dev/null 2>&1))"
 assert_contains "status reads the launchd PID" "$out" "pid 4321"
 out="$(mac_lr bash "$SCRIPT" disable)"
 assert_rc "macOS disable exits 0" "$?" "0"
 assert_eq "disable removed the plist" "$([ -f "$PLIST" ] && echo y || echo n)" "n"
 assert_contains "disable unloaded the agent" "$(cat "$LCL")" "[launchctl] unload"
+
+# #audit A2: when a GRUB change pends a reboot, HugePages aren't reserved yet, so install_service must
+# ENABLE the unit but NOT start it — starting now would run the miner degraded (no huge-page backing) and,
+# with Restart=always, churn until the reboot. The full-deploy run enters this branch but its systemctl
+# stub is a silent no-op, so nothing proved the start was withheld. Drive install_service directly and read
+# the recorded systemctl calls for each of the three cases (reboot-pending / rebuilt / steady-state).
+echo "== unit: install_service reboot-gates the start (#audit A2) =="
+svc_run() { # <dir> <reboot_required> <xmrig_rebuild>: renders into <dir>, echoes the systemctl call log
+    local d="$1"
+    mkdir -p "$d/etc/systemd" "$d/xmrig/build"
+    (
+        cd "$d" || exit 1
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT" # so envsubst reads the real systemd/xmrig.service.template
+        WORKER_ROOT="$d"
+        SYSTEMD_DIR="$d/etc/systemd"
+        REBOOT_REQUIRED="$2"
+        XMRIG_REBUILD="$3"
+        set +e
+        PATH="$STUBS:$PATH" CALL_LOG="$d/calls.log" install_service >/dev/null 2>&1
+    )
+    cat "$d/calls.log"
+}
+SVC_RB="$(mktemp -d "$SANDBOX/svcrb.XXXXXX")"
+log_reboot="$(svc_run "$SVC_RB" true false)"
+assert_contains "reboot pending: service enabled" "$log_reboot" "[systemctl] enable xmrig.service"
+assert_absent "reboot pending: NOT started (would run degraded) (#audit A2)" "$log_reboot" "start xmrig.service"
+assert_absent "reboot pending: NOT restarted" "$log_reboot" "restart xmrig.service"
+# CPUPOWER_PATH substitution: the ExecStartPre governor set is best-effort (leading `-`); a literal
+# unexpanded $CPUPOWER_PATH there would break with Restart=always. Assert it resolved to a real path.
+svc_rendered="$(cat "$SVC_RB/etc/systemd/xmrig.service")"
+assert_contains "service: ExecStartPre governor set rendered" "$svc_rendered" "ExecStartPre=-"
+assert_absent "service: no unexpanded CPUPOWER_PATH" "$svc_rendered" '$CPUPOWER_PATH'
+log_rebuild="$(svc_run "$(mktemp -d "$SANDBOX/svcrbu.XXXXXX")" false true)"
+assert_contains "rebuilt binary, no reboot: service restarted" "$log_rebuild" "[systemctl] restart xmrig.service"
+log_steady="$(svc_run "$(mktemp -d "$SANDBOX/svcst.XXXXXX")" false false)"
+assert_contains "no rebuild, no reboot: service (re)started, not restarted" "$log_steady" "[systemctl] start xmrig.service"
+assert_absent "no rebuild: does not needlessly restart a running miner" "$log_steady" "restart xmrig.service"
 
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
@@ -1616,10 +1832,19 @@ if [ "$HOST_OS" = Linux ]; then
     assert_contains "service: NoNewPrivileges" "$svc" "NoNewPrivileges=true"
     assert_contains "service: ProtectSystem=full" "$svc" "ProtectSystem=full"
     assert_contains "service: LimitMEMLOCK=infinity" "$svc" "LimitMEMLOCK=infinity"
+    # The rest of the defense-in-depth block was unchecked — a dropped line is a silent hardening regression.
+    assert_contains "service: ProtectControlGroups" "$svc" "ProtectControlGroups=true"
+    assert_contains "service: ProtectClock" "$svc" "ProtectClock=true"
+    assert_contains "service: RestrictSUIDSGID" "$svc" "RestrictSUIDSGID=true"
+    assert_contains "service: LockPersonality" "$svc" "LockPersonality=true"
+    assert_contains "service: PrivateTmp" "$svc" "PrivateTmp=true"
     assert_contains "service: ReadWritePaths -> worker root" "$svc" "ReadWritePaths=$W/home/worker"
     assert_absent "service: no unexpanded WORKER_ROOT" "$svc" 'ReadWritePaths=$WORKER_ROOT'
     assert_contains "kernel: msr module enabled" "$(cat "$W/etc/modules-load.d/msr.conf")" "msr"
     assert_contains "limits: fstab 2M mount written" "$(cat "$W/etc/fstab")" "hugetlbfs /dev/hugepages"
+    # The 1G mount line's content was only asserted in the uninstall pre-seed, never as produced by a fresh
+    # configure_limits — so a regression in the line it WRITES would go unnoticed.
+    assert_contains "limits: fstab 1G mount written (pagesize=1G)" "$(cat "$W/etc/fstab")" "pagesize=1G"
     # #13: memlock scoped to the mining user, NOT granted to every account ("*").
     assert_contains "limits: memlock unlimited written" "$(cat "$W/etc/security/limits.conf")" "soft memlock unlimited"
     assert_absent "limits: not wildcard memlock" "$(cat "$W/etc/security/limits.conf")" "* soft memlock unlimited"
@@ -2155,6 +2380,22 @@ out="$(un_run)"
 assert_rc "second uninstall exits 0" "$?" "0"
 assert_eq "cli: a non-RigForge 'rigforge' is preserved (#cli)" "$([ -f "$UN/usr-local-bin/rigforge" ] && [ ! -L "$UN/usr-local-bin/rigforge" ] && echo kept || echo removed)" "kept"
 
+# Without --yes, uninstall PROMPTS; answering 'n' must abort cleanly and revert NOTHING (a mistyped
+# uninstall shouldn't tear down a working rig). Every other uninstall test passes --yes, so this path was
+# never taken.
+echo "== black-box: uninstall without --yes aborts on 'n' (reverts nothing) =="
+UNN="$(mktemp -d "$SANDBOX/uninstn.XXXXXX")"
+cp "$ROOT/VERSION" "$UNN/"
+mkdir -p "$UNN/etc/systemd/system"
+: >"$UNN/etc/systemd/system/xmrig.service"
+cat >"$UNN/config.json" <<EOF
+{ "HOME_DIR": "$UNN/home", "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+out="$(printf 'n\n' | (cd "$UNN" && PATH="$STUBS:$PATH" SYSTEMD_DIR="$UNN/etc/systemd/system" RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall 2>&1))"
+assert_rc "uninstall 'n' exits 0" "$?" "0"
+assert_contains "uninstall 'n' reports it aborted" "$out" "Aborted"
+assert_eq "uninstall 'n' left the service unit in place" "$([ -f "$UNN/etc/systemd/system/xmrig.service" ] && echo present || echo gone)" "present"
+
 # #54: tune is an iterative, noise-aware, multi-knob hill-climb. It sweeps prefetch_mode, cpu.yield and
 # the RandomX thread count (cpu.rx, around L3/2 MB), measures each candidate as the MEDIAN of N runs,
 # memoizes so a combo is never benchmarked twice, climbs from two seeds (auto + educated guess), and
@@ -2498,6 +2739,24 @@ assert_eq "watts = energy delta / time (1.00 W) (#81)" "$(wfe 1000000 4000000 18
 assert_eq "watts corrects a single counter wrap (#81)" "$(wfe 17000000 1000000 18000000 2)" "1.00"
 assert_eq "watts empty on elapsed<=0 (no divide-by-zero) (#81)" "$(wfe 1 2 9 0)" ""
 assert_eq "mean averages the samples (#81)" "$(mean 80 100 120)" "100.00"
+# Degenerate inputs, from the missing-sensor / single-read paths that the fakes never reproduce: the stats
+# helpers must stay well-defined (no blank garbage, no divide-by-zero) so a candidate with one usable read
+# still ranks. med/sd source the same helpers the tune loop uses.
+med() { (
+    source "$SCRIPT"
+    _median "$@"
+); }
+sd() { (
+    source "$SCRIPT"
+    _stddev "$@"
+); }
+assert_eq "median of a single sample is itself (#81)" "$(med 500)" "500"
+assert_eq "median of no samples is empty, not 0 (#81)" "$(med)" ""
+assert_eq "stddev needs >=2 samples, else 0 (#81)" "$(sd 500)" "0"
+assert_eq "mean of no samples is empty (#81)" "$(mean)" ""
+# A backwards energy counter with NO wrap-max (RAPL absent/mispaired) must yield empty, not negative watts.
+# The existing wrap test always passes mx>0 (the correction branch), so the mx=0 give-up branch was unrun.
+assert_eq "watts empty on a backwards counter with no wrap-max (#81)" "$(wfe 5000000 1000000 0 2)" ""
 
 # #81: the BUG this fixes — watts must be sampled UNDER LOAD, not at idle after the bench. A fake xmrig
 # stays alive for the poll window and marks DONE only on exit; TUNE_POWER_CMD returns 200 W while running,
@@ -2564,6 +2823,34 @@ acc() {                                      # <target>; cand=1000H/s/10hpw vs b
 }
 assert_eq "perf: a slower candidate is rejected (#79)" "$(acc perf)" "reject"
 assert_eq "efficiency: a more-efficient candidate is accepted (#79)" "$(acc efficiency)" "accept"
+# #79: if EITHER side lacks a power reading, efficiency ranking can't apply — it must fall back to the raw
+# H/s comparison so the search still progresses. Here cand has NO hpw entry, so under efficiency the slower
+# cand (1000 < 1200) is rejected on raw H/s, exactly as under perf. (The existing gate always has both.)
+printf 'best\t8.0\n' >"$AT2/hpw-partial"
+assert_eq "efficiency with a missing power reading falls back to raw H/s (#79)" "$(
+    source "$SCRIPT"
+    TUNE_TARGET=efficiency
+    TUNE_MIN_DELTA=0.01
+    TUNE_SIGMA=0
+    MEMO_SD_FILE="$AT2/sd"
+    MEMO_THROTTLE_FILE="$AT2/thr"
+    MEMO_HPW_FILE="$AT2/hpw-partial"
+    set +e
+    _accept_better 1000 cand 1200 best && echo accept || echo reject
+)" "reject"
+
+# The scalar scorer used by the autotune log/ranking has the same no-power fallback (#95): efficiency
+# ranks hs/W only when watts is present and > 0; otherwise it scores raw H/s. Only ever exercised
+# indirectly (full autotune runs always supply watts) — unit-test the branch directly.
+echo "== unit: _autotune_score efficiency needs watts, else raw H/s (#95) =="
+asc() { (
+    source "$SCRIPT"
+    _autotune_score "$@"
+); }
+assert_eq "efficiency with watts scores hashrate-per-watt" "$(asc efficiency 1000 8)" "125.0000"
+assert_eq "efficiency with zero watts falls back to raw H/s" "$(asc efficiency 1000 0)" "1000"
+assert_eq "efficiency with empty watts falls back to raw H/s" "$(asc efficiency 1000 '')" "1000"
+assert_eq "perf target always scores raw H/s" "$(asc perf 1000 8)" "1000"
 
 # #79: end-to-end — with power that makes prefetch=1 more efficient (1000 H/s @ 100 W = 10 hpw) than
 # prefetch=2 (1200 H/s @ 200 W = 6 hpw), perf picks the faster prefetch=2 and efficiency picks prefetch=1.
@@ -2997,6 +3284,22 @@ assert_rc "restore of a missing archive fails" "$?" "1"
 out="$(printf 'n\n' | (cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore "$ARCHIVE" 2>&1))"
 assert_rc "restore cancels cleanly on 'n'" "$?" "0"
 assert_contains "restore cancel message" "$out" "cancelled"
+# A bad archive must fail LOUDLY and leave the existing good config.json untouched — a silent clobber here
+# would destroy a working config. FR/config.json currently holds DONATION=7 (restored above); assert both
+# the error AND that it survives. (1) not a tar/gzip at all:
+printf 'this is not a tar archive\n' >"$FR/junk.tar.gz"
+out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$FR/junk.tar.gz" </dev/null 2>&1)"
+assert_rc "restore of a non-tar archive fails" "$?" "1"
+assert_contains "restore of a non-tar archive is reported" "$out" "Could not extract"
+assert_eq "corrupt archive did not clobber the existing config" "$(J "$FR/config.json" '.DONATION')" "7"
+# (2) a valid tar that has no config.json (extracts fine, but isn't a RigForge backup):
+NOCFG="$(mktemp -d "$SANDBOX/nocfg.XXXXXX")"
+printf 'stray\n' >"$NOCFG/not-config.txt"
+tar -czf "$FR/nocfg.tar.gz" -C "$NOCFG" not-config.txt
+out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$FR/nocfg.tar.gz" </dev/null 2>&1)"
+assert_rc "restore of a config-less archive fails" "$?" "1"
+assert_contains "restore of a config-less archive is reported" "$out" "no config.json"
+assert_eq "config-less archive did not clobber the existing config" "$(J "$FR/config.json" '.DONATION')" "7"
 # backup needs a config to snapshot.
 NOC="$(mktemp -d "$SANDBOX/noc.XXXXXX")"
 cp "$ROOT/VERSION" "$NOC/"
