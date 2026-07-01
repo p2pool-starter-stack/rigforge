@@ -2332,7 +2332,11 @@ _read_api_hashrate() {
         return
     fi
     command -v curl >/dev/null 2>&1 || return 0
-    curl -fsS --max-time 5 -H "Authorization: Bearer ${ACCESS_TOKEN:-}" "$url" 2>/dev/null |
+    # The API is open (read-only) with no token by default; only send a Bearer when ACCESS_TOKEN is set.
+    # XMRig 401s a token it never asked for, and curl -f (exit 22) would then abort the caller under set -e.
+    local auth=()
+    [ -n "${ACCESS_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $ACCESS_TOKEN")
+    curl -fsS --max-time 5 "${auth[@]}" "$url" 2>/dev/null |
         jq -r '.hashrate.total[0] // empty' 2>/dev/null
 }
 
