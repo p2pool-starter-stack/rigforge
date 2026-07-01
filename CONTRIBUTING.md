@@ -1,24 +1,23 @@
 # Contributing to RigForge
 
-Thanks for your interest in improving RigForge. Whether it's a bug fix, a new
-CPU tuning profile, or a docs tweak, contributions are welcome.
-
 RigForge is the companion miner for the
-[Pithead](https://github.com/p2pool-starter-stack/pithead) P2Pool stack. If your
-idea is really about the stack as a whole rather than the miner, that repo may be
-the better home for it.
+[Pithead](https://github.com/p2pool-starter-stack/pithead) P2Pool stack. Bug
+fixes, CPU tuning profiles, and docs changes are all welcome.
+
+If your idea is about the stack as a whole rather than the miner, the Pithead
+repo may be the better home for it.
 
 ## Before you start
 
-- For anything beyond a small fix, **open an issue first** so we can agree on the
+- For anything beyond a small fix, open an issue first so we can agree on the
   approach before you spend time on it. This avoids duplicated work.
 - Check the existing issues to see if someone is already on it.
 
 ## Making changes
 
-RigForge is portable Bash that has to run on Ubuntu/Debian and macOS, so:
+RigForge is portable Bash that has to run on Ubuntu/Debian and macOS:
 
-- Keep it **portable bash**. Avoid GNU-only flags and other Linux-isms where a
+- Keep it portable. Avoid GNU-only flags and other Linux-isms where a
   POSIX-friendly alternative exists, and guard platform-specific code paths.
 - Run `make lint` before you push and fix any warnings. It runs ShellCheck and `shfmt` over the
   script, utilities, and the test scripts, exactly as CI does:
@@ -63,8 +62,8 @@ newline) so most editors match these checks automatically.
 
 RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-starter-stack/pithead)):
 
-- **`develop`** is the default, integration branch. All PRs target `develop`.
-- **`main`** is the release branch. `develop` is merged into `main` at each release, and version tags
+- `develop` is the default, integration branch. All PRs target `develop`.
+- `main` is the release branch. `develop` is merged into `main` at each release, and version tags
   are cut from `main`.
 
 ## Submitting a pull request
@@ -72,12 +71,10 @@ RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-st
 1. Fork the repo and create a topic branch off `develop`.
 2. Make your change and confirm `shellcheck` passes.
 3. Open a PR against `develop` and fill out the template.
-4. **All PRs require review** before merging; a code owner will take a look.
+4. All PRs require review before merging; a code owner will take a look.
 
 Keep PRs focused and the description clear about what changed and why. Small,
 reviewable changes get merged faster.
 
 By contributing, you agree that your contributions are licensed under the project's
 [MIT License](LICENSE).
-
-Thanks again for contributing! 🔥

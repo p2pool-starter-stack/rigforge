@@ -1,7 +1,7 @@
 # Getting Started
 
-This guide takes you from a fresh machine to a tuned, running XMRig worker. A single script,
-`rigforge.sh`, drives the whole process, and most of it is automated.
+Install and tune an XMRig worker from a fresh machine. A single script, `rigforge.sh`, drives the
+whole process, and most of it is automated.
 
 > **TL;DR**
 >
@@ -27,11 +27,11 @@ This guide takes you from a fresh machine to a tuned, running XMRig worker. A si
 | **Privileges** | `root`. The script installs packages and tunes the kernel, so run it with `sudo`. |
 | **Network** | The worker must reach your pool / stack host on its Stratum port (Pithead uses **3333**). Workers run on a trusted LAN and do **not** need Tor. |
 
-> 📐 **Full sizing guidance** — minimum vs. recommended specs and the per-CPU tuning profiles — is in
-> **[Hardware Requirements](hardware.md)**. The **stack host** these workers connect to is sized
+> 📐 Full sizing guidance, including minimum vs. recommended specs and the per-CPU tuning profiles,
+> is in **[Hardware Requirements](hardware.md)**. The **stack host** these workers connect to is sized
 > separately in [Pithead's hardware guide](https://github.com/p2pool-starter-stack/pithead/blob/main/docs/hardware.md).
 
-You don't need to install build dependencies yourself — RigForge installs the toolchain (`cmake`,
+You don't need to install build dependencies yourself. RigForge installs the toolchain (`cmake`,
 `libuv`, `hwloc`, …) for you on first run. You only need `git` to clone the repo.
 
 ---
@@ -44,12 +44,12 @@ cd rigforge
 chmod +x rigforge.sh
 ```
 
-Have your **pool URL** ready — a `host:port`. For a Pithead stack that's the stack machine's address
-and its proxy port `3333` (e.g. `stack.lan:3333`); with Pithead you do **not** need a wallet — the stack
-handles payouts centrally.
+Have your **pool URL** ready, a `host:port`. For a Pithead stack that's the stack machine's address
+and its proxy port `3333` (e.g. `stack.lan:3333`); with Pithead you do **not** need a wallet, since the
+stack handles payouts centrally.
 
-> **Mining to a public pool (SupportXMR, etc.) instead of Pithead?** Public pools pay **you**, so they
-> expect your **Monero wallet address as the login** (and usually a TLS port). The first-run prompt only
+> Mining to a public pool (SupportXMR, etc.) instead of Pithead? Public pools pay **you**, so they
+> expect your Monero wallet address as the login (and usually a TLS port). The first-run prompt only
 > asks for the pool URL, so afterwards set `pools[].user` to your wallet (and `tls`) and run
 > `sudo ./rigforge.sh apply`. There's a copy-paste example in
 > [Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc).
@@ -129,6 +129,6 @@ grep -i msr data/worker/xmrig.log               # MSR mod applied (no errors)
 
 ## Next steps
 
-- [Configuration](configuration.md) — every config key, and how the XMRig config is generated.
-- [Operations & Maintenance](operations.md) — the command reference, logs, upgrades, troubleshooting.
-- [Pithead Integration](pithead-integration.md) — how the dashboard discovers and reads each worker.
+- [Configuration](configuration.md): every config key, and how the XMRig config is generated.
+- [Operations & Maintenance](operations.md): the command reference, logs, upgrades, troubleshooting.
+- [Pithead Integration](pithead-integration.md): how the dashboard discovers and reads each worker.
