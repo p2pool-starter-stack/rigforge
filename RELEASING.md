@@ -52,15 +52,25 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    git push origin develop
    ```
 
-6. Promote `develop` to `main`:
+6. Promote `develop` to `main` **through a pull request** — `main` is a protected release branch, so the
+   promotion goes through a reviewable PR (its own gate + audit trail), not a direct push:
 
    ```bash
-   git checkout main && git merge --ff-only develop && git push origin main
+   gh pr create --base main --head develop --title "release: vX.Y.Z" \
+     --body "Promote develop to main for the vX.Y.Z release."
    ```
 
-7. Tag and push from `main` (annotated tag, matching `VERSION`):
+   Review and merge it. Keep `main` linear with a **fast-forward (rebase) merge** so the tag sits on the
+   same commit as `develop`'s release commit:
 
    ```bash
+   gh pr merge --rebase --admin   # fast-forward main to develop; --admin lets the releaser merge
+   ```
+
+7. Tag and push from `main` (annotated tag, matching `VERSION`) once the PR is merged:
+
+   ```bash
+   git checkout main && git pull --ff-only origin main
    git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
    git push origin main --follow-tags
    ```
