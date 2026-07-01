@@ -28,8 +28,8 @@ HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB
 
 # Extract L3 Cache size and normalize to Megabytes
 # Output format varies (e.g., "32M", "32768K"), so we strip non-numeric characters.
-L3_RAW=$(lscpu | grep "L3 cache" | head -n 1 | awk '{print $3$4}')
-L3_MB=$(echo "$L3_RAW" | sed 's/[^0-9]//g')
+L3_RAW=$(lscpu | awk '/L3 cache/{print $3$4; exit}')
+L3_MB="${L3_RAW//[!0-9]/}"
 
 # Convert Kilobytes to Megabytes if necessary
 if [[ "$L3_RAW" == *K* ]]; then
@@ -40,7 +40,7 @@ if [[ -z "$L3_MB" ]]; then
 fi
 
 # Detect Physical CPU Sockets (for display / NUMA fallback).
-SOCKETS=$(lscpu | grep "Socket(s):" | awk '{print $2}')
+SOCKETS=$(lscpu | awk '/Socket\(s\):/{print $2; exit}')
 if [[ -z "$SOCKETS" ]]; then
     SOCKETS=1
 fi
@@ -86,7 +86,7 @@ if [ "$RUNTIME" -eq 1 ]; then
     # Check if 1GB pages are already allocated
     PAGES_1GB=0
     if [ -f "$HUGEPAGES_1G_NR" ]; then
-        PAGES_1GB=$(cat "$HUGEPAGES_1G_NR" || echo 0)
+        PAGES_1GB=$(<"$HUGEPAGES_1G_NR")
     fi
 
     if [ "$PAGES_1GB" -gt 0 ]; then
