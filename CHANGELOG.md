@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-01
+
 ### Added
 
 - **Supply-chain & secret-scanning CI gates (#117).** Three cross-cutting hardening gates on top of
@@ -45,6 +47,16 @@ All notable changes to RigForge are documented here. The format is based on
   `ACCESS_TOKEN` to require a `Bearer` token (then match it on the dashboard with `workers.api_auth:
   token`/`name`). Pairs with pithead [#171](https://github.com/p2pool-starter-stack/pithead/issues/171)
   / [#172](https://github.com/p2pool-starter-stack/pithead/issues/172).
+
+### Fixed
+
+- **Live tuning works with the new open API default.** Every live-hashrate read — `autotune` and its
+  monthly timer, `tune --live`, `tune --confirm`, and the `upgrade` re-tune — always sent an
+  `Authorization: Bearer` header. Once the API defaulted to open with no token, that empty Bearer drew a
+  `401`, and under `set -e` the failed `curl -f` aborted the read, silently breaking live tuning on a
+  stock config. The header is now sent only when `ACCESS_TOKEN` is set. The dependency-free suite stubs
+  the API, so this surfaced only on the real-hardware release gate — which now sends its warmup probe the
+  same way.
 
 ## [1.0.1] - 2026-06-13
 
@@ -494,6 +506,7 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.0.1...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.1.0...main
+[1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0
 [1.0.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.1
 [1.0.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.0
