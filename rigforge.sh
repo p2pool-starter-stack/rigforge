@@ -229,7 +229,7 @@ ensure_config_exists() {
             log "Starting interactive setup..."
 
             # We only need the pool URL — every other key has a sensible default (see
-            # config.advanced.example.json for the full list). The URL is host:port (Pithead's proxy
+            # config.reference.json for the full list). The URL is host:port (Pithead's proxy
             # listens on 3333).
             read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL || true
 

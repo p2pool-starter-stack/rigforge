@@ -3010,8 +3010,8 @@ if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVe
 
 # #23: the advanced example must be valid JSON and must document every config.json key parse_config
 # reads — so the reference can't silently drift from the code.
-echo "== unit: config.advanced.example.json (#23) =="
-ADV="$ROOT/config.advanced.example.json"
+echo "== unit: config.reference.json (#23) =="
+ADV="$ROOT/config.reference.json"
 if jq -e . "$ADV" >/dev/null 2>&1; then ok "advanced example is valid JSON"; else bad "advanced example is valid JSON" "jq parse failed"; fi
 # The advanced example documents exactly the user-facing keys. The rig label lives in pools[].user and
 # the template is internal, so WORKER_NAME / WORKER_CONFIG_FILE / POOL_HOST must NOT appear.
@@ -3022,13 +3022,13 @@ for k in POOL_HOST WORKER_NAME WORKER_CONFIG_FILE; do
     assert_absent "advanced example has no $k key" "$(cat "$ADV")" "\"$k\""
 done
 
-# config.json.template is the copy-me starter (referenced by the docs and shipped in the release bundle).
+# config.minimal.json is the copy-me starter (referenced by the docs and shipped in the release bundle).
 # It must be valid JSON, carry an obvious unreplaced placeholder, and be REJECTED by parse_config unedited
 # — so a user can't accidentally deploy the template and mine to a bogus host. (It can drift unnoticed
-# otherwise: unlike config.advanced.example.json, nothing else validates it.)
-echo "== unit: config.json.template (starter) =="
-TPL="$ROOT/config.json.template"
-if jq -e . "$TPL" >/dev/null 2>&1; then ok "config.json.template is valid JSON"; else bad "config.json.template is valid JSON" "jq parse failed"; fi
+# otherwise: unlike config.reference.json, nothing else validates it.)
+echo "== unit: config.minimal.json (starter) =="
+TPL="$ROOT/config.minimal.json"
+if jq -e . "$TPL" >/dev/null 2>&1; then ok "config.minimal.json is valid JSON"; else bad "config.minimal.json is valid JSON" "jq parse failed"; fi
 assert_contains "template carries an unreplaced pool placeholder" "$(jq -r '.pools[0].url' "$TPL")" "<YOUR_POOL_HOST>"
 TT="$(mktemp -d "$SANDBOX/tpl.XXXXXX")"
 cp "$TPL" "$TT/config.json"
