@@ -1,7 +1,12 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real lint fmt
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real lint fmt lint-yaml lint-md lint-links lint-all
 
 SHELL_FILES = rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/linux.sh tests/e2e/in-container.sh tests/e2e/macos.sh tests/smoke.sh tests/coverage.sh tests/e2e-real.sh
+
+# Config/docs lint file sets, derived from what's tracked so CI and local stay in sync (like SHELL_FILES).
+YAML_FILES = $(shell git ls-files '*.yml' '*.yaml')
+MD_FILES = $(shell git ls-files '*.md')
+MARKDOWNLINT_VERSION = 0.22.1
 
 # Keep `make` (no target) running the default dev check; `make help` lists every target.
 .DEFAULT_GOAL := test
@@ -35,3 +40,14 @@ lint: ## shellcheck + shfmt (check) the script, utilities, and test scripts
 
 fmt: ## auto-format all shell scripts with shfmt (resolves shfmt lint failures)
 	shfmt -i 4 -w $(SHELL_FILES)
+
+lint-yaml: ## yamllint the YAML (workflows, dependabot, configs) — uses .yamllint, strict
+	yamllint --strict $(YAML_FILES)
+
+lint-md: ## markdownlint the docs — uses .markdownlint-cli2.yaml (needs node/npx)
+	npx --yes markdownlint-cli2@$(MARKDOWNLINT_VERSION) $(MD_FILES)
+
+lint-links: ## lychee link-check the docs — uses .lychee.toml (needs lychee; hits external links)
+	lychee $(MD_FILES)
+
+lint-all: lint lint-yaml lint-md ## run every fast linter (shell + yaml + markdown; not the link check)

@@ -1,0 +1,35 @@
+# RigForge pre-commit hooks. Install once per clone:
+#
+#   pipx install pre-commit   # or: pip install pre-commit
+#   pre-commit install
+#
+# Local == CI: the shell hook calls `make lint`, so the Makefile's SHELL_FILES stays the single
+# source of truth (no duplicated file list here). gitleaks is pinned to the same version CI runs
+# (.github/workflows/security.yml). The config/docs linters (yamllint, markdownlint, lychee) aren't
+# commit-time hooks — run them with `make lint-yaml` / `make lint-md` / `make lint-links`; they gate
+# in CI.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1 # keep in lockstep with GITLEAKS_VERSION in .github/workflows/security.yml
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md] # two trailing spaces is a hard line break in Markdown
+
+  - repo: local
+    hooks:
+      # Reuse `make lint` rather than re-listing files, so shellcheck/shfmt run over the exact same
+      # SHELL_FILES set as CI and `make lint`. Requires shellcheck + shfmt on PATH (see CONTRIBUTING).
+      - id: make-lint
+        name: shellcheck + shfmt (make lint)
+        entry: make lint
+        language: system
+        files: \.sh$
+        pass_filenames: false

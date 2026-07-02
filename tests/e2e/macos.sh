@@ -46,7 +46,7 @@ trap cleanup EXIT
 mkdir -p "$HOME"
 
 # Writable copy of just the deploy bits (not .git / the suite / build artifacts).
-(cd "$SRC" && cp -a rigforge.sh util systemd config.json.template config.advanced.example.json VERSION "$WORK"/) 2>/dev/null
+(cd "$SRC" && cp -a rigforge.sh util systemd config.minimal.json config.reference.json VERSION "$WORK"/) 2>/dev/null
 cd "$WORK" || {
     echo "cannot enter $WORK"
     exit 1

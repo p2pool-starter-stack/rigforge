@@ -229,7 +229,7 @@ ensure_config_exists() {
             log "Starting interactive setup..."
 
             # We only need the pool URL — every other key has a sensible default (see
-            # config.advanced.example.json for the full list). The URL is host:port (Pithead's proxy
+            # config.reference.json for the full list). The URL is host:port (Pithead's proxy
             # listens on 3333).
             read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL || true
 
@@ -343,17 +343,16 @@ parse_config() {
         done
     done < <(jq -c '.[]' <<<"$POOLS_JSON")
 
-    # HTTP API token. The rig's label is the pool `user` (#22; defaults to the hostname — see
-    # generate_xmrig_config). The token defaults to that same rig name, so the Pithead contract
-    # (the dashboard authenticates as `Bearer <rig name>`) holds out of the box. An explicit
-    # ACCESS_TOKEN overrides it.
+    # HTTP API token (OPTIONAL). By default the rig's read-only xmrig API is left OPEN — no token.
+    # Pithead's stock contract is a no-auth probe of GET http://<rig>:8080/1/summary, so an
+    # untokened, `restricted` (read-only) API works out of the box. Set ACCESS_TOKEN to require a
+    # Bearer token instead — then match it on the dashboard side (Pithead `workers.api_auth: token`
+    # + `workers.api_token`; or `name` if you set ACCESS_TOKEN to the rig name). See
+    # docs/pithead-integration.md.
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
-    if [ -z "$ACCESS_TOKEN" ]; then
-        ACCESS_TOKEN=$(jq -r '.[0].user' <<<"$POOLS_JSON")
-        [ -n "$ACCESS_TOKEN" ] || ACCESS_TOKEN=$(hostname)
-    fi
-    # The token is sent as an HTTP Authorization header, so keep it to safe, header-clean characters.
-    if ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
+    # When set, the token is sent as an HTTP Authorization header, so keep it to safe, header-clean
+    # characters. Empty is allowed and means "open API" (the default).
+    if [ -n "$ACCESS_TOKEN" ] && ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
         error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
     fi
 
@@ -590,27 +589,20 @@ generate_xmrig_config() {
     INIT_AVX2="-1"
     # Lock down the HTTP API to READ-ONLY (restricted) so it can't be used to *control* the miner
     # remotely. Keep it bound to all interfaces, NOT localhost: Pithead reads per-rig stats from the
-    # stack host via GET http://<rig>:8080/1/summary (read-only, authenticated by the per-rig access
-    # token = rig name). Binding localhost would break that integration — see issue #24. Workers are
-    # expected to live on a trusted LAN.
+    # stack host via GET http://<rig>:8080/1/summary (read-only; OPEN by default — see ACCESS_TOKEN
+    # above). Binding localhost would break that integration — see issue #24. Workers are expected to
+    # live on a trusted LAN, which is why a read-only API with no token is a safe default there.
     HTTP_RESTRICTED="true"
     HTTP_HOST="0.0.0.0"
 
-    # macOS Specific Overrides
+    # macOS Specific Overrides (only the values that differ from the shared defaults above)
     if [ "$OS_TYPE" == "Darwin" ]; then
-        YIELD="false"
-        # Match the Linux dedicated-miner default (2). XMRig warns a priority above 2 can make the
-        # machine unresponsive, and macOS is a light-use/dev target — don't pin it to the most
-        # aggressive level here.
-        PRIORITY="2"
         ASM="true"
         WRMSR="false"
         RDMSR="false"
         HUGE_PAGES="false"
         MEMORY_POOL="false"
         ONE_GB_PAGES="false"
-        NUMA="true"
-        HTTP_RESTRICTED="true"
         HTTP_HOST="::"
 
         # Generate rx array [-1, -1, ...] based on core count
@@ -900,7 +892,7 @@ configure_limits() {
 # removes it regardless, but only while it's still our symlink.
 link_cli() {
     [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
-    local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge" ok=1
+    local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge"
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
         return 0
@@ -917,8 +909,7 @@ link_cli() {
     local sudo_pfx=""
     [ -w "$BIN_DIR" ] || sudo_pfx="sudo"
     # shellcheck disable=SC2086
-    $sudo_pfx rm -f "$link" 2>/dev/null && $sudo_pfx ln -s "$target" "$link" 2>/dev/null || ok=0
-    if [ "$ok" = 1 ]; then
+    if $sudo_pfx rm -f "$link" 2>/dev/null && $sudo_pfx ln -s "$target" "$link" 2>/dev/null; then
         log "Installed the 'rigforge' command -> $link (try: 'sudo rigforge doctor' from anywhere)."
     else
         warn "Couldn't add the 'rigforge' command at $link (permissions?). Run it as './rigforge.sh' instead."
@@ -2341,8 +2332,14 @@ _read_api_hashrate() {
         return
     fi
     command -v curl >/dev/null 2>&1 || return 0
-    curl -fsS --max-time 5 -H "Authorization: Bearer ${ACCESS_TOKEN:-}" "$url" 2>/dev/null |
-        jq -r '.hashrate.total[0] // empty' 2>/dev/null
+    # The API is open (read-only) with no token by default; only send a Bearer when ACCESS_TOKEN is set.
+    # XMRig 401s a token it never asked for, and curl -f (exit 22) would then abort the caller under set -e.
+    # Branch rather than an empty-array curl arg, which also trips set -u on bash 3.2 (macOS).
+    if [ -n "${ACCESS_TOKEN:-}" ]; then
+        curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null
+    else
+        curl -fsS --max-time 5 "$url" 2>/dev/null
+    fi | jq -r '.hashrate.total[0] // empty' 2>/dev/null
 }
 
 # Median of N live API hashrate samples, <interval> seconds apart. Smooths the jittery live reading so a

@@ -7,9 +7,61 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-01
+
+### Added
+
+- **Supply-chain & secret-scanning CI gates (#117).** Three cross-cutting hardening gates on top of
+  the existing SHA-pinned actions and commit-verified XMRig build:
+  - **gitleaks** — a new `Security` workflow scans the full git history for committed secrets (pool
+    credentials, tokens, the stratum access-password) on every push and PR, plus a matching
+    [`.pre-commit-config.yaml`](./.pre-commit-config.yaml) hook so a leak is caught before it's pushed.
+    The binary is version- and checksum-pinned, like the existing shellcheck/shfmt installs.
+  - **Dependabot** ([`.github/dependabot.yml`](./.github/dependabot.yml)) — keeps the hand-pinned
+    GitHub Actions current (`github-actions` ecosystem only; RigForge has no pip/npm/docker deps) and
+    surfaces action security advisories.
+  - **zizmor** — static-audits the workflows for template injection, over-broad `GITHUB_TOKEN`, and
+    credential persistence, and (online) cross-references the actions we pin against the GitHub
+    Advisory Database. Runs on push/PR plus a weekly schedule, so a CVE disclosed against a pinned
+    action trips the gate even with no open PRs. Hardened the existing `ci.yml`/`release.yml` to a
+    read-only default token and `persist-credentials: false` on checkout to make the audit clean.
+- **DX glue + config/docs lint (#118).** Rounds out the non-shell tooling around the existing
+  shellcheck/shfmt + kcov core:
+  - **`.editorconfig`** — encodes the whitespace house style (`shfmt -i 4`, LF, final newline) so
+    editors match CI without per-editor setup.
+  - **pre-commit** — `.pre-commit-config.yaml` now orchestrates `make lint` (shellcheck/shfmt via the
+    Makefile's `SHELL_FILES`, no duplicated list), the existing gitleaks hook, and freebie hygiene
+    hooks (private-key detection, large-file guard, end-of-file + trailing-whitespace fixers).
+  - **yamllint + markdownlint** — new CI gates (and `make lint-yaml` / `make lint-md`) over the
+    workflows/configs and the docs, each with a tuned config (`.yamllint`, `.markdownlint-cli2.yaml`).
+  - **lychee** — a link-checker (`make lint-links`) that runs on a weekly schedule rather than per-PR,
+    since external links are flaky-by-nature.
+- **Contributing: inbound contributions are MIT-licensed (#119).** `CONTRIBUTING.md` now states that
+  contributions are licensed under the project's MIT License — a lightweight alternative to a CLA.
+
+### Changed
+
+- **Worker HTTP API is now OPEN (read-only) by default.** `ACCESS_TOKEN` no longer defaults to the rig
+  name; left unset, the rig's `:8080` API is served `restricted` (read-only) with **no token** — which
+  matches Pithead's new default no-auth stats probe, so a stock rig needs zero token coordination. Set
+  `ACCESS_TOKEN` to require a `Bearer` token (then match it on the dashboard with `workers.api_auth:
+  token`/`name`). Pairs with pithead [#171](https://github.com/p2pool-starter-stack/pithead/issues/171)
+  / [#172](https://github.com/p2pool-starter-stack/pithead/issues/172).
+
+### Fixed
+
+- **Live tuning works with the new open API default.** Every live-hashrate read — `autotune` and its
+  monthly timer, `tune --live`, `tune --confirm`, and the `upgrade` re-tune — always sent an
+  `Authorization: Bearer` header. Once the API defaulted to open with no token, that empty Bearer drew a
+  `401`, and under `set -e` the failed `curl -f` aborted the read, silently breaking live tuning on a
+  stock config. The header is now sent only when `ACCESS_TOKEN` is set. The dependency-free suite stubs
+  the API, so this surfaced only on the real-hardware release gate — which now sends its warmup probe the
+  same way.
+
 ## [1.0.1] - 2026-06-13
 
 ### Fixed
+
 - **HugePage sizing is now NUMA-aware (1 GB pages) (#111).** RandomX fast mode keeps a NUMA-local copy of the
   ~2080 MB dataset **per NUMA node**, but the reservation math multiplied the per-dataset 1 GB pages by the
   **socket** count, not the NUMA-node count. On a single-socket, multi-NUMA CPU — e.g. an EPYC 7642 with 4
@@ -83,6 +135,7 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 <summary><strong>Full 1.0.0 feature list</strong> — every capability and hardening that went into this release</summary>
 
 #### Added
+
 - **Privacy & security, documented up front (#109).** A new README "Privacy & security" section and a
   SECURITY.md "What RigForge exposes (and what it doesn't)" section state it plainly: **no telemetry** (the
   only outbound traffic is your pool, the commit-verified XMRig clone, and your distro's package mirrors);
@@ -308,6 +361,7 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
   Release with `.zip`/`.tar.gz` deploy bundles, `SHA256SUMS`, and changelog-derived notes (#3, #36).
 
 #### Changed
+
 - **Live auto-tuning converges in one run.** Each `autotune` run **live-sweeps every prefetch mode**
   against the running miner and adopts the fastest (median measurement + a margin gate, else it keeps the
   current mode), converging in a single ~minutes-long pass. The safety-net timer fires **monthly** by
@@ -373,6 +427,7 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
   fixes across the docs.
 
 #### Fixed
+
 - **`setup` re-run now applies your `config.json` edits (#109).** On a no-rebuild re-run, the regenerated
   config was written to the worker root instead of the build directory the service loads
   (`--config=$BUILD_DIR/config.json`), so an edit-then-`setup` silently kept mining the old config. setup
@@ -451,6 +506,7 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.0.1...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.1.0...main
+[1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0
 [1.0.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.1
 [1.0.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.0

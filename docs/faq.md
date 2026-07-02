@@ -1,71 +1,66 @@
 # FAQ
 
-Common questions about what RigForge is, what it does for you, and how it compares to setting XMRig up
-by hand. New here? Start with [Getting Started](getting-started.md); the deeper "how" lives in
-[How It Works](how-it-works.md).
+Common questions about RigForge and how it compares to setting XMRig up by hand. New here? Start with
+[Getting Started](getting-started.md). The mechanics are in [How It Works](how-it-works.md).
 
 ---
 
 ## Why RigForge vs. doing it by hand?
 
-You can absolutely build, tune, and run XMRig yourself — it's an excellent, well-documented miner. Doing
-it by hand means:
+You can build, tune, and run XMRig yourself; it's a well-documented miner. By hand that means:
 
 - Installing the build toolchain and compiling XMRig from source.
 - Reading the [RandomX optimization guide](https://xmrig.com/docs/miner/randomx-optimization-guide) and
-  hand-configuring HugePages (1 GB + 2 MB), MSR registers, NUMA, and thread layout **for your specific
-  CPU**.
-- Editing GRUB for persistent HugePages — without clobbering your existing kernel parameters.
+  hand-configuring HugePages (1 GB + 2 MB), MSR registers, NUMA, and thread layout for your specific CPU.
+- Editing GRUB for persistent HugePages, without clobbering your existing kernel parameters.
 - Wiring up a systemd service, a performance governor, and log rotation.
 - Redoing the CPU-specific parts every time you deploy a different machine.
 
-RigForge does all of that in one command, with tuning auto-detected from your CPU, idempotent
-re-runs, and a build pinned to an audited XMRig version. It's the difference between a one-off
-afternoon of tuning and `sudo ./rigforge.sh`. If you enjoy hand-wiring it, the manual route is a great
-learning exercise — RigForge just compiles **stock upstream XMRig**, so you're never locked into a
-custom fork.
+RigForge does that in one command: tuning auto-detected from your CPU, idempotent re-runs, and a build
+pinned to an audited XMRig version. The manual route is a fine learning exercise. RigForge compiles stock
+upstream XMRig, so you're never locked into a custom fork.
 
 ---
 
 ## Is RigForge a custom miner?
 
-No. RigForge compiles **stock, upstream [XMRig](https://github.com/xmrig/xmrig)** — it doesn't fork or
-modify the miner itself. All it changes at build time is the donate level (so your configured
-`DONATION` is honored); everything else is standard XMRig plus the setup/tuning/service wrapping.
+No. RigForge compiles stock, upstream [XMRig](https://github.com/xmrig/xmrig); it doesn't fork or modify
+the miner. The only build-time change is the donate level, so your configured `DONATION` is honored.
+Everything else is standard XMRig plus the setup, tuning, and service wrapping.
 
 ---
 
 ## Do I need a specific XMRig version?
 
-No. RigForge always builds a pinned, recent upstream XMRig, and any RandomX-capable XMRig (5.0+, 2019)
-speaks the standard Stratum protocol that pools and Pithead's proxy accept. There's no version coupling
-between the miner and the stack.
+No. RigForge builds a pinned, recent upstream XMRig. Any RandomX-capable XMRig (5.0+, 2019) speaks the
+standard Stratum protocol that pools and Pithead's proxy accept. There's no version coupling between the
+miner and the stack.
 
 ---
 
 ## What hardware do I need?
 
-A 64-bit x86 CPU with **AVX2**, ~2.3 GB of free RAM for RandomX fast mode (4 GB+ recommended), and —
-for the HugePages/MSR speedups — a Linux box you can reboot once. Full sizing and how the tuning is chosen
-are in [Hardware Requirements](hardware.md). Hashrate scales with cores **and L3 cache** (RandomX wants
-~2 MB of L3 per thread).
+A 64-bit x86 CPU with AVX2, ~2.3 GB of free RAM for RandomX fast mode (4 GB+ recommended), and, for the
+HugePages/MSR speedups, a Linux box you can reboot once. Sizing and how the tuning is chosen are in
+[Hardware Requirements](hardware.md). Hashrate scales with cores and L3 cache (RandomX wants ~2 MB of L3
+per thread).
 
 ---
 
 ## Do I have to use Pithead?
 
-No. RigForge points XMRig at any RandomX Stratum pool — set that pool's endpoint as a `pools[].url`.
-Pithead is the **flagship integration** (the API and discovery contract is wired up out of the box),
-but it's not required. See [Configuration › Pools](configuration.md#pools-full-control).
+No. RigForge points XMRig at any RandomX Stratum pool: set that pool's endpoint as a `pools[].url`.
+Pithead is the flagship integration (the API and discovery contract is wired up by default), but it's not
+required. See [Configuration › Pools](configuration.md#pools-full-control).
 
 ---
 
 ## Do I put my wallet address in the worker?
 
-**It depends on the pool.** With **Pithead** the stack handles payouts centrally, so you don't — the
-worker only needs the stack host and the `user` field is just a rig label. With a **public pool**
-(SupportXMR and the like) you do: the pool pays whoever logs in, so set `pools[].user` to your **Monero
-wallet address**. There's a copy-paste example in
+It depends on the pool. With Pithead the stack handles payouts centrally, so you don't: the worker only
+needs the stack host, and the `user` field is just a rig label. With a public pool (SupportXMR and the
+like) you do. The pool pays whoever logs in, so set `pools[].user` to your Monero wallet address. There's
+a copy-paste example in
 [Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc).
 
 ---
@@ -73,31 +68,32 @@ wallet address**. There's a copy-paste example in
 ## How do I change my pool (or another setting) later?
 
 Edit `config.json`, then run `sudo ./rigforge.sh apply`. That regenerates the live XMRig config and
-restarts the worker — no rebuild. `apply` is the everyday command for config edits; `setup` is for
-(re-)provisioning and `upgrade` is for moving to a newer pinned XMRig. See
-[Configuration › Changing settings later](configuration.md#changing-settings-later). (On macOS, `apply`
-regenerates the config; run `./rigforge.sh restart` to pick it up — see [Operations › Running on macOS](operations.md#running-on-macos).)
+restarts the worker, with no rebuild. `apply` is the everyday command for config edits; `setup` is for
+(re-)provisioning, and `upgrade` is for moving to a newer pinned XMRig. See
+[Configuration › Changing settings later](configuration.md#changing-settings-later). On macOS, `apply`
+regenerates the config; run `./rigforge.sh restart` to pick it up. See
+[Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
 
 ## Why does it need a reboot?
 
-On Linux, persistent **HugePages** are configured via GRUB, which only takes effect after a reboot —
-that's the single biggest RandomX performance lever. macOS doesn't expose HugePages, so it needs no
-reboot. See [How It Works › Kernel tuning](how-it-works.md#kernel--system-tuning-linux-only).
+On Linux, persistent HugePages are configured via GRUB, which only takes effect after a reboot. That's
+the single biggest RandomX performance lever. macOS doesn't expose HugePages, so it needs no reboot. See
+[How It Works › Kernel tuning](how-it-works.md#kernel--system-tuning-linux-only).
 
 ---
 
 ## I see MSR errors in the log. What's wrong?
 
-Almost always **Secure Boot** blocking the `msr` kernel module. Disable Secure Boot in your BIOS/UEFI
-and reboot. See [Operations › Troubleshooting](operations.md#troubleshooting).
+Almost always Secure Boot blocking the `msr` kernel module. Disable Secure Boot in your BIOS/UEFI and
+reboot. See [Operations › Troubleshooting](operations.md#troubleshooting).
 
 ---
 
 ## Is it safe to re-run the script?
 
-Yes — `setup` is idempotent. It skips the recompile when the pinned XMRig is already built, never
+Yes. `setup` is idempotent. It skips the recompile when the pinned XMRig is already built, never
 duplicates system-file edits (`fstab`, `limits.conf`, `/etc/modules`), merges (not overwrites) GRUB
 parameters, and archives a prior install rather than clobbering it. To rebuild only when the pinned
 version changes, use [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull).
@@ -106,31 +102,30 @@ version changes, use [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-
 
 ## If I lose the disk (or have many machines), do I have to set up and tune each one again?
 
-No — that's what `backup`/`restore` are for. `sudo ./rigforge.sh backup` snapshots the only
-expensive-to-recreate state — your `config.json` and the tuning result — into `./backups`. After data
-loss, `restore` it and re-run `setup` instead of re-tuning from scratch. For a **fleet**, tune one
-machine, back it up, and `restore` the archive on each identical machine so they all share the same
-config and tuning. Tuning is CPU-specific, so only reuse it between **identical** CPUs. See
+No, that's what `backup`/`restore` are for. `sudo ./rigforge.sh backup` snapshots the only
+expensive-to-recreate state (your `config.json` and the tuning result) into `./backups`. After data loss,
+`restore` it and re-run `setup` instead of re-tuning from scratch. For a fleet, tune one machine, back it
+up, and `restore` the archive on each identical machine so they all share the same config and tuning.
+Tuning is CPU-specific, so only reuse it between identical CPUs. See
 [Operations › Backup & restore](operations.md#backup--restore).
 
 ---
 
 ## Does the worker need Tor?
 
-No. Workers talk to the pool/stack over plain Stratum on your **local network**. Tor (for privacy and
-no port-forwarding) is a stack-host concern, handled by Pithead — not the miner.
+No. Workers talk to the pool/stack over plain Stratum on your local network. Tor (for privacy and no
+port-forwarding) is a stack-host concern, handled by Pithead, not the miner.
 
 ---
 
 ## Is macOS supported?
 
-macOS works for development and light use — RigForge builds and configures XMRig there — but **Ubuntu
-is the supported deployment target**. The Linux-only tuning (HugePages, MSR, systemd, governor) doesn't
-apply on macOS, which the macOS CPU profile accounts for, so the hashrate is lower than a tuned Linux
-box. There's no systemd service either, so the miner doesn't auto-start — launch it with
-`./rigforge.sh start` (the same `start`/`stop`/`restart`/`status`/`logs` verbs work on macOS). Full
-details — what differs, how to run it, and which commands are Linux-only — are in
-[Operations › Running on macOS](operations.md#running-on-macos).
+macOS works for development and light use (RigForge builds and configures XMRig there), but Ubuntu is the
+supported deployment target. The Linux-only tuning (HugePages, MSR, systemd, governor) doesn't apply on
+macOS, which the macOS CPU profile accounts for, so the hashrate is lower than a tuned Linux box. There's
+no systemd service either, so the miner doesn't auto-start; launch it with `./rigforge.sh start` (the same
+`start`/`stop`/`restart`/`status`/`logs` verbs work on macOS). What differs, how to run it, and which
+commands are Linux-only are in [Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
 

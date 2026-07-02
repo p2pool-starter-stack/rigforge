@@ -149,9 +149,14 @@ verify() {
     # miner's startup logging and spuriously fails the MSR assertions (the mod is applied a beat later).
     # Best-effort: wait up to ~90s for a live API hashrate, then proceed regardless so a genuinely dead
     # miner still surfaces as a doctor failure rather than hanging.
-    local _w _hr
+    # The worker API is open (read-only) with no token by default now, so only send a Bearer when the
+    # operator actually set ACCESS_TOKEN — XMRig 401s a token it never asked for, which under set -e +
+    # pipefail (curl -f → exit 22) would abort verify here before it prints a thing.
+    local _w _hr _tok _auth=()
+    _tok=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null || true)
+    [ -n "$_tok" ] && _auth=(-H "Authorization: Bearer $_tok")
     for _w in $(seq 1 30); do
-        _hr=$(curl -fsS --max-time 4 -H "Authorization: Bearer $(hostname)" http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
+        _hr=$(curl -fsS --max-time 4 "${_auth[@]}" http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
         { [ -n "$_hr" ] && awk "BEGIN{exit !($_hr > 0)}" 2>/dev/null; } && break
         sleep 3
     done
