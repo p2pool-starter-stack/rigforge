@@ -170,6 +170,13 @@ if [ "$1" = list ] && [ -n "$2" ]; then
 fi
 exit 0
 EOF
+    # curl stub for the worker-API probe: record the invocation (so a test can assert whether an
+    # Authorization header was passed) and emit an XMRig-style /2/summary body. Exits 0 like a real 200.
+    cat >"$bin/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "[curl] $*" >> "${CURL_LOG:-/dev/null}"
+printf '{"hashrate":{"total":[%s,0,0]}}\n' "${STUB_API_HR:-1234.5}"
+EOF
 
     chmod +x "$bin"/*
 }
@@ -1452,6 +1459,31 @@ wdead="$( (
     _wait_miner_live 1 && echo LIVE || echo DEAD
 ))"
 assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
+
+# The worker API is open (read-only) with no token by default (#125), so _read_api_hashrate must send a
+# Bearer ONLY when ACCESS_TOKEN is set — else XMRig 401s a token it never asked for and curl -f (exit 22)
+# aborts the caller under set -e, silently breaking live tuning. The rest of the suite stubs this via
+# API_CMD, so this is the one place the real curl branch (the header logic) is exercised.
+echo "== unit: _read_api_hashrate sends a Bearer only when ACCESS_TOKEN is set (#125) =="
+clog="$SANDBOX/curl-calls.log"
+: >"$clog"
+hr_open="$( (
+    source "$SCRIPT"
+    unset API_CMD
+    ACCESS_TOKEN=""
+    PATH="$STUBS:$PATH" CURL_LOG="$clog" STUB_API_HR=1234.5 _read_api_hashrate
+))"
+assert_eq "_read_api_hashrate returns the hashrate on the open (no-token) API" "$hr_open" "1234.5"
+assert_absent "no Authorization header sent when ACCESS_TOKEN is unset" "$(cat "$clog")" "Authorization"
+: >"$clog"
+hr_auth="$( (
+    source "$SCRIPT"
+    unset API_CMD
+    ACCESS_TOKEN="miner-0"
+    PATH="$STUBS:$PATH" CURL_LOG="$clog" STUB_API_HR=987.6 _read_api_hashrate
+))"
+assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
+assert_contains "Bearer <token> sent when ACCESS_TOKEN is set" "$(cat "$clog")" "Authorization: Bearer miner-0"
 
 # #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
 # no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
