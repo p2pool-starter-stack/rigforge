@@ -22,9 +22,9 @@ readonly C_RED='\033[1;31m'
 readonly C_BLUE='\033[1;34m'
 
 log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
-warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1"; }
+warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1" >&2; }
 error() {
-    echo -e "${C_RED}[ERROR]${C_RESET} $1"
+    echo -e "${C_RED}[ERROR]${C_RESET} $1" >&2
     exit 1
 }
 
@@ -189,6 +189,15 @@ grub_strip_managed() { # <current cmdline>
     printf '%s' "$preserved"
 }
 
+# Escape a value for use as the REPLACEMENT text of a `sed "s|pat|repl|"` command: backslash-prefix
+# `\`, `&` (whole-match backreference) and the `|` delimiter. Without this, a pre-existing kernel
+# param containing one of them (e.g. memmap=4G&2M) would silently corrupt /etc/default/grub (#134).
+# Implemented with sed, not ${var//}, because bash 5.2's patsub_replacement changed `&` semantics
+# in expansion replacements while our floor is bash 3.2.
+_sed_escape_replacement() { # <value> -> escaped value on stdout
+    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
 # --- Setup: prerequisites & configuration ---
 
 check_prerequisites() {
@@ -251,6 +260,10 @@ ensure_config_exists() {
 
             # Minimal config: just the native pools array. jq writes it so the URL is safely quoted.
             jq -n --arg url "$IN_URL" '{pools: [{url: $url}]}' >"$CONFIG_JSON"
+            # The operator is told (below) to hand-edit this file to add a wallet / ACCESS_TOKEN, and the
+            # first `apply` may be a long way off — chmod now so those secrets are never world-readable
+            # in the interim (generate_xmrig_config's chmod 600 only runs on setup/apply). (#131)
+            chmod 600 "$CONFIG_JSON"
             _reown_worker # hand the freshly-created config.json to the operator, even if setup later fails
             log "Created $CONFIG_JSON successfully."
             # New-user safety net: the minimal config has no wallet, so a PUBLIC-pool miner who stops here
@@ -508,6 +521,7 @@ compile_xmrig() {
 
     # Verify we built the exact commit we pinned (supply-chain hardening). On a mismatch, drop the clone so
     # the next run starts clean rather than tripping the not-empty error above.
+    local actual
     actual="$(git -C xmrig rev-parse HEAD)"
     [ "$actual" = "$XMRIG_COMMIT" ] || {
         rm -rf xmrig
@@ -610,7 +624,7 @@ generate_xmrig_config() {
         THREADS="["
         for ((i = 0; i < CORES; i++)); do
             THREADS="${THREADS}-1"
-            if [ $i -lt $((CORES - 1)) ]; then THREADS="${THREADS},"; fi
+            if [ "$i" -lt $((CORES - 1)) ]; then THREADS="${THREADS},"; fi
         done
         THREADS="${THREADS}]"
     fi
@@ -739,13 +753,13 @@ install_service() {
         # Overwrite the existing file. Only the three named vars are substituted; WORKER_ROOT is passed
         # into envsubst's environment for that one command (the template uses it in ReadWritePaths).
         WORKER_ROOT="$WORKER_ROOT" envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT' \
-            <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/xmrig.service" >/dev/null
+            <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 
         # Reload systemd daemon
         sudo systemctl daemon-reload
 
         # Enable service to start on boot
-        sudo systemctl enable xmrig.service
+        sudo systemctl enable "$SERVICE_NAME.service"
 
         if [ "$REBOOT_REQUIRED" = true ]; then
             # HugePages aren't reserved until the GRUB change takes effect on reboot — starting the miner
@@ -756,10 +770,10 @@ install_service() {
             # Restart only when the binary was rebuilt; otherwise just ensure it's running (a running
             # service is left undisturbed on a no-op re-run).
             log "Restarting XMRig service..."
-            sudo systemctl restart xmrig.service
+            sudo systemctl restart "$SERVICE_NAME.service"
         else
             log "No rebuild — ensuring the service is running (no restart)."
-            sudo systemctl start xmrig.service
+            sudo systemctl start "$SERVICE_NAME.service"
         fi
         SERVICE_INSTALLED=true
     else
@@ -852,7 +866,7 @@ tune_kernel() {
             log "GRUB is already configured with optimal HugePages settings."
         else
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$MERGED\"|" "$GRUB_DEFAULT"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$MERGED")\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
@@ -1010,7 +1024,7 @@ _wait_miner_live() { # [tries]
     local i hr tries="${1:-30}"
     for i in $(seq 1 "$tries"); do
         hr=$(_read_api_hashrate)
-        [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null && return 0
+        [ -n "$hr" ] && awk -v hr="$hr" 'BEGIN{exit !(hr > 0)}' 2>/dev/null && return 0
         sleep 3
     done
     return 1
@@ -1058,10 +1072,20 @@ upgrade() {
 # returns 1 (invalid) so every consumer fails closed rather than acting on a typo- or attacker-controlled
 # path. Shared by parse_config and the privileged uninstall/backup/restore/doctor consumers.
 _worker_root_for_home() { # <raw HOME_DIR> -> echoes "<root>", or returns 1 if invalid
-    local raw="$1"
+    local raw="$1" trimmed
     if [ "$raw" = "DYNAMIC_HOME" ] || [ -z "$raw" ] || [ "$raw" = "null" ]; then
         echo "$SCRIPT_DIR/data/worker"
     elif [[ "$raw" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$raw" != *..* ]]; then
+        # Syntactically valid is not enough: HOME_DIR feeds mkdir/cd/`sudo rm -rf`, so the
+        # filesystem's own top levels ("/", "/etc", bare "/home", ...) must fail closed too. (#135)
+        # ponytail: strips one trailing slash; the charset regex above already blocks anything
+        # hostile — this is a fat-finger guard, not a security boundary.
+        trimmed="${raw%/}"
+        case "${trimmed:-/}" in
+        / | /bin | /boot | /dev | /etc | /home | /lib | /lib64 | /media | /mnt | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var | /Applications | /Library | /System | /Users | /Volumes | /private)
+            return 1
+            ;;
+        esac
         echo "$raw/worker"
     else
         return 1
@@ -1145,7 +1169,7 @@ uninstall() {
         stripped=$(grub_strip_managed "$cur")
         if [ "$cur" != "$stripped" ]; then
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$stripped\"|" "$GRUB_DEFAULT"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$stripped")\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
@@ -2023,6 +2047,10 @@ tune() {
     done
 
     TUNE_TMP=$(mktemp -d)
+    # Cleanup is armed the moment the temp dir exists — an ERR-abort anywhere below (live mode
+    # included) must not leak it. _tune_bench_cleanup is idempotent and only restarts the service
+    # when _TUNE_SVC_STOPPED says the bench path stopped it. (#135)
+    trap '_tune_bench_cleanup' EXIT
     MEMO_FILE="$TUNE_TMP/memo"
     MEMO_SD_FILE="$TUNE_TMP/memo_sd"
     MEMO_THROTTLE_FILE="$TUNE_TMP/memo_throttle"
@@ -2049,7 +2077,6 @@ tune() {
         log "Stopping the '$SERVICE_NAME' service for the benchmark run (restarted automatically afterwards)."
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
         _TUNE_SVC_STOPPED=1
-        trap '_tune_bench_cleanup' EXIT
     fi
 
     local G_best="-1" G_best_key="" G_p="" G_y="" G_t="" G_g="" G_pr="" G_hj="" G_cq="" G_wr="" seed seed_hr
@@ -2087,7 +2114,7 @@ tune() {
         done
     fi
 
-    if [ -z "$G_p" ] || awk "BEGIN{exit !($G_best <= 0)}"; then
+    if [ -z "$G_p" ] || awk -v hr="$G_best" 'BEGIN{exit !(hr <= 0)}'; then
         rm -rf "$TUNE_TMP"
         error "Benchmarks produced no hashrate — check that the worker is built correctly."
     fi
@@ -2163,7 +2190,7 @@ _tune_confirm_live() { # <winner_overrides_json> <previous_overrides_json>
     sleep "$warm"
     base_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$base_hr" ] || base_hr=0
-    if awk "BEGIN{exit !($win_hr > $base_hr * (1 + $margin))}"; then
+    if awk -v w="$win_hr" -v b="$base_hr" -v m="$margin" 'BEGIN{exit !(w > b * (1 + m))}'; then
         printf '%s\n' "$win_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null
         _apply_runtime >/dev/null 2>&1 || true
         log "Confirmed: the tuned config wins live ($win_hr vs $base_hr H/s) — kept and applied."
@@ -2223,7 +2250,7 @@ _autotune_sample() { # <n> <interval> <target>
 # Score a sample for the active target: efficiency -> hashrate-per-watt (falls back to raw H/s if watts
 # are missing so the sweep still progresses); perf -> raw H/s. Drives both ranking and the margin gate.
 _autotune_score() { # <target> <hr> <watts>
-    if [ "$1" = efficiency ] && [ -n "$3" ] && awk "BEGIN{exit !($3 > 0)}"; then
+    if [ "$1" = efficiency ] && [ -n "$3" ] && awk -v w="$3" 'BEGIN{exit !(w > 0)}'; then
         awk -v h="$2" -v w="$3" 'BEGIN{printf "%.4f", h / w}'
     else
         printf '%s' "${2:-0}"
@@ -2231,7 +2258,7 @@ _autotune_score() { # <target> <hr> <watts>
 }
 # Human-readable sample for the log line: "10700 H/s" or "10700 H/s, 83.10 W, 128.84 H/s/W".
 _autotune_fmt() { # <target> <hr> <watts>
-    if [ "$1" = efficiency ] && [ -n "$3" ] && awk "BEGIN{exit !($3 > 0)}"; then
+    if [ "$1" = efficiency ] && [ -n "$3" ] && awk -v w="$3" 'BEGIN{exit !(w > 0)}'; then
         awk -v h="$2" -v w="$3" 'BEGIN{printf "%s H/s, %.2f W, %.2f H/s/W", h, w, h / w}'
     else
         printf '%s H/s' "${2:-0}"
@@ -2301,14 +2328,14 @@ autotune() {
         [ -n "$hr" ] || hr=0
         sc=$(_autotune_score "$target" "$hr" "$w")
         log "autotune: prefetch_mode=$m measured $(_autotune_fmt "$target" "$hr" "$w")."
-        if awk "BEGIN{exit !($sc > $best_score)}"; then
+        if awk -v sc="$sc" -v b="$best_score" 'BEGIN{exit !(sc > b)}'; then
             best_mode="$m"
             best_score="$sc"
         fi
     done
 
     # Adopt the winner only if it beats the baseline by the margin (noise guard); else keep the current mode.
-    if [ "$best_mode" != "$cur" ] && awk "BEGIN{exit !($best_score > $base_score * (1 + $margin))}"; then
+    if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
         log "autotune: best is prefetch_mode=$best_mode at $best_score $unit (vs $base_score baseline) — applying it."
     else
         best_mode="$cur"
@@ -2884,6 +2911,22 @@ doctor() {
     if [ -f "$CONFIG_JSON" ]; then
         wr=$(_worker_root_from_config)
         log_file="$wr/xmrig.log"
+    fi
+
+    # Read-only API posture (#135): exposing the HTTP API on 0.0.0.0:8080 is safe ONLY because the
+    # generated config pins http.restricted=true — assert the live file still does, so a hand-edit
+    # or a bad merge can't silently turn the read-only API into a control plane. Quiet when there is
+    # no built config yet (setup hasn't run); the service check above already covers that state.
+    local live_cfg="" restricted=""
+    [ -n "$wr" ] && live_cfg="$wr/xmrig/build/config.json"
+    if [ -n "$live_cfg" ] && [ -f "$live_cfg" ]; then
+        restricted=$(jq -r '.http.restricted' "$live_cfg" 2>/dev/null || true)
+        if [ "$restricted" = "true" ]; then
+            _ck_ok "HTTP API is read-only (http.restricted=true in the live config)"
+        else
+            _ck_warn "HTTP API is NOT read-only (http.restricted=${restricted:-unreadable}) — regenerate it with: sudo $0 apply"
+            issues=$((issues + 1))
+        fi
     fi
 
     # MSR mod applied? (#66) The ~10-15% RandomX gain needs three things, checked in order: the msr

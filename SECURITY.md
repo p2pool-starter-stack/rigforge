@@ -22,8 +22,9 @@ per-rig stats over the LAN. Know exactly what it is:
 
 - Read-only. It's configured `restricted: true`, so the API can be read but
   never used to control the miner (no remote pause, config change, or shutdown).
-- Token-gated. Reads require a bearer token (the rig name by default), so it
-  isn't an open endpoint.
+- Open by default. Reads need no token out of the box, matching Pithead's
+  stock no-auth probe. Set `ACCESS_TOKEN` in `config.json` to require a
+  `Bearer` token on every read instead.
 - LAN-bound by default. It binds `0.0.0.0:8080` because the Pithead dashboard
   polls each worker from the stack host. The data it can return is mining stats:
   hashrate, the configured pool URL, the worker label, and the CPU model.

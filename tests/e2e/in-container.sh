@@ -27,7 +27,12 @@ assert_absent() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contains [$3]
 #    are intentionally NOT hard-pinned: Ubuntu's archive rotates superseded versions out of the
 #    release pocket, so a pinned `jq=<ver>` would 404 and break the run once a new build lands.
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null && apt-get install -y -qq jq gettext-base >/dev/null
+apt-get update -qq >/dev/null && apt-get install -y -qq jq gettext-base >/dev/null || {
+    # No set -e in this harness (it counts assertions), so a dead archive/network must abort here
+    # explicitly — every later assertion depends on jq + envsubst existing. (#135)
+    echo "FATAL: apt-get install jq gettext-base failed (no network / archive down) — aborting the e2e run." >&2
+    exit 1
+}
 
 # 2. Writable copy of the repo (/src is mounted read-only).
 WORK=/work

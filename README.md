@@ -136,7 +136,7 @@ RigForge runs as root, so it's worth being explicit about what it does and doesn
   and it goes to the XMRig project. Set `"DONATION": 0` to turn it off.
 - Each worker exposes XMRig's HTTP API on `:8080` for the
   [Pithead](https://github.com/p2pool-starter-stack/pithead) dashboard. It's `restricted` (read-only,
-  can't control the miner) and token-gated. It binds the LAN by default; if you mine solo or to a public
+  can't control the miner) and open by default (set `ACCESS_TOKEN` in `config.json` to require a Bearer token). It binds the LAN by default; if you mine solo or to a public
   pool you don't need it at all and can firewall the port off.
 
 Full detail, and the exact `ufw` commands to lock down `:8080`, are in [SECURITY.md](./SECURITY.md).
@@ -196,7 +196,8 @@ For how RigForge is versioned and released, see [RELEASING.md](./RELEASING.md) a
 
 ## 🤝 Donate
 
-If RigForge saved you time and you'd like to support it, donations to this XMR wallet are appreciated:
+If RigForge saved you time and you'd like to support it, donations to this XMR wallet (the
+maintainer's wallet, separate from XMRig's own dev donation) are appreciated:
 
 ```text
 486aGn4qhH1MkaASjnEWMDN7stD1SVtPF5fvihmjffeBE5ACL1u1jU95KxiqmoiaPZMexi4R4W11MLXut66XWVVF8wjAE5R
@@ -207,3 +208,6 @@ If RigForge saved you time and you'd like to support it, donations to this XMR w
 ## 📝 License
 
 Provided "as-is" under the [MIT License](./LICENSE).
+
+RigForge itself is MIT; [XMRig](https://github.com/xmrig/xmrig) is GPLv3. RigForge clones and
+compiles upstream XMRig source on your own machine and redistributes no XMRig binaries.

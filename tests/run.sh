@@ -193,7 +193,7 @@ parse_and_print() { # <config_file> <script_dir> <var>
         local var="$3"
         set +eu
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
-        eval "printf '%s' \"\${$var}\""
+        printf '%s' "${!var}"
     )
 }
 # Convenience: the host of the first resolved pool (POOLS_JSON[0].url with the :port stripped), so the
@@ -356,6 +356,16 @@ assert_rc "HOME_DIR with metachar rejected" "$?" "1"
 c="$(mkconf hd_ok "{ \"HOME_DIR\": \"/opt/rig\", $POOL }")"
 parse_rc "$c" "$ROOT"
 assert_rc "clean absolute HOME_DIR accepted" "$?" "0"
+# #135: catastrophic-but-syntactically-valid HOME_DIR values fail closed before any sudo rm -rf.
+c="$(mkconf hd_slash "{ \"HOME_DIR\": \"//\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "HOME_DIR // (root) rejected (#135)" "$?" "1"
+c="$(mkconf hd_etc "{ \"HOME_DIR\": \"/etc/\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "HOME_DIR /etc rejected (#135)" "$?" "1"
+c="$(mkconf hd_home "{ \"HOME_DIR\": \"/home\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "bare /home HOME_DIR rejected (#135)" "$?" "1"
 # ACCESS_TOKEN character set.
 c="$(mkconf at_bad "{ \"ACCESS_TOKEN\": \"bad token\", $POOL }")"
 parse_rc "$c" "$ROOT"
@@ -408,6 +418,10 @@ ecd="$(mktemp -d "$SANDBOX/ec.XXXXXX")"
     printf 'y\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
 )
 assert_eq "first-run writes minimal pools config" "$(jq -c '.pools' "$ecd/config.json" 2>/dev/null)" '[{"url":"stack.lan:3333"}]'
+# #131: the operator hand-edits this file to add a wallet/token before the first `apply`, so it must
+# be owner-only from creation — not only after generate_xmrig_config's later chmod.
+if [ "$(uname -s)" = Darwin ]; then ec_mode="$(stat -f '%Lp' "$ecd/config.json")"; else ec_mode="$(stat -c '%a' "$ecd/config.json")"; fi
+assert_eq "bootstrap config.json is owner-only (0600) (#131)" "$ec_mode" "600"
 for bad in '' 'stack.lan' ':3333' '[zz]:3333'; do
     ecd2="$(mktemp -d "$SANDBOX/ec2.XXXXXX")"
     (
@@ -802,6 +816,32 @@ s="$(
     grub_strip_managed "quiet splash"
 )"
 assert_eq "strip leaves a clean cmdline untouched" "$s" "quiet splash"
+
+# #134: values interpolated into the GRUB sed REPLACEMENT must have \ & | escaped, or a legal
+# pre-existing kernel param corrupts /etc/default/grub. The escaper is pure, so test it directly,
+# then prove a real (non-in-place, so BSD-sed-safe) rewrite round-trips the characters literally.
+echo "== unit: _sed_escape_replacement protects the GRUB rewrites (#134) =="
+esc="$(
+    source "$SCRIPT"
+    _sed_escape_replacement 'quiet memmap=4G&2M weird\param a|b'
+)"
+assert_eq "escapes backslash, ampersand and pipe" "$esc" 'quiet memmap=4G\&2M weird\\param a\|b'
+esc2="$(
+    source "$SCRIPT"
+    _sed_escape_replacement 'quiet splash'
+)"
+assert_eq "plain cmdline passes through unchanged" "$esc2" 'quiet splash'
+GESC="$(mktemp -d "$SANDBOX/grubesc.XXXXXX")"
+printf 'GRUB_TIMEOUT=5\nGRUB_CMDLINE_LINUX_DEFAULT="old"\n' >"$GESC/grub"
+rewritten="$(
+    source "$SCRIPT"
+    val='quiet memmap=4G&2M weird\param a|b hugepages=100'
+    sed "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$val")\"|" "$GESC/grub"
+)"
+assert_contains "rewrite keeps & literal" "$rewritten" 'memmap=4G&2M'
+assert_contains "rewrite keeps backslash literal" "$rewritten" 'weird\param'
+assert_contains "rewrite keeps | literal" "$rewritten" 'a|b'
+assert_contains "other lines untouched" "$rewritten" 'GRUB_TIMEOUT=5'
 
 # ---------------------------------------------------------------------------
 # Pinned-build verification (#18): compile_xmrig clones the pinned XMRIG_VERSION and aborts if the
@@ -1689,7 +1729,12 @@ out="$(mac_run start)"
 assert_rc "macOS start exits 0" "$?" "0"
 assert_contains "macOS start reports a pid" "$out" "Started the miner"
 assert_eq "macOS start wrote a PID file" "$([ -f "$PIDF" ] && echo y || echo n)" "y"
-sleep 0.5 # let the backgrounded fake record its args
+# Bounded poll (the tests/e2e-real.sh pattern): wait up to ~6s for the backgrounded fake to record
+# its args instead of hoping one fixed sleep is enough on a loaded CI runner. (#135)
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if [ -s "$MC/home/worker/xmrig.args" ]; then break; fi
+    sleep 0.5
+done
 out="$(mac_run status)"
 assert_contains "macOS status shows running" "$out" "is running"
 assert_contains "macOS start used the build-dir config" "$(cat "$MC/home/worker/xmrig.args" 2>/dev/null)" "--config=$MCB/config.json"
@@ -1782,6 +1827,29 @@ log_steady="$(svc_run "$(mktemp -d "$SANDBOX/svcst.XXXXXX")" false false)"
 assert_contains "no rebuild, no reboot: service (re)started, not restarted" "$log_steady" "[systemctl] start xmrig.service"
 assert_absent "no rebuild: does not needlessly restart a running miner" "$log_steady" "restart xmrig.service"
 
+# #133: SERVICE_NAME is a documented override and every other verb honors it — install_service must
+# install/enable/start the SAME unit, not a hardcoded xmrig.service nothing else can see.
+echo "== unit: install_service honors SERVICE_NAME override (#133) =="
+SVC_OVR="$(mktemp -d "$SANDBOX/svcovr.XXXXXX")"
+mkdir -p "$SVC_OVR/etc/systemd" "$SVC_OVR/xmrig/build"
+(
+    cd "$SVC_OVR" || exit 1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT" # so envsubst reads the real systemd/xmrig.service.template
+    WORKER_ROOT="$SVC_OVR"
+    SYSTEMD_DIR="$SVC_OVR/etc/systemd"
+    SERVICE_NAME=miner
+    REBOOT_REQUIRED=false
+    XMRIG_REBUILD=true
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$SVC_OVR/calls.log" install_service >/dev/null 2>&1
+)
+assert_eq "SERVICE_NAME=miner writes miner.service (#133)" "$([ -f "$SVC_OVR/etc/systemd/miner.service" ] && echo yes || echo no)" "yes"
+assert_eq "SERVICE_NAME=miner writes NO xmrig.service (#133)" "$([ -f "$SVC_OVR/etc/systemd/xmrig.service" ] && echo yes || echo no)" "no"
+assert_contains "enables miner.service (#133)" "$(cat "$SVC_OVR/calls.log")" "[systemctl] enable miner.service"
+assert_contains "restarts miner.service (#133)" "$(cat "$SVC_OVR/calls.log")" "[systemctl] restart miner.service"
+
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
 # Every /etc target is redirected into the work dir, and passthrough sudo lets the writes land there.
@@ -1800,7 +1868,8 @@ e2e_setup() { # echoes the work dir
         "$W/etc/security" "$W/etc/default" "$W/home" "$W/proc" "$W/sys"
     : >"$W/etc/fstab"
     : >"$W/etc/security/limits.conf"
-    printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$W/etc/default/grub"
+    # memmap=4G&2M: a legal param whose '&' is sed-replacement-special — must survive the rewrite (#134)
+    printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash memmap=4G&2M"\n' >"$W/etc/default/grub"
     printf 'flags : fpu pdpe1gb\n' >"$W/proc/cpuinfo"
     # Use an explicit (dotted) host so this E2E doesn't depend on the .local/mDNS appending that
     # Host is used verbatim (#15 removed the .local appending); the url is host:port.
@@ -1882,6 +1951,7 @@ if [ "$HOST_OS" = Linux ]; then
     assert_absent "limits: not wildcard memlock" "$(cat "$W/etc/security/limits.conf")" "* soft memlock unlimited"
     assert_contains "grub: hugepages params written" "$(cat "$W/etc/default/grub")" "default_hugepagesz=2M"
     assert_contains "grub: preserves existing params (#19)" "$(cat "$W/etc/default/grub")" "quiet splash"
+    assert_contains "grub: sed-special & param survives the rewrite (#134)" "$(cat "$W/etc/default/grub")" 'memmap=4G&2M'
 else
     assert_eq "deploy: macOS huge-pages off" "$(J "$BUILD/config.json" '.cpu."huge-pages"')" "false"
     assert_eq "deploy: macOS http host all v6" "$(J "$BUILD/config.json" '.http.host')" "::"
@@ -1992,6 +2062,18 @@ out="$( (
     PATH="$STUBS:$PATH" doctor 2>&1
 ))"
 assert_contains "doctor: log HUGE PAGES below 100% WARN" "$out" "below 100%"
+
+# #135: doctor asserts the live config keeps the HTTP API read-only (http.restricted=true).
+echo "== unit: doctor checks http.restricted in the live config (#135) =="
+mkdir -p "$DOC/home/worker/xmrig/build"
+printf '{ "http": { "restricted": true } }\n' >"$DOC/home/worker/xmrig/build/config.json"
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: restricted=true passes (#135)" "$out" "HTTP API is read-only"
+printf '{ "http": { "restricted": false } }\n' >"$DOC/home/worker/xmrig/build/config.json"
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: restricted=false warns (#135)" "$out" "NOT read-only"
+assert_contains "doctor: restricted=false counts as an issue (#135)" "$out" "issue(s) found"
+rm -rf "$DOC/home/worker/xmrig" # leave $DOC exactly as the later doctor tests expect it
 
 # #67: doctor flags hashrate-capping HARDWARE (advisory) — single-channel/slow RAM (via dmidecode) and a
 # power/boost-capped clock (effective vs max, while mining). Fakes drive both the WARN and OK paths, and
