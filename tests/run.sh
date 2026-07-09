@@ -283,6 +283,16 @@ c="$(mkconf p_backup "{ \"pools\": [{\"url\":\"a:3333\"},{\"url\":\"b:14444\",\"
 assert_eq "two pools" "$(PJ "$c" | jq -c 'length')" "2"
 assert_eq "order preserved" "$(PJ "$c" | jq -c '[.[].url]')" '["a:3333","b:14444"]'
 assert_eq "backup tls kept" "$(PJ "$c" | jq -c '.[1].tls')" "true"
+# #115: tls-fingerprint passes through verbatim (either case) and the key is absent when unset/null,
+# so pre-#115 configs keep producing byte-identical POOLS_JSON.
+c="$(mkconf p_fp "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+assert_eq "tls-fingerprint passed through (#115)" "$(PJ "$c" | jq -r '.[0]."tls-fingerprint"')" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+c="$(mkconf p_fpu "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}] }")"
+assert_eq "uppercase fingerprint accepted verbatim (#115)" "$(PJ "$c" | jq -r '.[0]."tls-fingerprint"')" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+c="$(mkconf p_nofp "{ \"pools\": [{\"url\":\"h:3333\"}] }")"
+assert_eq "no fingerprint key when unset (#115)" "$(PJ "$c" | jq -c '.[0] | has("tls-fingerprint")')" "false"
+c="$(mkconf p_nullfp "{ \"pools\": [{\"url\":\"h:3333\",\"tls-fingerprint\":null}] }")"
+assert_eq "null fingerprint = absent (#115)" "$(PJ "$c" | jq -c '.[0] | has("tls-fingerprint")')" "false"
 # Validation: bad url, blank url, missing port, non-boolean tls, no pools key, and an empty pools array
 # all fail fast.
 c="$(mkconf p_badurl "{ \"pools\": [{\"url\":\"evil;rm:3333\"}] }")"
@@ -297,6 +307,23 @@ assert_rc "url without a port rejected" "$?" "1"
 c="$(mkconf p_badtls "{ \"pools\": [{\"url\":\"h:3333\",\"tls\":\"yes\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "non-boolean tls rejected" "$?" "1"
+# #115: fingerprint validation — wrong length, colon-separated openssl form, non-string, and the
+# pin-without-tls footgun all fail fast; a valid pin + tls:true parses.
+c="$(mkconf p_fpshort "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"abc123\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "short fingerprint rejected (#115)" "$?" "1"
+c="$(mkconf p_fpcolon "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"AB:CD:EF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "colon-separated fingerprint rejected (#115)" "$?" "1"
+c="$(mkconf p_fpbool "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":true}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "non-string fingerprint rejected (#115)" "$?" "1"
+c="$(mkconf p_fpnotls "{ \"pools\": [{\"url\":\"h:443\",\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "fingerprint without tls:true rejected (#115)" "$?" "1"
+c="$(mkconf p_fpok "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "valid fingerprint + tls accepted (#115)" "$?" "0"
 c="$(mkconf p_nopools "{ }")"
 parse_rc "$c" "$ROOT"
 assert_rc "no pools rejected" "$?" "1"
@@ -673,6 +700,15 @@ d="$(gen_config)"
 cfg="$d/config.json"
 unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
 assert_eq "explicit pool user kept" "$(J "$cfg" '.pools[0].user')" "fancy-rig"
+
+# #115: a pinned TLS pool's fingerprint survives config generation verbatim (generate only fills user).
+echo "== config-gen: tls-fingerprint passthrough (#115) =="
+export STUB_CPU_MODEL="Intel(R) Xeon" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+SIM_OS=Linux SIM_DON=1 SIM_POOLS='[{"url":"sec:443","user":"","pass":"x","keepalive":true,"tls":true,"enabled":true,"tls-fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]'
+d="$(gen_config)"
+cfg="$d/config.json"
+unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+assert_eq "tls-fingerprint survives generation (#115)" "$(J "$cfg" '.pools[0]."tls-fingerprint"')" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 # #21/#24: fields that must survive generate_xmrig_config unmangled. parse_config-side acceptance is
 # covered above; here we prove the EMITTED config.json (what XMRig actually loads) preserves them — a jq

@@ -330,7 +330,11 @@ parse_config() {
             keepalive: (.keepalive // true),
             tls: (.tls // false),
             enabled: (.enabled // true)
-        })
+        }
+        # tls-fingerprint (#115) is emitted ONLY when set: adding it unconditionally (null) would
+        # change the generated config shape for every existing rig on its next apply.
+        + (if (."tls-fingerprint" // null) != null
+            then {"tls-fingerprint": ."tls-fingerprint"} else {} end))
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
     # Validate every pool field — fail fast with a clear message rather than writing a config XMRig
@@ -363,6 +367,20 @@ parse_config() {
         fi
         if ! [[ "$_pass" =~ ^[[:graph:]]+$ ]]; then
             error "Pool pass must be non-empty with no spaces or control characters."
+        fi
+        # TLS fingerprint pin (#115): xmrig does NO cert verification for stratum without a pin
+        # (v6.26.0 Tls.cpp verifyFingerprint returns true when unset), so the fingerprint is the
+        # ONLY server authentication stratum-TLS has. 64 hex chars, either case (xmrig compares
+        # case-insensitively); passed verbatim, never normalized. A pin without tls:true is a hard
+        # error — a silently-ignored pin would leave the operator believing they're protected.
+        _fp=$(jq -r '."tls-fingerprint" // empty' <<<"$_pool")
+        if [ -n "$_fp" ]; then
+            if ! [[ "$_fp" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+                error "Pool tls-fingerprint must be the cert's SHA-256 as 64 hex chars (no colons). Get it with: echo | openssl s_client -connect $_u 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':'"
+            fi
+            if [ "$(jq -r '.tls' <<<"$_pool")" != "true" ]; then
+                error "Pool '$_u' sets tls-fingerprint but not \"tls\": true — the pin only applies to a TLS connection; set both or remove the fingerprint."
+            fi
         fi
         for _f in keepalive tls enabled; do
             _bv=$(jq -r --arg f "$_f" '.[$f]' <<<"$_pool")

@@ -94,6 +94,7 @@ you care about:
 | `pass` | `"x"` — the stratum password / worker name. For an open Pithead stack the default works; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
 | `keepalive` | `true` |
 | `tls` | `false` — set `true` when you connect on the pool's TLS/SSL port. |
+| `tls-fingerprint` | `null` (no pin) — the pool cert's SHA-256 as 64 hex chars. XMRig does no CA validation on stratum TLS, so the pin is the only server authentication; without it, TLS encrypts but doesn't authenticate. Requires `"tls": true`. See [Pithead Integration › Stratum over TLS](pithead-integration.md#stratum-over-tls-optional). |
 | `enabled` | `true` |
 
 Two common setups follow; pick the one that matches where you're mining.
@@ -138,7 +139,8 @@ in the pool's endpoint and your wallet:
   `WALLET.workername` here to label the rig in their dashboard.
 - `pass` is a worker name (or just `"x"`; most public pools ignore the password).
 - `url` + `tls` is the pool's stratum endpoint. Use the pool's TLS/SSL port (often `:443` or `:5555`)
-  with `"tls": true`; a plain, unencrypted port needs no `tls`. Your pool's *Getting started* /
+  with `"tls": true`; a plain, unencrypted port needs no `tls`. For a self-signed or internal cert,
+  add `tls-fingerprint` to pin it. Your pool's *Getting started* /
   *Connect* page lists its exact host, ports, and whether it wants `wallet` or `wallet.worker`.
 
 Save that as `config.json`, then `sudo ./rigforge.sh apply` (a fresh `setup` picks it up too).
