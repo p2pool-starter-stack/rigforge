@@ -53,7 +53,7 @@ if your stack doesn't use one.
   `pithead status`.
 - The password travels cleartext over your LAN's plain Stratum, so this is access control (who may mine),
   not encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind` / a firewall do the
-  rest).
+  rest) — or add [stratum over TLS](#stratum-over-tls-optional) below for confidentiality.
 - This is unrelated to the `DONATION` knob (that's this rig's dev-fee donation) and to the optional API
   `ACCESS_TOKEN` below (that gates the read-only stats API on `:8080`, which is open by default).
 
@@ -65,6 +65,39 @@ if your stack doesn't use one.
 3. Until step 2 lands on a rig, it logs `Permission denied` and drops off the dashboard — that's the
    expected signal that it still has the old secret, not a fault (see
    [Troubleshooting](#troubleshooting)).
+
+### Stratum over TLS (optional)
+
+Needs stack-side support that hasn't shipped yet (Pithead is tracking it as
+[pithead#261](https://github.com/p2pool-starter-stack/pithead/issues/261)) — but everything below
+already works today against **any** TLS stratum endpoint, e.g. a public pool's TLS port.
+
+```jsonc
+// config.json — TLS on, server cert pinned by its SHA-256 fingerprint
+{
+    "pools": [
+        { "url": "your-stack:3334", "tls": true, "tls-fingerprint": "<64 hex chars>" }
+    ]
+}
+```
+
+Then `sudo ./rigforge.sh apply`. (The `:3334` port is only an example — use whatever port the stack
+documents once pithead#261 fixes its port model.)
+
+**The trust model, plainly:** XMRig does no CA validation on stratum TLS. With `"tls": true` and no
+fingerprint, the link is encrypted but not authenticated — fine against passive snooping, no defense
+against an active man-in-the-middle. The fingerprint pin IS the server authentication. Get it with:
+
+```bash
+echo | openssl s_client -connect your-stack:3334 2>/dev/null \
+    | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':'
+```
+
+- TLS is confidentiality; the stratum password (above) is access control. They're orthogonal — set
+  both on an untrusted network.
+- Rotation: when the stack rotates its certificate, update `tls-fingerprint` on each rig and run
+  `apply` (same runbook shape as the password). A stale pin shows up as
+  `Failed to verify server certificate fingerprint` in the XMRig log.
 
 ---
 
@@ -110,6 +143,7 @@ connects from, also need matching configuration on both sides
 | Symptom | Fix |
 |---|---|
 | Rig won't mine / XMRig logs `Permission denied` at login | The stack has stratum authentication on (`p2pool.stratum_password`); set the pool `pass` to that secret. See [Stratum authentication](#stratum-authentication-optional). |
+| XMRig logs `Failed to verify server certificate fingerprint` | The `tls-fingerprint` pin doesn't match the server's certificate (rotated cert or a typo). Re-run the openssl one-liner in [Stratum over TLS](#stratum-over-tls-optional) and `apply`. |
 | Worker missing from the dashboard | The dashboard discovers rigs from their stratum `user` label; confirm the worker is actually connected to the pool and mining. |
 | Rig shows as connected but no stats | By default the API is open and the dashboard reads it with no token. If you set an `ACCESS_TOKEN` here, the dashboard must match it (`workers.api_auth: token` + `workers.api_token`, or `name` if the token is the rig name); otherwise clear `ACCESS_TOKEN` and re-run setup. |
 | Stats unreachable from the stack host | Confirm the worker's `:8080` is reachable from the stack host over the LAN (firewall, correct IP). RigForge binds `0.0.0.0` by default. |
