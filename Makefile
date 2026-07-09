@@ -1,7 +1,7 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
 .PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real lint fmt lint-yaml lint-md lint-links lint-all
 
-SHELL_FILES = rigforge.sh util/proposed-grub.sh tests/run.sh tests/e2e/linux.sh tests/e2e/in-container.sh tests/e2e/macos.sh tests/smoke.sh tests/coverage.sh tests/e2e-real.sh
+SHELL_FILES = $(shell git ls-files '*.sh')
 
 # Config/docs lint file sets, derived from what's tracked so CI and local stay in sync (like SHELL_FILES).
 YAML_FILES = $(shell git ls-files '*.yml' '*.yaml')
