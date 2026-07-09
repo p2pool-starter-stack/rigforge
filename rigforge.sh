@@ -258,8 +258,22 @@ ensure_config_exists() {
             *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool URL host '$_host' is not a valid hostname or IP. Aborting." ;;
             esac
 
-            # Minimal config: just the native pools array. jq writes it so the URL is safely quoted.
-            jq -n --arg url "$IN_URL" '{pools: [{url: $url}]}' >"$CONFIG_JSON"
+            # Pithead stratum auth (#113): if the stack sets p2pool.stratum_password, every rig's pool
+            # `pass` must match or the proxy rejects the login. The secret is shown by `pithead status`.
+            # Enter skips it (open stack / non-Pithead pool) — parse_config then defaults pass to "x".
+            # Pre-validate with parse_config's exact pass rule (same reasoning as the host check above:
+            # fail before the write so a bad value doesn't leave a prompt-suppressing config on disk).
+            IN_PASS=""
+            read -r -p "Stratum password, if your stack requires one (shown by 'pithead status'; Enter for none): " IN_PASS || true
+            if [ -n "$IN_PASS" ] && ! [[ "$IN_PASS" =~ ^[[:graph:]]+$ ]]; then
+                error "Stratum password must have no spaces or control characters."
+            fi
+
+            # Minimal config: just the native pools array. jq writes it so the URL (and pass, when
+            # given) are safely quoted; an empty pass writes no key at all, keeping the no-auth
+            # minimal config byte-identical to before.
+            jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" \
+                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end))]}' >"$CONFIG_JSON"
             # The operator is told (below) to hand-edit this file to add a wallet / ACCESS_TOKEN, and the
             # first `apply` may be a long way off — chmod now so those secrets are never world-readable
             # in the interim (generate_xmrig_config's chmod 600 only runs on setup/apply). (#131)

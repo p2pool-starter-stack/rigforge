@@ -44,6 +44,10 @@ and the rig won't mine. Put that same secret in the rig's pool `pass`:
 
 Then `./rigforge.sh apply` (or `setup`) regenerates the worker config with the new password.
 
+On a fresh rig you don't need to edit anything: the interactive first run (`setup` with no
+`config.json` yet) prompts for the stratum password and writes it for you — press Enter to skip it
+if your stack doesn't use one.
+
 - It's the same secret on every rig. The operator finds it on the stack side: it's printed after
   `pithead apply`/`setup`, stored in the stack's `.env` as `PROXY_STRATUM_PASSWORD`, and shown by
   `pithead status`.
@@ -52,6 +56,15 @@ Then `./rigforge.sh apply` (or `setup`) regenerates the worker config with the n
   rest).
 - This is unrelated to the `DONATION` knob (that's this rig's dev-fee donation) and to the optional API
   `ACCESS_TOKEN` below (that gates the read-only stats API on `:8080`, which is open by default).
+
+#### Rotating the password
+
+1. On the stack: change or regenerate `p2pool.stratum_password`, run `pithead apply`, and read the
+   new secret from `pithead status`.
+2. On each rig: set `pools[].pass` in `config.json` to the new secret and run `sudo ./rigforge.sh apply`.
+3. Until step 2 lands on a rig, it logs `Permission denied` and drops off the dashboard — that's the
+   expected signal that it still has the old secret, not a fault (see
+   [Troubleshooting](#troubleshooting)).
 
 ---
 
