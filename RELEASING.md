@@ -107,6 +107,11 @@ Pushing the tag triggers the release pipeline
 - creates the GitHub Release as a draft. Review the generated notes and bundles, then click
   Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
 
+After the fleet is re-tagged, record each rig's benchmark for the release
+(`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
+the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
+catch slow drift across releases (see `tests/perf-baselines/README.md`).
+
 To verify a downloaded bundle: `minisign -Vm SHA256SUMS -p minisign.pub` (see
 [SECURITY.md › Release signing](./SECURITY.md#release-signing)), then `sha256sum -c SHA256SUMS`.
 
