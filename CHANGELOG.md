@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-10
+
 ### Added
 
 - **Signed releases (#137).** The release workflow signs `SHA256SUMS` with minisign
@@ -634,7 +636,8 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.3.0...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.4.0...main
+[1.4.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.4.0
 [1.3.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.3.0
 [1.2.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.1
 [1.2.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.0
