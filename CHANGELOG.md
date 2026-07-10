@@ -28,7 +28,11 @@ All notable changes to RigForge are documented here. The format is based on
   handler at a time (`MaxConnections=1`) — concurrency was the CPU-theft multiplier, and the real
   consumer is a single dashboard poller, so queueing costs nothing. The `api-impact` gate phase
   now also bounds `/health` latency under full load (`E2E_API_LATENCY_S`, default 15s), closing the
-  responsiveness half of the perf contract.
+  responsiveness half of the perf contract. Serialization alone wasn't enough under *continuous*
+  hammering (the same work just queued — 4.5% measured), so the expensive probe blocks are now
+  cached with a 5s TTL in the unit's `RuntimeDirectory` (#164 — also cuts loaded 96-core latency
+  from ~10s to ~1s) and the handler cgroup carries a `CPUQuota=40%` hard ceiling: at most 40% of
+  one core, no matter how hard anything polls.
 
 ## [1.2.1] - 2026-07-10
 

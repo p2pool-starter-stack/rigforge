@@ -3037,9 +3037,35 @@ _health_json() {
     jq -n --argjson sa "$sa" --arg hpt "${hp_total:-}" --arg hp1g "${hp1g:-}" --arg gov "$gov" --arg msr "${msr_st:-none}" --arg pop "${pop:-0}" --arg nch "${nch:-0}" --arg spd "${spd:-0}" --arg rated "${rated:-0}" --argjson xmp "$xmp" --arg smt "$smt" --arg bv "$bv" --arg bn "$bn" --arg pct "${pct:-}" --argjson thr "$thr" '{service_active: $sa, hugepages_total: (if $hpt == "" then null else ($hpt | tonumber) end), hugepages_1g: (if $hp1g == "" then null else ($hp1g | tonumber) end), governor: (if $gov == "" then null else $gov end), msr: $msr, ram: {modules: ($pop | tonumber), channels: ($nch | tonumber), mts: ($spd | tonumber), rated_mts: ($rated | tonumber)}, xmp: $xmp, smt: (if $smt == "" then null else $smt end), firmware: {vendor: (if $bv == "" then null else $bv end), board: (if $bn == "" then null else $bn end)}, clock_pct_of_boost: (if $pct == "" then null else ($pct | tonumber) end), throttling: $thr}'
 }
 
-# Provenance + tune + power + health, namespaced under one `rigforge` key.
+# Serve a fresh-enough cached copy of an expensive JSON producer, or recompute and store it
+# atomically. The probe pass (dmidecode, per-core sysfs sweeps, ~15 jq spawns) is the whole cost of
+# a request — under continuous polling that shaved 4.5% hashrate on a 16-thread rig and cost ~10s
+# latency on a loaded 96-core one (#164). Firmware/tune state changes on reboots and tune runs, not
+# between dashboard polls, so a short TTL is honest. The unit's RuntimeDirectory provides the
+# writable spot under ProtectSystem=strict; when it's absent (tests, manual runs) we compute fresh
+# and skip the store. TTL override: RIGFORGE_API_CACHE_TTL (seconds; 0 disables caching).
+_api_cached() { # <name> <producer-fn> -> JSON on stdout
+    local name="$1" fn="$2" dir="${RIGFORGE_API_CACHE:-/run/rigforge-api}" ttl="${RIGFORGE_API_CACHE_TTL:-5}" f now mt out
+    f="$dir/$name.json"
+    if [ -f "$f" ] && [ "$ttl" -gt 0 ] 2>/dev/null; then
+        now=$(date +%s)
+        mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+        if [ $((now - mt)) -lt "$ttl" ]; then
+            cat "$f"
+            return 0
+        fi
+    fi
+    out=$("$fn")
+    if [ -d "$dir" ]; then
+        printf '%s' "$out" >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" 2>/dev/null || true
+    fi
+    printf '%s' "$out"
+}
+
+# Provenance + tune + power + health, namespaced under one `rigforge` key. Health and tune ride the
+# cache (the expensive probes); power stays fresh — its hs-per-watt is coupled to the live hashrate.
 _api_rigforge_block() { # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health}'
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_cached tune _api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_api_cached health _health_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health}'
 }
 
 # The only place a response is written. Content-Length in BYTES (wc -c), not ${#body} — bodies can
@@ -3104,8 +3130,8 @@ api_serve() {
         if [ -n "$sum" ]; then body=$(jq -n --argjson x "$sum" --argjson r "$rf" '$x + {rigforge: $r}'); else body=$(jq -n --argjson r "$rf" '{rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
         _http_respond 200 OK "$body"
         ;;
-    /health) _http_respond 200 OK "$(_health_json)" ;;
-    /tune) _http_respond 200 OK "$(_api_tune_json)" ;;
+    /health) _http_respond 200 OK "$(_api_cached health _health_json)" ;;
+    /tune) _http_respond 200 OK "$(_api_cached tune _api_tune_json)" ;;
     *) _http_respond 404 "Not Found" '{"error":"not found"}' ;;
     esac
     return 0

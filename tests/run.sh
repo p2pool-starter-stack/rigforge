@@ -3740,7 +3740,10 @@ assert_contains "socket is per-connection (Accept=yes)" "$(cat "$APS/systemd/rig
 assert_contains "one handler at a time (CPU-theft + DoS bound) (#80 gate finding)" "$(cat "$APS/systemd/rigforge-api.socket")" "MaxConnections=1"
 assert_contains "service invokes the api-serve verb" "$(cat "$APS/systemd/rigforge-api@.service")" "rigforge.sh api-serve"
 assert_contains "service is sandboxed read-only (#99 hardening)" "$(cat "$APS/systemd/rigforge-api@.service")" "ProtectSystem=strict"
-assert_contains "handlers never compete with the miner (#114 perf guard)" "$(cat "$APS/systemd/rigforge-api@.service")" "Nice=19"
+assert_eq "handlers yield without starving: exactly Nice=10 as a directive (#114/#161)" "$(grep -c '^Nice=10$' "$APS/systemd/rigforge-api@.service")" "1"
+assert_eq "no idle scheduling class (starved a pinned 96-core rig) (#161)" "$(grep -c '^IOSchedulingClass' "$APS/systemd/rigforge-api@.service")" "0"
+assert_eq "hard CPU ceiling for adversarial polling (#164)" "$(grep -c '^CPUQuota=40%$' "$APS/systemd/rigforge-api@.service")" "1"
+assert_eq "writable cache dir under the strict sandbox (#164)" "$(grep -c '^RuntimeDirectory=rigforge-api$' "$APS/systemd/rigforge-api@.service")" "1"
 assert_contains "enable log reports token posture without any token value" "$out" "token: open"
 # #99: a port change + apply must REBIND — daemon-reload alone never rebinds a changed ListenStream.
 APS_CALLS="$APS/calls.log"
@@ -3912,6 +3915,29 @@ pw="$( (
     _api_power_json ""
 ) | jq -c '{w: .watts, hpw: .hs_per_watt}')"
 assert_eq "power: no RAPL -> nulls" "$pw" '{"w":null,"hpw":null}'
+# #164: probe cache — a fresh cache is SERVED (poison proves the hit), a disabled TTL recomputes.
+APIC="$(mktemp -d "$SANDBOX/apic.XXXXXX")"
+api_req_cached() { # <ttl>
+    printf 'GET /health HTTP/1.1\r\n\r\n' | (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$APIQ/config.json"
+        RIGFORGE_API_CACHE="$APIC"
+        RIGFORGE_API_CACHE_TTL="$1"
+        set +e
+        PATH="$STUBS:$PATH" api_serve 2>/dev/null
+    ) | tr -d '\r'
+}
+resp="$(api_req_cached 5)"
+assert_eq "cache: first request stores the health probe (#164)" "$([ -f "$APIC/health.json" ] && echo y || echo n)" "y"
+printf '{"service_active":"POISON"}' >"$APIC/health.json"
+resp="$(api_req_cached 5)"
+assert_contains "cache: fresh cache served without re-probing (#164)" "$resp" "POISON"
+resp="$(api_req_cached 0)"
+assert_absent "cache: TTL=0 bypasses and recomputes (#164)" "$resp" "POISON"
+assert_contains "cache: recomputed body is the real probe set (#164)" "$resp" "service_active"
+
 # Dispatch: the verb is wired (Linux answers on stdin; elsewhere it refuses as socket-spawned only).
 if [ "$(uname -s)" = Linux ]; then
     out="$(printf '' | RIGFORGE_HOME="$APIQ" PATH="$STUBS:$PATH" bash "$SCRIPT" api-serve 2>/dev/null | tr -d '\r' || true)"
