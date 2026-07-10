@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-10
+
 ### Added
 
 - **Sister API (#99).** Opt-in (`"api": "enabled"`) read-only stats superset on its own port
@@ -30,6 +32,10 @@ All notable changes to RigForge are documented here. The format is based on
   phase owns the relative under-load measurement. A perf regression fails the release gate.
 - **doctor: read-only API posture check (#135).** Warns when the live config no longer pins
   `http.restricted: true`.
+- **Developer tooling.** `make dev-setup` (one-command local toolchain + git hooks), `make ci`
+  (the full local CI mirror), actionlint in CI (workflow correctness beside zizmor's security
+  audit), and commit-time markdown/yaml linting in pre-commit — all pinned, all single-sourced
+  through the Makefile.
 
 ### Fixed
 
@@ -554,7 +560,8 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.1.0...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.0...main
+[1.2.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0
 [1.0.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.1
 [1.0.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.0
