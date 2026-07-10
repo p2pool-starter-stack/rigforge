@@ -87,6 +87,14 @@ live_hashrate() { # 10s-window hashrate from the worker API, empty if none
     api8080 http://127.0.0.1:8080/2/summary | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true
 }
 
+api8081() { # [curl args...] -> body (empty on failure); token-aware like api8080 — the phases must
+    # work standalone against an operator config that keeps its own ACCESS_TOKEN
+    local tok auth=()
+    tok=$(jq -r '.ACCESS_TOKEN // empty' "$CFG" 2>/dev/null || true)
+    [ -n "$tok" ] && auth=(-H "Authorization: Bearer $tok")
+    curl -fsS --max-time 20 "${auth[@]}" "$@" 2>/dev/null || true
+}
+
 wait_for_job() { # <timeout_s> -> 0 when the log shows a stratum job
     local waited=0
     while [ "$waited" -lt "$1" ]; do
@@ -183,7 +191,7 @@ phase_api_impact() {
     set_cfg '.api = "enabled"'
     local body=""
     for _ in 1 2 3 4 5; do
-        body=$(curl -fsS --max-time 8 http://127.0.0.1:8081/health 2>/dev/null || true)
+        body=$(api8081 http://127.0.0.1:8081/health)
         [ -n "$body" ] && break
         sleep 3
     done
@@ -219,7 +227,7 @@ phase_api_impact() {
     # Worst-case polling: several clients hammering the heaviest endpoint back-to-back (each request
     # spawns a handler that runs the probes + a 1s RAPL window). MaxConnectionsPerSource caps the rest.
     for _ in 1 2 3 4; do
-        (while :; do curl -fsS --max-time 8 http://127.0.0.1:8081/2/summary >/dev/null 2>&1 || true; done) &
+        (while :; do api8081 http://127.0.0.1:8081/2/summary >/dev/null; done) &
         HAMMER_PIDS="$HAMMER_PIDS $!"
     done
     sleep 5 # let the load establish before sampling
@@ -240,7 +248,7 @@ phase_api_impact() {
     # Bound it WHILE the miner is fully loaded.
     local t0 t1 elapsed budget="${E2E_API_LATENCY_S:-15}"
     t0=$(date +%s)
-    curl -fsS --max-time "$budget" http://127.0.0.1:8081/health >/dev/null 2>&1 || true
+    api8081 http://127.0.0.1:8081/health >/dev/null
     t1=$(date +%s)
     elapsed=$((t1 - t0))
     if [ "$elapsed" -lt "$budget" ]; then
@@ -287,8 +295,8 @@ phase_network() {
     fi
     # Spirit-of-XMRig on the wire: the sister /2/summary minus `rigforge` must carry EXACTLY the key
     # set XMRig's own API serves — verbatim superset, nothing renamed, dropped, or invented.
-    k1=$(curl -fsS --max-time 8 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -cS 'keys' 2>/dev/null || true)
-    k2=$(curl -fsS --max-time 8 http://127.0.0.1:8081/2/summary 2>/dev/null | jq -cS 'del(.rigforge) | keys' 2>/dev/null || true)
+    k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
+    k2=$(api8081 http://127.0.0.1:8081/2/summary | jq -cS 'del(.rigforge) | keys' 2>/dev/null || true)
     if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then
         ok "wire superset: sister /2/summary = xmrig's keys + rigforge, nothing else"
     else
