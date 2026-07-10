@@ -26,6 +26,23 @@ jobs:
       # Via `make lint-yaml` so the file set + .yamllint config live in one place and can't drift from local.
       - name: Run yamllint (make lint-yaml)
         run: make lint-yaml
+      # actionlint checks the workflows for CORRECTNESS (bad needs/refs, invalid runners, shell bugs
+      # in run blocks); zizmor in security.yml audits them for security. Pinned + checksum-verified,
+      # same discipline as the shellcheck/gitleaks installs.
+      - name: Install pinned actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.7"
+          ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}" -o "$tarball"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          sudo install actionlint /usr/local/bin/
+          actionlint --version
+      - name: Run actionlint (make lint-actions)
+        run: make lint-actions
 
   lint-md:
     name: Lint (markdownlint)
