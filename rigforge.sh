@@ -15,11 +15,19 @@
 set -Eeuo pipefail
 
 # --- Logging Utilities ---
-readonly C_RESET='\033[0m'
-readonly C_GREEN='\033[1;32m'
-readonly C_YELLOW='\033[1;33m'
-readonly C_RED='\033[1;31m'
-readonly C_BLUE='\033[1;34m'
+# Color only when stdout is a terminal and NO_COLOR (https://no-color.org) is unset/empty (#144) —
+# pipes, captures, CI logs, and the journal entries timer units write all get plain text. The
+# ${_tty:+...} shape (instead of an if/else around the assignments) keeps every line executing on
+# every run, so the no-pty CI coverage gate sees the whole block.
+_tty=""
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then _tty=y; fi
+C_RESET="${_tty:+\033[0m}"
+C_GREEN="${_tty:+\033[1;32m}"
+C_YELLOW="${_tty:+\033[1;33m}"
+C_RED="${_tty:+\033[1;31m}"
+C_BLUE="${_tty:+\033[1;34m}"
+readonly C_RESET C_GREEN C_YELLOW C_RED C_BLUE
+unset _tty
 
 log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
 warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1" >&2; }
