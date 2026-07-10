@@ -1689,6 +1689,113 @@ hr_auth="$( (
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_contains "Bearer <token> sent when ACCESS_TOKEN is set" "$(cat "$clog")" "Authorization: Bearer miner-0"
 
+# #146: `setup --dry-run` prints a numbered read-only plan and touches NOTHING — no sudo, no writes,
+# no modprobe. The drift guard is the load-bearing test: every CURRENT_STEP phrase in main() must
+# appear in the plan, so a new pipeline step can't ship without a plan line.
+echo "== black-box: setup --dry-run plan + no-mutation guard (#146) =="
+DR="$(mktemp -d "$SANDBOX/dryrun.XXXXXX")"
+mkdir -p "$DR/etc"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$DR/etc/grub"
+printf 'proc /proc proc defaults 0 0\n' >"$DR/etc/fstab"
+cat >"$DR/config.json" <<EOF
+{ "HOME_DIR": "$DR/home", "pools": [{"url": "poolbox.lan:3333"}], "autotune": "performance", "api": "enabled", "add_to_path": true }
+EOF
+# RIGFORGE_HOME points SCRIPT_DIR at the sandbox, so seed a DETERMINISTIC stand-in for our own
+# util/proposed-grub.sh — the unit suite pins the plan's rendering; the container e2e runs the
+# real probe against a real kernel.
+mkdir -p "$DR/util"
+cat >"$DR/util/proposed-grub.sh" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+--runtime) echo 2514 ;;
+-q) echo "quiet splash default_hugepagesz=2M hugepages=2514 msr.allow_writes=on" ;;
+esac
+EOF
+chmod +x "$DR/util/proposed-grub.sh"
+dr_out="$(cd "$DR" && PATH="$STUBS:$PATH" CALL_LOG="$DR/calls.log" GRUB_DEFAULT="$DR/etc/grub" FSTAB="$DR/etc/fstab" \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+dr_rc=$?
+assert_rc "dry-run exits 0 (#146)" "$dr_rc" "0"
+assert_contains "plan: build line names the pinned version (#146)" "$dr_out" "build XMRig"
+assert_contains "plan: dependency probe ran (#146)" "$dr_out" "installing dependencies"
+assert_contains "plan: computed HugePages count (#146)" "$dr_out" "reserve 2514 2MB HugePages"
+assert_contains "plan: GRUB before -> after diff (#146)" "$dr_out" "GRUB cmdline: 'quiet splash' -> 'quiet splash default_hugepagesz=2M hugepages=2514 msr.allow_writes=on'"
+assert_contains "plan: reboot called out when GRUB changes (#146)" "$dr_out" "a reboot WILL be required"
+assert_contains "plan: fstab append lines (#146)" "$dr_out" "hugetlbfs /dev/hugepages"
+assert_contains "plan: autotune timer with the configured target (#146)" "$dr_out" "target: performance"
+assert_contains "plan: sister API units (#146)" "$dr_out" "install rigforge-api.service"
+assert_contains "plan: add_to_path symlink (#146)" "$dr_out" "symlink"
+assert_contains "plan: footer says nothing changed (#146)" "$dr_out" "Dry run — nothing was changed"
+# No-mutation guard: none of the stubbed mutating commands were invoked (the stubs log every call).
+for mut in apt-get modprobe tee mount sysctl; do
+    assert_absent "dry-run never invokes $mut (#146)" "$(cat "$DR/calls.log" 2>/dev/null)" "[$mut]"
+done
+assert_absent "dry-run never enables units (#146)" "$(cat "$DR/calls.log" 2>/dev/null)" "enable"
+# Drift guard: every CURRENT_STEP phrase in main() appears in the plan.
+main_steps="$(sed -n '/^main()/,/^}/p' "$SCRIPT" | grep -o 'CURRENT_STEP="[^"]*"' | cut -d'"' -f2)"
+while IFS= read -r step; do
+    assert_contains "plan covers main() step '$step' (#146)" "$dr_out" "$step"
+done <<<"$main_steps"
+# No config: says it would create one, exits 0, creates nothing.
+DR2="$(mktemp -d "$SANDBOX/dryrun2.XXXXXX")"
+dr2_out="$(cd "$DR2" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+assert_rc "no-config dry-run exits 0 (#146)" "$?" "0"
+assert_contains "no-config dry-run says a config would be created (#146)" "$dr2_out" "would create"
+assert_eq "no-config dry-run creates nothing (#146)" "$([ -f "$DR2/config.json" ] && echo y || echo n)" "n"
+# Opposite-config arms: prebuilt worker (skip-build lines), autotune/api absent (disabled arms),
+# add_to_path off, api_allow_from set (firewall-scoping arm), fstab pre-seeded (already-configured).
+DR3="$(mktemp -d "$SANDBOX/dryrun3.XXXXXX")"
+mkdir -p "$DR3/etc" "$DR3/home/worker/xmrig/build"
+printf 'hugetlbfs /dev/hugepages hugetlbfs defaults 0 0\nhugetlbfs_1g %s hugetlbfs pagesize=1G 0 0\n' "${HUGEPAGES_1G_DIR:-/dev/hugepages1G}" >"$DR3/etc/fstab"
+cat >"$DR3/config.json" <<EOF
+{ "HOME_DIR": "$DR3/home", "pools": [{"url": "poolbox.lan:3333"}], "api_allow_from": "10.0.0.9" }
+EOF
+touch "$DR3/home/worker/tune-overrides.json"
+# A genuinely "already built" worker: executable + matching commit marker (no sha record = legacy build).
+printf '#!/bin/sh\n' >"$DR3/home/worker/xmrig/build/xmrig"
+chmod +x "$DR3/home/worker/xmrig/build/xmrig"
+printf 'dr3commit000\n' >"$DR3/home/worker/xmrig/.rigforge-commit"
+mkdir -p "$DR3/util"
+cp "$DR/util/proposed-grub.sh" "$DR3/util/proposed-grub.sh"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash default_hugepagesz=2M hugepages=2514 msr.allow_writes=on"\n' >"$DR3/etc/grub"
+dr3_out="$(cd "$DR3" && PATH="$STUBS:$PATH" FSTAB="$DR3/etc/fstab" GRUB_DEFAULT="$DR3/etc/grub" \
+    XMRIG_COMMIT="dr3commit000" RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+assert_rc "opposite-config dry-run exits 0 (#146)" "$?" "0"
+assert_contains "plan: autotune disabled arm (#146)" "$dr3_out" "autotune disabled"
+assert_contains "plan: sister API disabled arm (#146)" "$dr3_out" "disabled — installed units would be removed"
+assert_contains "plan: firewall scoping arm (#146)" "$dr3_out" "scoping the API port(s) to 10.0.0.9"
+assert_contains "plan: add_to_path off arm (#146)" "$dr3_out" "no symlink"
+assert_contains "plan: fstab already configured arm (#146)" "$dr3_out" "fstab already configured"
+assert_contains "plan: tune overlay note (#146)" "$dr3_out" "overlay tune-overrides.json"
+assert_contains "plan: skip-build arm when already built (#146)" "$dr3_out" "skip the build"
+assert_contains "plan: compile-skipped arm (#146)" "$dr3_out" "skipped (already built"
+assert_contains "plan: GRUB already-configured arm (#146)" "$dr3_out" "GRUB already configured"
+# Every package missing (dpkg forced to fail) -> the exact-list arm renders.
+mkdir -p "$DR3/badpkg"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$DR3/badpkg/dpkg"
+chmod +x "$DR3/badpkg/dpkg"
+drm_out="$(cd "$DR3" && PATH="$DR3/badpkg:$STUBS:$PATH" XMRIG_COMMIT="dr3commit000" RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+assert_contains "plan: names the missing packages when dpkg says so (#146)" "$drm_out" "install packages: git build-essential"
+# Darwin arms: brew deps, kernel/limits/service skips, apply's manual-restart line.
+drd_out="$(cd "$DR3" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+assert_rc "Darwin dry-run exits 0 (#146)" "$?" "0"
+assert_contains "plan: brew dependency arm (#146)" "$drd_out" "install/verify via brew"
+assert_contains "plan: macOS kernel-tuning skip (#146)" "$drd_out" "no HugePages/MSR here"
+assert_contains "plan: macOS no-service arm (#146)" "$drd_out" "none on macOS"
+apd_out="$(cd "$DR3" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply --dry-run </dev/null 2>&1)"
+assert_contains "apply plan: macOS manual-restart arm (#146)" "$apd_out" "restart the miner manually"
+
+# apply --dry-run: plan lines, no restart.
+: >"$DR/calls.log"
+ap_out="$(cd "$DR" && PATH="$STUBS:$PATH" CALL_LOG="$DR/calls.log" RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply --dry-run </dev/null 2>&1)"
+assert_rc "apply --dry-run exits 0 (#146)" "$?" "0"
+assert_contains "apply plan: config regen target (#146)" "$ap_out" "regenerate"
+assert_contains "apply plan: reconcile line (#146)" "$ap_out" "autotune: performance"
+assert_absent "apply --dry-run never restarts (#146)" "$(cat "$DR/calls.log" 2>/dev/null)" "restart"
+# Unknown setup arg: hard error, house style.
+bash "$SCRIPT" setup --bogus >/dev/null 2>&1 || setup_arg_rc=$?
+assert_rc "unknown setup arg errors (#146)" "${setup_arg_rc:-0}" "1"
+
 # #145: `completion` prints a static tab-completion script. Static means drift is the one real risk,
 # so this diffs the script's verb list against the dispatch case itself — adding a verb without
 # updating _rigforge_verbs fails here. Hyphenated internal verbs (api-refresh, msr-apply) and the
