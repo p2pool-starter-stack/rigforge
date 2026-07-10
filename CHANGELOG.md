@@ -27,6 +27,14 @@ All notable changes to RigForge are documented here. The format is based on
   (`0.0.0.0`, `restricted:true`, the token rules) is unchanged — this layers network scoping
   under it. nftables only (Ubuntu 24.04's native firewall); a missing `nft` with the key set is a
   hard error, never a silent open port.
+- **Opt-in non-root miner (#140).** `miner_user` runs xmrig as a dedicated nologin system user:
+  RigForge applies the CPU's MSR preset root-side (`msr-apply`, an `ExecStartPre=+`) so the miner
+  never needs `/dev/cpu/*/msr`; the generated config sets `randomx.wrmsr/rdmsr: false`; HugePages
+  need no root (boot-time reservation + the unit's `LimitMEMLOCK`); `doctor` verifies both the
+  unit's user and the applied preset by register read-back. On CPU families outside the verified
+  preset tables the MSR boost is skipped with a warning — the reason this ships opt-in,
+  default-off (empty = exactly today's root behavior). `uninstall` leaves the user in place with
+  a removal hint (exact-removal discipline: we can't prove we created it).
 
 ## [1.3.0] - 2026-07-10
 

@@ -145,11 +145,12 @@ EOF
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
-    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g"
+    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
+    -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
-    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3 nft; do
+    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3 nft useradd; do
         cat >"$bin/$cmd" <<EOF
 #!/usr/bin/env bash
 echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
@@ -585,6 +586,7 @@ gen_config() { # echoes path to the dir containing config.json
             POOLS_JSON="[{\"url\":\"$POOL_ADDRESS:3333\",\"user\":\"\",\"pass\":\"x\",\"keepalive\":true,\"tls\":false,\"enabled\":true}]"
         fi
         ACCESS_TOKEN="${SIM_TOK:-tok123}"
+        MINER_USER="${SIM_MINER_USER:-}"
         DONATION="${SIM_DON:-1}"
         LOGROTATE_DIR="$d"
         set +e
@@ -749,6 +751,14 @@ d="$(gen_config)"
 cfg="$d/config.json"
 unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
 assert_eq "tls-fingerprint survives generation (#115)" "$(J "$cfg" '.pools[0]."tls-fingerprint"')" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+echo "== config-gen: miner_user disables in-process MSR writes (#140) =="
+export STUB_CPU_MODEL="AMD Ryzen 9 7950X" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+d="$(SIM_OS=Linux SIM_DON=1 SIM_MINER_USER=xmrig gen_config)"
+cfg="$d/config.json"
+unset STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+assert_eq "miner_user: randomx.wrmsr forced off (#140)" "$(J "$cfg" '.randomx.wrmsr')" "false"
+assert_eq "miner_user: randomx.rdmsr forced off (#140)" "$(J "$cfg" '.randomx.rdmsr')" "false"
 
 # #21/#24: fields that must survive generate_xmrig_config unmangled. parse_config-side acceptance is
 # covered above; here we prove the EMITTED config.json (what XMRig actually loads) preserves them — a jq
@@ -1973,13 +1983,184 @@ assert_absent "reboot pending: NOT restarted" "$log_reboot" "restart xmrig.servi
 # CPUPOWER_PATH substitution: the ExecStartPre governor set is best-effort (leading `-`); a literal
 # unexpanded $CPUPOWER_PATH there would break with Restart=always. Assert it resolved to a real path.
 svc_rendered="$(cat "$SVC_RB/etc/systemd/xmrig.service")"
-assert_contains "service: ExecStartPre governor set rendered" "$svc_rendered" "ExecStartPre=-"
+assert_contains "service: ExecStartPre governor set rendered (root-prefixed since #140)" "$svc_rendered" "ExecStartPre=+-"
+# #140 default path: no miner_user -> the unit runs root and carries NO msr-apply pre-step.
+assert_contains "service: runs as root by default (#140)" "$svc_rendered" "User=root"
+assert_eq "service: no msr-apply pre-step without miner_user (#140)" "$(printf '%s' "$svc_rendered" | grep -c '^ExecStartPre=.*msr-apply')" "0"
 assert_absent "service: no unexpanded CPUPOWER_PATH" "$svc_rendered" '$CPUPOWER_PATH'
 log_rebuild="$(svc_run "$(mktemp -d "$SANDBOX/svcrbu.XXXXXX")" false true)"
 assert_contains "rebuilt binary, no reboot: service restarted" "$log_rebuild" "[systemctl] restart xmrig.service"
 log_steady="$(svc_run "$(mktemp -d "$SANDBOX/svcst.XXXXXX")" false false)"
 assert_contains "no rebuild, no reboot: service (re)started, not restarted" "$log_steady" "[systemctl] start xmrig.service"
 assert_absent "no rebuild: does not needlessly restart a running miner" "$log_steady" "restart xmrig.service"
+
+# #140: miner_user renders the unit unprivileged, creates the system user, and disables xmrig's
+# own MSR writes in the generated config.
+echo "== unit: install_service with miner_user (#140) =="
+MU="$(mktemp -d "$SANDBOX/mu.XXXXXX")"
+mkdir -p "$MU/etc/systemd" "$MU/xmrig/build"
+(
+    cd "$MU" || exit 1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    WORKER_ROOT="$MU"
+    SYSTEMD_DIR="$MU/etc/systemd"
+    MINER_USER=rf-test-miner
+    REBOOT_REQUIRED=false
+    XMRIG_REBUILD=false
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$MU/calls.log" install_service >/dev/null 2>&1
+)
+mu_unit="$(cat "$MU/etc/systemd/xmrig.service")"
+assert_contains "miner_user: unit runs unprivileged (#140)" "$mu_unit" "User=rf-test-miner"
+assert_contains "miner_user: root-side msr-apply pre-step present (#140)" "$mu_unit" "ExecStartPre=+$ROOT/rigforge.sh msr-apply"
+assert_contains "miner_user: LimitNICE for cpu.priority (#140)" "$mu_unit" "LimitNICE=-20"
+assert_contains "miner_user: absent system user is created (#140)" "$(cat "$MU/calls.log")" "[useradd] --system --no-create-home --shell /usr/sbin/nologin rf-test-miner"
+
+echo "== unit: msr-apply preset detection + masked RMW (#140) =="
+MSRT="$(mktemp -d "$SANDBOX/msrt.XXXXXX")"
+mkdir -p "$MSRT/bin" "$MSRT/cpu/cpu0" "$MSRT/cpu/cpu1"
+cat >"$MSRT/bin/lscpu" <<'EOF'
+#!/usr/bin/env bash
+echo "Vendor ID:             ${T_VENDOR:-AuthenticAMD}"
+echo "CPU family:            ${T_FAMILY:-25}"
+echo "Model:                 ${T_MODEL:-97}"
+EOF
+printf '#!/usr/bin/env bash
+echo "[wrmsr] $*" >> "$CALL_LOG"
+exit 0
+' >"$MSRT/bin/wrmsr"
+printf '#!/usr/bin/env bash
+echo 001c000200000065
+' >"$MSRT/bin/rdmsr"
+printf '#!/usr/bin/env bash
+exit 0
+' >"$MSRT/bin/modprobe"
+printf '#!/usr/bin/env bash
+echo 0
+' >"$MSRT/bin/id"
+chmod +x "$MSRT/bin"/*
+det() { # <vendor> <family> <model>
+    (
+        source "$SCRIPT"
+        set +e
+        T_VENDOR="$1" T_FAMILY="$2" T_MODEL="$3" PATH="$MSRT/bin:$PATH" _msr_detect_preset
+    )
+}
+assert_eq "detect: Zen4 (fam 25 model 97) (#140)" "$(det AuthenticAMD 25 97)" "ryzen_19h_zen4"
+assert_eq "detect: Zen3 (fam 25 model 33) (#140)" "$(det AuthenticAMD 25 33)" "ryzen_19h"
+assert_eq "detect: Zen2 (fam 23) (#140)" "$(det AuthenticAMD 23 49)" "ryzen_17h"
+assert_eq "detect: Zen5 (fam 26) (#140)" "$(det AuthenticAMD 26 68)" "ryzen_1Ah_zen5"
+assert_eq "detect: Intel (#140)" "$(det GenuineIntel 6 85)" "intel"
+assert_eq "detect: unknown vendor -> empty (#140)" "$(det UnknownCorp 1 1)" ""
+out="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        CONFIG_JSON="$MSRT/config.json"
+        parse_config() { WORKER_ROOT="$MSRT"; }
+        CPU_SYSFS="$MSRT/cpu"
+        RDMSR_BIN="$MSRT/bin/rdmsr"
+        set +e
+        T_VENDOR=AuthenticAMD T_FAMILY=25 T_MODEL=97 PATH="$MSRT/bin:$PATH" CALL_LOG="$MSRT/calls.log" msr_apply 2>&1
+    )
+)"
+assert_contains "msr-apply: applies and logs the preset (#140)" "$out" "MSR preset 'ryzen_19h_zen4' applied"
+assert_eq "msr-apply: preset recorded for doctor (#140)" "$(cat "$MSRT/.rigforge-msr-preset")" "ryzen_19h_zen4"
+assert_contains "msr-apply: unmasked registers written whole via -a (#140)" "$(cat "$MSRT/calls.log")" "[wrmsr] -a 0xc0011020 0x0004400000000000"
+# Masked RMW: mask ffffffffffffffdf means only bit 5 is PRESERVED from the old value
+# (old=…65 -> bit5 set -> 0x20); everything else comes from the preset value (…40).
+# Expected (old & ~mask) | (val & mask) = 0x0004000000000060 on every CPU.
+assert_contains "msr-apply: masked register read-modify-written per CPU (#140)" "$(cat "$MSRT/calls.log")" "[wrmsr] -p0 0xc0011021 0x0004000000000060"
+assert_contains "msr-apply: second CPU covered too (#140)" "$(cat "$MSRT/calls.log")" "[wrmsr] -p1 0xc0011021 0x0004000000000060"
+out="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        parse_config() { WORKER_ROOT="$MSRT"; }
+        set +e
+        T_VENDOR=UnknownCorp T_FAMILY=1 T_MODEL=1 PATH="$MSRT/bin:$PATH" msr_apply 2>&1
+    )
+)"
+assert_rc "msr-apply: unknown family exits 0 (never wedges Restart=always) (#140)" "$?" "0"
+assert_contains "msr-apply: unknown family says so (#140)" "$out" "no MSR preset for this CPU family"
+# wrmsr (msr-tools) missing: warn + exit 0 — the miner still starts, just without the boost.
+mkdir -p "$MSRT/nowr"
+cp "$MSRT/bin/lscpu" "$MSRT/bin/modprobe" "$MSRT/bin/id" "$MSRT/nowr/"
+out="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        parse_config() { WORKER_ROOT="$MSRT"; }
+        set +e
+        T_VENDOR=AuthenticAMD T_FAMILY=25 T_MODEL=97 PATH="$MSRT/nowr:$STUBS:$PATH" msr_apply 2>&1
+        echo "rc=$?"
+    )
+)"
+assert_contains "msr-apply: missing wrmsr warns, never fails the unit (#140)" "$out" "wrmsr (msr-tools) not found"
+assert_contains "msr-apply: missing wrmsr exits 0 (#140)" "$out" "rc=0"
+mkdir -p "$MSRT/nonroot"
+printf '#!/usr/bin/env bash\ncase "$*" in *-un*) echo tester ;; *) echo 1000 ;; esac\n' >"$MSRT/nonroot/id"
+chmod +x "$MSRT/nonroot/id"
+# Dispatch: the msr-apply verb reaches msr_apply through the real arg dispatcher. Non-root (or
+# non-Linux) is the guaranteed-safe path everywhere the suite runs; both gates name the verb.
+out="$(cd "$SANDBOX" && PATH="$MSRT/nonroot:$STUBS:$PATH" bash "$SCRIPT" msr-apply </dev/null 2>&1)"
+rc=$?
+assert_rc "msr-apply verb: gated exit 1 outside root+Linux (#140)" "$rc" "1"
+assert_contains "msr-apply verb: dispatch reaches the gate (#140)" "$out" "msr-apply"
+
+echo "== unit: _reown_worker hands config+log back to the miner user (#140) =="
+ROW="$(mktemp -d "$SANDBOX/reown.XXXXXX")"
+mkdir -p "$ROW/bin" "$ROW/home/worker/xmrig/build"
+: >"$ROW/home/worker/xmrig/build/config.json"
+: >"$ROW/home/worker/xmrig.log"
+printf '#!/usr/bin/env bash\necho "[chown] $*" >>"$CALL_LOG"\n' >"$ROW/bin/chown"
+printf '#!/usr/bin/env bash\necho 0\n' >"$ROW/bin/id"
+chmod +x "$ROW/bin"/*
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    MINER_USER=rf-test-miner
+    REAL_USER=rfop
+    WORKER_ROOT="$ROW/home/worker"
+    CONFIG_JSON="$ROW/nonexistent.json"
+    sudo() { "$@"; }
+    set +e
+    PATH="$ROW/bin:$STUBS:$PATH" CALL_LOG="$ROW/calls.log" _reown_worker >/dev/null 2>&1
+)
+assert_contains "reown: blanket re-own to the operator first (#140)" "$(cat "$ROW/calls.log")" "[chown] -R rfop:rfop $ROW/home/worker"
+assert_contains "reown: miner user keeps config.json + log writable (#140)" "$(cat "$ROW/calls.log")" "[chown] rf-test-miner:rf-test-miner $ROW/home/worker/xmrig/build/config.json $ROW/home/worker/xmrig.log"
+
+# apply is the config-change path (#140): with an installed unit, apply re-renders it from config —
+# so toggling miner_user actually lands (User= flips) without a re-setup. The stale unit here says
+# User=root; config says rf-appuser.
+echo "== unit: apply re-renders the installed unit to the configured miner_user (#140) =="
+APR="$(mktemp -d "$SANDBOX/apprr.XXXXXX")"
+mkdir -p "$APR/sysd" "$APR/home/worker/xmrig/build"
+printf 'User=root\n' >"$APR/sysd/xmrig.service"
+cat >"$APR/config.json" <<EOF
+{ "HOME_DIR": "$APR/home", "miner_user": "rf-appuser", "pools": [{"url": "h:3333"}] }
+EOF
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT" # real systemd/xmrig.service.template
+    SYSTEMD_DIR="$APR/sysd"
+    SERVICE_NAME=xmrig
+    CONFIG_JSON="$APR/config.json"
+    _apply_runtime() { :; }
+    install_autotune() { :; }
+    install_api() { :; }
+    install_api_firewall() { :; }
+    _autotune_apply_notice() { :; }
+    sudo() { "$@"; }
+    set +e
+    PATH="$STUBS:$PATH" apply >/dev/null 2>&1
+)
+apr_unit="$(cat "$APR/sysd/xmrig.service")"
+assert_contains "apply: unit re-rendered to the configured user (#140)" "$apr_unit" "User=rf-appuser"
+assert_contains "apply: re-rendered unit carries the msr-apply pre-step (#140)" "$apr_unit" "rigforge.sh msr-apply"
 
 # #133: SERVICE_NAME is a documented override and every other verb honors it — install_service must
 # install/enable/start the SAME unit, not a hardcoded xmrig.service nothing else can see.
@@ -2725,6 +2906,48 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
+# #140: with miner_user set, doctor (a) compares config against the unit's actual User= and (b)
+# verifies the root-side preset recorded by msr-apply via the same rdmsr read-back.
+echo "== unit: doctor miner_user + root-side MSR preset (#140) =="
+MUD="$DOC/mud"
+mkdir -p "$MUD/home/worker" "$DOC/svc_mu" "$DOC/svc_root"
+printf 'net      use pool ...\n* HUGE PAGES 100%%\n' >"$MUD/home/worker/xmrig.log"
+printf 'ryzen_19h_zen4\n' >"$MUD/home/worker/.rigforge-msr-preset"
+cat >"$MUD/config.json" <<EOF
+{ "HOME_DIR": "$MUD/home", "miner_user": "rf-miner", "pools": [{"url": "h:3333"}] }
+EOF
+printf '#!/usr/bin/env bash\ncase "$*" in show*User*) echo rf-miner ;; *) exit 0 ;; esac\n' >"$DOC/svc_mu/systemctl"
+printf '#!/usr/bin/env bash\ncase "$*" in show*User*) echo root ;; *) exit 0 ;; esac\n' >"$DOC/svc_root/systemctl"
+chmod +x "$DOC/svc_mu/systemctl" "$DOC/svc_root/systemctl"
+run_doctor_mu() { # <rdmsr_bin> <svc stub dir>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$MUD/config.json"
+        MEMINFO="$DOC/meminfo_ok"
+        MSR_MODULE_DIR="$DOC/msrmod"
+        GOVERNOR_FILE="$DOC/gov_perf"
+        HUGEPAGES_1G_NR="$DOC/nr1g"
+        RDMSR_BIN="$1"
+        set +e
+        PATH="$2:$DOC/asroot:$STUBS:$PATH" doctor 2>&1
+    )
+}
+# Unit runs as the configured user + all 4 registers hold the recorded preset's values.
+out="$(run_doctor_mu "$DOC/rdmsr_ok" "$DOC/svc_mu")"
+assert_contains "doctor: confirms the unit runs unprivileged (#140)" "$out" "miner runs unprivileged as 'rf-miner'"
+assert_contains "doctor: root-side preset verified by read-back (#140)" "$out" "root-side MSR preset 'ryzen_19h_zen4' verified by register read-back (4/4)"
+# Config/unit disagree (apply not re-run): WARN with the fix hint.
+out="$(run_doctor_mu "$DOC/rdmsr_ok" "$DOC/svc_root")"
+assert_contains "doctor: warns when the unit still runs as root (#140)" "$out" "but the unit runs as 'root'"
+# Registers unreadable (no root / module unloaded): advisory, never a false mismatch.
+out="$(run_doctor_mu "$DOC/rdmsr_empty" "$DOC/svc_mu")"
+assert_contains "doctor: unreadable read-back -> advisory (#140)" "$out" "recorded — run doctor as root"
+# Readable but WRONG values (dropped write): WARN with the bad count.
+out="$(run_doctor_mu "$DOC/rdmsr_bad" "$DOC/svc_mu")"
+assert_contains "doctor: dropped root-side write -> WARN (#140)" "$out" "only 0/4 registers match"
+
 # #66: the preset table is the SOURCE OF TRUTH for register verification — assert the exact
 # (register value mask) triples against XMRig v6.26.0 (RxConfig.cpp), so a typo fails a test rather
 # than silently weakening every rig's check. "-" = whole-register (no-mask) write.
@@ -2770,7 +2993,7 @@ printf 'proc /proc proc defaults 0 0\nhugetlbfs /dev/hugepages hugetlbfs default
 printf 'root hard nofile 1024\n%s soft memlock unlimited\n%s hard memlock unlimited\n* soft memlock unlimited\n' "$ME" "$ME" >"$UN/etc/security/limits.conf"
 printf 'loop\nmsr\n' >"$UN/etc/modules"
 cat >"$UN/config.json" <<EOF
-{ "HOME_DIR": "$UN/home", "pools": [{"url": "poolbox.lan:3333"}] }
+{ "HOME_DIR": "$UN/home", "miner_user": "$ME", "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
 un_run() {
     (cd "$UN" && PATH="$STUBS:$PATH" \
@@ -2788,6 +3011,7 @@ ln -s "$UN/rigforge.sh" "$UN/usr-local-bin/rigforge"
 out="$(un_run)"
 rc=$?
 assert_rc "uninstall exits 0" "$rc" "0"
+assert_contains "uninstall leaves the miner user in place with a userdel hint (#140)" "$out" "Left system user '$ME' in place"
 assert_eq "service unit removed" "$([ -f "$UN/etc/systemd/system/xmrig.service" ] && echo y || echo n)" "n"
 assert_eq "logrotate policy removed" "$([ -f "$UN/etc/logrotate.d/xmrig" ] && echo y || echo n)" "n"
 assert_eq "msr.conf removed" "$([ -f "$UN/etc/modules-load.d/msr.conf" ] && echo y || echo n)" "n"
@@ -3809,6 +4033,18 @@ for bad in "256.1.1.1" "1.2.3.4/33" "fe80::1" "gouda.lan" "1.2.3.4; rm -rf /"; d
     parse_rc "$c" "$ROOT"
     assert_rc "api_allow_from '$bad' rejected (#142)" "$?" "1"
 done
+
+# #140: miner_user — valid name parses; root and malformed names hard-error; absent = empty.
+c="$(mkconf mu_ok "{ $POOL, \"miner_user\": \"xmrig\" }")"
+assert_eq "miner_user parses (#140)" "$(parse_and_print "$c" "$ROOT" MINER_USER)" "xmrig"
+c="$(mkconf mu_root "{ $POOL, \"miner_user\": \"root\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "miner_user=root rejected (#140)" "$?" "1"
+c="$(mkconf mu_bad "{ $POOL, \"miner_user\": \"Bad!Name\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "malformed miner_user rejected (#140)" "$?" "1"
+c="$(mkconf mu_none "{ $POOL }")"
+assert_eq "miner_user absent -> empty (run as root) (#140)" "$(parse_and_print "$c" "$ROOT" MINER_USER)" ""
 
 echo "== black-box: install_api_firewall renders + tears down the nft table (#142) =="
 FW="$(mktemp -d "$SANDBOX/fw.XXXXXX")"

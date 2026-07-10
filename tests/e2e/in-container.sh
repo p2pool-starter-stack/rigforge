@@ -88,7 +88,7 @@ export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit000000000000000000000000000
 # 5. Seed config.json (writable HOME_DIR; DONATION 7). Use an explicit (dotted) host so this doesn't
 #    depend on the .local/mDNS appending that PR #15 removes.
 cat >"$WORK/config.json" <<EOF
-{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "add_to_path": true, "api": "enabled", "api_allow_from": "10.20.30.40", "pools": [{"url": "poolbox.lan:3333"}] }
+{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "add_to_path": true, "api": "enabled", "api_allow_from": "10.20.30.40", "miner_user": "rf-miner", "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
 
 BUILD="$WORK/data-home/worker/xmrig/build"
@@ -134,6 +134,13 @@ assert_contains "service rendered by real envsubst" "$svc" "$BUILD"
 assert_contains "service: NoNewPrivileges hardening" "$svc" "NoNewPrivileges=true"
 assert_contains "service: ProtectSystem=full" "$svc" "ProtectSystem=full"
 assert_contains "service: ReadWritePaths -> worker root" "$svc" "ReadWritePaths=$WORK/data-home/worker"
+# Privilege separation (#140): the REAL useradd created the system user, the unit drops privileges to
+# it, MSRs are applied root-side via the pre-step, and xmrig's own MSR writes are disabled.
+assert_eq "miner_user: system user created by real useradd" "$(id -u rf-miner >/dev/null 2>&1 && echo y || echo n)" "y"
+assert_contains "miner_user: unit runs unprivileged" "$svc" "User=rf-miner"
+assert_contains "miner_user: root-side msr-apply pre-step" "$svc" "ExecStartPre=+$WORK/rigforge.sh msr-apply"
+assert_eq "miner_user: xmrig wrmsr disabled" "$(jq -r '.randomx.wrmsr' "$BUILD/config.json" 2>/dev/null)" "false"
+assert_eq "miner_user: config.json owned by the miner user" "$(stat -c %U "$BUILD/config.json" 2>/dev/null)" "rf-miner"
 assert_absent "service: no unexpanded WORKER_ROOT" "$svc" 'ReadWritePaths=$WORKER_ROOT'
 assert_contains "limits: fstab hugepages written" "$(cat /etc/fstab)" "hugetlbfs /dev/hugepages"
 assert_contains "limits: memlock written" "$(cat /etc/security/limits.conf)" "soft memlock unlimited"
@@ -236,6 +243,7 @@ rc3=$?
 assert_rc "uninstall exits 0" "$rc3" "0"
 [ "$rc3" = 0 ] || printf '%s\n' "$out3" | tail -20
 assert_eq "uninstall: service unit removed" "$([ -f /etc/systemd/system/xmrig.service ] && echo y || echo n)" "n"
+assert_eq "uninstall: miner user preserved (hint only, never deleted) (#140)" "$(id -u rf-miner >/dev/null 2>&1 && echo y || echo n)" "y"
 assert_eq "uninstall: sister API server removed (#99)" "$([ -f /etc/systemd/system/rigforge-api.service ] && echo y || echo n)" "n"
 assert_eq "uninstall: refresh timer removed (#99)" "$([ -f /etc/systemd/system/rigforge-api-refresh.timer ] && echo y || echo n)" "n"
 assert_eq "uninstall: fstab hugepages reverted" "$(grep -c 'hugetlbfs' /etc/fstab)" "0"
