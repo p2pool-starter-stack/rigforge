@@ -587,6 +587,10 @@ perf() {
         jq -n --arg hs "$hr" --arg cpu "$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1)" --arg when "$(date '+%Y-%m-%d')" '{bench_1m_hs: ($hs | tonumber), cpu: $cpu, recorded: $when}' >"$bl"
         jq -cn --arg hs "$hr" --arg tag "${E2E_PERF_TAG:-}" --arg when "$(date '+%Y-%m-%d')" '{tag: $tag, recorded: $when, bench_1m_hs: ($hs | tonumber)}' >>"$hist"
         ok "perf: baseline recorded — $hr H/s -> $bl + history (commit both files)"
+        # #206: the recording dirties this checkout, and a later `git checkout <tag>` ABORTS on
+        # dirty tracked files — say so now, not at the next deploy.
+        printf '  \033[1;33m∙\033[0m collect: %s and %s\n' "$bl" "$hist"
+        printf '  \033[1;33m∙\033[0m after they are committed upstream, reset this rig or the next tag deploy aborts: git checkout -- tests/perf-baselines/\n'
         return 0
     fi
     if [ ! -f "$bl" ]; then

@@ -111,7 +111,10 @@ Pushing the tag triggers the release pipeline
 After the fleet is re-tagged, record each rig's benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
 the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
-catch slow drift across releases (see `tests/perf-baselines/README.md`).
+catch slow drift across releases (see `tests/perf-baselines/README.md`). Once the collected
+baselines are merged, reset each rig's copy (`sudo git checkout -- tests/perf-baselines/` in
+`/opt/rigforge`): the recording dirties the rig's checkout, and the *next* release's
+`git checkout <tag>` aborts on exactly those files (this bit both the v1.4.0 and v1.5.0 deploys).
 
 To verify a downloaded bundle: `minisign -Vm SHA256SUMS -p minisign.pub` (see
 [SECURITY.md › Release signing](./SECURITY.md#release-signing)), then `sha256sum -c SHA256SUMS`.
