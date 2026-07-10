@@ -3737,6 +3737,7 @@ assert_eq "api enable writes the .socket" "$([ -f "$APS/systemd/rigforge-api.soc
 assert_eq "api enable writes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "y"
 assert_contains "socket binds the configured address:port" "$(cat "$APS/systemd/rigforge-api.socket")" "ListenStream=0.0.0.0:8081"
 assert_contains "socket is per-connection (Accept=yes)" "$(cat "$APS/systemd/rigforge-api.socket")" "Accept=yes"
+assert_contains "one handler at a time (CPU-theft + DoS bound) (#80 gate finding)" "$(cat "$APS/systemd/rigforge-api.socket")" "MaxConnections=1"
 assert_contains "service invokes the api-serve verb" "$(cat "$APS/systemd/rigforge-api@.service")" "rigforge.sh api-serve"
 assert_contains "service is sandboxed read-only (#99 hardening)" "$(cat "$APS/systemd/rigforge-api@.service")" "ProtectSystem=strict"
 assert_contains "handlers never compete with the miner (#114 perf guard)" "$(cat "$APS/systemd/rigforge-api@.service")" "Nice=19"

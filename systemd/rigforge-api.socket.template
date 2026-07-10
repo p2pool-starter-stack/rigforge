@@ -4,8 +4,12 @@ Description=RigForge sister API socket (read-only stats superset, #99)
 [Socket]
 ListenStream=$API_BIND:$API_PORT
 Accept=yes
-MaxConnections=16
-MaxConnectionsPerSource=8
+# ONE handler at a time: concurrency is the CPU-theft multiplier. Four concurrent handlers shaved
+# 3.1% hashrate on a 16-thread rig under polling load (the api-impact gate caught it); serialized,
+# the worst case is a single handler's slice regardless of how hard anything polls. Extra
+# connections queue in the accept backlog — the real consumer is one dashboard poller, so queueing
+# costs it nothing. Also a free DoS bound. (v1.3.0)
+MaxConnections=1
 
 [Install]
 WantedBy=sockets.target

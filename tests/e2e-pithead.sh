@@ -235,6 +235,19 @@ phase_api_impact() {
     else
         bad "sister API load shaved hashrate beyond ${tol}%: ${base} -> ${loaded} H/s"
     fi
+    # Responsiveness is the OTHER half of the perf contract: the guard that stops the API shaving
+    # hashrate must not starve it either (a v1.2.0 handler took ~51s on a loaded 96-core EPYC).
+    # Bound it WHILE the miner is fully loaded.
+    local t0 t1 elapsed budget="${E2E_API_LATENCY_S:-15}"
+    t0=$(date +%s)
+    curl -fsS --max-time "$budget" http://127.0.0.1:8081/health >/dev/null 2>&1 || true
+    t1=$(date +%s)
+    elapsed=$((t1 - t0))
+    if [ "$elapsed" -lt "$budget" ]; then
+        ok "sister API answers /health in ${elapsed}s under full mining load (budget ${budget}s)"
+    else
+        bad "sister API too slow under load: /health took >=${budget}s — handler starved (check Nice / MaxConnections)"
+    fi
     set_cfg '.api = "disabled"'
 }
 
