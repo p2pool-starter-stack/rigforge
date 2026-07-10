@@ -21,6 +21,15 @@ All notable changes to RigForge are documented here. The format is based on
   fingerprint flips, and an unverifiable item stays pending with an honest note. RigForge never
   writes BIOS itself.
 
+### Fixed
+
+- **Sister API polling can no longer shave hashrate.** The release gate caught a 3.1% dip under
+  worst-case polling on a 16-thread rig (four concurrent handlers). The socket now admits ONE
+  handler at a time (`MaxConnections=1`) — concurrency was the CPU-theft multiplier, and the real
+  consumer is a single dashboard poller, so queueing costs nothing. The `api-impact` gate phase
+  now also bounds `/health` latency under full load (`E2E_API_LATENCY_S`, default 15s), closing the
+  responsiveness half of the perf contract.
+
 ## [1.2.1] - 2026-07-10
 
 ### Fixed
