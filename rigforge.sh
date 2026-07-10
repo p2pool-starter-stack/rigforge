@@ -157,9 +157,18 @@ compute_build_jobs() { # <ncpu>
 # True if a finished XMRig build for the pinned commit already exists, so we can skip the recompile.
 # Requires BOTH the built binary and a commit marker that matches XMRIG_COMMIT (a marker without a
 # binary means an incomplete build → rebuild).
+# SHA-256 of a file, portable (Linux sha256sum / macOS shasum).
+_sha256() { # <file>
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
+}
+
 xmrig_already_built() {
-    local marker="$WORKER_ROOT/xmrig/.rigforge-commit"
-    [ -x "$WORKER_ROOT/xmrig/build/xmrig" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$XMRIG_COMMIT" ]
+    local marker="$WORKER_ROOT/xmrig/.rigforge-commit" sums="$WORKER_ROOT/xmrig/.rigforge-sha256"
+    [ -x "$WORKER_ROOT/xmrig/build/xmrig" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$XMRIG_COMMIT" ] || return 1
+    # Tamper evidence (#141): a binary that no longer matches its build-time SHA-256 is NOT "already
+    # built" — the next setup/upgrade rebuilds it (self-healing). A missing record is a build from an
+    # older RigForge: still built (don't force a 10-minute recompile fleet-wide on first upgrade).
+    [ ! -f "$sums" ] || [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$WORKER_ROOT/xmrig/build/xmrig")" ]
 }
 
 # Merge the HugePage/MSR kernel params we manage into an existing GRUB cmdline, preserving every
@@ -655,6 +664,13 @@ compile_xmrig() {
 
     # Record the built commit so a later run can detect "already built" and skip the recompile (#4).
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig/.rigforge-commit"
+    # And the binary's SHA-256 (#141): tamper EVIDENCE, not proofing — root can rewrite this too,
+    # but it reliably catches the accidental and unsophisticated cases, same honest posture as
+    # `restricted:true`. Guarded if: the stubbed-make tests produce no binary, and a trailing
+    # false `&&` would abort the function under set -e.
+    if [ -f "$WORKER_ROOT/xmrig/build/xmrig" ]; then
+        _sha256 "$WORKER_ROOT/xmrig/build/xmrig" >"$WORKER_ROOT/xmrig/.rigforge-sha256"
+    fi
 }
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
@@ -3167,6 +3183,21 @@ doctor() {
     if [ -f "$CONFIG_JSON" ]; then
         wr=$(_worker_root_from_config)
         log_file="$wr/xmrig.log"
+    fi
+
+    # Binary tamper evidence (#141): the artifact that runs 24/7 as root should still be the one we
+    # built. Recompute and compare against the build-time record; a missing record (older build) is
+    # advisory only — the next rebuild writes one.
+    local bin="$wr/xmrig/build/xmrig" sums="$wr/xmrig/.rigforge-sha256"
+    if [ -n "$wr" ] && [ -f "$bin" ]; then
+        if [ ! -f "$sums" ]; then
+            _ck_info "no build-time checksum recorded (older build) — the next setup/upgrade rebuild records one"
+        elif [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$bin")" ]; then
+            _ck_ok "xmrig binary matches its build-time SHA-256 (unchanged since compile)"
+        else
+            _ck_warn "xmrig binary CHANGED since it was built — re-run 'sudo $0 setup' to rebuild, or investigate how it changed"
+            issues=$((issues + 1))
+        fi
     fi
 
     # Read-only API posture (#135): exposing the HTTP API on 0.0.0.0:8080 is safe ONLY because the
