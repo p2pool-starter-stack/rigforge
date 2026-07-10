@@ -1516,17 +1516,18 @@ _post_upgrade_retune() {
 # script that calls it. Reads one file and one URL; no parse_config, no root, no other side effects.
 _upgrade_check() {
     local local_v remote_v url body highest
-    local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null) || true
+    local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true) # guard inside the $() (#210)
     if [ -z "$local_v" ]; then
         warn "No VERSION file at $SCRIPT_DIR/VERSION — can't compare against the latest release."
         return 0
     fi
-    body=$(curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null) || {
+    body=$(curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null || true)
+    if [ -z "$body" ]; then
         warn "Couldn't reach GitHub to check for a newer release — try again later."
         return 0
-    }
-    remote_v=$(printf '%s' "$body" | jq -r '.tag_name // empty' 2>/dev/null) || true
-    url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null) || true
+    fi
+    remote_v=$(printf '%s' "$body" | jq -r '.tag_name // empty' 2>/dev/null || true)
+    url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null || true)
     remote_v="${remote_v#v}"
     if [ -z "$remote_v" ]; then
         warn "Couldn't reach GitHub to check for a newer release — try again later."
@@ -3513,9 +3514,13 @@ watchdog() {
         return 0
     fi
     # Wedge check: the API probe returns empty (unreachable) or the live hashrate (a float).
-    hr=$(_read_api_hashrate)
+    # `|| true` INSIDE the substitution (#210): curl's nonzero exit (refused/timeout) rides the
+    # pipeline out of the probe via pipefail; unguarded, the assignment errexits the whole check,
+    # and a guard OUTSIDE the $() still lets the ERR trap fire in the subshell and spam "aborted
+    # while" into the journal every tick. An unreachable API is a STRIKE, not a crash.
+    hr=$(_read_api_hashrate || true)
     if [ -z "$hr" ] || awk -v h="$hr" 'BEGIN { exit !(h == 0) }'; then
-        f=$(cat "$fails_f" 2>/dev/null) || f=0
+        f=$(cat "$fails_f" 2>/dev/null || true) # guard inside the $() — see the probe above (#210)
         [[ "$f" =~ ^[0-9]+$ ]] || f=0
         f=$((f + 1))
         if [ "$f" -ge 2 ]; then

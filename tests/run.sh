@@ -1707,6 +1707,36 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" b
 rc=$?
 assert_rc "watchdog on macOS fails loudly" "$rc" "1"
 assert_contains "watchdog macOS message" "$out" "only supported on Linux"
+# #210: the failure the live wedge test caught on miner-0 — curl's timeout (exit 28) rode
+# pipefail out of _read_api_hashrate and errexit killed the whole check before the strike logic.
+# Reproduce through the REAL dispatch (ERR trap + errexit live, unlike the set +e unit runs above)
+# with a curl that fails exactly like a frozen miner's API.
+WDB="$(mktemp -d "$SANDBOX/wdb.XXXXXX")"
+mkdir -p "$WDB/bin" "$WDB/home/worker"
+cat >"$WDB/config.json" <<EOF
+{ "HOME_DIR": "$WDB/home", "pools": [{"url": "h:3333"}] }
+EOF
+printf '#!/usr/bin/env bash\nexit 28\n' >"$WDB/bin/curl"
+chmod +x "$WDB/bin/curl"
+out="$(cd "$WDB" && PATH="$WDB/bin:$STUBS:$PATH" STUB_UNAME_S=Linux CALL_LOG="$WDB/calls.log" RIGFORGE_HOME="$PWD" bash "$SCRIPT" watchdog </dev/null 2>&1)"
+rc=$?
+assert_rc "watchdog: curl timeout is a strike, not a crash (#210)" "$rc" "0"
+assert_absent "watchdog: no ERR-trap abort on curl 28 (#210)" "$out" "aborted while"
+assert_contains "watchdog: unreachable API counts a strike (#210)" "$out" "1/2"
+assert_eq "watchdog: strike file written through real dispatch (#210)" "$(cat "$WDB/home/worker/watchdog.fails")" "1"
+out="$(cd "$WDB" && PATH="$WDB/bin:$STUBS:$PATH" STUB_UNAME_S=Linux CALL_LOG="$WDB/calls.log" RIGFORGE_HOME="$PWD" bash "$SCRIPT" watchdog </dev/null 2>&1)"
+rc=$?
+assert_rc "watchdog: second tick exits 0 (#210)" "$rc" "0"
+assert_contains "watchdog: two timeouts restart the miner (#210)" "$out" "wedged"
+assert_eq "watchdog: restart reached systemctl (#210)" "$(grep -c "restart xmrig" "$WDB/calls.log")" "1"
+# Same trap-in-subshell shape in upgrade --check (#210): an offline curl must produce ONE warn,
+# not ERR-trap noise ahead of it — asserted through the real dispatch, where the trap is live.
+cp "$ROOT/VERSION" "$WDB/"
+out="$(cd "$WDB" && PATH="$WDB/bin:$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" upgrade --check </dev/null 2>&1)"
+rc=$?
+assert_rc "upgrade --check offline exits 0 via dispatch (#210)" "$rc" "0"
+assert_contains "upgrade --check offline warns once (#210)" "$out" "try again later"
+assert_absent "upgrade --check offline has no ERR-trap noise (#210)" "$out" "aborted while"
 
 # #95: the tri-state `autotune` value normalizes to a mode (+ a perf|efficiency target). Legacy booleans
 # still map (true->performance, false->disabled); an unknown value hard-errors so a typo can't silently
