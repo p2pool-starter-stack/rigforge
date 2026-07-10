@@ -60,6 +60,36 @@ RigForge is built to be reproducible and tamper-evident:
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
 
+### Release signing
+
+Release checksums prove integrity, not origin — an attacker who can swap the release assets can swap
+`SHA256SUMS` right alongside them. So the release workflow signs `SHA256SUMS` with
+[minisign](https://jedisct1.github.io/minisign/) and uploads the signature as `SHA256SUMS.minisig`.
+Because the signature covers the checksum file, every asset listed in it is signed by inclusion —
+including any artifact added later.
+
+The public key (also committed as [`minisign.pub`](./minisign.pub) at the repo root — get it from the
+repo, not from the release download you are verifying):
+
+```text
+MINISIGN_PUBKEY_PLACEHOLDER
+```
+
+To verify a release: download the assets plus `SHA256SUMS` and `SHA256SUMS.minisig`, then
+
+```bash
+minisign -Vm SHA256SUMS -P "MINISIGN_PUBKEY_PLACEHOLDER"   # or: -p minisign.pub from a repo checkout
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+The trusted comment in the signature names the tag (`RigForge vX.Y.Z`), so a signature can't be
+replayed onto a different release's checksum file — check it matches the release you downloaded.
+
+Key rotation: if the key is rotated or compromised, a fresh keypair replaces `minisign.pub` and the
+key above, the old key stays listed here under a "retired keys" line with its last-valid tag, the
+`MINISIGN_SECRET_KEY` Actions secret is updated, and the rotation is called out in the next
+release's notes. Old releases stay verifiable against the retired key.
+
 ## Supported versions
 
 Only the latest `main` is supported. Please reproduce against current `main`

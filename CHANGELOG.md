@@ -9,6 +9,10 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **Signed releases (#137).** The release workflow signs `SHA256SUMS` with minisign
+  (`SHA256SUMS.minisig`), so releases prove origin, not just integrity — every listed asset is
+  covered by inclusion. Fork-safe: without the `MINISIGN_SECRET_KEY` secret the release publishes
+  unsigned with a notice. Verification commands in `SECURITY.md` › Release signing.
 - **Config typo lint (#138).** `parse_config` now warns on unknown top-level keys and pool fields
   (case-insensitive did-you-mean for near-misses, key names only — never values). A misspelled
   `ACCESS_TOKEN` previously just… didn't apply, silently. Warn, not error: an unknown key is at
