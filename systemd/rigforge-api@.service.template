@@ -19,6 +19,13 @@ StandardError=journal
 # bounds both the hashrate hit AND the response latency) but the scheduler gives it a slice, so the
 # API answers in a few seconds under full load instead of ~51s. (v1.2.1)
 Nice=10
+# Hard bound no polling pattern can exceed: the handler cgroup gets at most 40% of ONE core —
+# ~2.5% of a 16-thread rig, a rounding error on a 96-core one. The probe cache (#164) makes
+# typical requests far cheaper than this; the quota is the adversarial ceiling. (v1.3.0)
+CPUQuota=40%
+# Writable cache spot under ProtectSystem=strict (probe results, short TTL — see _api_cached).
+RuntimeDirectory=rigforge-api
+RuntimeDirectoryPreserve=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
