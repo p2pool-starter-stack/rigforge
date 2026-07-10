@@ -2328,6 +2328,13 @@ assert_eq "cli: add_to_path=true links rigforge onto PATH (#cli)" "$(readlink "$
 # ---------------------------------------------------------------------------
 # Release metadata (#3): VERSION must be valid SemVer so it stays in lock-step with tags/CHANGELOG.
 # #45: doctor inspects read-only system state (overridable paths) and reports PASS/WARN.
+echo "== black-box: no ANSI escapes off-terminal (#144) =="
+out="$(bash "$SCRIPT" version 2>&1)"
+assert_absent "no ANSI escapes when piped/captured (#144)" "$out" "$(printf '\033')"
+# NO_COLOR wins regardless of tty; captured output is never a tty, so both asserts are stable.
+out="$(NO_COLOR=1 bash "$SCRIPT" version 2>&1)"
+assert_absent "NO_COLOR=1 output is colorless (#144)" "$out" "$(printf '\033')"
+
 echo "== unit: doctor health checks (#45) =="
 DOC="$(mktemp -d "$SANDBOX/doc.XXXXXX")"
 printf 'HugePages_Total:    2048\n' >"$DOC/meminfo_ok"

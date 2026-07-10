@@ -296,6 +296,9 @@ Everything else works anywhere: `setup`, `apply`, `bench`, the offline `tune`, `
 
 ## Logs
 
+Output is colored only when stdout is a terminal; set `NO_COLOR=1` to disable color everywhere
+([no-color.org](https://no-color.org)) — piped, captured, and journal output is always plain text.
+
 ```bash
 sudo journalctl -u xmrig -f     # live service logs
 ```
