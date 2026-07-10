@@ -104,7 +104,7 @@ jobs:
       # stubs (OS_TYPE=Darwin + faked sysctl), so the macOS config profile is covered without a Mac
       # runner; contributors on macOS can also run `make test` locally. jq is preinstalled on the runner.
       - name: Run test suite
-        run: bash tests/run.sh
+        run: make test-suite
 
   test-macos:
     name: Test suite (macOS)
@@ -121,14 +121,16 @@ jobs:
       - name: Install jq
         run: brew list jq >/dev/null 2>&1 || brew install jq
       - name: Run test suite
-        run: bash tests/run.sh
+        run: make test-suite
+      # Stays raw on purpose: the make recipe says `bash`, which resolves to a modern PATH bash —
+      # only an explicit /bin/bash pins Apple's 3.2 for the portability check.
       - name: Run test suite under Apple's bash 3.2
         run: /bin/bash tests/run.sh
       # Native macOS e2e (#69 layer 2): the REAL rigforge.sh end to end with only brew/git/cmake/make
       # stubbed — real BSD sed, the macOS config profile, real nohup/PID control, real launchctl
       # enable/disable (headless-tolerant), and BSD tar/date backup/restore.
       - name: Run native macOS e2e
-        run: bash tests/e2e/macos.sh
+        run: make test-e2e-macos
 
   e2e:
     name: End-to-end (Docker)
@@ -140,7 +142,7 @@ jobs:
       # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
       # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
       - name: Run end-to-end suite
-        run: bash tests/e2e/linux.sh
+        run: make test-e2e
 
   coverage:
     name: Coverage (kcov + diff-cover)
@@ -162,7 +164,7 @@ jobs:
       # Runs tests/run.sh under a digest-pinned kcov image, reports rigforge.sh + util/proposed-grub.sh
       # coverage, and fails if the total drops below the committed floor (tests/coverage-floor.txt).
       - name: Measure coverage (kcov) + enforce the total floor
-        run: bash tests/coverage.sh
+        run: make coverage
       # Patch coverage is the real lever: it requires NEW/CHANGED lines to be tested, which is what keeps
       # coverage from rotting. Self-contained (no Codecov) — reads the Cobertura report from kcov.
       - name: Install pinned diff-cover
