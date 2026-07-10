@@ -45,6 +45,9 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 | Key | Default | What it does |
 |---|---|---|
 | `pools` | *(required)* | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
+| `api` | `"disabled"` | `"enabled"` serves the sister API: a second **read-only** port with XMRig's `/1/summary`+`/2/summary` passed through verbatim plus a namespaced `rigforge` object (tune state, RAPL watts, firmware/health probes, pinned versions), and `/health` + `/tune` endpoints. Socket-activated (no resident process); gated by the same `ACCESS_TOKEN`; Linux-only. |
+| `api_port` | `8081` | Sister API port (8080 is rejected — that's XMRig's own API). |
+| `api_bind` | `"0.0.0.0"` | Sister API listen address. |
 | `ACCESS_TOKEN` | `""` *(open)* | Optional bearer token for the XMRig HTTP API. Unset (default) leaves the read-only API open, which matches Pithead's default no-auth probe. Set a value to require a `Bearer` token, then match it on the dashboard (`workers.api_auth: token` + `workers.api_token`, or `name` if you set it to the rig name). See [Pithead Integration](pithead-integration.md). |
 | `DONATION` | `1` | XMRig donate level, an integer 0–100 (percent). Patched into the build (`donate.h`) and written to the generated config, so it must be a valid integer or setup fails fast. |
 | `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |

@@ -416,3 +416,17 @@ If you see MSR errors, see Troubleshooting below.
 - [Getting Started](getting-started.md) — first-run setup and verification.
 - [Configuration](configuration.md) — config keys and how the XMRig config is generated.
 - [Pithead Integration](pithead-integration.md) — the dashboard contract.
+
+## Sister API (optional)
+
+Set `"api": "enabled"` in `config.json` and run `sudo ./rigforge.sh apply`. The rig then serves a
+second read-only HTTP endpoint (default `:8081`, keys `api_port`/`api_bind`) with everything the
+`:8080` XMRig API has **plus** the data only RigForge knows: applied tune knobs and the last tune
+run (`/tune`), hashrate-per-watt from RAPL, and the doctor probes — HugePages, MSR state, governor,
+RAM channels/speeds, memory-profile and SMT state, throttling — as JSON (`/health`, or nested under
+`rigforge` in `/1/summary` and `/2/summary`). It is socket-activated: systemd owns the listener and
+spawns one short-lived handler per request, so an idle rig runs no extra process. The same
+`ACCESS_TOKEN` posture applies (open when unset, Bearer required when set), it is read-only by
+construction (GET only), and when XMRig is down the RigForge data still serves with an
+`"xmrig_api": "unreachable"` marker — which is exactly when the health data matters. Linux-only;
+`"api": "disabled"` + `apply` removes the units cleanly.
