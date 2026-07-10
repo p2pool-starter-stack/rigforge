@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+
+- **Sister API hardening (2026-07-10 audit).** The one network-facing process no longer runs as
+  root: `rigforge-api.service` gets `DynamicUser=yes`, reading the 0600 `config.json` through a
+  systemd `LoadCredential` instead of owning it. The Bearer check is now constant-time
+  (`hmac.compare_digest`) and a 10 s request-arrival timeout closes the single-connection
+  slowloris hang on the deliberately single-threaded server. `doctor` gains one advisory line for
+  the open-AND-unscoped posture (no `ACCESS_TOKEN`, no `api_allow_from`) — correct on the designed
+  trusted LAN, loud enough to catch before a rig faces anything else.
+
 ### Added
 
 - **Shell completion (#145).** `completion bash|zsh` prints a static, zero-dependency tab-completion

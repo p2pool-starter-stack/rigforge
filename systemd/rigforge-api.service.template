@@ -6,9 +6,17 @@ After=network.target
 # The xmrig model (#164): one long-lived process shipping pre-built bytes from /run/rigforge-api —
 # a request costs microseconds and spawns nothing, so polling cannot touch mining performance.
 # The bodies are produced by rigforge-api-refresh.timer, off the request path entirely.
-ExecStart=/usr/bin/python3 $SCRIPT_DIR/util/api-server.py $API_BIND $API_PORT /run/rigforge-api $SCRIPT_DIR/config.json
+# ${CREDENTIALS_DIRECTORY} is expanded by systemd at start (not by envsubst — it's not in the
+# render allowlist): root loads the 0600 config.json as a credential so the unprivileged
+# DynamicUser process can read the ACCESS_TOKEN without owning the file.
+ExecStart=/usr/bin/python3 $SCRIPT_DIR/util/api-server.py $API_BIND $API_PORT /run/rigforge-api ${CREDENTIALS_DIRECTORY}/config
+LoadCredential=config:$SCRIPT_DIR/config.json
 Restart=always
 RestartSec=5
+# The one process on this rig that faces the network 24/7 must not be root: it only reads the
+# pre-built files under /run/rigforge-api (world-readable, written by the refresh unit), so a
+# throwaway dynamic user costs nothing and turns a would-be root compromise into nobody's.
+DynamicUser=yes
 # Lowest priority costs nothing when the work is microseconds — and guarantees the miner every core.
 Nice=19
 NoNewPrivileges=yes

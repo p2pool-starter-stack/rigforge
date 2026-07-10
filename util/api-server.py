@@ -12,6 +12,7 @@ is set in config.json (read once at startup; `apply` restarts this unit on rotat
 that exists but cannot be parsed is fatal at startup — silently dropping a token would turn a
 config typo into an open API.
 """
+import hmac
 import json
 import os
 import sys
@@ -54,7 +55,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if TOKEN:
             auth = (self.headers.get("Authorization") or "").strip()
-            if auth != "Bearer " + TOKEN:
+            # Constant-time compare: the Bearer check is the only auth this API has, so don't
+            # hand a public network a timing side-channel on it.
+            if not hmac.compare_digest(auth.encode(), ("Bearer " + TOKEN).encode()):
                 return self._send(401, "Unauthorized", b'{"error":"unauthorized"}')
         name = ROUTES.get(self.path.split("?", 1)[0])
         if name is None:
@@ -78,5 +81,8 @@ if __name__ == "__main__":
     bind, port, DATA_DIR, cfg = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
     TOKEN = load_token(cfg)
     # Single-threaded on purpose: requests serialize naturally, and serving pre-built bytes takes
-    # microseconds — concurrency would only add ways to compete with the miner.
+    # microseconds — concurrency would only add ways to compete with the miner. The flip side of
+    # single-threaded is that one held-open connection would block everyone (slowloris), so cap
+    # how long a request may take to arrive.
+    Handler.timeout = 10
     HTTPServer((bind, port), Handler).serve_forever()
