@@ -28,6 +28,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh provision   # real deps + XMRig build + tuning + kernel tuning + service
    sudo reboot                             # HugePages (1G + GRUB cmdline) take effect on boot; reconnect
    sudo bash tests/e2e-real.sh verify      # doctor (HugePages/MSR/governor/service) + bench (real H/s) + a short tune + a live auto-tune pass
+   sudo bash tests/e2e-real.sh perf        # offline bench vs the committed per-host baseline + best-ever history (the release perf gate)
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
 

@@ -1,5 +1,5 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real lint fmt lint-yaml lint-md lint-links lint-all
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead lint fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci
 
 SHELL_FILES = $(shell git ls-files '*.sh')
 

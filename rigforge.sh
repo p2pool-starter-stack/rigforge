@@ -983,9 +983,9 @@ install_autotune() {
     sudo systemctl enable --now rigforge-autotune.timer 2>/dev/null || true
 }
 
-# Sister API (#99): socket-activated — systemd owns the listener; one short-lived
-# `rigforge.sh api-serve` process handles each request. No resident daemon, no new dependencies.
-# Toggle shape mirrors install_autotune above.
+# Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
+# JSON from /run/rigforge-api; a systemd timer (`rigforge.sh api-refresh`) recomputes the files every
+# 15 s. Requests never touch the miner. Toggle shape mirrors install_autotune above.
 # Opt-in API firewall (#142): an own `inet rigforge` nft table scoping the read-only API port(s)
 # to `api_allow_from` + loopback. nftables only (Ubuntu 24.04's native firewall — a ufw fallback
 # would double the surface); own table so teardown is a single `destroy`. Matches only the API
