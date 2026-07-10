@@ -101,11 +101,14 @@ Pushing the tag triggers the release pipeline
   `config.reference.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`) as
   `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev files are excluded),
 - generates `SHA256SUMS` for the artifacts,
+- signs `SHA256SUMS` with minisign (`SHA256SUMS.minisig`; skipped with a notice when the
+  `MINISIGN_SECRET_KEY` secret is absent, e.g. on forks) — check the draft has the `.minisig` asset,
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
 - creates the GitHub Release as a draft. Review the generated notes and bundles, then click
   Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
 
-To verify a downloaded bundle: `sha256sum -c SHA256SUMS`.
+To verify a downloaded bundle: `minisign -Vm SHA256SUMS -p minisign.pub` (see
+[SECURITY.md › Release signing](./SECURITY.md#release-signing)), then `sha256sum -c SHA256SUMS`.
 
 > The release is created as a draft so a human reviews it before it goes public, a deliberate gate
 > for a tool that installs a root miner. Drop `--draft` from `release.yml` to auto-publish on tag instead.
