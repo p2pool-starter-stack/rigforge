@@ -2998,6 +2998,45 @@ svc_disable() {
 }
 # --- Commands: version, apply & bench ---
 
+# Tab completion (#145): PRINT a completion script, install nothing — the operator opts in with
+# `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
+# (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
+# dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
+# verbs (api-refresh, msr-apply) and the -v/-h flag spellings are deliberately not completed.
+_completion_bash() {
+    cat <<'RIGFORGE_COMPLETION'
+_rigforge_verbs="setup upgrade uninstall tune autotune doctor bios status logs start up stop down restart enable disable apply bench backup restore version help completion"
+_rigforge() {
+    local cur verb
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    verb="${COMP_WORDS[1]:-}"
+    if [ "$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=($(compgen -W "$_rigforge_verbs" -- "$cur"))
+        return
+    fi
+    case "$verb" in
+    tune) COMPREPLY=($(compgen -W "--now --short --long --live --bench --confirm --efficiency --perf --history --clear" -- "$cur")) ;;
+    uninstall | backup) COMPREPLY=($(compgen -W "-y --yes" -- "$cur")) ;;
+    restore) COMPREPLY=($(compgen -W "-y --yes" -- "$cur") $(compgen -f -- "$cur")) ;;
+    completion) COMPREPLY=($(compgen -W "bash zsh" -- "$cur")) ;;
+    esac
+}
+complete -F _rigforge rigforge rigforge.sh ./rigforge.sh
+RIGFORGE_COMPLETION
+}
+
+cmd_completion() {
+    case "${1:-}" in
+    bash) _completion_bash ;;
+    zsh)
+        # bashcompinit runs the same script under zsh — one verb list, not two to drift apart.
+        echo "autoload -U +X bashcompinit && bashcompinit"
+        _completion_bash
+        ;;
+    *) error "Usage: $0 completion bash|zsh" ;;
+    esac
+}
+
 cmd_version() {
     local v="unknown"
     if [ -f "$SCRIPT_DIR/VERSION" ]; then v="$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")"; fi
@@ -3908,6 +3947,7 @@ Info:
              ExecStartPre when miner_user is set (the unprivileged miner can't write MSRs)
   api-refresh (internal) recompute the sister API's response files — driven every 15s by the
              rigforge-api-refresh systemd timer ("api": "enabled" in config.json)
+  completion print a bash/zsh tab-completion script: completion bash|zsh
   version    print the RigForge version  (-v, --version)
   help       show this help              (-h, --help)
 
@@ -3949,8 +3989,12 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         restore "$@"
         ;;
+    completion)
+        shift
+        cmd_completion "$@"
+        ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, msr-apply, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, msr-apply, completion, version, help." ;;
     esac
 fi
