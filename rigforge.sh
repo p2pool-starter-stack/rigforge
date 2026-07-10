@@ -435,6 +435,55 @@ parse_config() {
     if [ "$API_PORT" = 8080 ]; then error "api_port 8080 collides with XMRig's own API — pick another port."; fi
     API_BIND=$(jq -r '.api_bind // "0.0.0.0"' "$CONFIG_JSON")
     [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
+
+    _warn_unknown_config_keys
+}
+
+# Typo lint (#138): a key parse_config doesn't read is silently ignored — worst case a security key
+# ("ACESS_TOKEN") that the operator believes is protecting them. Warn (never error: an unknown key
+# is at worst a no-op, and erroring would brick fleet applies on any future rename), name each
+# unknown key with a case-insensitive did-you-mean, and point at the reference. Keys starting with
+# `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
+# #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
+_warn_unknown_config_keys() {
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind RIG_NAME"
+    local known_pool="url user pass keepalive tls enabled tls-fingerprint"
+    local k lk m lm hit hint unknown_seen=0
+    while IFS= read -r k; do
+        case "$k" in _*) continue ;; esac
+        hit=""
+        hint=""
+        lk=$(printf '%s' "$k" | tr '[:upper:]' '[:lower:]')
+        for m in $known; do
+            if [ "$k" = "$m" ]; then
+                hit=1
+                break
+            fi
+            lm=$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')
+            if [ "$lk" = "$lm" ]; then hint="$m"; fi
+        done
+        if [ -n "$hit" ]; then continue; fi
+        if [ -n "$hint" ]; then warn "config.json: unknown key \"$k\" is ignored — did you mean \"$hint\"?"; else warn "config.json: unknown key \"$k\" is ignored."; fi
+        unknown_seen=1
+    done < <(jq -r 'keys[]' "$CONFIG_JSON" 2>/dev/null || true)
+    while IFS= read -r k; do
+        case "$k" in _*) continue ;; esac
+        hit=""
+        hint=""
+        lk=$(printf '%s' "$k" | tr '[:upper:]' '[:lower:]')
+        for m in $known_pool; do
+            if [ "$k" = "$m" ]; then
+                hit=1
+                break
+            fi
+            lm=$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')
+            if [ "$lk" = "$lm" ]; then hint="$m"; fi
+        done
+        if [ -n "$hit" ]; then continue; fi
+        if [ -n "$hint" ]; then warn "config.json: unknown pool field \"$k\" is ignored — did you mean \"$hint\"?"; else warn "config.json: unknown pool field \"$k\" is ignored."; fi
+        unknown_seen=1
+    done < <(jq -r '(.pools // []) | map(keys[]) | unique | .[]' "$CONFIG_JSON" 2>/dev/null || true)
+    if [ "$unknown_seen" = 1 ]; then warn "See config.reference.json for every supported key."; fi
 }
 
 # --- Setup: workspace & dependency install ---

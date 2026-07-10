@@ -7,6 +7,14 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Config typo lint (#138).** `parse_config` now warns on unknown top-level keys and pool fields
+  (case-insensitive did-you-mean for near-misses, key names only — never values). A misspelled
+  `ACCESS_TOKEN` previously just… didn't apply, silently. Warn, not error: an unknown key is at
+  worst a no-op, and erroring would break fleet `apply`s on any future rename. `_`-prefixed keys
+  are the comment convention; `RIG_NAME` is reserved for the flashable-image seed (#1).
+
 ## [1.3.0] - 2026-07-10
 
 ### Added

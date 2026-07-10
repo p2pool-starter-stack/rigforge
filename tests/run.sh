@@ -401,6 +401,43 @@ c="$(mkconf at_bad "{ \"ACCESS_TOKEN\": \"bad token\", $POOL }")"
 parse_rc "$c" "$ROOT"
 assert_rc "ACCESS_TOKEN with space rejected" "$?" "1"
 
+# #138: unknown keys warn (never error) with a case-insensitive did-you-mean; `_`-prefixed keys and
+# the reserved RIG_NAME never warn; warnings carry key NAMES only, never values.
+lint_out() { # <config> -> parse_config's stderr+stdout
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$1"
+        SCRIPT_DIR="$ROOT"
+        set +e
+        parse_config 2>&1
+    )
+}
+c="$(mkconf lint_typo "{ $POOL, \"donation\": 5 }")"
+out="$(lint_out "$c")"
+assert_contains "typo'd key warns with a did-you-mean (#138)" "$out" 'unknown key "donation" is ignored — did you mean "DONATION"?'
+assert_contains "warnings end with the reference pointer (#138)" "$out" "See config.reference.json"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    set +e
+    parse_config >/dev/null 2>&1
+)
+assert_rc "unknown keys never fail the parse (#138)" "$?" "0"
+c="$(mkconf lint_tok "{ $POOL, \"ACESS_TOKEN\": \"supersecret-value\" }")"
+out="$(lint_out "$c")"
+assert_contains "misspelled security key is named (#138)" "$out" 'unknown key "ACESS_TOKEN"'
+assert_absent "the value never appears in the warning (#138)" "$out" "supersecret-value"
+c="$(mkconf lint_pool "{ \"pools\": [{\"url\":\"h:3333\",\"keepAlive\":true}] }")"
+out="$(lint_out "$c")"
+assert_contains "pool-field typo warns with a did-you-mean (#138)" "$out" 'unknown pool field "keepAlive" is ignored — did you mean "keepalive"?'
+c="$(mkconf lint_quiet "{ $POOL, \"_note\": \"comment\", \"RIG_NAME\": \"rig9\", \"api\": \"enabled\" }")"
+out="$(lint_out "$c")"
+assert_absent "underscore keys, RIG_NAME, and known keys stay quiet (#138)" "$out" "unknown key"
+c="$(mkconf lint_novel "{ $POOL, \"frobnicate\": 1 }")"
+out="$(lint_out "$c")"
+assert_contains "novel key warns without a hint (#138)" "$out" 'unknown key "frobnicate" is ignored.'
+assert_absent "no did-you-mean when nothing is close (#138)" "$out" "did you mean"
+
 echo "== unit: parse_config — workspace + token =="
 c="$(mkconf dyn "{ \"HOME_DIR\": \"DYNAMIC_HOME\", $POOL }")"
 assert_eq "DYNAMIC_HOME -> script data dir" "$(parse_and_print "$c" "$ROOT" WORKER_ROOT)" "$ROOT/data/worker"
