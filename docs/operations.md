@@ -39,7 +39,7 @@ run `sudo rigforge [command]` from any directory; `uninstall` removes it.
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
-| `upgrade` | Rebuild and restart only if the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. If periodic autotune is enabled, it also re-tunes the new build (the fastest knobs can shift between versions). |
+| `upgrade` | Rebuild and restart only if the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. If periodic autotune is enabled, it also re-tunes the new build (the fastest knobs can shift between versions). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled). |
 | `uninstall` | Remove the service and revert all system changes (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. |
@@ -356,9 +356,15 @@ miner yourself; see [Running on macOS](#running-on-macos).)
 RigForge pins XMRig to a known version/commit. To move to a newer pinned build:
 
 ```bash
+./rigforge.sh upgrade --check   # optional: is there a newer RigForge release? (on-demand, no sudo)
 git pull                        # get the new pin (and any RigForge changes)
 sudo ./rigforge.sh upgrade      # rebuild + restart only if the pin changed
 ```
+
+`upgrade --check` compares your `VERSION` against the latest GitHub release and prints the upgrade
+recipe if you're behind. It's the only command that queries GitHub's API, it runs exactly when you
+type it (nothing is scheduled — see [SECURITY.md](../SECURITY.md)), and it always exits 0, so it's
+safe to call from your own scripts.
 
 `upgrade` is a no-op when the pinned XMRig is already built, so it's cheap to run. A plain
 `sudo ./rigforge.sh` (setup) also picks up a changed pin, but `upgrade` is the explicit, restart-aware

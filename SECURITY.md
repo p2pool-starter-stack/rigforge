@@ -8,7 +8,9 @@ seriously and appreciate responsible disclosure.
 ## What RigForge exposes (and what it doesn't)
 
 No telemetry, ever. RigForge never phones home. There is no analytics, no
-version ping, and no usage beacon. The only outbound connections it makes are to
+version ping, and no usage beacon. (`upgrade --check` queries the GitHub releases
+API, but only when you run it — nothing is scheduled and nothing else calls it.)
+The only outbound connections it makes are to
 *your* pool, to the pinned XMRig source on GitHub (a shallow clone whose commit is
 verified against a hardcoded hash before it's built), and to your distro's package
 mirrors. The XMRig developer donation defaults to 1%, XMRig's own upstream
