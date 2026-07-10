@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-10
+
 ### Fixed
 
 - **Sister API responsiveness under full mining load.** The per-request handler ran at `Nice=19` +
@@ -569,7 +571,8 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.0...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.1...main
+[1.2.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.1
 [1.2.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0
 [1.0.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.1
