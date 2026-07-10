@@ -146,7 +146,8 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
-    -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g"
+    -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g" \
+    -e "s|\${WATCHDOG_INTERVAL_MIN}|${WATCHDOG_INTERVAL_MIN:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -1530,6 +1531,160 @@ assert_contains "default autotune cadence is monthly, not daily (#95)" "$(cat "$
 out="$(run_autotune disabled)"
 assert_eq "autotune disable removes the .timer" "$([ -f "$AT/systemd/rigforge-autotune.timer" ] && echo y || echo n)" "n"
 assert_eq "autotune disable removes the .service" "$([ -f "$AT/systemd/rigforge-autotune.service" ] && echo y || echo n)" "n"
+
+# #139: install_watchdog mirrors install_autotune — enabled renders both units (only the cadence is
+# baked in; max_temp_c/ACCESS_TOKEN are re-read from config.json each run so no token lands in a
+# unit file), disabled removes both cleanly.
+echo "== black-box: install_watchdog timer enable/disable (#139) =="
+WDI="$(mktemp -d "$SANDBOX/wdi.XXXXXX")"
+mkdir -p "$WDI/systemd"
+cp "$ROOT/systemd/rigforge-watchdog.service.template" "$ROOT/systemd/rigforge-watchdog.timer.template" "$WDI/systemd/"
+run_install_watchdog() { # <disabled|enabled> [interval_min]
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$WDI"
+        SYSTEMD_DIR="$WDI/systemd"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        ACCESS_TOKEN=tok-123 # must NOT appear in any rendered unit
+        WATCHDOG_MODE="$1"
+        [ -n "${2:-}" ] && WATCHDOG_INTERVAL_MIN="$2"
+        set +e
+        PATH="$STUBS:$PATH" install_watchdog 2>&1
+    )
+}
+out="$(run_install_watchdog enabled 7)"
+assert_eq "watchdog enable writes the .timer" "$([ -f "$WDI/systemd/rigforge-watchdog.timer" ] && echo y || echo n)" "y"
+assert_eq "watchdog enable writes the .service" "$([ -f "$WDI/systemd/rigforge-watchdog.service" ] && echo y || echo n)" "y"
+assert_contains "watchdog timer honours the interval override" "$(cat "$WDI/systemd/rigforge-watchdog.timer")" "OnUnitActiveSec=7min"
+assert_contains "watchdog service invokes the watchdog verb" "$(cat "$WDI/systemd/rigforge-watchdog.service")" "rigforge.sh watchdog"
+assert_contains "watchdog service bakes in RIGFORGE_OPERATOR (#reown)" "$(cat "$WDI/systemd/rigforge-watchdog.service")" "RIGFORGE_OPERATOR=rfop"
+assert_absent "no token in the watchdog service unit" "$(cat "$WDI/systemd/rigforge-watchdog.service")" "tok-123"
+assert_absent "no token in the watchdog timer unit" "$(cat "$WDI/systemd/rigforge-watchdog.timer")" "tok-123"
+out="$(run_install_watchdog enabled)" # no interval -> product default
+assert_contains "watchdog default cadence is 5min" "$(cat "$WDI/systemd/rigforge-watchdog.timer")" "OnUnitActiveSec=5min"
+out="$(run_install_watchdog disabled)"
+assert_eq "watchdog disable removes the .timer" "$([ -f "$WDI/systemd/rigforge-watchdog.timer" ] && echo y || echo n)" "n"
+assert_eq "watchdog disable removes the .service" "$([ -f "$WDI/systemd/rigforge-watchdog.service" ] && echo y || echo n)" "n"
+
+# #139: the watchdog config keys. Typo hard-errors (a recovery mechanism must not be silently
+# disabled); the interval and cutoff validate as bounded integers; max_temp_c empty = cutoff off.
+echo "== unit: parse_config — watchdog keys (#139) =="
+wd_mode() { parse_and_print "$1" "$ROOT" WATCHDOG_MODE; }
+c="$(mkconf wd_dis "{ $POOL, \"watchdog\": \"disabled\" }")"
+assert_eq "watchdog disabled -> mode disabled" "$(wd_mode "$c")" "disabled"
+c="$(mkconf wd_def "{ $POOL }")"
+assert_eq "watchdog absent -> mode disabled" "$(wd_mode "$c")" "disabled"
+assert_eq "watchdog interval defaults to 5" "$(parse_and_print "$c" "$ROOT" WATCHDOG_INTERVAL_MIN)" "5"
+assert_eq "max_temp_c defaults to empty (cutoff off)" "$(parse_and_print "$c" "$ROOT" MAX_TEMP_C)" ""
+c="$(mkconf wd_en "{ $POOL, \"watchdog\": \"enabled\", \"watchdog_interval_min\": 15, \"max_temp_c\": 85 }")"
+assert_eq "watchdog enabled -> mode enabled" "$(wd_mode "$c")" "enabled"
+assert_eq "watchdog interval honours the override" "$(parse_and_print "$c" "$ROOT" WATCHDOG_INTERVAL_MIN)" "15"
+assert_eq "max_temp_c honours the override" "$(parse_and_print "$c" "$ROOT" MAX_TEMP_C)" "85"
+c="$(mkconf wd_true "{ $POOL, \"watchdog\": true }")"
+assert_eq "watchdog legacy true -> enabled" "$(wd_mode "$c")" "enabled"
+parse_fails() { (source "$SCRIPT" && CONFIG_JSON="$1" SCRIPT_DIR="$ROOT" && set +e && PATH="$STUBS:$PATH" parse_config 2>&1); }
+c="$(mkconf wd_typo "{ $POOL, \"watchdog\": \"enbaled\" }")"
+assert_contains "watchdog typo hard-errors" "$(parse_fails "$c")" 'Invalid "watchdog" value'
+c="$(mkconf wd_iv0 "{ $POOL, \"watchdog_interval_min\": 0 }")"
+assert_contains "interval 0 rejected" "$(parse_fails "$c")" "watchdog_interval_min must be"
+c="$(mkconf wd_iv9k "{ $POOL, \"watchdog_interval_min\": 9000 }")"
+assert_contains "interval 9000 rejected" "$(parse_fails "$c")" "watchdog_interval_min must be"
+c="$(mkconf wd_t30 "{ $POOL, \"max_temp_c\": 30 }")"
+assert_contains "max_temp_c 30 rejected (never restarts)" "$(parse_fails "$c")" "max_temp_c must be"
+c="$(mkconf wd_thot "{ $POOL, \"max_temp_c\": \"hot\" }")"
+assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_temp_c must be"
+
+# #139: the watchdog() check itself. One check per run; restart only on the SECOND consecutive
+# unhealthy check (0 H/s and API-unreachable both count); thermal stop above max_temp_c with a
+# 5°C-hysteresis restart; unreadable temp or empty max_temp_c skips thermal entirely. systemctl
+# calls asserted via CALL_LOG; parse_config is shadowed so the test drives state directly.
+echo "== unit: watchdog health check (#139) =="
+WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
+run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]
+    (
+        source "$SCRIPT"
+        parse_config() { :; }
+        OS_TYPE=Linux
+        WORKER_ROOT="$WDR"
+        SERVICE_NAME=xmrig
+        MAX_TEMP_C="$3"
+        _ACT="${4:-y}"
+        sudo() { "$@"; }
+        systemctl() {
+            echo "[systemctl] $*" >>"$WDR/calls.log"
+            case "$*" in *is-active*) [ "$_ACT" = y ] ;; *) return 0 ;; esac
+        }
+        set +e
+        TUNE_TEMP_CMD="$1" API_CMD="$2" watchdog 2>&1
+        echo "rc=$?"
+    )
+}
+wd_calls() { grep -c "$1" "$WDR/calls.log" 2>/dev/null || true; }
+# Healthy: counter stays clear, no restart.
+: >"$WDR/calls.log"
+out="$(run_watchdog 'echo 60' 'echo 12345.6' '')"
+assert_contains "healthy check logs the hashrate" "$out" "healthy (12345.6 H/s)"
+assert_contains "healthy check exits 0" "$out" "rc=0"
+assert_eq "healthy check never restarts" "$(wd_calls 'restart xmrig')" "0"
+assert_eq "healthy check leaves no strike file" "$([ -f "$WDR/watchdog.fails" ] && echo y || echo n)" "n"
+# Strike 1 (0 H/s): no restart yet.
+: >"$WDR/calls.log"
+out="$(run_watchdog 'echo 60' 'echo 0' '')"
+assert_contains "first unhealthy check is a strike" "$out" "1/2"
+assert_eq "one blip does not restart" "$(wd_calls 'restart xmrig')" "0"
+assert_eq "strike file records 1" "$(cat "$WDR/watchdog.fails")" "1"
+# Strike 2 (API unreachable — the other unhealthy shape): restart fires, counter resets.
+out="$(run_watchdog 'echo 60' 'false' '')"
+assert_contains "second consecutive fail restarts" "$out" "wedged"
+assert_eq "restart fired on the second strike" "$(wd_calls 'restart xmrig')" "1"
+assert_eq "strike file reset after restart" "$([ -f "$WDR/watchdog.fails" ] && echo y || echo n)" "n"
+# A healthy check between strikes resets the counter.
+out="$(run_watchdog 'echo 60' 'echo 0' '')"
+out="$(run_watchdog 'echo 60' 'echo 9999' '')"
+assert_eq "healthy check resets the strike counter" "$([ -f "$WDR/watchdog.fails" ] && echo y || echo n)" "n"
+# Thermal cutoff: above max_temp_c -> stop + marker, even with a healthy hashrate.
+: >"$WDR/calls.log"
+out="$(run_watchdog 'echo 92.5' 'echo 12345' '85')"
+assert_contains "over-temp stops the miner" "$out" "above max_temp_c=85"
+assert_eq "over-temp issued systemctl stop" "$(wd_calls 'stop xmrig')" "1"
+assert_eq "over-temp leaves the hold marker" "$([ -f "$WDR/watchdog.thermal-hold" ] && echo y || echo n)" "y"
+# Hold + still warm (81 > 85-5): stays stopped, no start.
+: >"$WDR/calls.log"
+out="$(run_watchdog 'echo 81' 'echo 0' '85' n)"
+assert_contains "hold above the hysteresis floor stays stopped" "$out" "stays stopped"
+assert_eq "no start while still warm" "$(wd_calls 'start xmrig')" "0"
+# Hold + cooled below max_temp_c - 5: starts exactly once, marker cleared.
+: >"$WDR/calls.log"
+out="$(run_watchdog 'echo 79.9' 'echo 0' '85' n)"
+assert_contains "cooled rig lifts the hold" "$out" "thermal hold lifted"
+assert_eq "cooled rig starts the miner once" "$(wd_calls 'start xmrig')" "1"
+assert_eq "hold marker cleared after the start" "$([ -f "$WDR/watchdog.thermal-hold" ] && echo y || echo n)" "n"
+# max_temp_c empty: thermal logic fully skipped even at 92°C (healthy path runs).
+: >"$WDR/calls.log"
+out="$(run_watchdog 'echo 92' 'echo 12345' '')"
+assert_contains "no max_temp_c -> thermal skipped" "$out" "healthy"
+assert_eq "no max_temp_c -> no stop" "$(wd_calls 'stop xmrig')" "0"
+# Unreadable temp must not stop a healthy miner.
+out="$(run_watchdog 'true' 'echo 12345' '85')"
+assert_contains "unreadable temp skips thermal" "$out" "healthy"
+# Stale hold after the operator removed max_temp_c: lifted (a skipped check must not strand the miner).
+touch "$WDR/watchdog.thermal-hold"
+out="$(run_watchdog 'echo 92' 'echo 0' '' n)"
+assert_contains "hold with max_temp_c removed is lifted" "$out" "no longer set"
+assert_eq "stale hold cleared" "$([ -f "$WDR/watchdog.thermal-hold" ] && echo y || echo n)" "n"
+# Service not active (and no hold): systemd Restart= owns it; state resets, exit 0.
+printf '1\n' >"$WDR/watchdog.fails"
+out="$(run_watchdog 'echo 60' 'echo 0' '' n)"
+assert_contains "inactive service is left to systemd" "$out" "not active"
+assert_contains "inactive service exits 0" "$out" "rc=0"
+assert_eq "inactive service clears the strike file" "$([ -f "$WDR/watchdog.fails" ] && echo y || echo n)" "n"
+# Black-box: the dispatcher reaches watchdog(), which is Linux-only.
+out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" watchdog </dev/null 2>&1)"
+rc=$?
+assert_rc "watchdog on macOS fails loudly" "$rc" "1"
+assert_contains "watchdog macOS message" "$out" "only supported on Linux"
 
 # #95: the tri-state `autotune` value normalizes to a mode (+ a perf|efficiency target). Legacy booleans
 # still map (true->performance, false->disabled); an unknown value hard-errors so a typo can't silently

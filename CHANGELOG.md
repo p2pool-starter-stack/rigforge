@@ -19,6 +19,15 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **Miner watchdog + optional thermal cutoff (#139).** `"watchdog": "enabled"` installs a systemd
+  timer (every `watchdog_interval_min` minutes, default 5) running one health check per tick: two
+  consecutive checks seeing 0 H/s or an unreachable worker API restart a wedged miner — the
+  process-alive-but-mining-nothing case `Restart=always` can't see — while a single blip never
+  does. `max_temp_c` (opt-in, empty by default) adds a runtime thermal cutoff: stop above it,
+  start again exactly once below `max_temp_c - 5` (fixed 5 °C hysteresis). A stopped miner is left
+  to systemd; an unreadable sensor never stops a healthy miner; the token never lands in unit
+  files or logs. Same timer machinery as periodic autotune; Linux-only; removed cleanly on
+  disable and by `uninstall`.
 - **`upgrade --check` (#148).** On-demand "is there a newer RigForge?" — one unauthenticated query
   of GitHub's releases API, compared against the local `VERSION` with `sort -V`, printing the new
   version, release URL, and the upgrade recipe when you're behind (an "ahead of the latest

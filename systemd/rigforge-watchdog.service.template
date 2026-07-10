@@ -1,0 +1,12 @@
+[Unit]
+Description=RigForge miner watchdog check
+After=$SERVICE_NAME.service
+
+[Service]
+Type=oneshot
+# This runs as root with no SUDO_USER, so tell rigforge.sh which operator to hand files back to (captured
+# at setup time) — otherwise its post-run re-own would chown the worker + config.json to root each run.
+Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
+# No max_temp_c or ACCESS_TOKEN baked in: the verb re-reads config.json every run, so a config edit
+# followed by `apply` needs no unit rewrite — and no token ever lands in a unit file.
+ExecStart=$SCRIPT_DIR/rigforge.sh watchdog
