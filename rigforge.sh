@@ -419,6 +419,22 @@ parse_config() {
     # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
     # no system-wide convenience change you didn't ask for.
     ADD_TO_PATH=$(jq -r '.add_to_path // false' "$CONFIG_JSON")
+
+    # Opt-in read-only sister API (#99): serves XMRig's /2/summary enriched with RigForge state
+    # (tune/power/health/provenance) on its own port. Same posture as :8080 — read-only, LAN-bound,
+    # gated by the SAME ACCESS_TOKEN (a second token would re-open the Pithead token-coordination
+    # problem for no gain).
+    _api=$(jq -r '.api // "disabled"' "$CONFIG_JSON")
+    case "$_api" in
+    disabled | false | off | none | null | "") API_MODE=disabled ;;
+    enabled | true | on) API_MODE=enabled ;;
+    *) error "Invalid \"api\" value '$_api' in config.json — use \"disabled\" or \"enabled\"." ;;
+    esac
+    API_PORT=$(jq -r '.api_port // 8081' "$CONFIG_JSON")
+    if ! [[ "$API_PORT" =~ ^[0-9]+$ ]] || [ "$API_PORT" -lt 1 ] || [ "$API_PORT" -gt 65535 ]; then error "api_port must be a port number 1-65535 (got: $API_PORT)."; fi
+    if [ "$API_PORT" = 8080 ]; then error "api_port 8080 collides with XMRig's own API — pick another port."; fi
+    API_BIND=$(jq -r '.api_bind // "0.0.0.0"' "$CONFIG_JSON")
+    [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
 }
 
 # --- Setup: workspace & dependency install ---
@@ -843,6 +859,29 @@ install_autotune() {
     sudo systemctl enable --now rigforge-autotune.timer 2>/dev/null || true
 }
 
+# Sister API (#99): socket-activated — systemd owns the listener; one short-lived
+# `rigforge.sh api-serve` process handles each request. No resident daemon, no new dependencies.
+# Toggle shape mirrors install_autotune above.
+install_api() {
+    [ "$OS_TYPE" == "Linux" ] || return 0
+    local sock="$SYSTEMD_DIR/rigforge-api.socket" svc="$SYSTEMD_DIR/rigforge-api@.service"
+    if [ "${API_MODE:-disabled}" = "disabled" ]; then
+        if [ -f "$sock" ]; then
+            sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
+            sudo rm -f "$sock" "$svc"
+            sudo systemctl daemon-reload 2>/dev/null || true
+            log "Sister API disabled."
+        fi
+        return 0
+    fi
+    # Never echo the token itself — only whether one is required.
+    log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open))..."
+    API_BIND="$API_BIND" API_PORT="$API_PORT" envsubst '$API_BIND $API_PORT' <"$SCRIPT_DIR/systemd/rigforge-api.socket.template" | sudo tee "$sock" >/dev/null
+    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api@.service.template" | sudo tee "$svc" >/dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rigforge-api.socket 2>/dev/null || true
+}
+
 tune_kernel() {
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Skipping kernel tuning (Not supported on $OS_TYPE)."
@@ -1042,6 +1081,8 @@ main() {
     install_service
     CURRENT_STEP="configuring autotune"
     install_autotune
+    CURRENT_STEP="configuring the sister API"
+    install_api
     CURRENT_STEP="linking the rigforge command"
     link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
     CURRENT_STEP="reconciling file ownership"
@@ -1161,6 +1202,10 @@ uninstall() {
     worker_root=$(_worker_root_from_config)
 
     # 1. systemd service (+ the optional autotune timer, #46)
+    if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ]; then
+        sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service"
+    fi
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-autotune.timer" "$SYSTEMD_DIR/rigforge-autotune.service"
@@ -2762,6 +2807,7 @@ apply() {
     _apply_runtime
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
+        install_api >/dev/null 2>&1 || true
         _autotune_apply_notice
     fi
 }
@@ -2900,6 +2946,159 @@ _msr_rdmsr_verify() { # <preset> -> sets _MSR_OK / _MSR_TOTAL / _MSR_UNREAD / _M
     done <<EOF
 $regs
 EOF
+}
+
+# --- Sister API (#99): read-only stats superset on its own port ---
+
+# Full /2/summary body from the local worker API (empty when unreachable). Sibling of
+# _read_api_hashrate with the same API_CMD test hook and Bearer branch (see the comment there).
+_xmrig_summary_json() {
+    local url="http://127.0.0.1:8080/2/summary"
+    if [ -n "${API_CMD:-}" ]; then
+        eval "$API_CMD"
+        return
+    fi
+    command -v curl >/dev/null 2>&1 || return 0
+    if [ -n "${ACCESS_TOKEN:-}" ]; then
+        curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
+    else
+        curl -fsS --max-time 5 "$url" 2>/dev/null || true
+    fi
+}
+
+# {watts, hs_per_watt} over a 1-second RAPL energy window; nulls when unmeasurable (no RAPL /
+# non-root). RAPL only — TUNE_POWER_CMD is an operator-session env var whose value is eval'd, and
+# config-derived text must never reach eval inside a network-facing handler.
+_api_power_json() { # <hashrate|"">
+    local hr="${1:-}" e0 e1 t0 t1 mx w=""
+    e0=$(_rapl_sum energy_uj || true)
+    t0=$(_now_s)
+    if [ -n "$e0" ]; then
+        sleep 1
+        e1=$(_rapl_sum energy_uj || true)
+        t1=$(_now_s)
+        mx=$(_rapl_sum max_energy_range_uj || true)
+        w=$(_watts_from_energy "$e0" "$e1" "${mx:-0}" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b - a}')")
+    fi
+    jq -n --arg w "$w" --arg hr "$hr" '{watts: (if $w == "" then null else ($w | tonumber) end), hs_per_watt: (if $w == "" or $hr == "" or ($w | tonumber) == 0 then null else (($hr | tonumber) / ($w | tonumber)) end)}'
+}
+
+# Tune/autotune state as JSON — the machine-readable sibling of _tune_history (same sources, same
+# systemctl reads). Every jq program here is single-line: kcov cannot attribute in-string lines.
+_api_tune_json() {
+    local ovr="$WORKER_ROOT/tune-overrides.json" logf="$WORKER_ROOT/rigforge-tune.json"
+    local applied=null target=null best=null n=null aten=false atgt="" asched="" anext=""
+    if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then applied=$(cat "$ovr"); fi
+    if [ -s "$logf" ] && jq -e . "$logf" >/dev/null 2>&1; then
+        target=$(jq -c '.target // null' "$logf" 2>/dev/null || echo null)
+        best=$(jq -c '.best.hashrate // null' "$logf" 2>/dev/null || echo null)
+        n=$(jq -c '.results | length' "$logf" 2>/dev/null || echo null)
+    fi
+    if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
+        aten=true
+        atgt=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=AUTOTUNE_TARGET=//p' | head -1)
+        asched=$(systemctl cat rigforge-autotune.timer 2>/dev/null | sed -nE 's/^OnCalendar=//p' | head -1)
+        anext=$(systemctl show rigforge-autotune.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    fi
+    jq -n --argjson applied "$applied" --argjson target "$target" --argjson best "$best" --argjson n "$n" --argjson aten "$aten" --arg atgt "$atgt" --arg asched "$asched" --arg anext "$anext" '{applied: $applied, target: $target, last_best_hs: $best, candidates_tried: $n, autotune: {enabled: $aten, target: (if $atgt == "" then null else $atgt end), schedule: (if $asched == "" then null else $asched end), next: (if $anext == "" then null else $anext end)}}'
+}
+
+# Health probes as JSON — reuses doctor's probe helpers and comparison expressions verbatim so the
+# wire and the human report can never disagree; doctor stays the judgmental formatter.
+_health_json() {
+    local sa=false hp_total="" hp1g="" gov="" msr_st="" wr="" logf="" mem pop nch spd rated smt="" bv="" bn="" pct="" thr=null xmp=null effk maxk
+    if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then sa=true; fi
+    hp_total=$(awk '/^HugePages_Total:/ {print $2}' "$MEMINFO" 2>/dev/null || true)
+    hp1g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || true)
+    gov=$(cat "$GOVERNOR_FILE" 2>/dev/null || true)
+    wr=$(_worker_root_from_config)
+    [ -n "$wr" ] && logf="$wr/xmrig.log"
+    msr_st=$(_msr_log_status "${logf:-/nonexistent}" | cut -f1)
+    mem=$(_mem_summary)
+    read -r pop nch spd rated <<<"${mem:-0 0 0 0}"
+    if [ "${rated:-0}" -gt 0 ] 2>/dev/null && [ "${spd:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "$spd" -lt "$rated" ]; then xmp=false; else xmp=true; fi
+    fi
+    smt=$(cat "$SMT_CONTROL" 2>/dev/null || true)
+    bv=$(_dmi board_vendor)
+    bn=$(_dmi board_name)
+    if [ "$sa" = true ]; then
+        maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null || true)
+        effk=$(_cpu_eff_khz)
+        if [ -n "$effk" ] && [ "${maxk:-0}" -gt 0 ] 2>/dev/null; then
+            pct=$((effk * 100 / maxk))
+            if [ "$pct" -lt "$MIN_CLOCK_PCT" ]; then thr=true; else thr=false; fi
+        fi
+    fi
+    jq -n --argjson sa "$sa" --arg hpt "${hp_total:-}" --arg hp1g "${hp1g:-}" --arg gov "$gov" --arg msr "${msr_st:-none}" --arg pop "${pop:-0}" --arg nch "${nch:-0}" --arg spd "${spd:-0}" --arg rated "${rated:-0}" --argjson xmp "$xmp" --arg smt "$smt" --arg bv "$bv" --arg bn "$bn" --arg pct "${pct:-}" --argjson thr "$thr" '{service_active: $sa, hugepages_total: (if $hpt == "" then null else ($hpt | tonumber) end), hugepages_1g: (if $hp1g == "" then null else ($hp1g | tonumber) end), governor: (if $gov == "" then null else $gov end), msr: $msr, ram: {modules: ($pop | tonumber), channels: ($nch | tonumber), mts: ($spd | tonumber), rated_mts: ($rated | tonumber)}, xmp: $xmp, smt: (if $smt == "" then null else $smt end), firmware: {vendor: (if $bv == "" then null else $bv end), board: (if $bn == "" then null else $bn end)}, clock_pct_of_boost: (if $pct == "" then null else ($pct | tonumber) end), throttling: $thr}'
+}
+
+# Provenance + tune + power + health, namespaced under one `rigforge` key.
+_api_rigforge_block() { # <hashrate|"">
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health}'
+}
+
+# The only place a response is written. Content-Length in BYTES (wc -c), not ${#body} — bodies can
+# carry multibyte DMI strings.
+_http_respond() { # <code> <reason> <body>
+    local body="$3" len
+    len=$(printf '%s' "$body" | wc -c | tr -d ' ')
+    printf 'HTTP/1.1 %s %s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$1" "$2" "$len" "$body"
+}
+
+# One request in on stdin, one response out on stdout — spawned per connection by the
+# rigforge-api.socket unit (Accept=yes). Read-only by construction: GET only, fixed routes, nothing
+# from the request is ever executed or logged (the auth header is compared, never echoed). Always
+# returns 0 — a non-zero exit would mark the per-connection unit failed and spam the journal for
+# what is just a bad request.
+api_serve() {
+    [ "$OS_TYPE" = Linux ] || error "api-serve is spawned by the rigforge-api systemd socket and is Linux-only."
+    # parse_config error()s — i.e. EXITS — on a bad config, which `||` cannot catch in this shell.
+    # Probe it in a subshell first so a broken config yields a 500 response instead of a dead
+    # connection, then load it for real (now guaranteed not to exit).
+    (parse_config >/dev/null 2>&1) || {
+        _http_respond 500 "Internal Server Error" '{"error":"config unreadable"}'
+        return 0
+    }
+    parse_config >/dev/null 2>&1
+    local reqline="" method="" path="" _rest="" hline="" auth=""
+    IFS= read -t 5 -r reqline || {
+        _http_respond 408 "Request Timeout" '{"error":"timeout"}'
+        return 0
+    }
+    reqline=${reqline%$'\r'}
+    read -r method path _rest <<<"$reqline" || true
+    while IFS= read -t 5 -r hline; do
+        hline=${hline%$'\r'}
+        if [ -z "$hline" ]; then break; fi
+        case "$hline" in [Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:*) auth="${hline#*: }" ;; esac
+    done
+    if [ "$method" != GET ]; then
+        _http_respond 405 "Method Not Allowed" '{"error":"read-only API"}'
+        return 0
+    fi
+    if [ -n "${ACCESS_TOKEN:-}" ] && [ "$auth" != "Bearer $ACCESS_TOKEN" ]; then
+        _http_respond 401 "Unauthorized" '{"error":"unauthorized"}'
+        return 0
+    fi
+    path=${path%%\?*}
+    local sum="" hr="" rf="" body=""
+    case "$path" in
+    /1/summary | /2/summary)
+        sum=$(_xmrig_summary_json || true)
+        printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
+        hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
+        rf=$(_api_rigforge_block "$hr")
+        # Superset rule: every XMRig field passes through unchanged, plus one namespaced key. When
+        # the miner is down the RigForge data still serves — that is when health matters most.
+        if [ -n "$sum" ]; then body=$(jq -n --argjson x "$sum" --argjson r "$rf" '$x + {rigforge: $r}'); else body=$(jq -n --argjson r "$rf" '{rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
+        _http_respond 200 OK "$body"
+        ;;
+    /health) _http_respond 200 OK "$(_health_json)" ;;
+    /tune) _http_respond 200 OK "$(_api_tune_json)" ;;
+    *) _http_respond 404 "Not Found" '{"error":"not found"}' ;;
+    esac
+    return 0
 }
 
 # --- Doctor: one-stop health check ---
@@ -3150,6 +3349,8 @@ Backup:
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
 
 Info:
+  api-serve  (internal) answer one sister-API request on stdin/stdout — spawned per connection
+             by the rigforge-api systemd socket ("api": "enabled" in config.json)
   version    print the RigForge version  (-v, --version)
   help       show this help              (-h, --help)
 
@@ -3168,6 +3369,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     autotune) autotune ;;
     doctor) doctor ;;
+    api-serve) api_serve ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;
@@ -3187,6 +3389,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, api-serve, version, help." ;;
     esac
 fi

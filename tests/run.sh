@@ -145,7 +145,7 @@ EOF
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
-    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g"
+    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -3513,6 +3513,197 @@ out="$( (
     parse_config 2>&1
 ))"
 assert_contains "parse_config rejects the unedited template (no accidental deploy)" "$out" "not a valid hostname"
+
+# ---------------------------------------------------------------------------
+# Sister API (#99): config keys, the socket-unit install toggle, and the api-serve request handler.
+echo "== unit: sister API config keys (#99) =="
+api_mode() { parse_and_print "$1" "$ROOT" API_MODE; }
+c="$(mkconf api_def "{ $POOL }")"
+assert_eq "api omitted -> disabled" "$(api_mode "$c")" "disabled"
+assert_eq "api_port default 8081" "$(parse_and_print "$c" "$ROOT" API_PORT)" "8081"
+assert_eq "api_bind default 0.0.0.0" "$(parse_and_print "$c" "$ROOT" API_BIND)" "0.0.0.0"
+c="$(mkconf api_on "{ $POOL, \"api\": \"enabled\", \"api_port\": 9000, \"api_bind\": \"192.168.1.5\" }")"
+assert_eq "api enabled parses" "$(api_mode "$c")" "enabled"
+assert_eq "api_port override honoured" "$(parse_and_print "$c" "$ROOT" API_PORT)" "9000"
+assert_eq "api_bind override honoured" "$(parse_and_print "$c" "$ROOT" API_BIND)" "192.168.1.5"
+c="$(mkconf api_bad "{ $POOL, \"api\": \"maybe\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "invalid api value rejected (typo must not silently disable)" "$?" "1"
+c="$(mkconf api_p0 "{ $POOL, \"api_port\": 8080 }")"
+parse_rc "$c" "$ROOT"
+assert_rc "api_port 8080 collision rejected" "$?" "1"
+c="$(mkconf api_pbig "{ $POOL, \"api_port\": 70000 }")"
+parse_rc "$c" "$ROOT"
+assert_rc "api_port out of range rejected" "$?" "1"
+c="$(mkconf api_pstr "{ $POOL, \"api_port\": \"abc\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "non-numeric api_port rejected" "$?" "1"
+c="$(mkconf api_bbad "{ $POOL, \"api_bind\": \"not an ip!\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "malformed api_bind rejected" "$?" "1"
+
+echo "== black-box: install_api socket enable/disable (#99) =="
+APS="$(mktemp -d "$SANDBOX/aps.XXXXXX")"
+mkdir -p "$APS/systemd"
+cp "$ROOT/systemd/rigforge-api.socket.template" "$ROOT/systemd/rigforge-api@.service.template" "$APS/systemd/"
+run_api_install() { # <disabled|enabled>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$APS"
+        SYSTEMD_DIR="$APS/systemd"
+        REAL_USER=rfop
+        API_MODE="$1"
+        API_BIND=0.0.0.0
+        API_PORT=8081
+        set +e
+        PATH="$STUBS:$PATH" install_api 2>&1
+    )
+}
+out="$(run_api_install enabled)"
+assert_eq "api enable writes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "y"
+assert_eq "api enable writes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "y"
+assert_contains "socket binds the configured address:port" "$(cat "$APS/systemd/rigforge-api.socket")" "ListenStream=0.0.0.0:8081"
+assert_contains "socket is per-connection (Accept=yes)" "$(cat "$APS/systemd/rigforge-api.socket")" "Accept=yes"
+assert_contains "service invokes the api-serve verb" "$(cat "$APS/systemd/rigforge-api@.service")" "rigforge.sh api-serve"
+assert_contains "service is sandboxed read-only (#99 hardening)" "$(cat "$APS/systemd/rigforge-api@.service")" "ProtectSystem=strict"
+assert_contains "enable log reports token posture without any token value" "$out" "token: open"
+out="$(run_api_install disabled)"
+assert_eq "api disable removes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
+assert_eq "api disable removes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
+
+echo "== unit: api-serve request handling (#99) =="
+APIQ="$(mktemp -d "$SANDBOX/apiq.XXXXXX")"
+mkdir -p "$APIQ/home/worker"
+printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333"}] }\n' "$APIQ" >"$APIQ/config.json"
+api_req() { # <request (printf %b)> <config_json> -> full response, CRs stripped
+    printf '%b' "$1" | (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$2"
+        set +e
+        PATH="$STUBS:$PATH" api_serve 2>/dev/null
+    ) | tr -d '\r'
+}
+# Happy path: the stub curl answers the local xmrig probe, so the superset rule is provable.
+resp="$(api_req 'GET /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "summary responds 200" "$resp" "HTTP/1.1 200 OK"
+assert_contains "response carries Content-Length" "$resp" "Content-Length:"
+body="$(printf '%s' "$resp" | sed '1,/^$/d')"
+assert_eq "xmrig fields pass through unchanged (superset rule)" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
+assert_eq "rigforge.version = the VERSION file" "$(printf '%s' "$body" | jq -r '.rigforge.version')" "$(cat "$ROOT/VERSION")"
+assert_eq "provenance carries the full pinned commit" "$(printf '%s' "$body" | jq -r '.rigforge.xmrig_commit | length')" "40"
+assert_eq "tune state: no runs yet -> null" "$(printf '%s' "$body" | jq -r '.rigforge.tune.candidates_tried')" "null"
+# /1/summary is the same handler; unreachable xmrig still answers 200 with the marker.
+resp="$(api_req 'GET /1/summary HTTP/1.1\r\n\r\n' /dev/null 2>/dev/null || true)"
+UNREACH="$(printf 'GET /1/summary HTTP/1.1\r\n\r\n' | (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$APIQ/config.json"
+    set +e
+    API_CMD='printf %s ""' api_serve 2>/dev/null
+) | tr -d '\r')"
+assert_contains "xmrig down still answers 200" "$UNREACH" "HTTP/1.1 200 OK"
+assert_contains "xmrig down is marked, not fatal" "$UNREACH" '"xmrig_api": "unreachable"'
+# /tune with seeded state files.
+printf '{"cpu":{"rx":16}}' >"$APIQ/home/worker/tune-overrides.json"
+printf '{"target":"perf","best":{"hashrate":1200},"results":[{},{}]}' >"$APIQ/home/worker/rigforge-tune.json"
+resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+body="$(printf '%s' "$resp" | sed '1,/^$/d')"
+assert_eq "tune: applied overrides served" "$(printf '%s' "$body" | jq -r '.applied.cpu.rx')" "16"
+assert_eq "tune: last best hashrate served" "$(printf '%s' "$body" | jq -r '.last_best_hs')" "1200"
+assert_eq "tune: candidate count served" "$(printf '%s' "$body" | jq -r '.candidates_tried')" "2"
+assert_eq "tune: autotune timer visible (stub systemctl)" "$(printf '%s' "$body" | jq -r '.autotune.enabled')" "true"
+# /health against the #78 firmware fixtures (memory profile off, SMT off, throttled clock).
+HRESP="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$APIQ/config.json"
+    MEMINFO="$DOC/meminfo_ok"
+    GOVERNOR_FILE="$DOC/gov_perf"
+    HUGEPAGES_1G_NR="$DOC/nr1g"
+    DMIDECODE="$DOC/dmidecode_xmpoff"
+    SMT_CONTROL="$DOC/smt_off"
+    DMI_DIR="$DOC/dmi"
+    CPUFREQ_MAX="$DOC/cpufreq_max"
+    CPU_SYSFS="$DOC/cpu_throttle"
+    set +e
+    PATH="$STUBS:$PATH" api_serve 2>/dev/null
+) | tr -d '\r')"
+hbody="$(printf '%s' "$HRESP" | sed '1,/^$/d')"
+assert_eq "health: memory profile off -> xmp false" "$(printf '%s' "$hbody" | jq -r '.xmp')" "false"
+assert_eq "health: ram channels from dmidecode" "$(printf '%s' "$hbody" | jq -r '.ram.channels')" "2"
+assert_eq "health: throttled clock flagged (service active via stub)" "$(printf '%s' "$hbody" | jq -r '.throttling')" "true"
+assert_eq "health: hugepages_total is numeric" "$(printf '%s' "$hbody" | jq -r '.hugepages_total | type')" "number"
+HRESP2="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$APIQ/config.json"
+    DMIDECODE="$DOC/dmidecode_xmpon"
+    set +e
+    PATH="$STUBS:$PATH" api_serve 2>/dev/null
+) | tr -d '\r')"
+assert_eq "health: memory profile on -> xmp true" "$(printf '%s' "$HRESP2" | sed '1,/^$/d' | jq -r '.xmp')" "true"
+# Auth: with ACCESS_TOKEN set, the exact Bearer is required; the token never appears in a response.
+printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "tok1" }\n' >"$APIQ/config2.json"
+resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "no header -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
+resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "wrong bearer -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
+assert_absent "401 body never echoes the token" "$resp" "tok1"
+resp="$(api_req 'GET /health HTTP/1.1\r\nauthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "right bearer (any header case) -> 200" "$resp" "HTTP/1.1 200 OK"
+# Method / route / timeout / config guards.
+resp="$(api_req 'POST /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "non-GET -> 405 (read-only API)" "$resp" "HTTP/1.1 405 Method Not Allowed"
+resp="$(api_req 'GET /nope HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "unknown route -> 404" "$resp" "HTTP/1.1 404 Not Found"
+resp="$(api_req '' "$APIQ/config.json")"
+assert_contains "empty request -> 408" "$resp" "HTTP/1.1 408 Request Timeout"
+printf '{broken' >"$APIQ/bad.json"
+resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/bad.json")"
+assert_contains "unreadable config -> 500, not a crash" "$resp" "HTTP/1.1 500 Internal Server Error"
+# Power: a static RAPL reading covers the measured branch (0 W over the window -> hs_per_watt null).
+RAPLF="$APIQ/rapl"
+mkdir -p "$RAPLF/intel-rapl:0"
+printf 'package-0' >"$RAPLF/intel-rapl:0/name"
+printf '5000000' >"$RAPLF/intel-rapl:0/energy_uj"
+printf '262143328850' >"$RAPLF/intel-rapl:0/max_energy_range_uj"
+pw="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    RAPL_DIR="$RAPLF"
+    # Deterministic clock: macOS date lacks %N, and a real 1s window is flaky. _now_s runs inside
+    # command substitutions (subshells), so the tick must live in a file, not a variable.
+    CLK="$RAPLF/clk"
+    _now_s() {
+        local t
+        t=$(cat "$CLK" 2>/dev/null || echo 100)
+        echo "$t"
+        echo $((t + 1)) >"$CLK"
+    }
+    set +e
+    _api_power_json 1000
+) | jq -c '[.watts == 0, .hs_per_watt]')"
+assert_eq "power: static RAPL energy -> 0 W, no hs-per-watt" "$pw" '[true,null]'
+pw="$( (
+    source "$SCRIPT"
+    set +e
+    _api_power_json ""
+) | jq -c '{w: .watts, hpw: .hs_per_watt}')"
+assert_eq "power: no RAPL -> nulls" "$pw" '{"w":null,"hpw":null}'
+# Dispatch: the verb is wired (Linux answers on stdin; elsewhere it refuses as socket-spawned only).
+if [ "$(uname -s)" = Linux ]; then
+    out="$(printf '' | RIGFORGE_HOME="$APIQ" PATH="$STUBS:$PATH" bash "$SCRIPT" api-serve 2>/dev/null | tr -d '\r' || true)"
+    assert_contains "black-box api-serve dispatch answers (Linux)" "$out" "408"
+else
+    out="$( (printf '' | RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-serve) 2>&1 || true)"
+    assert_contains "api-serve refuses off-Linux" "$out" "Linux-only"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
