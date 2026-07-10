@@ -296,6 +296,15 @@ Everything else works anywhere: `setup`, `apply`, `bench`, the offline `tune`, `
 
 ## Logs
 
+## Filing a bug
+
+`./rigforge.sh support-bundle` (no root needed) collects what a maintainer needs — `doctor` output,
+version, both configs (structurally redacted: token and pool password removed, pool user/wallet
+masked to first-4…last-4), a 500-line miner-log tail, tuning files, unit files, hardware basics —
+into a mode-600 tarball next to the script. It never collects the journal, shell history, or
+unredacted configs, and never uploads anything. Extract and review it before attaching to a
+public issue.
+
 Tab completion is opt-in and installs nothing by default:
 
 ```bash

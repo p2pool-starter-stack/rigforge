@@ -2914,6 +2914,85 @@ restore() {
     WORKER_ROOT="$wr" _reown_worker # restored config.json + tuning were written as root
 }
 
+# Structural secret redaction for the support bundle (#147): jq path operations only — NEVER sed
+# over secret values (a regex that misses one quoting variant leaks; deleting/replacing a JSON path
+# can't). Tokens and pool passwords go entirely; the pool user (usually a wallet — pseudonymous but
+# it publicly links every rig and payout to one identity) keeps first-4…last-4 so a maintainer can
+# still tell rigs apart and spot the same-wallet-wrong-field misconfig.
+_redact_config() {
+    jq 'def mask: if length > 12 then .[0:4] + "…" + .[-4:] else "<redacted>" end; (if (.ACCESS_TOKEN // "") != "" then .ACCESS_TOKEN = "<redacted>" else . end) | (if .http?."access-token" != null then .http."access-token" = "<redacted>" else . end) | (if .pools then .pools = (.pools | map((if (.pass // "") != "" then .pass = "<redacted>" else . end) | (if (.user // "") != "" then .user = (.user | mask) else . end))) else . end)'
+}
+
+# support-bundle (#147): everything a maintainer needs to debug a miner, nothing secret, one local
+# tarball (never uploaded anywhere — the no-phone-home posture in SECURITY.md). No root required;
+# root-only probes inside doctor degrade to their own warn lines, which is itself useful signal.
+support_bundle() {
+    local arg
+    for arg in "$@"; do
+        error "Unexpected argument for support-bundle: $arg. Run '$0 help'."
+    done
+    [ -f "$CONFIG_JSON" ] || error "No config.json to collect. Run 'setup' first."
+
+    local wr stage collected="" skipped="" f
+    wr=$(_worker_root_from_config)
+    stage=$(mktemp -d)
+    _take() { collected="$collected $1"; }
+    _skip() { skipped="$skipped $1"; }
+
+    cmd_version >"$stage/version.txt" && _take version.txt
+    # Subprocess, not a function call: doctor's error-exits can't kill the bundle. Strip ANSI codes.
+    ("$0" doctor </dev/null 2>&1 || true) | sed -e $'s/\x1b\[[0-9;]*m//g' >"$stage/doctor.txt" && _take doctor.txt
+    # Fail closed: if jq can't redact a file, the file stays OUT of the bundle — never the original.
+    if _redact_config <"$CONFIG_JSON" >"$stage/config.redacted.json" 2>/dev/null; then
+        _take config.redacted.json
+    else
+        rm -f "$stage/config.redacted.json"
+        _skip "config.redacted.json(unparseable)"
+    fi
+    if [ -n "$wr" ] && [ -f "$wr/xmrig/build/config.json" ]; then
+        if _redact_config <"$wr/xmrig/build/config.json" >"$stage/xmrig-config.redacted.json" 2>/dev/null; then
+            _take xmrig-config.redacted.json
+        else
+            rm -f "$stage/xmrig-config.redacted.json"
+            _skip "xmrig-config.redacted.json(unparseable)"
+        fi
+    fi
+    if [ -n "$wr" ] && [ -f "$wr/xmrig.log" ]; then
+        tail -n 500 "$wr/xmrig.log" >"$stage/xmrig.log.tail" 2>/dev/null && _take xmrig.log.tail
+    fi
+    for f in tune-overrides.json rigforge-tune.json; do
+        [ -n "$wr" ] && [ -f "$wr/$f" ] && cp "$wr/$f" "$stage/$f" && _take "$f"
+    done
+    for f in "$SERVICE_NAME.service" rigforge-autotune.service rigforge-autotune.timer; do
+        [ -f "$SYSTEMD_DIR/$f" ] && cp "$SYSTEMD_DIR/$f" "$stage/$f" 2>/dev/null && _take "$f"
+    done
+    {
+        uname -a
+        if [ "$OS_TYPE" = Linux ]; then
+            lscpu 2>/dev/null || true
+            free -h 2>/dev/null || true
+        else
+            sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+            sysctl -n hw.memsize 2>/dev/null || true
+        fi
+    } >"$stage/system.txt" 2>/dev/null && _take system.txt
+    jq -n --arg v "$(cmd_version)" --arg host "$(hostname 2>/dev/null)" --arg files "${collected# }" --arg skipped "${skipped# }" \
+        '{rigforge: $v, source_host: $host, files: ($files | split(" ")), not_collected: (["journalctl (system-wide)", "shell history", "unredacted configs", "backups/"] + (if $skipped != "" then ($skipped | split(" ")) else [] end))}' \
+        >"$stage/manifest.json" 2>/dev/null || true
+
+    local stamp archive
+    stamp=$(date +%Y%m%d-%H%M%S)
+    archive="$SCRIPT_DIR/rigforge-support-$(hostname 2>/dev/null)-$stamp.tar.gz"
+    (umask 077 && tar -czf "$archive" -C "$stage" .)
+    rm -rf "$stage"
+    chmod 600 "$archive" 2>/dev/null || true
+
+    log "Collected:${collected}"
+    log "NOT collected: journalctl, shell history, unredacted configs, ./backups (tokens and pool passwords are redacted; pool user/wallet is masked to first-4…last-4)."
+    log "Bundle: $archive"
+    log "Review the extracted contents before attaching it to a public issue."
+}
+
 # --- Commands: macOS & systemd service control (#11) ---
 
 # Service-control verbs. On Linux they wrap the systemd unit; on macOS (no systemd) start/stop/restart/
@@ -3147,7 +3226,7 @@ svc_disable() {
 # verbs (api-refresh, msr-apply) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
-_rigforge_verbs="setup upgrade uninstall tune autotune doctor bios status logs start up stop down restart enable disable apply bench backup restore version help completion"
+_rigforge_verbs="setup upgrade uninstall tune autotune doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
 _rigforge() {
     local cur verb
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -4128,6 +4207,7 @@ Info:
              ExecStartPre when miner_user is set (the unprivileged miner can't write MSRs)
   api-refresh (internal) recompute the sister API's response files — driven every 15s by the
              rigforge-api-refresh systemd timer ("api": "enabled" in config.json)
+  support-bundle  collect doctor/version/configs/log-tail into a redacted tarball for bug reports
   completion print a bash/zsh tab-completion script: completion bash|zsh
   version    print the RigForge version  (-v, --version)
   help       show this help              (-h, --help)
@@ -4178,12 +4258,16 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         restore "$@"
         ;;
+    support-bundle)
+        shift
+        support_bundle "$@"
+        ;;
     completion)
         shift
         cmd_completion "$@"
         ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, msr-apply, completion, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, msr-apply, support-bundle, completion, version, help." ;;
     esac
 fi

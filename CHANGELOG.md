@@ -19,6 +19,11 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **`support-bundle` (#147).** One verb collects everything a bug report needs — doctor output,
+  version, configs, miner-log tail, tuning + unit files, hardware basics — into a mode-600 local
+  tarball with secrets redacted structurally in jq (token/pass removed, wallet masked to
+  first-4…last-4; a file jq can't parse is skipped, never shipped unredacted). Collects the
+  minimum, uploads nothing, and says exactly what it did and didn't take.
 - **`setup --dry-run` / `apply --dry-run` (#146).** A numbered, machine-specific plan of exactly
   what would happen — missing packages by name, build-or-skip, the exact GRUB cmdline
   before → after and whether a reboot follows, fstab/unit/timer actions — computed from read-only
