@@ -894,6 +894,18 @@ EOF
 
 # Render the miner unit from its template (#140 made this shared: `apply` must re-render when
 # miner_user changes, without install_service's enable/start side effects).
+# Privilege separation (#140): create the dedicated system user on first use. Never deleted by
+# uninstall (we can't prove we created it; an inert nologin user is safer than userdel). Called
+# from BOTH install paths — setup (install_service) and apply's unit re-render — because apply is
+# the documented config-change path for toggling miner_user; a unit saying User=<absent user>
+# fails with status=217/USER (caught live on miner-0 during the v1.4.0 gate).
+_ensure_miner_user() {
+    if [ -n "${MINER_USER:-}" ] && ! id -u "$MINER_USER" >/dev/null 2>&1; then
+        log "Creating system user '$MINER_USER' for the miner..."
+        sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$MINER_USER"
+    fi
+}
+
 _render_xmrig_unit() {
     local msr_line=""
     # Root-side MSR application for an unprivileged miner: no `-` prefix — on an opted-in rig a
@@ -914,12 +926,7 @@ install_service() {
         NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
         export NFT_PATH
 
-        # Privilege separation (#140): create the dedicated system user on first use. Never deleted
-        # by uninstall (we can't prove we created it; an inert nologin user is safer than userdel).
-        if [ -n "${MINER_USER:-}" ] && ! id -u "$MINER_USER" >/dev/null 2>&1; then
-            log "Creating system user '$MINER_USER' for the miner..."
-            sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$MINER_USER"
-        fi
+        _ensure_miner_user
         _render_xmrig_unit
 
         # Reload systemd daemon
@@ -2990,6 +2997,7 @@ apply() {
         # A miner_user change only lands in the unit file — re-render + daemon-reload so the
         # _apply_runtime restart below picks it up (#140).
         parse_config
+        _ensure_miner_user
         NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
         export NFT_PATH
         export BUILD_DIR="$WORKER_ROOT/xmrig/build"
