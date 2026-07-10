@@ -19,6 +19,13 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **`upgrade --check` (#148).** On-demand "is there a newer RigForge?" — one unauthenticated query
+  of GitHub's releases API, compared against the local `VERSION` with `sort -V`, printing the new
+  version, release URL, and the upgrade recipe when you're behind (an "ahead of the latest
+  release" note on develop checkouts, never a downgrade prompt). Runs exactly when you type it —
+  nothing scheduled, no other verb calls it, so the "no version ping" promise in SECURITY.md
+  stands — and always exits 0, so it's safe inside operator scripts. `doctor` stays fully offline;
+  its all-clear summary now just mentions the command.
 - **`support-bundle` (#147).** One verb collects everything a bug report needs — doctor output,
   version, configs, miner-log tail, tuning + unit files, hardware basics — into a mode-600 local
   tarball with secrets redacted structurally in jq (token/pass removed, wallet masked to

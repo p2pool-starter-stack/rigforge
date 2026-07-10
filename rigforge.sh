@@ -1452,9 +1452,59 @@ _post_upgrade_retune() {
     fi
 }
 
+# upgrade --check: compare the local VERSION against GitHub's latest release tag, on demand only.
+# This is the one place RigForge talks to GitHub's API, and it runs exactly when the operator types
+# it — never scheduled, never piggybacked on another verb (SECURITY.md's "no version ping" promise
+# stands because the check is explicit). Always returns 0: an update *hint* must never break a
+# script that calls it. Reads one file and one URL; no parse_config, no root, no other side effects.
+_upgrade_check() {
+    local local_v remote_v url body highest
+    local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null) || true
+    if [ -z "$local_v" ]; then
+        warn "No VERSION file at $SCRIPT_DIR/VERSION — can't compare against the latest release."
+        return 0
+    fi
+    body=$(curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null) || {
+        warn "Couldn't reach GitHub to check for a newer release — try again later."
+        return 0
+    }
+    remote_v=$(printf '%s' "$body" | jq -r '.tag_name // empty' 2>/dev/null) || true
+    url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null) || true
+    remote_v="${remote_v#v}"
+    if [ -z "$remote_v" ]; then
+        warn "Couldn't reach GitHub to check for a newer release — try again later."
+        return 0
+    fi
+    if [ "$local_v" = "$remote_v" ]; then
+        log "RigForge $local_v is the latest release."
+        return 0
+    fi
+    highest=$(printf '%s\n%s\n' "$local_v" "$remote_v" | sort -V | tail -n1)
+    if [ "$highest" = "$remote_v" ]; then
+        log "A newer RigForge is available: $remote_v (you have $local_v)."
+        if [ -n "$url" ]; then
+            log "Release notes: $url"
+        fi
+        log "Update: cd $SCRIPT_DIR && git pull && sudo $0 upgrade  (tag-pinned fleets: git fetch --tags && git checkout v$remote_v)"
+    else
+        log "RigForge $local_v is ahead of the latest release ($remote_v) — development build."
+    fi
+    return 0
+}
+
 # Upgrade flow: rebuild + restart ONLY if the pinned XMRig version/commit changed. Skips the
 # setup-only steps (dependency install, kernel tuning) — those don't change on a version bump.
 upgrade() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+        --check)
+            _upgrade_check
+            return 0
+            ;;
+        *) error "Unexpected argument for upgrade: $arg. Run '$0 help'." ;;
+        esac
+    done
     check_prerequisites
     parse_config
     decide_rebuild
@@ -3919,6 +3969,7 @@ EOF
     echo ""
     if [ "$issues" -eq 0 ]; then
         log "doctor: all critical checks passed."
+        log "Check for a newer RigForge any time: '$0 upgrade --check'."
     else
         warn "doctor: $issues issue(s) found — see the hints above."
     fi
@@ -4169,7 +4220,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
-  upgrade    redeploy after a 'git pull': rebuild + restart if the pinned XMRig changed
+  upgrade    redeploy after a 'git pull': rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
@@ -4224,7 +4275,10 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         if [ $# -gt 0 ]; then shift; fi
         main "$@"
         ;;
-    upgrade) upgrade ;;
+    upgrade)
+        shift
+        upgrade "$@"
+        ;;
     uninstall) uninstall "${2:-}" ;;
     tune)
         shift

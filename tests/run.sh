@@ -1204,6 +1204,71 @@ rc=$?
 assert_rc "unknown command fails" "$rc" "1"
 assert_contains "unknown command message" "$out" "Unknown command"
 
+# #148: upgrade --check — on-demand release check against GitHub's releases API. It must NEVER exit
+# nonzero (an update hint can't be allowed to break an operator's script), never suggest a downgrade,
+# and accept both `v1.2.3` and `1.2.3` tag shapes. Driven with test-local curl stubs; the sort -V
+# canary fails loudly if a host's sort can't version-order (instead of silently mis-comparing).
+echo "== unit: upgrade --check (#148) =="
+assert_eq "sort -V canary: 1.9.0 < 1.10.0" "$(printf '1.9.0\n1.10.0\n' | sort -V | tail -n1)" "1.10.0"
+UPC="$(mktemp -d "$SANDBOX/upc.XXXXXX")"
+mkdir -p "$UPC/bin"
+printf '1.4.0\n' >"$UPC/VERSION"
+run_upgrade_check() { # curl behavior comes from $UPC/bin/curl (rewritten per case)
+    (
+        source "$SCRIPT"
+        SCRIPT_DIR="$UPC"
+        set +e
+        PATH="$UPC/bin:$STUBS:$PATH" _upgrade_check 2>&1
+        echo "rc=$?"
+    )
+}
+stub_curl() { printf '#!/usr/bin/env bash\n%s\n' "$1" >"$UPC/bin/curl" && chmod +x "$UPC/bin/curl"; }
+stub_curl 'printf "{\"tag_name\":\"v9.9.9\",\"html_url\":\"https://github.com/p2pool-starter-stack/rigforge/releases/tag/v9.9.9\"}"'
+out="$(run_upgrade_check)"
+assert_contains "check: newer version reported" "$out" "9.9.9 (you have 1.4.0)"
+assert_contains "check: release URL printed" "$out" "releases/tag/v9.9.9"
+assert_contains "check: upgrade recipe printed" "$out" "git pull"
+assert_contains "check: tag-pinned recipe printed" "$out" "git checkout v9.9.9"
+assert_contains "check: newer exits 0" "$out" "rc=0"
+stub_curl 'printf "{\"tag_name\":\"v9.9.9\"}"'
+out="$(run_upgrade_check)"
+assert_contains "check: newer without html_url still reports" "$out" "9.9.9 (you have 1.4.0)"
+assert_eq "check: no notes line when html_url missing" "$(printf '%s' "$out" | grep -c 'Release notes')" "0"
+stub_curl 'printf "{\"tag_name\":\"v1.4.0\"}"'
+out="$(run_upgrade_check)"
+assert_contains "check: up to date (v-prefixed tag)" "$out" "RigForge 1.4.0 is the latest release"
+assert_contains "check: up-to-date exits 0" "$out" "rc=0"
+stub_curl 'printf "{\"tag_name\":\"1.4.0\"}"'
+out="$(run_upgrade_check)"
+assert_contains "check: up to date (bare tag)" "$out" "RigForge 1.4.0 is the latest release"
+stub_curl 'printf "{\"tag_name\":\"v0.0.1\"}"'
+out="$(run_upgrade_check)"
+assert_contains "check: ahead of latest (develop build)" "$out" "ahead of the latest release (0.0.1)"
+assert_eq "check: ahead never suggests a downgrade" "$(printf '%s' "$out" | grep -c 'git pull')" "0"
+assert_contains "check: ahead exits 0" "$out" "rc=0"
+stub_curl 'exit 22' # curl -f on a 403 rate-limit / offline
+out="$(run_upgrade_check)"
+assert_contains "check: offline warns" "$out" "try again later"
+assert_contains "check: offline exits 0" "$out" "rc=0"
+stub_curl 'printf "{}"' # API shape changed / rate-limit body that slipped past -f
+out="$(run_upgrade_check)"
+assert_contains "check: missing tag_name warns" "$out" "try again later"
+assert_contains "check: missing tag_name exits 0" "$out" "rc=0"
+rm "$UPC/VERSION"
+out="$(run_upgrade_check)"
+assert_contains "check: missing VERSION warns" "$out" "No VERSION file"
+assert_contains "check: missing VERSION exits 0" "$out" "rc=0"
+# Black-box through the dispatcher: --check reaches _upgrade_check (the shared curl stub answers with
+# an XMRig summary body — no tag_name — so it lands on the warn arm), and unknown flags error.
+out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" upgrade --check </dev/null 2>&1)"
+rc=$?
+assert_rc "upgrade --check exits 0 via dispatcher" "$rc" "0"
+assert_contains "upgrade --check reaches the check" "$out" "try again later"
+out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" upgrade --bogus </dev/null 2>&1)"
+rc=$?
+assert_rc "upgrade rejects unknown flags" "$rc" "1"
+assert_contains "upgrade unknown-flag message" "$out" "Unexpected argument for upgrade"
+
 # #11: command surface — version, the service verbs, and help listing them.
 echo "== black-box: command surface (#11) =="
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" version 2>&1)"
@@ -2609,7 +2674,8 @@ run_doctor() { # <meminfo> <msr_dir> <governor_file> <nr1g_file>
         PATH="$STUBS:$PATH" doctor 2>&1
     )
 }
-out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+: >"$DOC/curl.log"
+out="$(CURL_LOG="$DOC/curl.log" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_contains "doctor: prints version" "$out" "RigForge "
 assert_contains "doctor: HugePages OK" "$out" "HugePages reserved"
 assert_contains "doctor: 1GB pages OK" "$out" "1GB HugePages reserved"
@@ -2617,6 +2683,8 @@ assert_contains "doctor: msr module OK" "$out" "msr kernel module loaded"
 assert_contains "doctor: governor OK" "$out" "governor = performance"
 assert_contains "doctor: log HUGE PAGES 100%" "$out" "HUGE PAGES 100%"
 assert_contains "doctor: all passed" "$out" "all critical checks passed"
+assert_contains "doctor: all-clear mentions upgrade --check (#148)" "$out" "upgrade --check"
+assert_eq "doctor: zero releases-API calls (#148)" "$(grep -c 'api.github.com' "$DOC/curl.log")" "0"
 out="$(run_doctor "$DOC/meminfo_zero" "$DOC/nope-missing" "$DOC/gov_ps" "$DOC/nr1g_zero")"
 assert_contains "doctor: HugePages WARN" "$out" "HugePages not reserved"
 assert_contains "doctor: msr module WARN" "$out" "msr module not loaded"

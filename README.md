@@ -139,7 +139,9 @@ See [Operations › Commands](docs/operations.md#commands) for the full referenc
 
 RigForge runs as root, so it's worth being explicit about what it does and doesn't do:
 
-- No telemetry. No analytics, no version ping, no usage beacon. The only outbound traffic is
+- No telemetry. No analytics, no version ping, no usage beacon. (`upgrade --check` queries the
+  GitHub releases API, but only when you run it — nothing is scheduled and nothing else calls it.)
+  The only outbound traffic is
   to *your* pool, to the pinned XMRig source on GitHub (cloned and commit-verified before building),
   and to your distro's package mirrors.
 - The XMRig donation defaults to **1%**. That's XMRig's own upstream default, not a RigForge markup,
