@@ -22,6 +22,12 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **Per-release benchmark history + anti-ratchet perf gate.** `E2E_PERF_RECORD` now also appends
+  `{tag, recorded, bench_1m_hs}` to `tests/perf-baselines/<host>.history.jsonl`
+  (`E2E_PERF_TAG=vX.Y.Z` names the release), and the perf gate judges measurements against the
+  current baseline **and** the host's best-ever history entry — so refreshing baselines each
+  release can never walk hashrate down tolerance-by-tolerance. Recording per release is now a
+  documented RELEASING.md step; histories seeded from the v1.3.0 baselines for all eight rigs.
 - **`apply` creates the miner user (#140).** Toggling `miner_user` via `apply` (its documented
   config-change path) rendered `User=` into the unit but only `setup` created the user, so the
   service crash-looped with `status=217/USER`. Caught live on miner-0 during the release gate;
