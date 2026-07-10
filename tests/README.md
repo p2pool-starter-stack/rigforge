@@ -24,6 +24,14 @@ The first four run automatically on every push/PR (see [`.github/workflows/ci.ym
 The last two are deliberately kept out of CI, because a real build, HugePages, and live mining are
 flaky by nature and against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
 
+### The shared rig (miner-0)
+
+miner-0 is the e2e bench for both RigForge's release gates and Pithead's e2e testing, and the two
+must not run concurrently: the gates mutate the rig, Pithead's tests assume a steadily-hashing
+miner. Both harnesses therefore take a kernel `flock` on `/var/lock/rig-e2e.lock` at entry — a
+second arrival exits 75 naming the holder (set `RIG_LOCK_WAIT=1` to queue instead). Check who
+holds it from off-box: `ssh miner-0 'flock -n -x /var/lock/rig-e2e.lock true || cat /run/rig-e2e.holder'` (#183).
+
 ## Where does my test go?
 
 - New logic, config-gen behaviour, a CPU/OS profile, or command behaviour → [`run.sh`](run.sh).

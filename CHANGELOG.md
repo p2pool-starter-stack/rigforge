@@ -7,6 +7,17 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Shared-rig lock for the release gates (#183).** `e2e-real` and `e2e-pithead` take a kernel
+  `flock` on `/var/lock/rig-e2e.lock` before their first service- or API-touching action, so
+  RigForge's rig-mutating gates and Pithead's e2e testing can't collide on the shared miner-0: a
+  second arrival exits 75 (`EX_TEMPFAIL`) naming the holder (project, suite, pid, start time, via
+  the `/run/rig-e2e.holder` sidecar), and `RIG_LOCK_WAIT=1` queues instead of failing. The lock
+  dies with the holding process — a killed run needs no cleanup. Pithead's harness carries the
+  same helper against the same path; the path is the whole contract. Test-harness only:
+  `rigforge.sh` itself stays lock-free.
+
 ## [1.4.0] - 2026-07-10
 
 ### Added

@@ -48,6 +48,32 @@ die() {
     exit 2
 }
 
+# #183: the shared-rig lock. miner-0 hosts BOTH RigForge's release gates (rig-mutating) and
+# Pithead's e2e (API-reading, assumes a steadily-hashing miner) — a kernel flock serializes them.
+# Exclusive for mutators, `shared` for future read-only modes; the lock dies with the holding
+# process, so a killed run never needs cleanup. Pithead's harness carries the same helper against
+# the same path — the path IS the contract. Duplicated verbatim in tests/e2e-pithead.sh on purpose
+# (15 lines beat a lib two repos must share; tests/run.sh guards the copies against drift). The
+# env-overridable paths exist only so tests/run.sh can sandbox it without root. FD 9 is inherited
+# by children — that is what keeps the lock held for the whole run; do not close it.
+rig_lock() { # rig_lock <project> <suite> [shared]
+    local mode=-x
+    [ "${3:-}" = shared ] && mode=-s
+    exec 9>"${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}"
+    chmod 666 "${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}" 2>/dev/null || true # a non-root shared reader can join later
+    if ! flock -n $mode 9; then
+        if [ "${RIG_LOCK_WAIT:-0}" = 1 ]; then
+            echo "rig busy ($(cat "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" 2>/dev/null || echo unknown)) — waiting..." >&2
+            flock $mode 9
+        else
+            echo "miner-0 busy: $(cat "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" 2>/dev/null || echo unknown). Retry with RIG_LOCK_WAIT=1 to queue." >&2
+            exit 75 # EX_TEMPFAIL — callers can tell "busy, retry later" from a real failure
+        fi
+    fi
+    printf '%s %s pid=%s started=%s\n' "$1" "$2" "$$" "$(date -Iseconds)" >"${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}"
+    trap 'rm -f "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}"' EXIT
+}
+
 # Drive `rigforge enable|disable` to a settled systemd boot-state. The gate hammers the service
 # with many stop/start/restart/tune cycles, and systemctl/D-Bus can transiently drop a single
 # enable/disable under that load — so poll is-enabled for the target state and re-issue the verb
@@ -555,6 +581,13 @@ perf() {
 }
 
 case "${1:-}" in
+provision | verify | perf | teardown | all) ;;
+*) die "usage: sudo bash tests/e2e-real.sh {provision|verify|perf|teardown|all}" ;;
+esac
+# #183: serialize the shared rig — taken after arg parsing, before the first systemctl/API touch.
+rig_lock rigforge e2e-real
+
+case "$1" in
 provision) provision ;;
 verify) verify ;;
 perf) perf ;;
