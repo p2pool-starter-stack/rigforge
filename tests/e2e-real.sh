@@ -18,6 +18,16 @@
 #               + non-root doctor)
 #   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
+# Env knobs:
+#   E2E_ALLOW_OFFLINE_POOL       1 = don't fail the connect check when the pool is unreachable
+#   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
+#   E2E_AUTOTUNE_MODES           autotune modes exercised by the live-tune check
+#   E2E_AUTOTUNE_WARMUP          seconds the live autotune lets each candidate warm up
+#   E2E_AB_WARMUP                seconds the A/B tune check warms up per side
+#   E2E_PERF_TOLERANCE_PCT       allowed drop vs the committed baseline/best-ever (default 5)
+#   E2E_PERF_RECORD              1 = record the baseline + append history instead of judging
+#   E2E_PERF_TAG                 release tag stamped into the history entry (with E2E_PERF_RECORD)
+#
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
 #   sudo bash tests/e2e-real.sh provision
 #   sudo reboot                         # then reconnect
@@ -469,9 +479,15 @@ verify() {
     # RIGFORGE_OPERATOR for the re-own to hand files back to the operator (not root). Assert the unit
     # carries it, then exercise the re-own exactly the way the root timer does (no SUDO_USER + that operator).
     local wr="$HERE/data/worker" op=""
-    # `|| true`: when autotune is disabled the unit doesn't exist, so `systemctl cat` exits non-zero —
-    # which, under this script's `set -Eeuo pipefail`, would abort the whole gate before the SKIP branch
-    # below. Swallow it so a worker with autotune off cleanly reaches the skip.
+    # SKIP only when the unit itself is absent (autotune genuinely disabled). A unit that EXISTS but
+    # bakes in no RIGFORGE_OPERATOR is exactly the #reown regression this phase guards — it must fail,
+    # not skip (previously the two states were indistinguishable and the regression slid through).
+    if ! systemctl cat rigforge-autotune.service >/dev/null 2>&1; then
+        ok "SKIP autotune re-own check — periodic autotune not enabled ('autotune': true in config.json)"
+        summary "verify"
+        return
+    fi
+    # `|| true`: sed/head under `set -Eeuo pipefail`.
     op=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=RIGFORGE_OPERATOR=//p' | head -1 || true)
     if [ -n "$op" ]; then
         ok "autotune unit bakes in RIGFORGE_OPERATOR=$op (#reown)"
@@ -483,7 +499,7 @@ verify() {
                 bad "a root-context run left the worker owned by '$(stat -c %U "$wr")' (expected '$op')"
         fi
     else
-        ok "SKIP autotune re-own check — periodic autotune not enabled ('autotune': true in config.json)"
+        bad "autotune unit exists but bakes in no RIGFORGE_OPERATOR — the #reown regression (nightly tune would hand files to root)"
     fi
     summary "verify"
 }

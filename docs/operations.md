@@ -191,7 +191,8 @@ so `doctor` verifies it actually took effect, not just that the `msr` module loa
 
 With `miner_user` set (see [configuration](configuration.md)), xmrig runs unprivileged and cannot
 write MSRs itself: `randomx.wrmsr` is disabled in the generated config and RigForge applies the same
-per-family preset root-side instead (`rigforge.sh msr-apply`, run as a privileged `ExecStartPre=` of the
+per-family preset root-side instead (`rigforge.sh msr-apply`, an internal verb like `api-refresh` —
+the sister API's 15 s data-refresh the systemd timer drives — run as a privileged `ExecStartPre=` of the
 service). `doctor`'s read-back check verifies the root-side write the same way, and also confirms the
 unit actually runs as the configured user.
 

@@ -12,6 +12,7 @@
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
 #   E2E_DROPOFF_TIMEOUT          seconds for the dashboard to drop a stopped worker (default 300)
 #   E2E_API_IMPACT_TOLERANCE_PCT max hashrate loss under sister-API load (default 3)
+#   E2E_API_LATENCY_S            responsiveness budget for /health under full load (default 15)
 #
 # Preconditions: a provisioned worker on this rig (`setup` has run; the miner may be running).
 # The operator's config.json is snapshotted and restored (+ `apply`) on exit, whatever happens.
