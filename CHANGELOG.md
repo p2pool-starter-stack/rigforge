@@ -19,6 +19,14 @@ All notable changes to RigForge are documented here. The format is based on
   and a mismatch also fails the "already built" check so the next `setup`/`upgrade` rebuilds —
   self-healing. Evidence, not proofing (root can rewrite the record too); legacy builds without a
   record are advisory only, never a forced fleet recompile.
+- **Opt-in API firewall (#142).** `api_allow_from` (an IPv4/CIDR, default empty) scopes the
+  read-only API port(s) — `:8080` always, `:8081` when the sister API is on — to that source plus
+  loopback, via an own `inet rigforge` nftables table re-applied on boot and destroyed on
+  `uninstall`. Matches only the API dports, so SSH and the outbound stratum connection are
+  untouchable; the strict IPv4 validation doubles as the injection guard. The Pithead contract
+  (`0.0.0.0`, `restricted:true`, the token rules) is unchanged — this layers network scoping
+  under it. nftables only (Ubuntu 24.04's native firewall); a missing `nft` with the key set is a
+  hard error, never a silent open port.
 
 ## [1.3.0] - 2026-07-10
 

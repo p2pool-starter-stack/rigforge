@@ -17,6 +17,10 @@ User=root
 # in a restart loop. The governor is a tuning nicety, not a correctness requirement, so a failed set
 # must never stop mining.
 ExecStartPre=-$CPUPOWER_PATH frequency-set -g performance
+# Re-apply the opt-in API firewall on boot (#142). Best-effort (`-`) + only when the file exists:
+# a rig without api_allow_from set ships no file, so this is a clean no-op there. `+` runs it as
+# root even if a future release moves the miner to an unprivileged user.
+ExecStartPre=+-/bin/sh -c 'test -f $WORKER_ROOT/api-firewall.nft && $NFT_PATH -f $WORKER_ROOT/api-firewall.nft || true'
 
 # --- Execution Configuration ---
 # Set working directory to ensure relative paths in config.json resolve correctly

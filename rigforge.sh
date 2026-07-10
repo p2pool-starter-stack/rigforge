@@ -406,6 +406,22 @@ parse_config() {
     # + `workers.api_token`; or `name` if you set ACCESS_TOKEN to the rig name). See
     # docs/pithead-integration.md.
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
+
+    # Opt-in firewall scoping (#142): restrict the read-only API port(s) to one source + loopback.
+    # Empty (default) = RigForge manages no firewall. IPv4/CIDR only — the Pithead contract and the
+    # fleet are IPv4 LAN; the strict regex is also the injection guard (the value reaches an nft file).
+    API_ALLOW_FROM=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON")
+    if [ -n "$API_ALLOW_FROM" ]; then
+        if [[ "$API_ALLOW_FROM" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
+            local _a _b _c _d _p
+            IFS='./' read -r _a _b _c _d _p <<<"$API_ALLOW_FROM"
+            if [ "$_a" -gt 255 ] || [ "$_b" -gt 255 ] || [ "$_c" -gt 255 ] || [ "$_d" -gt 255 ] || [ "${_p:-0}" -gt 32 ]; then
+                error "api_allow_from must be a valid IPv4 address or CIDR (e.g. 192.168.1.10 or 192.168.1.0/24); got: '$API_ALLOW_FROM'."
+            fi
+        else
+            error "api_allow_from must be an IPv4 address or CIDR (e.g. 192.168.1.10 or 192.168.1.0/24); got: '$API_ALLOW_FROM'."
+        fi
+    fi
     # When set, the token is sent as an HTTP Authorization header, so keep it to safe, header-clean
     # characters. Empty is allowed and means "open API" (the default).
     if [ -n "$ACCESS_TOKEN" ] && ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
@@ -864,10 +880,12 @@ install_service() {
         export BUILD_DIR="$WORKER_ROOT/xmrig/build"
         CPUPOWER_PATH=$(command -v cpupower || echo "/usr/bin/cpupower")
         export CPUPOWER_PATH
+        NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
+        export NFT_PATH
 
         # Overwrite the existing file. Only the three named vars are substituted; WORKER_ROOT is passed
         # into envsubst's environment for that one command (the template uses it in ReadWritePaths).
-        WORKER_ROOT="$WORKER_ROOT" envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT' \
+        WORKER_ROOT="$WORKER_ROOT" envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH' \
             <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 
         # Reload systemd daemon
@@ -927,6 +945,42 @@ install_autotune() {
 # Sister API (#99): socket-activated — systemd owns the listener; one short-lived
 # `rigforge.sh api-serve` process handles each request. No resident daemon, no new dependencies.
 # Toggle shape mirrors install_autotune above.
+# Opt-in API firewall (#142): an own `inet rigforge` nft table scoping the read-only API port(s)
+# to `api_allow_from` + loopback. nftables only (Ubuntu 24.04's native firewall — a ufw fallback
+# would double the surface); own table so teardown is a single `destroy`. Matches only the API
+# dports, so SSH and the outbound stratum connection are untouchable by construction. Applied now
+# AND re-applied on boot via xmrig.service (the always-present anchor); removed with the table.
+install_api_firewall() {
+    [ "$OS_TYPE" == "Linux" ] || return 0
+    [ -n "${WORKER_ROOT:-}" ] || return 0 # nowhere to stage the rule file yet
+    local nft_file="$WORKER_ROOT/api-firewall.nft"
+    if [ -z "${API_ALLOW_FROM:-}" ]; then
+        if [ -f "$nft_file" ]; then
+            command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
+            sudo rm -f "$nft_file"
+            log "API firewall removed."
+        fi
+        return 0
+    fi
+    command -v nft >/dev/null 2>&1 || error "api_allow_from is set but 'nft' is missing — install nftables (sudo apt-get install nftables) or clear the key."
+    # Port set: :8080 (XMRig's API) always, plus :8081 (the sister API) when it's enabled.
+    local ports="8080"
+    [ "${API_MODE:-disabled}" = enabled ] && ports="8080, ${API_PORT:-8081}"
+    sudo tee "$nft_file" >/dev/null <<NFT
+destroy table inet rigforge
+table inet rigforge {
+    chain api {
+        type filter hook input priority filter; policy accept;
+        tcp dport { $ports } iifname "lo" accept
+        tcp dport { $ports } ip saddr $API_ALLOW_FROM accept
+        tcp dport { $ports } drop
+    }
+}
+NFT
+    sudo nft -f "$nft_file"
+    log "API firewall active — port(s) $ports reachable only from $API_ALLOW_FROM and loopback."
+}
+
 install_api() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-api.service" rsvc="$SYSTEMD_DIR/rigforge-api-refresh.service" rtmr="$SYSTEMD_DIR/rigforge-api-refresh.timer"
@@ -1161,6 +1215,8 @@ main() {
     install_autotune
     CURRENT_STEP="configuring the sister API"
     install_api
+    CURRENT_STEP="configuring the API firewall"
+    install_api_firewall
     CURRENT_STEP="linking the rigforge command"
     link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
     CURRENT_STEP="reconciling file ownership"
@@ -1285,6 +1341,7 @@ uninstall() {
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service" \
             "$SYSTEMD_DIR/rigforge-api.service" "$SYSTEMD_DIR/rigforge-api-refresh.service" "$SYSTEMD_DIR/rigforge-api-refresh.timer"
     fi
+    command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-autotune.timer" "$SYSTEMD_DIR/rigforge-autotune.service"
@@ -2887,6 +2944,7 @@ apply() {
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
         install_api >/dev/null 2>&1 || true
+        install_api_firewall || true
         _autotune_apply_notice
     fi
 }
