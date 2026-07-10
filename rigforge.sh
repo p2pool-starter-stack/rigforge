@@ -2628,12 +2628,9 @@ autotune() {
 # tests via API_CMD. This is RigForge's own local reader (loopback) used by tune/autotune; it uses the
 # `/2/summary` endpoint. Pithead's dashboard separately reads `/1/summary` from the stack host — both
 # are valid XMRig endpoints, the divergence is intentional.
-_read_api_hashrate() {
+# Raw /2/summary JSON from the worker API, or nothing when curl is missing/unreachable (#143).
+_read_api_summary() {
     local url="http://127.0.0.1:8080/2/summary"
-    if [ -n "${API_CMD:-}" ]; then
-        eval "$API_CMD"
-        return
-    fi
     command -v curl >/dev/null 2>&1 || return 0
     # The API is open (read-only) with no token by default; only send a Bearer when ACCESS_TOKEN is set.
     # XMRig 401s a token it never asked for, and curl -f (exit 22) would then abort the caller under set -e.
@@ -2642,7 +2639,15 @@ _read_api_hashrate() {
         curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null
     else
         curl -fsS --max-time 5 "$url" 2>/dev/null
-    fi | jq -r '.hashrate.total[0] // empty' 2>/dev/null
+    fi
+}
+
+_read_api_hashrate() {
+    if [ -n "${API_CMD:-}" ]; then
+        eval "$API_CMD"
+        return
+    fi
+    _read_api_summary | jq -r '.hashrate.total[0] // empty' 2>/dev/null
 }
 
 # Median of N live API hashrate samples, <interval> seconds apart. Smooths the jittery live reading so a
@@ -2903,11 +2908,45 @@ mac_disable() {
     fi
 }
 
+# One-glance live summary from a single /2/summary fetch (#143). Facts only, no ✓/! judgment
+# markers (that's doctor's job); plain aligned lines stay grep-friendly. Never sudo, never prompts.
+_status_api_summary() {
+    local body hs pool up acc rej hp
+    body=$(_read_api_summary)
+    if [ -z "$body" ]; then
+        echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
+        return 0
+    fi
+    # One jq fork for every field, tab-separated (bash-3.2-safe read into locals).
+    IFS=$(printf '\t') read -r hs pool up acc rej hp < <(printf '%s' "$body" |
+        jq -r '[(.hashrate.total[0] // 0), (.connection.pool // "?"), (.uptime // 0),
+                (.connection.accepted // 0), (.connection.rejected // 0), (.hugepages // "")] | @tsv' 2>/dev/null) || true
+    [ -n "${hs:-}" ] || return 0 # half-up API / unparseable body: stay quiet, platform block follows
+    printf '  %-10s %s H/s\n' "Hashrate:" "$hs"
+    printf '  %-10s %s\n' "Pool:" "$pool"
+    printf '  %-10s %s\n' "Uptime:" "$(_render_duration "$up")"
+    printf '  %-10s %s accepted / %s rejected\n' "Shares:" "$acc" "$rej"
+    [ -n "$hp" ] && printf '  %-10s %s\n' "HugePages:" "$hp"
+    echo
+}
+
+# Seconds -> "Nd Nh Nm" (integer math only; no bc).
+_render_duration() {
+    local s="${1:-0}" d h m
+    case "$s" in *[!0-9]*) s=0 ;; esac
+    d=$((s / 86400)) h=$((s % 86400 / 3600)) m=$((s % 3600 / 60))
+    if [ "$d" -gt 0 ]; then printf '%dd %dh %dm' "$d" "$h" "$m"; elif [ "$h" -gt 0 ]; then printf '%dh %dm' "$h" "$m"; else printf '%dm' "$m"; fi
+}
+
 svc_status() {
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
+        # parse_config in a subshell: it error-exits on a bad config, and ACCESS_TOKEN only exists
+        # after it — a bad/missing config must degrade to the platform block, never crash status.
+        (parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
+    (parse_config >/dev/null 2>&1 && _status_api_summary) || true
     # Read-only: `systemctl status` is world-readable, so no sudo (don't prompt for a password to look).
     systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
 }
@@ -3834,7 +3873,7 @@ Day to day:
   upgrade    redeploy after a 'git pull': rebuild + restart if the pinned XMRig changed
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   logs       follow the live miner logs
-  status     show whether the miner is running
+  status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
   start      start the miner (systemd on Linux, a background process on macOS) [alias: up]
   stop       stop the miner [alias: down]
   restart    restart the miner

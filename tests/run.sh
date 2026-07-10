@@ -176,7 +176,7 @@ EOF
     cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "[curl] $*" >> "${CURL_LOG:-/dev/null}"
-printf '{"hashrate":{"total":[%s,0,0]}}\n' "${STUB_API_HR:-1234.5}"
+printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","accepted":42,"rejected":1},"uptime":93780,"hugepages":true}\n' "${STUB_API_HR:-1234.5}"
 EOF
 
     chmod +x "$bin"/*
@@ -1688,6 +1688,53 @@ hr_auth="$( (
 ))"
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_contains "Bearer <token> sent when ACCESS_TOKEN is set" "$(cat "$clog")" "Authorization: Bearer miner-0"
+
+# #143: `status` prepends a one-glance live summary from ONE /2/summary fetch — facts, no ✓/! markers,
+# never sudo. Unreachable API (miner stopped / http off) degrades to a single explanatory line and the
+# untouched platform block; a bad config can't crash it (parse_config runs in a subshell).
+echo "== unit: status live summary (#143) =="
+ST="$(mktemp -d "$SANDBOX/status.XXXXXX")"
+cat >"$ST/config.json" <<EOF
+{ "HOME_DIR": "$ST/home", "pools": [{"url": "h:3333"}] }
+EOF
+run_status() { # <curl-mode: ok|fail>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SERVICE_NAME=xmrig
+        CONFIG_JSON="$ST/config.json"
+        unset API_CMD
+        [ "$1" = fail ] && curl() { return 7; }
+        set +e
+        PATH="$STUBS:$PATH" CALL_LOG="$ST/calls.log" svc_status 2>&1
+    )
+}
+: >"$ST/calls.log"
+out="$(run_status ok)"
+assert_contains "status: hashrate line (#143)" "$out" "Hashrate:  1234.5 H/s"
+assert_contains "status: pool line (#143)" "$out" "Pool:      poolbox.lan:3333"
+assert_contains "status: uptime rendered as d/h/m (#143)" "$out" "Uptime:    1d 2h 3m"
+assert_contains "status: shares line (#143)" "$out" "42 accepted / 1 rejected"
+assert_contains "status: hugepages line when the field exists (#143)" "$out" "HugePages: true"
+assert_contains "status: platform block still follows (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
+: >"$ST/calls.log"
+out="$(run_status fail)"
+assert_contains "status: unreachable API -> one explanatory line (#143)" "$out" "worker API not reachable at 127.0.0.1:8080"
+assert_contains "status: platform block untouched when API is down (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
+: >"$ST/calls.log"
+out="$(
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SERVICE_NAME=xmrig
+        CONFIG_JSON="$ST/nonexistent.json"
+        set +e
+        PATH="$STUBS:$PATH" CALL_LOG="$ST/calls.log" svc_status 2>&1
+        echo "rc=$?"
+    )
+)"
+assert_contains "status: missing config degrades to the platform block (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
+assert_contains "status: missing config still exits 0 (#143)" "$out" "rc=0"
 
 # #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
 # no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
