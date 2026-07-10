@@ -49,7 +49,7 @@ run `sudo rigforge [command]` from any directory; `uninstall` removes it.
 | `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
-| `status` | Show the systemd service status. |
+| `status` | One-glance live summary from the worker API (hashrate, pool, uptime, accepted/rejected shares — one fetch, no sudo), then the systemd service status. Miner stopped or API off: a single "worker API not reachable" line and the platform block as before. |
 | `logs` | Follow the live service logs (`journalctl -f`). |
 | `start` / `stop` / `restart` | Start, stop, or restart the miner service. (`up` / `down` are aliases for `start` / `stop`.) |
 | `enable` / `disable` | Start the service on boot, or not. |

@@ -9,6 +9,11 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **Live status summary (#143).** `status` now opens with a one-glance block from a single
+  worker-API fetch — hashrate, pool, uptime (`1d 2h 3m`), accepted/rejected shares, huge pages —
+  then the unchanged platform detail. Facts only (no ✓/! judgment — that's doctor's), never sudo,
+  and a stopped miner or bad config degrades to one explanatory line plus the platform block.
+
 - **Shared-rig lock for the release gates (#183).** `e2e-real` and `e2e-pithead` take a kernel
   `flock` on `/var/lock/rig-e2e.lock` before their first service- or API-touching action, so
   RigForge's rig-mutating gates and Pithead's e2e testing can't collide on the shared miner-0: a
