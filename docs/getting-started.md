@@ -44,6 +44,14 @@ cd rigforge
 chmod +x rigforge.sh
 ```
 
+Want to see exactly what setup would do to this machine before handing it root? The dry run
+prints a numbered plan (missing packages, the GRUB diff, HugePages count, units) and changes
+nothing — it doesn't even need sudo:
+
+```bash
+./rigforge.sh setup --dry-run
+```
+
 Have your **pool URL** ready, a `host:port`. For a Pithead stack that's the stack machine's address
 and its proxy port `3333` (e.g. `stack.lan:3333`); with Pithead you do **not** need a wallet, since the
 stack handles payouts centrally.

@@ -94,6 +94,22 @@ EOF
 BUILD="$WORK/data-home/worker/xmrig/build"
 ARCH="$(uname -m)"
 
+# #146: the dry-run plan, against the REAL container: real dpkg probe, real /proc for the
+# HugePages count, real proposed-grub.sh for the exact GRUB before -> after diff. Run BEFORE the
+# real setup so the plan shows the fresh-box actions — and prove it changed nothing.
+echo "== setup --dry-run (before anything) =="
+dr_out="$(./rigforge.sh setup --dry-run </dev/null 2>&1)"
+assert_rc "dry-run exits 0" "$?" "0"
+# dpkg is stubbed in this harness (every package reads installed), so assert the probe line, not
+# a specific missing list — the "install packages: <list>" branch is plain-shell over _missing_deps.
+assert_contains "dry-run: dependency probe line" "$dr_out" "installing dependencies: all dependencies already installed"
+assert_contains "dry-run: real GRUB before -> after diff" "$dr_out" "GRUB cmdline: 'quiet splash' ->"
+assert_contains "dry-run: reboot callout" "$dr_out" "a reboot WILL be required"
+assert_contains "dry-run: build line" "$dr_out" "build XMRig"
+assert_contains "dry-run: footer" "$dr_out" "Dry run — nothing was changed"
+assert_eq "dry-run: no unit installed" "$([ -f /etc/systemd/system/xmrig.service ] && echo y || echo n)" "n"
+assert_absent "dry-run: fstab untouched" "$(cat /etc/fstab)" "hugetlbfs"
+
 echo "== first run =="
 out1="$(./rigforge.sh </dev/null 2>&1)"
 rc1=$?

@@ -574,6 +574,53 @@ prepare_workspace() {
     fi
 }
 
+# Package-manager detection (read-only) — sets DEP_LIST / DEP_CHECK / DEP_INSTALL, rc 1 when no
+# manager is found. Split from install_dependencies so the setup --dry-run plan (#146) reuses the
+# EXACT list and check — never a second copy to drift.
+_detect_pkg_manager() {
+    DEP_LIST=""
+    DEP_CHECK=""
+    DEP_INSTALL=""
+    if command -v apt-get &>/dev/null; then
+        DEP_LIST="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3"
+        if [ "$OS_TYPE" == "Linux" ]; then
+            # msr-tools (rdmsr): lets `doctor` verify the prefetcher MSR mod actually applied (#66).
+            DEP_LIST="$DEP_LIST linux-tools-common msr-tools"
+            if apt-cache show "linux-tools-$(uname -r)" &>/dev/null; then
+                DEP_LIST="$DEP_LIST linux-tools-$(uname -r)"
+            fi
+        fi
+        # DPkg::Lock::Timeout waits for the apt/dpkg lock instead of failing — fresh boots often have
+        # unattended-upgrades holding it for a minute or two (#74).
+        DEP_INSTALL="sudo apt-get update -qq -o DPkg::Lock::Timeout=300 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300 -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
+        DEP_CHECK="dpkg -s"
+    elif command -v dnf &>/dev/null; then
+        DEP_LIST="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel msr-tools"
+        DEP_INSTALL="sudo dnf install -y"
+        DEP_CHECK="rpm -q"
+    elif command -v pacman &>/dev/null; then
+        DEP_LIST="git cmake libuv openssl hwloc gettext base-devel"
+        DEP_INSTALL="sudo pacman -Sy --noconfirm --needed"
+        DEP_CHECK="pacman -Qi"
+    else
+        return 1
+    fi
+}
+
+# Echo the packages from DEP_LIST that aren't installed (read-only, no root). $DEP_LIST are PACKAGE
+# names (build-essential, libuv1-dev — most have no same-named binary), so the package manager is
+# the authority for "is it installed", not `command -v` (which would both miss header-only -dev
+# packages and let an unrelated PATH binary mask a genuinely-absent package).
+_missing_deps() {
+    local dep missing=""
+    for dep in $DEP_LIST; do
+        if ! $DEP_CHECK "$dep" &>/dev/null; then
+            missing="$missing $dep"
+        fi
+    done
+    printf '%s' "$missing"
+}
+
 install_dependencies() {
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
@@ -588,46 +635,12 @@ install_dependencies() {
             error "Homebrew not found."
         fi
     else
-        local dependencies=""
-        local install_cmd=""
-        local check_cmd=""
-
-        if command -v apt-get &>/dev/null; then
-            dependencies="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3"
-            if [ "$OS_TYPE" == "Linux" ]; then
-                # msr-tools (rdmsr): lets `doctor` verify the prefetcher MSR mod actually applied (#66).
-                dependencies="$dependencies linux-tools-common msr-tools"
-                if apt-cache show "linux-tools-$(uname -r)" &>/dev/null; then
-                    dependencies="$dependencies linux-tools-$(uname -r)"
-                fi
-            fi
-            # DPkg::Lock::Timeout waits for the apt/dpkg lock instead of failing — fresh boots often have
-            # unattended-upgrades holding it for a minute or two (#74).
-            install_cmd="sudo apt-get update -qq -o DPkg::Lock::Timeout=300 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300 -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
-            check_cmd="dpkg -s"
-        elif command -v dnf &>/dev/null; then
-            dependencies="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel msr-tools"
-            install_cmd="sudo dnf install -y"
-            check_cmd="rpm -q"
-        elif command -v pacman &>/dev/null; then
-            dependencies="git cmake libuv openssl hwloc gettext base-devel"
-            install_cmd="sudo pacman -Sy --noconfirm --needed"
-            check_cmd="pacman -Qi"
-        else
+        if ! _detect_pkg_manager; then
             warn "No supported package manager found. Please install dependencies manually."
             return
         fi
-
-        # $dependencies are PACKAGE names (build-essential, libuv1-dev, gettext-base — most have no
-        # same-named binary), so the package manager is the authority for "is it installed", not
-        # `command -v` (which would both miss header-only -dev packages and let an unrelated PATH binary
-        # mask a genuinely-absent package). Query $check_cmd only.
-        local missing_deps=""
-        for dep in $dependencies; do
-            if ! $check_cmd "$dep" &>/dev/null; then
-                missing_deps="$missing_deps $dep"
-            fi
-        done
+        local missing_deps
+        missing_deps="$(_missing_deps)"
 
         if [ -n "$missing_deps" ]; then
             # `setup` is an automated provisioner (often run headless / over the release e2e), so install
@@ -635,7 +648,7 @@ install_dependencies() {
             # hit EOF and aborted the whole run under `set -e` on a non-tty stdin (#74).
             log "Installing required system dependencies:"
             echo -e "  ${C_YELLOW}$missing_deps${C_RESET}"
-            eval "$install_cmd $missing_deps"
+            eval "$DEP_INSTALL $missing_deps"
         else
             log "All system dependencies are already installed."
         fi
@@ -1063,6 +1076,29 @@ install_api() {
     sudo systemctl start rigforge-api-refresh.service 2>/dev/null || true
 }
 
+# #65 (read-only): the thread count the HugePages reservation is sized for — the tuned cpu.rx if
+# `tune` pinned one (so setup + tune stay consistent), or an explicit RIGFORGE_THREADS override (the
+# documented resize-then-re-tune path). Empty => proposed-grub.sh falls back to its L3 estimate.
+_rx_setup_threads() {
+    RX_SETUP_THREADS=""
+    if [ -n "${RIGFORGE_THREADS:-}" ]; then
+        RX_SETUP_THREADS="$RIGFORGE_THREADS"
+    elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
+        RX_SETUP_THREADS=$(jq -r '.cpu.rx // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
+    fi
+    case "$RX_SETUP_THREADS" in -1 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
+}
+
+# Read-only GRUB computation shared by tune_kernel (the mutation half) and the setup --dry-run plan
+# (#146): sets MANAGED (params we manage), CURRENT (the live cmdline), MERGED (#19 merge — never
+# clobbers params the user/distro set). Callers guard on proposed-grub.sh + $GRUB_DEFAULT existing.
+_grub_proposed() {
+    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
+    MANAGED="${MANAGED#quiet splash }"
+    CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
+    MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
+}
+
 tune_kernel() {
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Skipping kernel tuning (Not supported on $OS_TYPE)."
@@ -1079,16 +1115,7 @@ tune_kernel() {
         fi
     fi
 
-    # #65: size the HugePages reservation for the thread count we'll actually run — the tuned cpu.rx if
-    # `tune` pinned one (so setup + tune stay consistent), or an explicit RIGFORGE_THREADS override (the
-    # documented resize-then-re-tune path). Empty => proposed-grub.sh falls back to its L3 estimate.
-    RX_SETUP_THREADS=""
-    if [ -n "${RIGFORGE_THREADS:-}" ]; then
-        RX_SETUP_THREADS="$RIGFORGE_THREADS"
-    elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        RX_SETUP_THREADS=$(jq -r '.cpu.rx // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
-    fi
-    case "$RX_SETUP_THREADS" in -1 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
+    _rx_setup_threads
     [ -n "$RX_SETUP_THREADS" ] && log "Sizing the HugePages reservation for $RX_SETUP_THREADS mining thread(s) (#65)."
 
     log "Applying runtime memory tuning..."
@@ -1110,11 +1137,7 @@ tune_kernel() {
         # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
         # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
         # clobber other kernel parameters the user/distro set (#19 — boot-safety).
-        MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
-        MANAGED="${MANAGED#quiet splash }"
-
-        CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
-        MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
+        _grub_proposed
 
         if [ "$CURRENT" = "$MERGED" ]; then
             log "GRUB is already configured with optimal HugePages settings."
@@ -1242,7 +1265,126 @@ _reown_worker() {
     fi
 }
 
+# setup --dry-run (#146): a numbered plan of exactly what setup WOULD do on this machine with this
+# config, computed from read-only probes only — no sudo, no writes, no modprobe. A dedicated printer
+# (not a DRY_RUN flag threaded through the mutating functions) because a printer can't mutate by
+# construction; the drift risk is covered by a test asserting every CURRENT_STEP phrase in main()
+# appears here. Step lines reuse those exact phrases — they're load-bearing for that test.
+_setup_plan() {
+    local n=0
+    _p() {
+        n=$((n + 1))
+        printf '%2d. %s: %s\n' "$n" "$1" "$2"
+    }
+    echo "setup --dry-run — the plan for this machine ($(hostname), $OS_TYPE):"
+    if command -v jq >/dev/null 2>&1; then
+        _p "verifying prerequisites" "jq found; nothing to install"
+    else
+        _p "verifying prerequisites" "install jq (config-dependent details below unavailable until it exists)"
+        echo "Dry run — nothing was changed. Run 'sudo $0 setup' to apply."
+        return 0
+    fi
+    if [ ! -f "$CONFIG_JSON" ]; then
+        _p "ensuring config exists" "would create $CONFIG_JSON interactively (pool URL prompt) — the rest of the plan depends on it"
+        echo "Dry run — nothing was changed. Run 'sudo $0 setup' to apply."
+        return 0
+    fi
+    _p "ensuring config exists" "use the existing $CONFIG_JSON"
+    parse_config >/dev/null
+    _p "parsing config" "pools: $(printf '%s' "$POOLS_JSON" | jq -r '[.[].url] | join(", ")' 2>/dev/null)"
+    decide_rebuild >/dev/null 2>&1 || true
+    if [ "$XMRIG_REBUILD" = true ]; then
+        _p "checking the build" "build XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) — clone + compile"
+    else
+        _p "checking the build" "skip the build — XMRig $XMRIG_VERSION already built at the pinned commit"
+    fi
+    _p "preparing workspace" "workspace at $WORKER_ROOT (an existing prior install would be archived first)"
+    if [ "$OS_TYPE" = "Darwin" ]; then
+        _p "installing dependencies" "install/verify via brew: cmake libuv openssl hwloc"
+    elif _detect_pkg_manager; then
+        local _md
+        _md="$(_missing_deps)"
+        if [ -n "$_md" ]; then
+            _p "installing dependencies" "install packages:$_md"
+        else
+            _p "installing dependencies" "all dependencies already installed"
+        fi
+    else
+        _p "installing dependencies" "no supported package manager found — manual install"
+    fi
+    if [ "$XMRIG_REBUILD" = true ]; then
+        _p "compiling XMRig" "compile in $WORKER_ROOT/xmrig/build and record the binary SHA-256"
+    else
+        _p "compiling XMRig" "skipped (already built; SHA-256 record kept)"
+    fi
+    _p "generating XMRig config" "write $WORKER_ROOT/xmrig/build/config.json$([ -f "$WORKER_ROOT/tune-overrides.json" ] && echo ' + overlay tune-overrides.json')"
+    if [ "$OS_TYPE" != "Linux" ]; then
+        _p "tuning the kernel" "skipped (not supported on $OS_TYPE — no HugePages/MSR here)"
+        _p "configuring limits" "skipped (Linux-only)"
+        _p "installing the service" "none on macOS — run via '$0 start' (nohup) or the launchd login agent"
+    else
+        local _msr _pages="(proposed-grub.sh missing — fallback 3072)" _grubline="GRUB: will check at run time" _reboot=""
+        _msr="write msr to $MODULES_LOAD_DIR/msr.conf (module autoload)"
+        [ -e "$MODULES_LOAD_DIR/msr.conf" ] && _msr="msr module already configured"
+        if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
+            _rx_setup_threads
+            _pages=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
+            if [ -f "$GRUB_DEFAULT" ]; then
+                _grub_proposed
+                if [ "$CURRENT" = "$MERGED" ]; then
+                    _grubline="GRUB already configured (no reboot needed for it)"
+                else
+                    _grubline="GRUB cmdline: '$CURRENT' -> '$MERGED'"
+                    _reboot=" — a reboot WILL be required"
+                fi
+            fi
+        fi
+        _p "tuning the kernel" "$_msr; reserve $_pages 2MB HugePages (runtime sysctl); $_grubline$_reboot"
+        local _f1="hugetlbfs /dev/hugepages hugetlbfs defaults 0 0" _f2="hugetlbfs_1g $HUGEPAGES_1G_DIR hugetlbfs pagesize=1G 0 0" _add=""
+        grep -qxF "$_f1" "$FSTAB" 2>/dev/null || _add=" '$_f1'"
+        grep -qxF "$_f2" "$FSTAB" 2>/dev/null || _add="$_add '$_f2'"
+        if [ -n "$_add" ]; then
+            _p "configuring limits" "append to $FSTAB:$_add; memlock unlimited for $REAL_USER in $LIMITS_CONF"
+        else
+            _p "configuring limits" "fstab already configured; memlock unlimited for $REAL_USER in $LIMITS_CONF"
+        fi
+        _p "installing the service" "render systemd/xmrig.service.template -> $SYSTEMD_DIR/$SERVICE_NAME.service (User=${MINER_USER:-root}), daemon-reload, enable --now"
+    fi
+    case "$AUTOTUNE_MODE" in
+    disabled) _p "configuring autotune" "no periodic timer (autotune disabled) — an installed one would be removed" ;;
+    *) _p "configuring autotune" "install rigforge-autotune.timer (monthly re-tune, target: $AUTOTUNE_MODE)" ;;
+    esac
+    if [ "$API_MODE" = enabled ]; then
+        _p "configuring the sister API" "install rigforge-api.service (:$API_PORT) + the 15s refresh timer"
+    else
+        _p "configuring the sister API" "disabled — installed units would be removed"
+    fi
+    if [ -n "${API_ALLOW_FROM:-}" ]; then
+        _p "configuring the API firewall" "nftables 'inet rigforge' table scoping the API port(s) to $API_ALLOW_FROM + loopback"
+    else
+        _p "configuring the API firewall" "no api_allow_from — no firewall scoping (an installed table would be removed)"
+    fi
+    if [ "$ADD_TO_PATH" = true ]; then
+        _p "linking the rigforge command" "symlink $BIN_DIR/rigforge -> $SCRIPT_DIR/rigforge.sh"
+    else
+        _p "linking the rigforge command" "add_to_path is off — no symlink"
+    fi
+    _p "reconciling file ownership" "chown the worker tree back to $REAL_USER${MINER_USER:+ (config+log to $MINER_USER)}"
+    _p "finishing up" "print the summary$([ "$OS_TYPE" = Linux ] && echo ' (and the reboot notice when HugePages changed)')"
+    echo "Dry run — nothing was changed. Run 'sudo $0 setup' to apply."
+}
+
 main() {
+    local _arg
+    for _arg in "$@"; do
+        case "$_arg" in
+        --dry-run)
+            _setup_plan
+            return 0
+            ;;
+        *) error "Unexpected argument for setup: $_arg. Run '$0 help'." ;;
+        esac
+    done
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
     CURRENT_STEP="ensuring config exists"
@@ -3078,7 +3220,31 @@ _apply_runtime() {
 # periodic-autotune timer with config (#95) — so changing the `autotune` target and running `apply`
 # actually takes effect (not just shows the new value) — then reports the target. install_autotune is the
 # autotune analog of restarting the service; its own log is suppressed in favour of the single status line.
+# apply --dry-run (#146): the three-line plan — symmetric with setup --dry-run.
+_apply_plan() {
+    parse_config >/dev/null
+    echo "apply --dry-run — the plan:"
+    echo " 1. regenerate $WORKER_ROOT/xmrig/build/config.json$([ -f "$WORKER_ROOT/tune-overrides.json" ] && echo ' (+ overlay tune-overrides.json)')"
+    if [ "$OS_TYPE" = Linux ]; then
+        echo " 2. re-render the unit (User=${MINER_USER:-root}) and restart $SERVICE_NAME"
+    else
+        echo " 2. restart the miner manually ('$0 restart') — no service on $OS_TYPE"
+    fi
+    echo " 3. reconcile the autotune timer + sister API + firewall to config (autotune: $AUTOTUNE_MODE, api: $API_MODE)"
+    echo "Dry run — nothing was changed. Run 'sudo $0 apply' to apply."
+}
+
 apply() {
+    local _arg
+    for _arg in "$@"; do
+        case "$_arg" in
+        --dry-run)
+            _apply_plan
+            return 0
+            ;;
+        *) error "Unexpected argument for apply: $_arg. Run '$0 help'." ;;
+        esac
+    done
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         # A miner_user change only lands in the unit file — re-render + daemon-reload so the
         # _apply_runtime restart below picks it up (#140).
@@ -3923,7 +4089,7 @@ Usage: $0 [command]
 Most days you only need the first group; the rest are grouped below. Full guide: docs/operations.md
 
 Day to day:
-  apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild)
+  apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
   upgrade    redeploy after a 'git pull': rebuild + restart if the pinned XMRig changed
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   logs       follow the live miner logs
@@ -3948,7 +4114,7 @@ Tuning:
              writes BIOS itself
 
 Provision & lifecycle:
-  setup      (default) provision the worker: dependencies, build, kernel tuning, service
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo)
   uninstall  remove the service and revert all system changes (add --yes/-y to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically
@@ -3972,7 +4138,12 @@ USAGE
 
 if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     case "${1:-setup}" in
-    setup) main ;;
+    setup)
+        # if-form, not `[ $# -gt 0 ] && shift`: a false && list at top level trips set -e on the
+        # zero-arg default path (bare ./rigforge.sh dispatches here with $# = 0).
+        if [ $# -gt 0 ]; then shift; fi
+        main "$@"
+        ;;
     upgrade) upgrade ;;
     uninstall) uninstall "${2:-}" ;;
     tune)
@@ -3994,7 +4165,10 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     restart) svc_restart ;;
     enable) svc_enable ;;
     disable) svc_disable ;;
-    apply) apply ;;
+    apply)
+        shift
+        apply "$@"
+        ;;
     bench) bench ;;
     backup)
         shift

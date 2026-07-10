@@ -19,6 +19,12 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **`setup --dry-run` / `apply --dry-run` (#146).** A numbered, machine-specific plan of exactly
+  what would happen — missing packages by name, build-or-skip, the exact GRUB cmdline
+  before → after and whether a reboot follows, fstab/unit/timer actions — computed from read-only
+  probes, no sudo, nothing touched. A printer function, not a DRY_RUN flag threaded through
+  mutating code (a printer can't mutate by construction); a drift test pins the plan to every
+  step in the real pipeline.
 - **Shell completion (#145).** `completion bash|zsh` prints a static, zero-dependency tab-completion
   script (nothing auto-installs; `source <(rigforge completion bash)` opts in). Verbs and per-verb
   flags complete; a suite drift-guard diffs the script's verb list against the dispatch case, so a
