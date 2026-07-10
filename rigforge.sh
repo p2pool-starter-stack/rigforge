@@ -3646,7 +3646,16 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         bios "$@"
         ;;
-    api-serve) api_serve ;;
+    api-serve)
+        api_serve
+        # Admission control: with the serialized socket (MaxConnections=1), holding the slot one
+        # extra second bounds the ACCEPT RATE to <1/s no matter how hard anything polls. The v1.3
+        # gate proved the residual hashrate shave is L3-cache pollution from per-request process
+        # churn — proportional to request RATE, immune to Nice/CPUQuota — so the fix is pacing, not
+        # priorities. The response is already on the wire (curl completes at Content-Length), so a
+        # real dashboard polling every 5-15s never notices. Sleep costs no CPU and no cache. (#164)
+        sleep 1
+        ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;

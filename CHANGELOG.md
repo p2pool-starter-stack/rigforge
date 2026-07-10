@@ -32,7 +32,12 @@ All notable changes to RigForge are documented here. The format is based on
   hammering (the same work just queued — 4.5% measured), so the expensive probe blocks are now
   cached with a 5s TTL in the unit's `RuntimeDirectory` (#164 — also cuts loaded 96-core latency
   from ~10s to ~1s) and the handler cgroup carries a `CPUQuota=40%` hard ceiling: at most 40% of
-  one core, no matter how hard anything polls.
+  one core, no matter how hard anything polls. The final layer is admission control: the residual
+  shave proved to be L3-cache pollution from per-request process churn (rate-proportional, immune
+  to priorities and quotas — most visible on the 7800X3D's V-cache), so the serialized handler
+  holds its socket slot one extra second after responding, bounding the accept rate itself to
+  under one request per second. A dashboard polling every few seconds never notices; a flood
+  cannot exceed it.
 
 ## [1.2.1] - 2026-07-10
 
