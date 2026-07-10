@@ -47,3 +47,17 @@ flaky by nature and against GitHub Actions' ToS. They're a manual pre-tag gate t
   on macOS); avoid bash-4-only syntax.
 - Lint everything: `make lint` (shellcheck + shfmt). The file list lives in the Makefile's
   `SHELL_FILES` so CI and local stay in sync — add new `tests/*.sh` there.
+
+## Performance testing (standardized)
+
+Three standardized measurements, each owned by exactly one layer, so a release can't regress
+performance unnoticed:
+
+| Measurement | Where | Standard | Knobs |
+|---|---|---|---|
+| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine, compared against the **committed per-host baseline** in [`perf-baselines/`](perf-baselines/). No baseline → the phase reports the measurement and how to record one. | `E2E_PERF_TOLERANCE_PCT` (default 5); `E2E_PERF_RECORD=1` writes/updates the baseline — commit the file. |
+| **Hashrate under API load** | `e2e-pithead.sh` `api-impact` phase | Live 10s-window hashrate, 6×5s samples, baseline vs 4 clients hammering the sister API back-to-back. The handler unit's `Nice=19`/`IOSchedulingClass=idle` is the mechanism; this proves it. | `E2E_API_IMPACT_TOLERANCE_PCT` (default 3). |
+| **Tune improvement** | `e2e-real.sh` `verify` phase (existing) | The short real tune must produce a winner that beats or ties the baseline candidate (#62–#64 machinery: sustained-clock sampling, variance-aware acceptance, live A/B confirm). | `TUNE_BENCH`, `TUNE_ITERS` (see the phase comments). |
+
+Baselines are per-host on purpose: hashrate is hardware. When a rig's hardware or BIOS tuning
+changes deliberately, re-record its baseline in the same PR that documents the change.

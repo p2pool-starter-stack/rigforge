@@ -508,20 +508,68 @@ summary() {
     fi
 }
 
+# Standardized performance gate (#114 follow-through): the same offline 1M bench as verify, judged
+# against a COMMITTED per-host baseline (tests/perf-baselines/<hostname>.json) so a release can't
+# silently regress hashrate. No baseline yet -> reports the measurement and how to record one.
+# Knobs: E2E_PERF_RECORD=1 writes/updates the baseline (commit the file); E2E_PERF_TOLERANCE_PCT
+# (default 5) is the allowed drop — real rigs vary run-to-run with thermals, so keep it honest but
+# not twitchy. The relative live-hashrate guard (API load must not shave H/s) lives in
+# tests/e2e-pithead.sh's api-impact phase; this one owns the absolute number.
+perf() {
+    phase "perf — offline bench vs the committed $(hostname) baseline"
+    local bl out hr base tol="${E2E_PERF_TOLERANCE_PCT:-5}"
+    bl="$HERE/tests/perf-baselines/$(hostname).json"
+    "$RIGFORGE" stop >/dev/null 2>&1 || true # take the whole machine for a clean reading
+    if ! out="$(BENCH=1M "$RIGFORGE" bench 2>&1)"; then
+        bad "perf: bench failed"
+        printf '%s\n' "$out" | tail -3 >&2
+        "$RIGFORGE" start >/dev/null 2>&1 || true
+        return 0
+    fi
+    "$RIGFORGE" start >/dev/null 2>&1 || true
+    hr="$(printf '%s' "$out" | grep -oiE '[0-9.]+ H/s' | tail -1 | grep -oE '[0-9.]+')"
+    if [ -z "$hr" ]; then
+        bad "perf: no hashrate parsed from bench output"
+        return 0
+    fi
+    if [ -n "${E2E_PERF_RECORD:-}" ]; then
+        mkdir -p "$(dirname "$bl")"
+        jq -n --arg hs "$hr" --arg cpu "$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1)" --arg when "$(date '+%Y-%m-%d')" '{bench_1m_hs: ($hs | tonumber), cpu: $cpu, recorded: $when}' >"$bl"
+        ok "perf: baseline recorded — $hr H/s -> $bl (commit this file)"
+        return 0
+    fi
+    if [ ! -f "$bl" ]; then
+        printf '  \033[1;33m∙\033[0m no baseline for %s — measured %s H/s; record with E2E_PERF_RECORD=1 and commit tests/perf-baselines/\n' "$(hostname)" "$hr"
+        return 0
+    fi
+    base=$(jq -r '.bench_1m_hs // empty' "$bl" 2>/dev/null || true)
+    if [ -z "$base" ]; then
+        bad "perf: baseline $bl is unreadable"
+        return 0
+    fi
+    if awk -v h="$hr" -v b="$base" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
+        ok "perf: $hr H/s within ${tol}% of baseline $base ($(jq -r '.recorded' "$bl" 2>/dev/null))"
+    else
+        bad "perf REGRESSION: $hr H/s vs baseline $base H/s (tolerance ${tol}%) — investigate before releasing"
+    fi
+}
+
 case "${1:-}" in
 provision) provision ;;
 verify) verify ;;
+perf) perf ;;
 teardown) teardown ;;
 all)
     provision
     if [ "$(hugepages_total)" -gt 0 ]; then
         verify
+        perf
         teardown
     else
         echo "e2e-real: stopping after provision — reboot, then run 'verify' and 'teardown'." >&2
     fi
     ;;
 *)
-    die "usage: sudo bash tests/e2e-real.sh {provision|verify|teardown|all}"
+    die "usage: sudo bash tests/e2e-real.sh {provision|verify|perf|teardown|all}"
     ;;
 esac

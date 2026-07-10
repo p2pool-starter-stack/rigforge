@@ -96,7 +96,7 @@ the `xmrig` service then starts automatically.
 | **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | **[How It Works](docs/how-it-works.md)** | What the script actually does: compile, HugePages, MSR, NUMA, governor, service. |
-| **[Pithead Integration](docs/pithead-integration.md)** | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080`, and the token rules. |
+| **[Pithead Integration](docs/pithead-integration.md)** | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080` (plus the optional enriched sister API on `:8081`), and the token rules. |
 | **[FAQ](docs/faq.md)** | Common questions, plus why RigForge vs. doing it by hand. |
 
 Browse the full index at **[docs/](docs/README.md)**.

@@ -293,6 +293,9 @@ c="$(mkconf p_nofp "{ \"pools\": [{\"url\":\"h:3333\"}] }")"
 assert_eq "no fingerprint key when unset (#115)" "$(PJ "$c" | jq -c '.[0] | has("tls-fingerprint")')" "false"
 c="$(mkconf p_nullfp "{ \"pools\": [{\"url\":\"h:3333\",\"tls-fingerprint\":null}] }")"
 assert_eq "null fingerprint = absent (#115)" "$(PJ "$c" | jq -c '.[0] | has("tls-fingerprint")')" "false"
+# Index alignment: a pin on the SECOND pool must land on the second pool, not the first.
+c="$(mkconf p_fp2 "{ \"pools\": [{\"url\":\"plain:3333\"}, {\"url\":\"sec:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+assert_eq "second-pool fingerprint stays on the second pool (#115)" "$(PJ "$c" | jq -c '[(.[0] | has("tls-fingerprint")), (.[1]."tls-fingerprint" == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]')" "[false,true]"
 # Validation: bad url, blank url, missing port, non-boolean tls, no pools key, and an empty pools array
 # all fail fast.
 c="$(mkconf p_badurl "{ \"pools\": [{\"url\":\"evil;rm:3333\"}] }")"
@@ -1233,6 +1236,34 @@ arc_apply() {
 arc_out="$(arc_apply)"
 assert_contains "apply re-bakes the stale timer to the configured target (#95)" "$(cat "$ARC/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=efficiency"
 assert_contains "apply reports the reconciled target (#95)" "$arc_out" "Periodic autotune: efficiency"
+
+# #99: apply is the config-change path for the sister API too — toggling `api` on/off via apply must
+# install/remove the socket units without a full setup.
+echo "== black-box: apply reconciles the sister API to config (#99) =="
+cp "$ROOT/systemd/rigforge-api.socket.template" "$ROOT/systemd/rigforge-api@.service.template" "$ARC/systemd/"
+arc_api() { # <enabled|disabled>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ARC"
+        SYSTEMD_DIR="$ARC/systemd"
+        SERVICE_NAME=xmrig
+        REAL_USER=rfop
+        AUTOTUNE_MODE=disabled
+        API_MODE="$1"
+        API_BIND=0.0.0.0
+        API_PORT=8081
+        _apply_runtime() { :; }
+        sudo() { "$@"; }
+        set +e
+        PATH="$STUBS:$PATH" apply 2>&1
+    )
+}
+arc_api enabled >/dev/null
+assert_eq "apply with api enabled installs the socket (#99)" "$([ -f "$ARC/systemd/rigforge-api.socket" ] && echo y || echo n)" "y"
+arc_api disabled >/dev/null
+assert_eq "apply with api disabled removes the socket (#99)" "$([ -f "$ARC/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
+assert_eq "apply with api disabled removes the handler unit (#99)" "$([ -f "$ARC/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
 
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
@@ -3569,6 +3600,22 @@ assert_contains "service invokes the api-serve verb" "$(cat "$APS/systemd/rigfor
 assert_contains "service is sandboxed read-only (#99 hardening)" "$(cat "$APS/systemd/rigforge-api@.service")" "ProtectSystem=strict"
 assert_contains "handlers never compete with the miner (#114 perf guard)" "$(cat "$APS/systemd/rigforge-api@.service")" "Nice=19"
 assert_contains "enable log reports token posture without any token value" "$out" "token: open"
+# #99: a port change + apply must REBIND — daemon-reload alone never rebinds a changed ListenStream.
+APS_CALLS="$APS/calls.log"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$APS"
+    SYSTEMD_DIR="$APS/systemd"
+    REAL_USER=rfop
+    API_MODE=enabled
+    API_BIND=0.0.0.0
+    API_PORT=9000
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$APS_CALLS" install_api >/dev/null 2>&1
+)
+assert_contains "port change re-renders the socket (#99)" "$(cat "$APS/systemd/rigforge-api.socket")" "ListenStream=0.0.0.0:9000"
+assert_contains "port change restarts the socket to rebind (#99)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api.socket"
 out="$(run_api_install disabled)"
 assert_eq "api disable removes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
 assert_eq "api disable removes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
@@ -3617,6 +3664,11 @@ assert_eq "tune: applied overrides served" "$(printf '%s' "$body" | jq -r '.appl
 assert_eq "tune: last best hashrate served" "$(printf '%s' "$body" | jq -r '.last_best_hs')" "1200"
 assert_eq "tune: candidate count served" "$(printf '%s' "$body" | jq -r '.candidates_tried')" "2"
 assert_eq "tune: autotune timer visible (stub systemctl)" "$(printf '%s' "$body" | jq -r '.autotune.enabled')" "true"
+printf '{broken' >"$APIQ/home/worker/tune-overrides.json"
+resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "corrupt tune-overrides still answers 200" "$resp" "HTTP/1.1 200 OK"
+assert_eq "corrupt tune-overrides -> applied null, not a crash" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -r '.applied')" "null"
+printf '{"cpu":{"rx":16}}' >"$APIQ/home/worker/tune-overrides.json"
 # /health against the #78 firmware fixtures (memory profile off, SMT off, throttled clock).
 HRESP="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
     source "$SCRIPT"
@@ -3658,11 +3710,17 @@ assert_contains "wrong bearer -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
 assert_absent "401 body never echoes the token" "$resp" "tok1"
 resp="$(api_req 'GET /health HTTP/1.1\r\nauthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
 assert_contains "right bearer (any header case) -> 200" "$resp" "HTTP/1.1 200 OK"
+resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization:Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "right bearer (no space after colon) -> 200" "$resp" "HTTP/1.1 200 OK"
 # Method / route / timeout / config guards.
 resp="$(api_req 'POST /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
 assert_contains "non-GET -> 405 (read-only API)" "$resp" "HTTP/1.1 405 Method Not Allowed"
 resp="$(api_req 'GET /nope HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
 assert_contains "unknown route -> 404" "$resp" "HTTP/1.1 404 Not Found"
+resp="$(api_req 'GET /health?verbose=1 HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "query string is stripped, route still matches" "$resp" "HTTP/1.1 200 OK"
+resp="$(api_req 'HEAD /health HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "HEAD -> 405 (GET is the whole read-only surface)" "$resp" "HTTP/1.1 405 Method Not Allowed"
 resp="$(api_req '' "$APIQ/config.json")"
 assert_contains "empty request -> 408" "$resp" "HTTP/1.1 408 Request Timeout"
 printf '{broken' >"$APIQ/bad.json"

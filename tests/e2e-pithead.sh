@@ -137,12 +137,16 @@ phase_connect() {
 
 phase_worker_api() {
     phase "worker-api — the :8080 contract (open read-only by default; Bearer when ACCESS_TOKEN set)"
+    # Normalize first: the operator's config may carry its own ACCESS_TOKEN (miner-0 does), and this
+    # phase tests the CONTRACT in both modes — the EXIT trap restores the operator's token afterwards.
+    set_cfg '.ACCESS_TOKEN = ""'
+    sleep 3 # give the restarted miner a beat to bind
     local body code
     body=$(curl -fsS --max-time 5 http://127.0.0.1:8080/2/summary 2>/dev/null || true)
     if [ -n "$body" ] && printf '%s' "$body" | jq -e '.hashrate' >/dev/null 2>&1; then
-        ok "default posture: /2/summary readable with no token"
+        ok "open posture: /2/summary readable with no token"
     else
-        bad "default posture: /2/summary not readable without a token"
+        bad "open posture: /2/summary not readable without a token"
     fi
     if [ "$(jq -r '.http.host' "$GEN_CFG" 2>/dev/null)" = "0.0.0.0" ]; then
         ok "API bound to 0.0.0.0 (reachable from the stack host)"
@@ -236,6 +240,10 @@ phase_api_impact() {
 
 phase_stratum_auth() {
     phase "stratum-auth — right pass mines, wrong pass is rejected (#113, stack phase 1)"
+    if [ -z "$WLOG" ]; then
+        bad "no worker xmrig.log found — run the connect phase (or setup) first"
+        return 0
+    fi
     if [ -z "${E2E_STRATUM_PASS:-}" ]; then
         skip "E2E_STRATUM_PASS not set (stack auth off, or secret not provided) — phases skipped"
         return 0
@@ -307,14 +315,27 @@ phase_dashboard() {
 }
 
 phase_dev_fee() {
-    phase "dev-fee — the worker's donation follows config, independent of the stack"
-    local want got
+    phase "dev-fee — the effective donation follows config and the compiled floor"
+    # XMRig clamps donate-level to the kMinimumDonateLevel compiled into donate.h and AUTOSAVES the
+    # clamped value back into the generated config — so a DONATION lowered after the build only takes
+    # effect on a rebuild. The effective contract is max(config, compiled floor). Caught live on
+    # miner-0 (config 0, floor 1) the first time this gate ran, 2026-07-10.
+    local want got minlvl src eff
     want=$(jq -r '.DONATION // 1' "$CFG")
+    src=$(find "$HERE" -path '*worker*/xmrig/src/donate.h' 2>/dev/null | head -1)
+    minlvl=""
+    [ -n "$src" ] && minlvl=$(sed -nE 's/.*kMinimumDonateLevel *= *([0-9]+).*/\1/p' "$src" | head -1)
+    minlvl="${minlvl:-1}"
+    eff="$want"
+    if [ "$want" -lt "$minlvl" ] 2>/dev/null; then eff="$minlvl"; fi
     got=$(jq -r '."donate-level"' "$GEN_CFG" 2>/dev/null || true)
-    if [ "$got" = "$want" ]; then
-        ok "donate-level $got matches config"
+    if [ "$got" = "$eff" ]; then
+        ok "effective donate-level $got (config $want, compiled floor $minlvl)"
+        if [ "$eff" != "$want" ]; then
+            printf '  \033[1;33m∙\033[0m NOTE: config wants %s but this build was compiled with floor %s — rebuild to lower it (docs/configuration.md)\n' "$want" "$minlvl"
+        fi
     else
-        bad "donate-level is '$got', config says '$want'"
+        bad "donate-level is '$got'; expected $eff (config $want, compiled floor $minlvl)"
     fi
 }
 
