@@ -47,6 +47,7 @@ run `sudo rigforge [command]` from any directory; `uninstall` removes it.
 | `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them, an optional, one-time step. Live variants: `--now` / `--short` (a quick prefetch re-tune against the running miner, the *run a live tune now* path), `--now --long` (a full live search of every knob, = `--live`), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
 | `bios` | Guided, resumable walk-through of the BIOS/UEFI changes for your hardware — the settings `tune` can't reach from the OS (memory profile XMP/EXPO/DOCP, SMT, PBO/Eco-Mode; `--efficiency` picks the low-power set). Detects the current firmware state via the same probes `doctor` uses, hands you a board-specific checklist one item at a time, saves the pending items, and on the next run re-verifies which changes actually took. RigForge never writes BIOS itself; plan for console access (keyboard/KVM) for the reboot-into-BIOS step. Linux-only. See [Guided BIOS tuning](#guided-bios-tuning). |
 | `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
+| `watchdog` | One health check per run — the scheduled recovery verb, like `autotune`. You normally don't type it; set `"watchdog": "enabled"` in `config.json` and setup installs a timer that runs it every `watchdog_interval_min` minutes: two consecutive checks seeing 0 H/s or a dead API restart the wedged miner, and with `max_temp_c` set it stops the miner above that temperature (starting it again 5 °C below). Linux-only. See [Watchdog](#watchdog-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
 | `status` | One-glance live summary from the worker API (hashrate, pool, uptime, accepted/rejected shares — one fetch, no sudo), then the systemd service status. Miner stopped or API off: a single "worker API not reachable" line and the platform block as before. |
@@ -201,6 +202,40 @@ optimal on the vast majority of CPUs. The knob exists for the rare case where a 
 disabling the mod) wins on unusual silicon: set `TUNE_WRMSR="true false"` (or a preset number) to sweep
 `randomx.wrmsr` alongside the other knobs. It's applied per-bench (no reboot) and pinned only if it
 actually wins.
+
+---
+
+### Watchdog (opt-in)
+
+`Restart=always` in the miner's unit only covers a *dead* process. The failure mode it can't see:
+XMRig wedges — process alive, 0 H/s, HTTP API unresponsive — and systemd reports `active (running)`
+while the rig mines nothing. The watchdog covers that gap, plus an optional thermal cutoff for the
+"failed case fan in July" scenario.
+
+```jsonc
+// config.json
+"watchdog": "enabled",          // installs rigforge-watchdog.timer on the next setup/apply
+"watchdog_interval_min": 5,     // check cadence (minutes)
+"max_temp_c": 85                // optional: stop above 85°C, start again below 80°C
+```
+
+Each timer tick runs one check (`journalctl -u rigforge-watchdog.service` shows every decision):
+
+- **Wedge recovery (2-strike rule).** The local worker API (`127.0.0.1:8080/2/summary`, with the
+  `ACCESS_TOKEN` Bearer header when one is set) is unreachable or reports 0 H/s → one strike. Two
+  consecutive strikes (~2 ticks, unambiguous) restart the miner; a single blip — a
+  restart-in-progress, the dataset re-initializing — never does. Any healthy check resets the count.
+- **Thermal cutoff (only with `max_temp_c` set).** Above the cutoff the miner is stopped and a hold
+  marker written; later checks start it again exactly once the temperature drops below
+  `max_temp_c - 5` (the 5 °C hysteresis is fixed — enough to outlast the post-restart heat-up
+  without stranding the miner). An unreadable sensor skips the thermal check entirely: a missing
+  sensor must not stop a healthy miner. Before setting a cutoff, check what
+  `/sys/class/thermal/thermal_zone0/temp` reports on *your* board — the zone's meaning varies
+  (`THERMAL_ZONE` overrides the path).
+- A miner that's simply **not running** is left alone — dead-process recovery is systemd's job.
+
+Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed
+cleanly. `uninstall` removes them too.
 
 ---
 

@@ -449,6 +449,30 @@ parse_config() {
     esac
     case "$AUTOTUNE_MODE" in efficiency) AUTOTUNE_TARGET=efficiency ;; *) AUTOTUNE_TARGET=perf ;; esac
 
+    # Opt-in miner watchdog (#139): a periodic health check (same timer machinery as autotune) that
+    # restarts a WEDGED miner — process alive, 0 H/s or API dead, the case systemd's Restart= can't
+    # see — and, when max_temp_c is set, stops the miner above that temperature (restarting 5°C
+    # below). A typo hard-errors: a recovery mechanism must not be silently disabled.
+    _wd=$(jq -r '.watchdog // "disabled"' "$CONFIG_JSON")
+    case "$_wd" in
+    disabled | false | off | none | null | "") WATCHDOG_MODE=disabled ;;
+    enabled | true | on) WATCHDOG_MODE=enabled ;;
+    *) error "Invalid \"watchdog\" value '$_wd' in config.json — use \"disabled\" or \"enabled\"." ;;
+    esac
+    WATCHDOG_INTERVAL_MIN=$(jq -r '.watchdog_interval_min // 5' "$CONFIG_JSON")
+    if ! [[ "$WATCHDOG_INTERVAL_MIN" =~ ^[0-9]+$ ]] || [ "$WATCHDOG_INTERVAL_MIN" -lt 1 ] || [ "$WATCHDOG_INTERVAL_MIN" -gt 1440 ]; then
+        error "watchdog_interval_min must be a whole number of minutes, 1-1440 (got: $WATCHDOG_INTERVAL_MIN)."
+    fi
+    # Empty (the default) = no thermal cutoff. Opt-in because thermal_zone0's meaning varies by
+    # board — a wrong cutoff on an unchecked sensor is worse than none. 40-110: below 40 a loaded
+    # rig would never restart, above 110 is past any CPU's limit.
+    MAX_TEMP_C=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON")
+    if [ -n "$MAX_TEMP_C" ]; then
+        if ! [[ "$MAX_TEMP_C" =~ ^[0-9]+$ ]] || [ "$MAX_TEMP_C" -lt 40 ] || [ "$MAX_TEMP_C" -gt 110 ]; then
+            error "max_temp_c must be empty (no thermal cutoff) or a whole number 40-110 °C (got: $MAX_TEMP_C)."
+        fi
+    fi
+
     # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
     # no system-wide convenience change you didn't ask for.
     ADD_TO_PATH=$(jq -r '.add_to_path // false' "$CONFIG_JSON")
@@ -490,7 +514,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME"
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -1004,6 +1028,33 @@ install_autotune() {
     sudo systemctl enable --now rigforge-autotune.timer 2>/dev/null || true
 }
 
+# Install (or remove) the systemd timer that runs the miner watchdog periodically, based on the
+# `watchdog` config flag (#139). Same shape as install_autotune above; idempotent both ways.
+install_watchdog() {
+    [ "$OS_TYPE" == "Linux" ] || return 0
+    local svc="$SYSTEMD_DIR/rigforge-watchdog.service" tmr="$SYSTEMD_DIR/rigforge-watchdog.timer"
+    if [ "${WATCHDOG_MODE:-disabled}" = "disabled" ]; then
+        if [ -f "$tmr" ]; then
+            sudo systemctl disable --now rigforge-watchdog.timer 2>/dev/null || true
+            sudo rm -f "$svc" "$tmr"
+            sudo systemctl daemon-reload 2>/dev/null || true
+            log "Miner watchdog disabled."
+        fi
+        return 0
+    fi
+    log "Enabling the miner watchdog: a health check every ${WATCHDOG_INTERVAL_MIN:-5} min${MAX_TEMP_C:+, thermal cutoff ${MAX_TEMP_C}°C}..."
+    # Only the cadence is baked into the units — the verb re-reads config.json every run, so an
+    # `apply` after a max_temp_c or ACCESS_TOKEN edit needs no unit rewrite (and no token on disk).
+    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
+        envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR' \
+        <"$SCRIPT_DIR/systemd/rigforge-watchdog.service.template" | sudo tee "$svc" >/dev/null
+    WATCHDOG_INTERVAL_MIN="${WATCHDOG_INTERVAL_MIN:-5}" \
+        envsubst '$WATCHDOG_INTERVAL_MIN' \
+        <"$SCRIPT_DIR/systemd/rigforge-watchdog.timer.template" | sudo tee "$tmr" >/dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rigforge-watchdog.timer 2>/dev/null || true
+}
+
 # Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
 # JSON from /run/rigforge-api; a systemd timer (`rigforge.sh api-refresh`) recomputes the files every
 # 15 s. Requests never touch the miner. Toggle shape mirrors install_autotune above.
@@ -1354,6 +1405,10 @@ _setup_plan() {
     disabled) _p "configuring autotune" "no periodic timer (autotune disabled) — an installed one would be removed" ;;
     *) _p "configuring autotune" "install rigforge-autotune.timer (monthly re-tune, target: $AUTOTUNE_MODE)" ;;
     esac
+    case "$WATCHDOG_MODE" in
+    disabled) _p "configuring the watchdog" "no watchdog timer (watchdog disabled) — an installed one would be removed" ;;
+    *) _p "configuring the watchdog" "install rigforge-watchdog.timer (health check every ${WATCHDOG_INTERVAL_MIN}min${MAX_TEMP_C:+, thermal cutoff ${MAX_TEMP_C}°C})" ;;
+    esac
     if [ "$API_MODE" = enabled ]; then
         _p "configuring the sister API" "install rigforge-api.service (:$API_PORT) + the 15s refresh timer"
     else
@@ -1409,6 +1464,8 @@ main() {
     install_service
     CURRENT_STEP="configuring autotune"
     install_autotune
+    CURRENT_STEP="configuring the watchdog"
+    install_watchdog
     CURRENT_STEP="configuring the sister API"
     install_api
     CURRENT_STEP="configuring the API firewall"
@@ -1598,6 +1655,10 @@ uninstall() {
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-autotune.timer" "$SYSTEMD_DIR/rigforge-autotune.service"
+    fi
+    if [ -f "$SYSTEMD_DIR/rigforge-watchdog.timer" ]; then
+        sudo systemctl disable --now rigforge-watchdog.timer 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-watchdog.timer" "$SYSTEMD_DIR/rigforge-watchdog.service"
     fi
     if [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
@@ -3276,7 +3337,7 @@ svc_disable() {
 # verbs (api-refresh, msr-apply) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
-_rigforge_verbs="setup upgrade uninstall tune autotune doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
+_rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
 _rigforge() {
     local cur verb
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -3390,10 +3451,76 @@ apply() {
     _apply_runtime
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
+        install_watchdog >/dev/null 2>&1 || true
         install_api >/dev/null 2>&1 || true
         install_api_firewall || true
         _autotune_apply_notice
     fi
+}
+
+# Miner watchdog (#139): ONE health check per invocation — rigforge-watchdog.timer provides the
+# cadence. Two jobs systemd's Restart= can't do: restart a WEDGED miner (process alive, 0 H/s or
+# API dead — two consecutive strikes, so one restart-in-progress or dataset-init blip never
+# triggers it), and an opt-in thermal cutoff (stop above max_temp_c, start again 5°C below — the
+# hysteresis is fixed: big enough to outlast the post-restart heat-up on the rigs we run, small
+# enough not to strand the miner, and one less knob to typo). State lives in $WORKER_ROOT (which
+# _reown_worker already re-owns): a bare-integer strike counter and a thermal-hold marker file.
+# The health probe reuses _read_api_hashrate (ACCESS_TOKEN Bearer handled there, token never
+# logged) and _read_temp (THERMAL_ZONE/TUNE_TEMP_CMD overrides handled there).
+watchdog() {
+    if [ "$OS_TYPE" != "Linux" ]; then
+        error "watchdog drives the live systemd service and is only supported on Linux."
+    fi
+    parse_config
+    local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
+    t=$(_read_temp)
+    # Thermal hold first: WE stopped the miner, so the not-active check below must not short-circuit
+    # the recovery. Start again only once we're 5°C under the cutoff (or the cutoff was removed).
+    if [ -f "$hold_f" ]; then
+        if [ -z "$MAX_TEMP_C" ]; then
+            rm -f "$hold_f"
+            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
+            log "watchdog: max_temp_c is no longer set — thermal hold lifted, miner started."
+        elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
+            rm -f "$hold_f"
+            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
+            log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, miner started."
+        else
+            log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
+        fi
+        return 0
+    fi
+    if ! systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        rm -f "$fails_f"
+        log "watchdog: $SERVICE_NAME is not active — dead-process recovery is systemd's (Restart=). Nothing to do."
+        return 0
+    fi
+    # Thermal cutoff (opt-in). An unreadable temp skips this — a missing sensor must not stop a
+    # healthy miner.
+    if [ -n "$MAX_TEMP_C" ] && [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t > m) }'; then
+        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        touch "$hold_f"
+        warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
+        return 0
+    fi
+    # Wedge check: the API probe returns empty (unreachable) or the live hashrate (a float).
+    hr=$(_read_api_hashrate)
+    if [ -z "$hr" ] || awk -v h="$hr" 'BEGIN { exit !(h == 0) }'; then
+        f=$(cat "$fails_f" 2>/dev/null) || f=0
+        [[ "$f" =~ ^[0-9]+$ ]] || f=0
+        f=$((f + 1))
+        if [ "$f" -ge 2 ]; then
+            rm -f "$fails_f"
+            sudo systemctl restart "$SERVICE_NAME" 2>/dev/null || true
+            warn "watchdog: miner wedged ($f consecutive checks with 0 H/s or an unreachable API) — restarted."
+        else
+            printf '%s\n' "$f" >"$fails_f"
+            log "watchdog: unhealthy check ($f/2: 0 H/s or API unreachable) — restarting at 2 in a row."
+        fi
+        return 0
+    fi
+    rm -f "$fails_f"
+    log "watchdog: healthy ($hr H/s)."
 }
 
 # bench (#11): run a one-off xmrig --bench and report the hashrate. A quick perf/health check.
@@ -4238,6 +4365,9 @@ Tuning:
   bench      run a one-off 'xmrig --bench' and report the hashrate
   autotune   alias of 'tune --now' (and the verb the scheduled timer runs); turn on the schedule with
              autotune:"performance"|"efficiency" in config.json
+  watchdog   one health check: restart a wedged miner (alive but 0 H/s, two strikes), enforce
+             max_temp_c (stop above it, start 5°C below). Schedule it with watchdog:"enabled"
+             in config.json — the timer runs it every watchdog_interval_min minutes
   bios       guided, resumable walk-through of the BIOS/UEFI changes for your hardware (XMP/EXPO,
              SMT, PBO/Eco-Mode; '--efficiency' picks the low-power set). Detects state, hands you a
              board-specific checklist, and re-verifies what took after the reboot. RigForge never
@@ -4285,6 +4415,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         tune "$@"
         ;;
     autotune) autotune ;;
+    watchdog) watchdog ;;
     doctor) doctor ;;
     bios)
         shift

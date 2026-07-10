@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodic RigForge miner watchdog
+
+[Timer]
+OnBootSec=${WATCHDOG_INTERVAL_MIN}min
+OnUnitActiveSec=${WATCHDOG_INTERVAL_MIN}min
+
+[Install]
+WantedBy=timers.target
