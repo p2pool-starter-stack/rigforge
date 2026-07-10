@@ -29,6 +29,13 @@ per-rig stats over the LAN. Know exactly what it is:
   polls each worker from the stack host. The data it can return is mining stats:
   hashrate, the configured pool URL, the worker label, and the CPU model.
 
+The optional sister API (`:8081`, `"api": "enabled"` — **off by default**) follows the same
+posture: read-only by construction (GET only, fixed routes, nothing from a request is executed or
+logged), gated by the same `ACCESS_TOKEN`, and socket-activated with a sandboxed per-request
+handler (`ProtectSystem=strict`, `NoNewPrivileges`, idle CPU priority so it can never compete with
+the miner). It additionally serves RigForge's tune/health/power data — still stats, never a
+control surface.
+
 Not running Pithead? Nothing else needs the port; `tune` and `doctor` read
 the API over `127.0.0.1`. So if you mine solo or to a public pool, you can firewall
 `:8080` off entirely without losing anything:

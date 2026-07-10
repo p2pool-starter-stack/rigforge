@@ -40,6 +40,15 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    PITHEAD_URL=gouda.lan:3333 sudo -E make e2e-pithead
    ```
 
+   Both gates carry the standardized performance checks (see `tests/README.md` › Performance
+   testing): `e2e-real`'s `perf` phase compares the offline bench against the committed per-host
+   baseline in `tests/perf-baselines/`, and `e2e-pithead`'s `api-impact` phase proves the sister
+   API doesn't shave live hashrate. A perf regression fails the gate — investigate or consciously
+   re-record the baseline before tagging.
+
+   ```bash
+   ```
+
    Each phase must report `E2E-REAL (<phase>): PASS`. This proves a release bundle actually
    builds, tunes, and hashes on real hardware, which the suites can't since they all stub XMRig.
    - Put a real, reachable pool in `config.json` first. Without one, `setup` writes an unroutable

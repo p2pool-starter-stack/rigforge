@@ -137,12 +137,16 @@ phase_connect() {
 
 phase_worker_api() {
     phase "worker-api — the :8080 contract (open read-only by default; Bearer when ACCESS_TOKEN set)"
+    # Normalize first: the operator's config may carry its own ACCESS_TOKEN (miner-0 does), and this
+    # phase tests the CONTRACT in both modes — the EXIT trap restores the operator's token afterwards.
+    set_cfg '.ACCESS_TOKEN = ""'
+    sleep 3 # give the restarted miner a beat to bind
     local body code
     body=$(curl -fsS --max-time 5 http://127.0.0.1:8080/2/summary 2>/dev/null || true)
     if [ -n "$body" ] && printf '%s' "$body" | jq -e '.hashrate' >/dev/null 2>&1; then
-        ok "default posture: /2/summary readable with no token"
+        ok "open posture: /2/summary readable with no token"
     else
-        bad "default posture: /2/summary not readable without a token"
+        bad "open posture: /2/summary not readable without a token"
     fi
     if [ "$(jq -r '.http.host' "$GEN_CFG" 2>/dev/null)" = "0.0.0.0" ]; then
         ok "API bound to 0.0.0.0 (reachable from the stack host)"
@@ -234,8 +238,84 @@ phase_api_impact() {
     set_cfg '.api = "disabled"'
 }
 
+phase_network() {
+    phase "network — nothing listens or leaks beyond what the config defines"
+    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep
+    # Outbound: the miner's ONLY established TCP peers are the configured pool. Anything else would
+    # mean traffic the operator never asked for.
+    remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
+    if [ -n "$remotes" ]; then
+        for r in $remotes; do
+            case "$r" in
+            *:"$port") ;;
+            *)
+                bad_remote=1
+                bad "unexpected xmrig peer: $r"
+                ;;
+            esac
+        done
+        [ "$bad_remote" = 0 ] && ok "outbound: xmrig's only TCP peers are the pool (:$port)"
+    else
+        bad "no established xmrig connections found to inspect"
+    fi
+    # Listeners: the miner owns :8080 and nothing else; :8081 exists exactly while enabled.
+    set_cfg '.api = "enabled"'
+    sleep 3
+    if ss -Htln 2>/dev/null | grep -q ':8081 '; then
+        ok ":8081 listening while api enabled"
+    else
+        bad ":8081 not listening while api enabled"
+    fi
+    xl=$(ss -Htlnp 2>/dev/null | awk '/xmrig/ {print $4}' | grep -v ':8080$' | sort -u || true)
+    if [ -z "$xl" ]; then
+        ok "miner listens on :8080 only"
+    else
+        bad "miner has unexpected listeners: $xl"
+    fi
+    # Spirit-of-XMRig on the wire: the sister /2/summary minus `rigforge` must carry EXACTLY the key
+    # set XMRig's own API serves — verbatim superset, nothing renamed, dropped, or invented.
+    k1=$(curl -fsS --max-time 8 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -cS 'keys' 2>/dev/null || true)
+    k2=$(curl -fsS --max-time 8 http://127.0.0.1:8081/2/summary 2>/dev/null | jq -cS 'del(.rigforge) | keys' 2>/dev/null || true)
+    if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then
+        ok "wire superset: sister /2/summary = xmrig's keys + rigforge, nothing else"
+    else
+        bad "superset mismatch: xmrig keys $k1 vs sister-without-rigforge $k2"
+    fi
+    # Leak sweep: with a token AND a stratum pass configured, no byte of any response on either port
+    # — authed, unauthed, or error, headers included — may contain either secret.
+    set_cfg '.ACCESS_TOKEN = "tok-net1" | .pools[0].pass = "pass-net1"'
+    sleep 3
+    sweep=$(
+        for p in 8080 8081; do
+            for path in /1/summary /2/summary /health /tune /nope; do
+                curl -is --max-time 8 -H "Authorization: Bearer tok-net1" "http://127.0.0.1:$p$path" 2>/dev/null || true
+                curl -is --max-time 8 "http://127.0.0.1:$p$path" 2>/dev/null || true
+            done
+        done
+    )
+    case "$sweep" in
+    *tok-net1*) bad "leak: ACCESS_TOKEN appears in a response" ;;
+    *) ok "leak sweep: ACCESS_TOKEN never appears in any response (both ports, all routes + errors)" ;;
+    esac
+    case "$sweep" in
+    *pass-net1*) bad "leak: the stratum pass appears in a response" ;;
+    *) ok "leak sweep: pools[].pass never appears in any response" ;;
+    esac
+    set_cfg '.api = "disabled" | .ACCESS_TOKEN = "" | .pools[0].pass = "x"'
+    sleep 3
+    if ss -Htln 2>/dev/null | grep -q ':8081 '; then
+        bad ":8081 still listening after api disabled"
+    else
+        ok ":8081 closed when api disabled"
+    fi
+}
+
 phase_stratum_auth() {
     phase "stratum-auth — right pass mines, wrong pass is rejected (#113, stack phase 1)"
+    if [ -z "$WLOG" ]; then
+        bad "no worker xmrig.log found — run the connect phase (or setup) first"
+        return 0
+    fi
     if [ -z "${E2E_STRATUM_PASS:-}" ]; then
         skip "E2E_STRATUM_PASS not set (stack auth off, or secret not provided) — phases skipped"
         return 0
@@ -307,14 +387,27 @@ phase_dashboard() {
 }
 
 phase_dev_fee() {
-    phase "dev-fee — the worker's donation follows config, independent of the stack"
-    local want got
+    phase "dev-fee — the effective donation follows config and the compiled floor"
+    # XMRig clamps donate-level to the kMinimumDonateLevel compiled into donate.h and AUTOSAVES the
+    # clamped value back into the generated config — so a DONATION lowered after the build only takes
+    # effect on a rebuild. The effective contract is max(config, compiled floor). Caught live on
+    # miner-0 (config 0, floor 1) the first time this gate ran, 2026-07-10.
+    local want got minlvl src eff
     want=$(jq -r '.DONATION // 1' "$CFG")
+    src=$(find "$HERE" -path '*worker*/xmrig/src/donate.h' 2>/dev/null | head -1)
+    minlvl=""
+    [ -n "$src" ] && minlvl=$(sed -nE 's/.*kMinimumDonateLevel *= *([0-9]+).*/\1/p' "$src" | head -1)
+    minlvl="${minlvl:-1}"
+    eff="$want"
+    if [ "$want" -lt "$minlvl" ] 2>/dev/null; then eff="$minlvl"; fi
     got=$(jq -r '."donate-level"' "$GEN_CFG" 2>/dev/null || true)
-    if [ "$got" = "$want" ]; then
-        ok "donate-level $got matches config"
+    if [ "$got" = "$eff" ]; then
+        ok "effective donate-level $got (config $want, compiled floor $minlvl)"
+        if [ "$eff" != "$want" ]; then
+            printf '  \033[1;33m∙\033[0m NOTE: config wants %s but this build was compiled with floor %s — rebuild to lower it (docs/configuration.md)\n' "$want" "$minlvl"
+        fi
     else
-        bad "donate-level is '$got', config says '$want'"
+        bad "donate-level is '$got'; expected $eff (config $want, compiled floor $minlvl)"
     fi
 }
 
@@ -333,6 +426,7 @@ case "${1:-all}" in
 connect) phase_connect ;;
 worker-api) phase_worker_api ;;
 api-impact) phase_api_impact ;;
+network) phase_network ;;
 stratum-auth) phase_stratum_auth ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
@@ -340,10 +434,11 @@ all)
     phase_connect
     phase_worker_api
     phase_api_impact
+    phase_network
     phase_stratum_auth
     phase_dashboard
     phase_dev_fee
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|stratum-auth|dashboard|dev-fee|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)" ;;
 esac
 summary

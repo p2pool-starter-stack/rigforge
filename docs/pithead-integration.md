@@ -66,6 +66,32 @@ if your stack doesn't use one.
    expected signal that it still has the old secret, not a fault (see
    [Troubleshooting](#troubleshooting)).
 
+### Sister API (optional, `:8081`)
+
+Set `"api": "enabled"` (+ `sudo ./rigforge.sh apply`) and the worker serves a second **read-only**
+HTTP endpoint the stack can consume for data XMRig doesn't know (the enriched feed for
+pithead#235):
+
+- `GET /1/summary` and `GET /2/summary` — XMRig's own body passed through **verbatim** (a strict
+  superset: everything the `:8080` probe returns is here unchanged), plus one namespaced
+  `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance), `tune` (applied
+  overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
+  hashrate-per-watt over a 1s window; `null` when unmeasurable), and `health` (the doctor probes
+  as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling).
+- `GET /health` and `GET /tune` — the `rigforge.health` / `rigforge.tune` objects bare.
+- When XMRig's own API is unreachable the response is still `200` with
+  `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
+  matters.
+
+Same token rule as `:8080`: open when `ACCESS_TOKEN` is unset (the default), the exact `Bearer`
+otherwise — the sister API deliberately mirrors XMRig's own API conventions: the versioned `/1`/`/2`
+paths, the same `Bearer`/`401` semantics, JSON-only bodies, and minimal headers. The release gate's
+`network` phase enforces the boundary on the wire: the miner's only TCP peers are the configured
+pool, `:8081` exists exactly while enabled, and no response byte ever contains `ACCESS_TOKEN` or a
+pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
+`api_port`/`api_bind`; it is socket-activated (no resident process) and its handler runs at idle
+CPU priority so polling cannot shave hashrate.
+
 ### Stratum over TLS (optional)
 
 Needs stack-side support that hasn't shipped yet (Pithead is tracking it as

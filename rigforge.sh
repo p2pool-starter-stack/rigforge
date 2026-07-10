@@ -880,6 +880,10 @@ install_api() {
     RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api@.service.template" | sudo tee "$svc" >/dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable --now rigforge-api.socket 2>/dev/null || true
+    # enable --now is a no-op on an already-running socket, and daemon-reload alone never rebinds a
+    # changed ListenStream — an api_port/api_bind edit + `apply` would keep listening on the OLD
+    # address until reboot. Restart rebinds (and is a start when the socket was stopped).
+    sudo systemctl restart rigforge-api.socket 2>/dev/null || true
 }
 
 tune_kernel() {
@@ -3071,7 +3075,13 @@ api_serve() {
     while IFS= read -t 5 -r hline; do
         hline=${hline%$'\r'}
         if [ -z "$hline" ]; then break; fi
-        case "$hline" in [Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:*) auth="${hline#*: }" ;; esac
+        case "$hline" in
+        [Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:*)
+            # HTTP allows optional whitespace after the colon — strip the name, then leading spaces/tabs.
+            auth="${hline#*:}"
+            while [ "${auth# }" != "$auth" ] || [ "${auth#	}" != "$auth" ]; do auth="${auth# }" auth="${auth#	}"; done
+            ;;
+        esac
     done
     if [ "$method" != GET ]; then
         _http_respond 405 "Method Not Allowed" '{"error":"read-only API"}'
