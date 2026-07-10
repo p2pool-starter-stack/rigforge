@@ -7,6 +7,18 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **watchdog: wedge recovery actually fires on an unreachable API (#210).** In v1.5.0 the check
+  crashed (curl's exit rode `pipefail` out of the probe into an unguarded assignment under
+  `set -e`) before the strike logic ran — so the exact condition the watchdog exists for, a live
+  process with a dead API, was never recovered, and the failed oneshot spammed the journal every
+  tick. Caught by the #139 live wedge test on miner-0. The probe guard now sits *inside* the
+  command substitution (an outer `||` can't suppress the ERR trap firing in the subshell); the
+  same shape made offline `upgrade --check` print ERR-trap noise ahead of its one warn line,
+  fixed identically. Regression tests run both paths through the real dispatch, where the trap
+  is live.
+
 ## [1.5.0] - 2026-07-10
 
 ### Security
