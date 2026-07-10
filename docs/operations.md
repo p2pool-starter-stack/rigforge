@@ -16,10 +16,10 @@ reference](#commands) is below.
 | Redeploy after a `git pull` | `git pull && sudo ./rigforge.sh upgrade` | Rebuilds + restarts (and re-tunes) if the XMRig pin moved; otherwise a no-op. See [the note below](#upgrading-xmrig-redeploy-after-a-git-pull). |
 | Run a live tune now | `sudo ./rigforge.sh tune --now` | One live pass against the running miner; keeps the best prefetch mode if it wins. Linux only. |
 | Check the worker is healthy | `sudo ./rigforge.sh doctor` | HugePages, MSR, governor, service, with a fix hint for anything off. |
-| Watch it mining | `sudo ./rigforge.sh logs` | Live logs; `Ctrl-C` stops following (the miner keeps running). |
+| Watch it mining | `./rigforge.sh logs` | Live logs, no root needed; `Ctrl-C` stops following (the miner keeps running). |
 | Stop / start / restart | `sudo ./rigforge.sh stop` · `start` · `restart` | Control the miner service. |
 | Quick speed check | `sudo ./rigforge.sh bench` | One-off offline benchmark; reports H/s. |
-| Save config + tuning | `sudo ./rigforge.sh backup` | Snapshots the only hard-to-recreate state to `./backups`. |
+| Save config + tuning | `./rigforge.sh backup` | Snapshots the only hard-to-recreate state to `./backups`. No root needed. |
 
 > On macOS, drop the `sudo` (the privileged steps are Linux-only) and run `./rigforge.sh restart` after
 > `apply` to pick up changes. `doctor` and the live re-tunes (`tune --now`, `tune --live`) are Linux-only.
@@ -36,13 +36,27 @@ RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`. Optional:
 `"add_to_path": true` in `config.json` and setup installs a `rigforge` command on your PATH, so you can
 run `sudo rigforge [command]` from any directory; `uninstall` removes it.
 
+### Privileges
+
+Not every verb needs root — the design, in four lines:
+
+- `setup` / `upgrade` / `apply` / `uninstall` and the service verbs (`start` / `stop` / `restart` /
+  `enable` / `disable`) call `sudo` inline for each privileged step — run them with `sudo` (or be
+  ready for the inline password prompts).
+- `tune` / `autotune` re-run themselves under `sudo` automatically (interactive terminals only, so a
+  script never hangs on a password prompt).
+- `status`, `logs`, `backup`, and `restore` never need root — you shouldn't type a password just to
+  look at your own rig.
+- `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
+  root.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
 | `upgrade` | Rebuild and restart only if the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. If periodic autotune is enabled, it also re-tunes the new build (the fastest knobs can shift between versions). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled). |
 | `uninstall` | Remove the service and revert all system changes (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
-| `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. |
+| `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. Exits non-zero when critical issues are found (cron-friendly, matching Pithead's `status`). |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
 | `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them, an optional, one-time step. Live variants: `--now` / `--short` (a quick prefetch re-tune against the running miner, the *run a live tune now* path), `--now --long` (a full live search of every knob, = `--live`), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
 | `bios` | Guided, resumable walk-through of the BIOS/UEFI changes for your hardware — the settings `tune` can't reach from the OS (memory profile XMP/EXPO/DOCP, SMT, PBO/Eco-Mode; `--efficiency` picks the low-power set). Detects the current firmware state via the same probes `doctor` uses, hands you a board-specific checklist one item at a time, saves the pending items, and on the next run re-verifies which changes actually took. RigForge never writes BIOS itself; plan for console access (keyboard/KVM) for the reboot-into-BIOS step. Linux-only. See [Guided BIOS tuning](#guided-bios-tuning). |
@@ -251,7 +265,7 @@ sudo systemctl restart xmrig    # restart (e.g. after a config change)
 ```
 
 RigForge also wraps these so you don't have to remember the unit name:
-`sudo ./rigforge.sh status` / `logs` / `start` / `stop` / `restart`.
+`./rigforge.sh status` / `logs` (no root needed) and `sudo ./rigforge.sh start` / `stop` / `restart`.
 
 The service is enabled at install, so it starts automatically on boot (and after the post-setup
 reboot).
@@ -425,7 +439,7 @@ regenerated by `setup`, so they're not worth saving. `backup` snapshots that sta
 archive:
 
 ```bash
-sudo ./rigforge.sh backup           # -> ./backups/rigforge-backup-YYYYMMDD-HHMMSS.tar.gz
+./rigforge.sh backup                # -> ./backups/rigforge-backup-YYYYMMDD-HHMMSS.tar.gz (no root needed)
 ```
 
 The archive is owner-only (`chmod 600`) and includes `config.json`, the tuning files, and a small
@@ -434,7 +448,7 @@ manifest (RigForge version + source host). Back up after first-run setup and aga
 `restore` puts it back. Point it at an archive:
 
 ```bash
-sudo ./rigforge.sh restore ./backups/rigforge-backup-20260101-120000.tar.gz   # prompts; -y to skip
+./rigforge.sh restore ./backups/rigforge-backup-20260101-120000.tar.gz   # prompts; -y to skip
 sudo ./rigforge.sh setup            # rebuild + apply (or 'apply' if XMRig is already built)
 ```
 

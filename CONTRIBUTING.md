@@ -29,6 +29,8 @@ RigForge is portable Bash that has to run on Ubuntu/Debian and macOS:
   CI runs the same checks, so a clean local run keeps your PR green. (`make fmt` auto-applies the
   `shfmt` formatting.)
 - Update the README or other docs when you change behavior or add options.
+- New `config.json` keys are lowercase `snake_case`, matching Pithead. The three SCREAMING legacy
+  keys (`ACCESS_TOKEN`, `DONATION`, `HOME_DIR`) are frozen as-is — never rename a shipped key.
 
 ## Pre-commit hooks
 

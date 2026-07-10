@@ -17,6 +17,20 @@ All notable changes to RigForge are documented here. The format is based on
   the open-AND-unscoped posture (no `ACCESS_TOKEN`, no `api_allow_from`) — correct on the designed
   trusted LAN, loud enough to catch before a rig faces anything else.
 
+### Changed
+
+- **Consistency sweep (#149).** `doctor` now exits non-zero when critical issues are found
+  (cron-friendly, matching Pithead's health verb). Extra arguments to no-arg verbs (`doctor foo`,
+  Pithead's `setup --skip-deps` muscle memory) error with a pointer to help instead of being
+  silently ignored. `uninstall` gains the same EOF-guarded prompt as every other prompt (a piped
+  run aborts cleanly on the default-No path) and the same strict flag loop as `restore`. All
+  unknown-flag errors share one template (`Unknown option for <verb>: '<arg>'`), the four
+  "Aborting." suffixes are gone, and the reboot reminder speaks `[WARN]` like every other
+  instruction. Docs: a Privileges note (which verbs sudo inline, which self-elevate, and that
+  `status`/`logs`/`backup`/`restore` never need root — the docs used to prescribe `sudo` for
+  looking), and a written config-key naming policy (legacy SCREAMING keys frozen; all new keys
+  lowercase snake_case, matching Pithead). No key or verb was renamed.
+
 ### Added
 
 - **Miner watchdog + optional thermal cutoff (#139).** `"watchdog": "enabled"` installs a systemd

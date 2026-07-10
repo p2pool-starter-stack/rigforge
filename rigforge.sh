@@ -260,10 +260,10 @@ ensure_config_exists() {
             read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL || true
 
             if [ -z "$IN_URL" ]; then
-                error "A pool URL is required. Aborting."
+                error "A pool URL is required."
             fi
             if ! [[ "$IN_URL" =~ :[0-9]+$ ]]; then
-                error "Pool URL must include a port, e.g. $IN_URL:3333. Aborting."
+                error "Pool URL must include a port, e.g. $IN_URL:3333."
             fi
             # Validate the host now, the same way parse_config will in a moment — otherwise a host-less URL
             # like ":3333" passes the port check, gets written, and then parse_config hard-errors on it,
@@ -271,8 +271,8 @@ ensure_config_exists() {
             # exists). Failing before the write keeps the user re-promptable.
             _host="${IN_URL%:*}"
             case "$_host" in
-            \[*\]) [[ "$_host" =~ ^\[[0-9A-Fa-f:]+\]$ ]] || error "Pool URL '$IN_URL' has an invalid IPv6 literal (use [addr]:port). Aborting." ;;
-            *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool URL host '$_host' is not a valid hostname or IP. Aborting." ;;
+            \[*\]) [[ "$_host" =~ ^\[[0-9A-Fa-f:]+\]$ ]] || error "Pool URL '$IN_URL' has an invalid IPv6 literal (use [addr]:port)." ;;
+            *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool URL host '$_host' is not a valid hostname or IP." ;;
             esac
 
             # Pithead stratum auth (#113): if the stack sets p2pool.stratum_password, every rig's pool
@@ -1264,7 +1264,7 @@ finish_deployment() {
     log "Deployment Complete."
     if [ "$REBOOT_REQUIRED" = true ]; then
         warn "ACTION REQUIRED: A system reboot is mandatory to enable HugePages."
-        echo "Please run: 'sudo reboot' now."
+        warn "Please run 'sudo reboot' now."
     else
         log "Worker configured successfully. No reboot required."
     fi
@@ -1437,7 +1437,7 @@ main() {
             _setup_plan
             return 0
             ;;
-        *) error "Unexpected argument for setup: $_arg. Run '$0 help'." ;;
+        *) error "Unknown option for setup: '$_arg'. Run '$0 help'." ;;
         esac
     done
     CURRENT_STEP="verifying prerequisites"
@@ -1559,7 +1559,7 @@ upgrade() {
             _upgrade_check
             return 0
             ;;
-        *) error "Unexpected argument for upgrade: $arg. Run '$0 help'." ;;
+        *) error "Unknown option for upgrade: '$arg'. Run '$0 help'." ;;
         esac
     done
     check_prerequisites
@@ -1625,9 +1625,18 @@ uninstall() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "uninstall manages Linux system changes and is only supported on Linux."
     fi
-    if [ "${1:-}" != "--yes" ] && [ "${1:-}" != "-y" ]; then
+    local assume_yes=0 arg
+    for arg in "$@"; do
+        case "$arg" in
+        -y | --yes) assume_yes=1 ;;
+        *) error "Unknown option for uninstall: '$arg'. Run '$0 help'." ;;
+        esac
+    done
+    if [ "$assume_yes" -eq 0 ]; then
         warn "This removes the xmrig service and reverts RigForge's system changes (fstab, limits, modules, GRUB)."
-        read -r -p "Proceed with uninstall? (y/N): " ANS
+        # `|| true`: EOF on a piped/non-interactive stdin leaves ANS empty, so the default-No abort
+        # below runs instead of the ERR trap (same guard as the setup prompts).
+        read -r -p "Proceed with uninstall? (y/N): " ANS || true
         [[ "$ANS" =~ ^[Yy] ]] || {
             log "Aborted."
             return 0
@@ -2449,7 +2458,7 @@ tune() {
         --short) now=1 ;;                    # explicit quick pass — the default depth for --now
         --long) TUNE_MODE=live now_long=1 ;; # full all-knob LIVE sweep (= --live), the thorough re-tune
         --history) TUNE_HISTORY=1 ;;         # show current tuning + last run + auto-tune decisions, then exit
-        *) error "Unknown tune option: $1 (use --now, --short, --long, --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
+        *) error "Unknown option for tune: '$1' (use --now, --short, --long, --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
         esac
         shift
     done
@@ -2930,7 +2939,7 @@ backup() {
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) ;; # accepted for symmetry with restore; backup has no prompt to skip
-        *) error "Unexpected argument for backup: $arg. Run '$0 help'." ;;
+        *) error "Unknown option for backup: '$arg'. Run '$0 help'." ;;
         esac
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to back up. Run 'setup' first."
@@ -2960,7 +2969,7 @@ backup() {
 
     log "Backed up: $included"
     log "Saved to:  $archive"
-    log "Restore with: sudo $0 restore $archive"
+    log "Restore with: $0 restore $archive"
 }
 
 # restore [-y|--yes] <archive>: put config.json + tuning back from a backup archive.
@@ -2969,7 +2978,7 @@ restore() {
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
-        -*) error "Unknown option for restore: $arg. Run '$0 help'." ;;
+        -*) error "Unknown option for restore: '$arg'. Run '$0 help'." ;;
         *) [ -n "$archive" ] || archive="$arg" ;;
         esac
     done
@@ -3040,7 +3049,7 @@ _redact_config() {
 support_bundle() {
     local arg
     for arg in "$@"; do
-        error "Unexpected argument for support-bundle: $arg. Run '$0 help'."
+        error "Unknown option for support-bundle: '$arg'. Run '$0 help'."
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to collect. Run 'setup' first."
 
@@ -3432,7 +3441,7 @@ apply() {
             _apply_plan
             return 0
             ;;
-        *) error "Unexpected argument for apply: $_arg. Run '$0 help'." ;;
+        *) error "Unknown option for apply: '$_arg'. Run '$0 help'." ;;
         esac
     done
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
@@ -4099,6 +4108,9 @@ EOF
         log "Check for a newer RigForge any time: '$0 upgrade --check'."
     else
         warn "doctor: $issues issue(s) found — see the hints above."
+        # Non-zero on unhealthy (#149): doctor is the verb operators cron/gate on, and Pithead's
+        # health verb already exits non-zero — one stack's habits must transfer to the other.
+        return 1
     fi
 }
 
@@ -4375,13 +4387,13 @@ Tuning:
 
 Provision & lifecycle:
   setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo)
-  uninstall  remove the service and revert all system changes (add --yes/-y to skip the prompt)
+  uninstall  remove the service and revert all system changes (add -y|--yes to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically
 
 Backup:
   backup     save config.json + tuning to a timestamped archive in ./backups
-  restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
+  restore    restore config.json + tuning from a backup archive: restore [-y|--yes] <archive>
 
 Info:
   msr-apply  (internal) apply the CPU's MSR preset as root — run by the miner unit's
@@ -4398,6 +4410,14 @@ USAGE
 }
 
 if [ "$_RIGFORGE_SOURCED" = "0" ]; then
+    # Honesty check: these verbs take no arguments, so reject extras (Pithead's `setup --skip-deps`
+    # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
+    # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
+    case "${1:-setup}" in
+    autotune | watchdog | doctor | api-refresh | msr-apply | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
+        [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
+        ;;
+    esac
     case "${1:-setup}" in
     setup)
         # if-form, not `[ $# -gt 0 ] && shift`: a false && list at top level trips set -e on the
@@ -4409,14 +4429,17 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         upgrade "$@"
         ;;
-    uninstall) uninstall "${2:-}" ;;
+    uninstall)
+        shift
+        uninstall "$@"
+        ;;
     tune)
         shift
         tune "$@"
         ;;
     autotune) autotune ;;
     watchdog) watchdog ;;
-    doctor) doctor ;;
+    doctor) doctor || exit 1 ;; # `||`: a mere unhealthy report must not fire the ERR trap's "aborted while" line
     bios)
         shift
         bios "$@"

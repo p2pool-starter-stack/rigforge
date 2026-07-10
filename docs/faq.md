@@ -102,7 +102,7 @@ version changes, use [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-
 
 ## If I lose the disk (or have many machines), do I have to set up and tune each one again?
 
-No, that's what `backup`/`restore` are for. `sudo ./rigforge.sh backup` snapshots the only
+No, that's what `backup`/`restore` are for. `./rigforge.sh backup` (no root needed) snapshots the only
 expensive-to-recreate state (your `config.json` and the tuning result) into `./backups`. After data loss,
 `restore` it and re-run `setup` instead of re-tuning from scratch. For a fleet, tune one machine, back it
 up, and `restore` the archive on each identical machine so they all share the same config and tuning.
