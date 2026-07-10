@@ -3567,6 +3567,7 @@ assert_contains "socket binds the configured address:port" "$(cat "$APS/systemd/
 assert_contains "socket is per-connection (Accept=yes)" "$(cat "$APS/systemd/rigforge-api.socket")" "Accept=yes"
 assert_contains "service invokes the api-serve verb" "$(cat "$APS/systemd/rigforge-api@.service")" "rigforge.sh api-serve"
 assert_contains "service is sandboxed read-only (#99 hardening)" "$(cat "$APS/systemd/rigforge-api@.service")" "ProtectSystem=strict"
+assert_contains "handlers never compete with the miner (#114 perf guard)" "$(cat "$APS/systemd/rigforge-api@.service")" "Nice=19"
 assert_contains "enable log reports token posture without any token value" "$out" "token: open"
 out="$(run_api_install disabled)"
 assert_eq "api disable removes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
