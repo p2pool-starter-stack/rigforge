@@ -461,6 +461,17 @@ parse_config() {
     API_BIND=$(jq -r '.api_bind // "0.0.0.0"' "$CONFIG_JSON")
     [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
 
+    # Privilege separation (#140): run the miner as this dedicated non-root system user. Empty
+    # (default) keeps today's root behavior exactly. `root` is rejected — it would silently mean
+    # "no separation". useradd-portable names only.
+    MINER_USER=$(jq -r '.miner_user // empty' "$CONFIG_JSON")
+    if [ -n "$MINER_USER" ]; then
+        if [ "$MINER_USER" = "root" ]; then
+            error "miner_user must be a non-root system username (empty = run as root, the default)."
+        fi
+        [[ "$MINER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || error "miner_user '$MINER_USER' is not a valid system username (lowercase, digits, _ -; max 32 chars)."
+    fi
+
     _warn_unknown_config_keys
 }
 
@@ -471,7 +482,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind RIG_NAME"
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -740,6 +751,13 @@ generate_xmrig_config() {
     HTTP_RESTRICTED="true"
     HTTP_HOST="0.0.0.0"
 
+    # Privilege separation (#140): an unprivileged miner cannot write /dev/cpu/*/msr — RigForge
+    # applies the MSR preset root-side (msr-apply, ExecStartPre) and xmrig must not try itself.
+    if [ -n "${MINER_USER:-}" ]; then
+        WRMSR="false"
+        RDMSR="false"
+    fi
+
     # macOS Specific Overrides (only the values that differ from the shared defaults above)
     if [ "$OS_TYPE" == "Darwin" ]; then
         ASM="true"
@@ -866,13 +884,26 @@ generate_xmrig_config() {
         notifempty
         copytruncate
         minsize 50M
-        create 0644 $REAL_USER $REAL_USER
+        create 0644 ${MINER_USER:-$REAL_USER} ${MINER_USER:-$REAL_USER}
     }
 EOF
     fi
 }
 
 # --- Setup: service, kernel tuning & deployment ---
+
+# Render the miner unit from its template (#140 made this shared: `apply` must re-render when
+# miner_user changes, without install_service's enable/start side effects).
+_render_xmrig_unit() {
+    local msr_line=""
+    # Root-side MSR application for an unprivileged miner: no `-` prefix — on an opted-in rig a
+    # failed MSR write should be VISIBLE, and msr-apply itself exits 0 on the known-benign cases
+    # (unknown CPU family, module missing) so it never wedges the Restart=always loop.
+    if [ -n "${MINER_USER:-}" ]; then msr_line="ExecStartPre=+$SCRIPT_DIR/rigforge.sh msr-apply"; fi
+    WORKER_ROOT="$WORKER_ROOT" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
+        envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
+        <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
+}
 
 install_service() {
     if [ "$OS_TYPE" == "Linux" ]; then
@@ -883,10 +914,13 @@ install_service() {
         NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
         export NFT_PATH
 
-        # Overwrite the existing file. Only the three named vars are substituted; WORKER_ROOT is passed
-        # into envsubst's environment for that one command (the template uses it in ReadWritePaths).
-        WORKER_ROOT="$WORKER_ROOT" envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH' \
-            <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
+        # Privilege separation (#140): create the dedicated system user on first use. Never deleted
+        # by uninstall (we can't prove we created it; an inert nologin user is safer than userdel).
+        if [ -n "${MINER_USER:-}" ] && ! id -u "$MINER_USER" >/dev/null 2>&1; then
+            log "Creating system user '$MINER_USER' for the miner..."
+            sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$MINER_USER"
+        fi
+        _render_xmrig_unit
 
         # Reload systemd daemon
         sudo systemctl daemon-reload
@@ -1186,6 +1220,11 @@ _reown_worker() {
     esac
     if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
     if [ -f "$CONFIG_JSON" ]; then sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true; fi
+    # Privilege separation (#140): the unprivileged miner must keep write access to its autosaved
+    # config and its log after the blanket re-own above. Every re-owning verb routes through here.
+    if [ -n "${MINER_USER:-}" ] && [ "$OS_TYPE" = Linux ]; then
+        sudo chown "$MINER_USER:$MINER_USER" "$WORKER_ROOT/xmrig/build/config.json" "$WORKER_ROOT/xmrig.log" 2>/dev/null || true
+    fi
 }
 
 main() {
@@ -1336,6 +1375,13 @@ uninstall() {
     worker_root=$(_worker_root_from_config)
 
     # 1. systemd service (+ the optional autotune timer, #46)
+    local _mu
+    _mu=$(jq -r '.miner_user // empty' "$CONFIG_JSON" 2>/dev/null || true)
+    if [ -n "$_mu" ] && id -u "$_mu" >/dev/null 2>&1; then
+        # Exact-removal discipline: we only delete what we provably created, and we can't prove
+        # that for a user. An inert nologin user is safer than a wrong userdel.
+        log "Left system user '$_mu' in place — remove it yourself with: sudo userdel $_mu"
+    fi
     if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ] || [ -f "$SYSTEMD_DIR/rigforge-api.service" ]; then
         sudo systemctl disable --now rigforge-api.socket rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service" \
@@ -2940,6 +2986,18 @@ _apply_runtime() {
 # actually takes effect (not just shows the new value) — then reports the target. install_autotune is the
 # autotune analog of restarting the service; its own log is suppressed in favour of the single status line.
 apply() {
+    if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
+        # A miner_user change only lands in the unit file — re-render + daemon-reload so the
+        # _apply_runtime restart below picks it up (#140).
+        parse_config
+        NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
+        export NFT_PATH
+        export BUILD_DIR="$WORKER_ROOT/xmrig/build"
+        CPUPOWER_PATH=$(command -v cpupower || echo "/usr/bin/cpupower")
+        export CPUPOWER_PATH
+        _render_xmrig_unit
+        sudo systemctl daemon-reload 2>/dev/null || true
+    fi
     _apply_runtime
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
@@ -3035,6 +3093,70 @@ _msr_log_status() { # <logfile>
 # (src/crypto/rx/RxConfig.cpp). mask "-" means a whole-register (no-mask) write, so the register equals
 # the value exactly regardless of firmware; "~0x20" is encoded as ffffffffffffffdf. Only the presets we
 # verify on real hardware are listed — for any other preset, doctor relies on XMRig's log confirmation.
+# Detect which MSR preset fits this CPU — the same family/model mapping XMRig's RxConfig uses,
+# limited to the presets _msr_preset_regs carries (verified on real hardware).
+_msr_detect_preset() { # -> preset name, or "" for unknown
+    local vendor family model
+    vendor=$(lscpu 2>/dev/null | sed -nE 's/^Vendor ID:[ \t]+//p' | head -1)
+    family=$(lscpu 2>/dev/null | sed -nE 's/^CPU family:[ \t]+//p' | head -1)
+    model=$(lscpu 2>/dev/null | sed -nE 's/^Model:[ \t]+//p' | head -1)
+    case "$vendor" in
+    AuthenticAMD)
+        case "$family" in
+        23) printf 'ryzen_17h' ;;
+        25)
+            # Zen4 lives in family 25 models 0x60-0x7f (96-127); the rest of family 25 is Zen3.
+            if [ "${model:-0}" -ge 96 ] 2>/dev/null && [ "${model:-0}" -le 127 ] 2>/dev/null; then printf 'ryzen_19h_zen4'; else printf 'ryzen_19h'; fi
+            ;;
+        26) printf 'ryzen_1Ah_zen5' ;;
+        esac
+        ;;
+    GenuineIntel) printf 'intel' ;;
+    esac
+}
+
+# Apply the MSR preset root-side (#140): the unprivileged miner can't write /dev/cpu/*/msr, so the
+# unit's ExecStartPre=+ runs this as root before xmrig starts. Exits 0 on the known-benign cases
+# (unknown family, no msr module) so Restart=always never wedges; a real write failure is fatal
+# and visible — an opted-in operator must know the ~10-15% MSR boost didn't apply.
+msr_apply() {
+    [ "$OS_TYPE" = Linux ] || error "msr-apply writes Linux MSRs and is only supported on Linux."
+    [ "$(id -u)" -eq 0 ] || error "msr-apply needs root (it writes /dev/cpu/*/msr) — it is normally run by the systemd unit."
+    parse_config >/dev/null
+    local preset regs reg val mask cpu old new
+    preset=$(_msr_detect_preset)
+    if [ -z "$preset" ]; then
+        warn "no MSR preset for this CPU family — mining continues without the MSR boost."
+        return 0
+    fi
+    modprobe msr 2>/dev/null || true
+    if ! command -v wrmsr >/dev/null 2>&1; then
+        warn "wrmsr (msr-tools) not found — mining continues without the MSR boost."
+        return 0
+    fi
+    regs=$(_msr_preset_regs "$preset")
+    while read -r reg val mask; do
+        if [ -z "$reg" ]; then continue; fi
+        if [ "$mask" = "-" ]; then
+            wrmsr -a "$reg" "0x$val"
+        else
+            # Masked register: read-modify-write per CPU — the unmasked bits differ per core's prior
+            # state, so -a would clobber them. Same masked-compare semantics as _msr_rdmsr_verify.
+            for cpu in "${CPU_SYSFS:-/sys/devices/system/cpu}"/cpu[0-9]*; do
+                cpu="${cpu##*cpu}"
+                old=$("${RDMSR_BIN:-rdmsr}" -p"$cpu" -0 "$reg" 2>/dev/null || true)
+                case "$old" in '' | *[!0-9A-Fa-f]*) continue ;; esac
+                new=$(printf '%016x' $(((0x$old & ~0x$mask) | (0x$val & 0x$mask))))
+                wrmsr -p"$cpu" "$reg" "0x$new"
+            done
+        fi
+    done <<EOF
+$regs
+EOF
+    printf '%s' "$preset" >"$WORKER_ROOT/.rigforge-msr-preset"
+    log "MSR preset '$preset' applied root-side (miner runs unprivileged)."
+}
+
 _msr_preset_regs() { # <preset> -> lines "reg value mask"
     case "$1" in
     ryzen_19h_zen4 | ryzen_1Ah_zen5)
@@ -3241,6 +3363,35 @@ doctor() {
     if [ -f "$CONFIG_JSON" ]; then
         wr=$(_worker_root_from_config)
         log_file="$wr/xmrig.log"
+    fi
+
+    # Privilege separation (#140): when the config asks for an unprivileged miner, the unit must
+    # actually say so (a stale unit from before the change would still run root). Quiet when
+    # systemctl can't answer (non-systemd test envs).
+    local cfg_mu=""
+    [ -f "$CONFIG_JSON" ] && cfg_mu=$(jq -r '.miner_user // empty' "$CONFIG_JSON" 2>/dev/null || true)
+    if [ -n "$cfg_mu" ]; then
+        local svc_user
+        svc_user=$(systemctl show -p User --value "$SERVICE_NAME" 2>/dev/null || true)
+        if [ "$svc_user" = "$cfg_mu" ]; then
+            _ck_ok "miner runs unprivileged as '$cfg_mu' (miner_user)"
+        elif [ -n "$svc_user" ]; then
+            _ck_warn "config sets miner_user='$cfg_mu' but the unit runs as '$svc_user' — re-run 'sudo $0 apply'"
+            issues=$((issues + 1))
+        fi
+        if [ -n "$wr" ] && [ -f "$wr/.rigforge-msr-preset" ]; then
+            local _mp
+            _mp=$(cat "$wr/.rigforge-msr-preset" 2>/dev/null || true)
+            _msr_rdmsr_verify "$_mp"
+            if [ "$_MSR_TOTAL" -gt 0 ] && [ "$_MSR_OK" = "$_MSR_TOTAL" ]; then
+                _ck_ok "root-side MSR preset '$_mp' verified by register read-back ($_MSR_OK/$_MSR_TOTAL)"
+            elif [ "$_MSR_UNREAD" = "$_MSR_TOTAL" ]; then
+                _ck_info "root-side MSR preset '$_mp' recorded — run doctor as root for the register read-back"
+            else
+                _ck_warn "root-side MSR preset '$_mp': only $_MSR_OK/$_MSR_TOTAL registers match (bad:$_MSR_BAD)"
+                issues=$((issues + 1))
+            fi
+        fi
     fi
 
     # Binary tamper evidence (#141): the artifact that runs 24/7 as root should still be the one we
@@ -3698,6 +3849,8 @@ Backup:
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
 
 Info:
+  msr-apply  (internal) apply the CPU's MSR preset as root — run by the miner unit's
+             ExecStartPre when miner_user is set (the unprivileged miner can't write MSRs)
   api-refresh (internal) recompute the sister API's response files — driven every 15s by the
              rigforge-api-refresh systemd timer ("api": "enabled" in config.json)
   version    print the RigForge version  (-v, --version)
@@ -3723,6 +3876,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         bios "$@"
         ;;
     api-refresh) api_refresh ;;
+    msr-apply) msr_apply ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;
@@ -3742,6 +3896,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, msr-apply, version, help." ;;
     esac
 fi

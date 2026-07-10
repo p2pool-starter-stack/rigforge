@@ -189,6 +189,12 @@ so `doctor` verifies it actually took effect, not just that the `msr` module loa
   without `rdmsr`, or with the `msr` module unloaded, this step is skipped with an advisory, never a false
   alarm; the log check above still confirms the write.
 
+With `miner_user` set (see [configuration](configuration.md)), xmrig runs unprivileged and cannot
+write MSRs itself: `randomx.wrmsr` is disabled in the generated config and RigForge applies the same
+per-family preset root-side instead (`rigforge.sh msr-apply`, run as a privileged `ExecStartPre=` of the
+service). `doctor`'s read-back check verifies the root-side write the same way, and also confirms the
+unit actually runs as the configured user.
+
 You almost never need to tune the MSR preset. XMRig auto-selects the right per-family preset, and that's
 optimal on the vast majority of CPUs. The knob exists for the rare case where a non-default preset (or
 disabling the mod) wins on unusual silicon: set `TUNE_WRMSR="true false"` (or a preset number) to sweep
