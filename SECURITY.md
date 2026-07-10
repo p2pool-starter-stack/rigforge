@@ -60,6 +60,11 @@ RigForge is built to be reproducible and tamper-evident:
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
 
+The sister API server itself runs unprivileged (`DynamicUser=`), reads the config through a
+systemd credential rather than owning the 0600 file, compares tokens in constant time, and caps
+request-arrival time so a held-open connection can't wedge it. `doctor` calls out the fully-open
+posture (no token, no `api_allow_from`) so it can't leave a trusted LAN unnoticed.
+
 ### Release signing
 
 Release checksums prove integrity, not origin — an attacker who can swap the release assets can swap

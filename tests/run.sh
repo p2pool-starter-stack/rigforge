@@ -3023,6 +3023,34 @@ assert_contains "doctor: unreadable read-back -> advisory (#140)" "$out" "record
 out="$(run_doctor_mu "$DOC/rdmsr_bad" "$DOC/svc_mu")"
 assert_contains "doctor: dropped root-side write -> WARN (#140)" "$out" "only 0/4 registers match"
 
+# Combined exposure advisory (#sec): tokenless AND unscoped is the designed LAN default but gets
+# one loud info line; either control set flips it to the ok line. Never a counted issue.
+echo "== unit: doctor exposure posture advisory (#sec) =="
+EXP="$DOC/exposure"
+mkdir -p "$EXP/home/worker"
+exp_doctor() { # <config-body>
+    printf '%s' "$1" >"$EXP/config.json"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$EXP/config.json"
+        MEMINFO="$DOC/meminfo_ok"
+        MSR_MODULE_DIR="$DOC/msrmod"
+        GOVERNOR_FILE="$DOC/gov_perf"
+        HUGEPAGES_1G_NR="$DOC/nr1g"
+        set +e
+        PATH="$DOC/asroot:$STUBS:$PATH" doctor 2>&1
+    )
+}
+out="$(exp_doctor "{ \"HOME_DIR\": \"$EXP/home\", \"pools\": [{\"url\": \"h:3333\"}] }")"
+assert_contains "doctor: open+unscoped gets the LAN advisory (#sec)" "$out" "fine on a trusted LAN"
+assert_absent "doctor: the advisory is not a counted issue (#sec)" "$out" "issue(s) found"
+out="$(exp_doctor "{ \"HOME_DIR\": \"$EXP/home\", \"ACCESS_TOKEN\": \"tok-sec\", \"pools\": [{\"url\": \"h:3333\"}] }")"
+assert_contains "doctor: a token flips the posture line to ok (#sec)" "$out" "API exposure is limited (token)"
+out="$(exp_doctor "{ \"HOME_DIR\": \"$EXP/home\", \"api_allow_from\": \"10.0.0.9\", \"pools\": [{\"url\": \"h:3333\"}] }")"
+assert_contains "doctor: a firewall scope flips the posture line to ok (#sec)" "$out" "API exposure is limited (firewall scope)"
+
 # #66: the preset table is the SOURCE OF TRUTH for register verification — assert the exact
 # (register value mask) triples against XMRig v6.26.0 (RxConfig.cpp), so a typo fails a test rather
 # than silently weakening every rig's check. "-" = whole-register (no-mask) write.
@@ -4191,6 +4219,14 @@ assert_eq "api enable writes the refresh timer" "$([ -f "$APS/systemd/rigforge-a
 assert_contains "server unit runs the stdlib server with the configured bind/port" "$(cat "$APS/systemd/rigforge-api.service")" "api-server.py 0.0.0.0 8081"
 assert_eq "server is maximally polite: exactly Nice=19 as a directive (#164)" "$(grep -c '^Nice=19$' "$APS/systemd/rigforge-api.service")" "1"
 assert_eq "server is sandboxed read-only (#99 hardening)" "$(grep -c '^ProtectSystem=strict$' "$APS/systemd/rigforge-api.service")" "1"
+# Security hardening (audit 2026-07-10): the network-facing unit drops root via DynamicUser and
+# reads the 0600 config through a systemd credential (root loads it, the sandbox user reads it).
+assert_eq "server never runs as root (DynamicUser) (#sec)" "$(grep -c '^DynamicUser=yes$' "$APS/systemd/rigforge-api.service")" "1"
+assert_contains "server reads the token via LoadCredential, not the 0600 file (#sec)" "$(cat "$APS/systemd/rigforge-api.service")" "LoadCredential=config:"
+assert_contains "server ExecStart points at the credential copy (#sec)" "$(cat "$APS/systemd/rigforge-api.service")" '${CREDENTIALS_DIRECTORY}/config'
+assert_eq "credential var survives the envsubst render un-expanded (#sec)" "$(grep -c 'CREDENTIALS_DIRECTORY' "$APS/systemd/rigforge-api.service")" "2"
+assert_contains "server caps request-arrival time (slowloris) (#sec)" "$(cat "$ROOT/util/api-server.py")" "Handler.timeout"
+assert_contains "token compare is constant-time (#sec)" "$(cat "$ROOT/util/api-server.py")" "hmac.compare_digest"
 assert_eq "refresh runs at idle priority off the request path (#164)" "$(grep -c '^IOSchedulingClass=idle$' "$APS/systemd/rigforge-api-refresh.service")" "1"
 assert_contains "refresh timer fires every 15s" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnUnitActiveSec=15"
 assert_contains "enable log reports token posture without any token value" "$out" "token: open"

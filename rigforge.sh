@@ -3519,6 +3519,21 @@ doctor() {
         fi
     fi
 
+    # Combined exposure posture: open (tokenless) AND unscoped (no api_allow_from firewall) is the
+    # designed default for a trusted LAN — but it deserves one loud advisory line, because it's
+    # exactly the combination that must not leave the LAN. Advisory, not a counted issue: on the
+    # designed topology it is correct.
+    if [ -f "$CONFIG_JSON" ]; then
+        local cfg_tok cfg_scope
+        cfg_tok=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)
+        cfg_scope=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON" 2>/dev/null || true)
+        if [ -z "$cfg_tok" ] && [ -z "$cfg_scope" ]; then
+            _ck_info "API is open (no ACCESS_TOKEN) and unscoped (no api_allow_from) — fine on a trusted LAN; set one of them before this rig faces anything else"
+        else
+            _ck_ok "API exposure is limited (${cfg_tok:+token}${cfg_tok:+${cfg_scope:+ + }}${cfg_scope:+firewall scope})"
+        fi
+    fi
+
     # MSR mod applied? (#66) The ~10-15% RandomX gain needs three things, checked in order: the msr
     # module loadable, XMRig's own log line confirming it WROTE the prefetcher preset, and — when rdmsr
     # (msr-tools) is present — a register read-back that catches a write a hypervisor/lockdown dropped.
