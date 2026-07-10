@@ -2286,6 +2286,104 @@ out="$(DMI_DIR="/nonexistent-dmi" SMT_CONTROL="/nonexistent-smt" DMIDECODE="$DOC
     run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_absent "doctor: no firmware context when DMI unreadable (#78)" "$out" "Firmware:"
 
+# ---------------------------------------------------------------------------
+# Guided BIOS flow (#80): detect -> guide -> save -> re-verify, against the #78 firmware fixtures.
+# The detection expressions are doctor's, so the fixtures drive both the WARN and OK sides.
+echo "== unit: guided BIOS flow (#80) =="
+BIO="$(mktemp -d "$SANDBOX/bio.XXXXXX")"
+run_bios() { # <extra env assignments as "VAR=val ..."> [args...]; sandbox WORKER_ROOT, Enter piped
+    local envs="$1"
+    shift
+    printf '\n\n\n' | (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$BIO/config.json"
+        WORKER_ROOT="$BIO"
+        RIGFORGE_FORCE_ELEVATE=0
+        DMI_DIR="$DOC/dmi"
+        eval "$envs"
+        parse_config() { WORKER_ROOT="$BIO"; }
+        _reown_worker() { :; }
+        set +e
+        PATH="$STUBS:$PATH" bios "$@" 2>&1
+    )
+}
+printf '{ "pools": [{"url": "h:3333"}] }\n' >"$BIO/config.json"
+# 1. Guide pass: profile off + SMT off + throttled clock -> three pending items, saved state.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_off DMIDECODE=$DOC/dmidecode_xmpoff CPU_SYSFS=$DOC/cpu_throttle CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios: prints the firmware context (#80)" "$out" "Reading current firmware state"
+assert_contains "bios: memory item shows the ASUS EXPO menu path (#80)" "$out" "Ai Overclock Tuner"
+assert_contains "bios: SMT item present (#80)" "$out" "SMT / Hyper-Threading"
+assert_contains "bios: PBO path for the perf target (#80)" "$out" "Precision Boost Overdrive"
+assert_contains "bios: saved the pending items (#80)" "$out" "Saved 3 pending item(s)"
+assert_eq "bios: state file holds 3 items (#80)" "$(jq -r '.items | length' "$BIO/rigforge-bios.json")" "3"
+assert_eq "bios: memory first (RandomX impact order) (#80)" "$(jq -r '.items[0].id' "$BIO/rigforge-bios.json")" "memory_profile"
+# 2. Verify pass (partial): profile + SMT took, clock still capped -> exactly power_boost kept.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_throttle CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: resumes from the saved state (#80)" "$out" "Resuming"
+assert_eq "bios verify: two items took (#80)" "$(printf '%s' "$out" | grep -c "Took.")" "2"
+assert_contains "bios verify: boost still pending with the re-check hint (#80)" "$out" "still"
+assert_eq "bios verify: only power_boost kept (#80)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["power_boost"]'
+# 3. Converged: clock now healthy -> state deleted, tune handoff printed.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: converged (#80)" "$out" "All BIOS items applied"
+assert_contains "bios verify: hands off to a live re-tune (#80)" "$out" "tune --live"
+assert_eq "bios verify: state file removed on convergence (#80)" "$([ -f "$BIO/rigforge-bios.json" ] && echo y || echo n)" "n"
+# 4. Miner stopped at verify: boost is unverifiable -> stays pending with the honest note.
+printf '%s\n' '{"target":"perf","saved":"2026-07-10 03:00","items":[{"id":"power_boost","status":"pending","before":"78% of max boost","menu":"PBO"}]}' >"$BIO/rigforge-bios.json"
+BSTOP="$(mktemp -d "$SANDBOX/bstop.XXXXXX")"
+printf '#!/usr/bin/env bash\n[ "$1" = is-active ] && exit 3\nexit 0\n' >"$BSTOP/systemctl"
+chmod +x "$BSTOP/systemctl"
+out="$(printf '\n' | (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$BIO/config.json"
+    WORKER_ROOT="$BIO"
+    DMI_DIR="$DOC/dmi"
+    SMT_CONTROL="$DOC/smt_on"
+    DMIDECODE="$DOC/dmidecode_xmpon"
+    parse_config() { WORKER_ROOT="$BIO"; }
+    _reown_worker() { :; }
+    set +e
+    PATH="$BSTOP:$STUBS:$PATH" bios 2>&1
+))"
+assert_contains "bios verify: miner stopped -> can't verify boost (#80)" "$out" "can't verify with the miner stopped"
+assert_eq "bios verify: unverifiable item stays pending (#80)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["power_boost"]'
+rm -f "$BIO/rigforge-bios.json"
+# 5. Nothing to do: all-good fixtures -> no state file, explicit all-set line, rc 0.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios: nothing to change -> says so (#80)" "$out" "already set"
+assert_eq "bios: no state file when nothing pending (#80)" "$([ -f "$BIO/rigforge-bios.json" ] && echo y || echo n)" "n"
+# 6. Efficiency target picks the low-power menu set.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_off DMIDECODE=$DOC/dmidecode_xmpoff CPU_SYSFS=$DOC/cpu_throttle CPUFREQ_MAX=$DOC/cpufreq_max' --efficiency)"
+assert_contains "bios --efficiency: Eco Mode path (#80)" "$out" "Eco Mode"
+assert_contains "bios --efficiency: Curve Optimizer path (#80)" "$out" "Curve Optimizer"
+assert_absent "bios --efficiency: not the PBO-max path (#80)" "$out" "Precision Boost Overdrive"
+assert_eq "bios --efficiency: target persisted in state (#80)" "$(jq -r '.target' "$BIO/rigforge-bios.json")" "efficiency"
+rm -f "$BIO/rigforge-bios.json"
+# 7. Vendor fallback: unknown board -> the generic menu line.
+BVEND="$(mktemp -d "$SANDBOX/bvend.XXXXXX")"
+mkdir -p "$BVEND"
+printf 'SomeVendor' >"$BVEND/board_vendor"
+printf 'SomeBoard' >"$BVEND/board_name"
+printf '1.0' >"$BVEND/bios_version"
+printf '2026-01-01' >"$BVEND/bios_date"
+out="$(run_bios 'DMI_DIR='"$BVEND"' SMT_CONTROL=$DOC/smt_off DMIDECODE=$DOC/dmidecode_xmpoff CPU_SYSFS=$DOC/cpu_throttle CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios: unknown vendor gets the generic memory hint (#80)" "$out" "look for the memory profile setting"
+rm -f "$BIO/rigforge-bios.json"
+# 8. Non-root degrade: dmidecode unreadable -> memory item is honest, no crash.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$NOHW/dmidecode-absent CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios: unreadable RAM state degrades honestly (#80)" "$out" "run as root so dmidecode can read"
+# 9. Unknown flag errors on the house template; macOS refuses.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on' --wat)"
+assert_contains "bios: unknown flag -> template error (#80)" "$out" "Unknown option for bios"
+if [ "$(uname -s)" != Linux ]; then
+    out="$( (RIGFORGE_HOME="$BIO" bash "$SCRIPT" bios </dev/null) 2>&1 || true)"
+    assert_contains "bios: refuses off-Linux (#80)" "$out" "only supported on Linux"
+fi
+
 # #audit A3: doctor's "service is not active" WARN + issue branch, and the gating of the clock-under-load
 # check on a RUNNING service. Every other doctor test uses the shared systemctl stub, which is always
 # "active", so these paths were never exercised. A stub variant reports inactive (is-active -> exit 3).

@@ -45,6 +45,7 @@ run `sudo rigforge [command]` from any directory; `uninstall` removes it.
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, HugePages are reserved, the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
 | `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them, an optional, one-time step. Live variants: `--now` / `--short` (a quick prefetch re-tune against the running miner, the *run a live tune now* path), `--now --long` (a full live search of every knob, = `--live`), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
+| `bios` | Guided, resumable walk-through of the BIOS/UEFI changes for your hardware — the settings `tune` can't reach from the OS (memory profile XMP/EXPO/DOCP, SMT, PBO/Eco-Mode; `--efficiency` picks the low-power set). Detects the current firmware state via the same probes `doctor` uses, hands you a board-specific checklist one item at a time, saves the pending items, and on the next run re-verifies which changes actually took. RigForge never writes BIOS itself; plan for console access (keyboard/KVM) for the reboot-into-BIOS step. Linux-only. See [Guided BIOS tuning](#guided-bios-tuning). |
 | `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
@@ -116,6 +117,19 @@ Useful variants (all optional):
 The search internals, every tunable knob, the full list of `TUNE_*` environment variables, and the
 power/efficiency and reservation-aware details are all in
 [How It Works -> Measured tuning](how-it-works.md#measured-tuning-the-tune-search).
+
+### Guided BIOS tuning
+
+`sudo ./rigforge.sh bios` walks the detect → guide → reboot → re-verify loop for the firmware
+settings with the biggest RandomX impact: the memory profile (XMP/EXPO/DOCP), SMT, and the CPU
+power/boost posture (`--efficiency` swaps the boost item for Eco-Mode + Curve Optimizer). It reads
+the same probes `doctor` reports on, so the two never disagree; pending items are saved to
+`rigforge-bios.json` (included in `backup`/`restore`) and the next `bios` run re-checks exactly
+those items against fresh probes — an item only counts as applied when its OS-visible fingerprint
+flips (memory running at rated speed, SMT on, loaded clock above the boost threshold). The CPU
+boost item needs the miner running to measure; with it stopped, `bios` says so and keeps the item
+pending rather than guessing. After everything took, re-run `tune --live` — the hardware envelope
+changed.
 
 ### Live auto-tuning (opt-in)
 

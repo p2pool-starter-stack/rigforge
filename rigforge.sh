@@ -2489,7 +2489,7 @@ backup() {
     stage=$(mktemp -d)
     cp "$CONFIG_JSON" "$stage/config.json"
     # The tuning files live under the worker root; include whichever exist (a fresh worker has none yet).
-    for f in tune-overrides.json rigforge-tune.json; do
+    for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
         if [ -n "$wr" ] && [ -f "$wr/$f" ]; then
             cp "$wr/$f" "$stage/$f"
             included="$included $f"
@@ -2555,7 +2555,7 @@ restore() {
     cp "$stage/config.json" "$CONFIG_JSON"
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
-    for f in tune-overrides.json rigforge-tune.json; do
+    for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
         if [ -f "$stage/$f" ]; then
             mkdir -p "$wr" 2>/dev/null || sudo mkdir -p "$wr"
             cp "$stage/$f" "$wr/$f" 2>/dev/null || sudo cp "$stage/$f" "$wr/$f"
@@ -3319,6 +3319,239 @@ EOF
 
 # --- Usage & command dispatch ---
 
+# --- Guided BIOS tuning (#80): detect -> guide -> reboot -> re-verify ---
+
+# One probe pass; results in globals (the S_* style tune uses). Detection expressions are byte-for-
+# byte doctor's (#78: memory 2998-form, SMT, boost) so `bios` and `doctor` can never disagree about
+# the same rig. Each item: B_<X>_STATUS = ok|pending|unknown, B_<X>_BEFORE = short human value.
+_bios_detect() {
+    local mem pop nch spd rated smt effk maxk pct
+    B_MEM_STATUS=unknown B_MEM_BEFORE="" B_SMT_STATUS=unknown B_SMT_BEFORE="" B_BOOST_STATUS=unknown B_BOOST_BEFORE=""
+    mem=$(_mem_summary)
+    read -r pop nch spd rated <<<"${mem:-0 0 0 0}"
+    if [ "${rated:-0}" -gt 0 ] 2>/dev/null && [ "${spd:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "$spd" -lt "$rated" ]; then B_MEM_STATUS=pending; else B_MEM_STATUS=ok; fi
+        B_MEM_BEFORE="${spd} of ${rated} MT/s"
+    fi
+    smt=$(cat "$SMT_CONTROL" 2>/dev/null || true)
+    case "$smt" in
+    off | forceoff)
+        B_SMT_STATUS=pending
+        B_SMT_BEFORE="$smt"
+        ;;
+    "") : ;; # no SMT sysfs -> unknown (can't verify)
+    *)
+        B_SMT_STATUS=ok
+        B_SMT_BEFORE="$smt"
+        ;;
+    esac
+    # Boost is only measurable under load (idle cores read low) — same gate as doctor's check.
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null || true)
+        effk=$(_cpu_eff_khz)
+        if [ -n "$effk" ] && [ "${maxk:-0}" -gt 0 ] 2>/dev/null; then
+            pct=$((effk * 100 / maxk))
+            if [ "$pct" -lt "$MIN_CLOCK_PCT" ]; then B_BOOST_STATUS=pending; else B_BOOST_STATUS=ok; fi
+            B_BOOST_BEFORE="${pct}% of max boost"
+        fi
+    fi
+}
+
+# The exact BIOS menu path(s) for an item on a detected board vendor. A case statement is the
+# smallest thing that holds four vendors + a generic fallback — no data file. (#80)
+_bios_menu() { # <board_vendor> <item_id> <target> -> menu-path line(s) on stdout
+    local v
+    v=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    case "$v" in
+    asus*) v=asus ;; # asustek matches too
+    asrock*) v=asrock ;;
+    giga*) v=gigabyte ;;
+    micro-star* | msi*) v=msi ;;
+    *) v=generic ;;
+    esac
+    case "$2:$v" in
+    memory_profile:asus) echo "Ai Tweaker ▸ Ai Overclock Tuner ▸ EXPO I (Intel boards: XMP I)" ;;
+    memory_profile:asrock) echo "OC Tweaker ▸ DRAM Profile ▸ EXPO/XMP Profile 1" ;;
+    memory_profile:gigabyte) echo "Tweaker ▸ Extreme Memory Profile (X.M.P.) / EXPO ▸ Profile 1" ;;
+    memory_profile:msi) echo "OC ▸ A-XMP / EXPO ▸ Profile 1" ;;
+    memory_profile:*) echo "look for the memory profile setting (XMP / EXPO / DOCP) and enable profile 1" ;;
+    smt:*) echo "Advanced ▸ CPU Configuration ▸ SMT / Hyper-Threading ▸ Enabled" ;;
+    power_boost:*)
+        if [ "$3" = efficiency ]; then
+            printf '%s\n' "PBO ▸ Eco Mode (65 W TDP)" "Curve Optimizer ▸ All Cores ▸ Negative ▸ 20"
+        else
+            echo "Advanced ▸ AMD Overclocking ▸ Precision Boost Overdrive ▸ Enabled (Advanced) (Intel: lift the PL1/PL2 power limits)"
+        fi
+        ;;
+    esac
+}
+
+# Persist ONLY the still-pending items — done items are not state. jq -n --arg for every value:
+# DMI strings carry spaces/quotes, and the menu strings carry UTF-8 markers.
+_bios_state_write() { # <state_file>; reads the B_* globals + TUNE_TARGET
+    local f="$1" items vendor
+    vendor=$(_dmi board_vendor)
+    items=$({
+        if [ "$B_MEM_STATUS" = pending ]; then jq -n --arg b "$B_MEM_BEFORE" --arg m "$(_bios_menu "$vendor" memory_profile "$TUNE_TARGET")" '{id: "memory_profile", status: "pending", before: $b, menu: $m}'; fi
+        if [ "$B_SMT_STATUS" = pending ]; then jq -n --arg b "$B_SMT_BEFORE" --arg m "$(_bios_menu "$vendor" smt "$TUNE_TARGET")" '{id: "smt", status: "pending", before: $b, menu: $m}'; fi
+        if [ "$B_BOOST_STATUS" = pending ]; then jq -n --arg b "$B_BOOST_BEFORE" --arg m "$(_bios_menu "$vendor" power_boost "$TUNE_TARGET")" '{id: "power_boost", status: "pending", before: $b, menu: $m}'; fi
+    } | jq -s .)
+    jq -n --arg t "$TUNE_TARGET" --arg when "$(date '+%Y-%m-%d %H:%M')" --argjson items "$items" '{target: $t, saved: $when, items: $items}' >"$f"
+    log "Saved $(jq -r '.items | length' "$f") pending item(s) to $f."
+}
+
+_bios_item_label() { # <id> -> human label
+    case "$1" in
+    memory_profile) printf 'Memory profile' ;;
+    smt) printf 'SMT / Hyper-Threading' ;;
+    power_boost) printf 'CPU boost / power' ;;
+    esac
+}
+
+# Run 1: detect, print the firmware context, walk the pending items one at a time with the exact
+# BIOS menu path for this board, save the resumable state, and hand the operator the checklist.
+# RigForge never writes BIOS (#78 feasibility) — this is detect-and-recommend with a verify loop.
+_bios_guide() { # <state_file>
+    local state="$1" pending="" id
+    _bios_detect
+    echo ""
+    log "Reading current firmware state (RigForge can't change these from the OS — it only reads them):"
+    _ck_info "Firmware: $(_dmi board_vendor) $(_dmi board_name), BIOS $(_dmi bios_version) ($(_dmi bios_date))"
+    if [ "$B_SMT_STATUS" = ok ]; then _ck_ok "SMT / Hyper-Threading: enabled"; fi
+    if [ "$B_SMT_STATUS" = pending ]; then _ck_warn "SMT / Hyper-Threading: $B_SMT_BEFORE"; fi
+    if [ "$B_MEM_STATUS" = ok ]; then _ck_ok "Memory profile: running at rated speed ($B_MEM_BEFORE)"; fi
+    if [ "$B_MEM_STATUS" = pending ]; then _ck_warn "Memory profile: running at $B_MEM_BEFORE — EXPO/XMP not enabled"; fi
+    if [ "$B_MEM_STATUS" = unknown ]; then _ck_info "Memory profile: can't verify — run as root so dmidecode can read the RAM state"; fi
+    if [ "$B_BOOST_STATUS" = ok ]; then _ck_ok "CPU boost under load: $B_BOOST_BEFORE"; fi
+    if [ "$B_BOOST_STATUS" = pending ]; then _ck_warn "CPU boost under load: $B_BOOST_BEFORE — likely power-capped"; fi
+    if [ "$B_BOOST_STATUS" = unknown ]; then _ck_info "CPU boost not checked — the miner isn't running (start it and re-run bios to include the power/boost item)"; fi
+    for id in memory_profile smt power_boost; do
+        case "$id" in
+        memory_profile) if [ "$B_MEM_STATUS" = pending ]; then pending="$pending $id"; fi ;;
+        smt) if [ "$B_SMT_STATUS" = pending ]; then pending="$pending $id"; fi ;;
+        power_boost) if [ "$B_BOOST_STATUS" = pending ]; then pending="$pending $id"; fi ;;
+        esac
+    done
+    if [ -z "$pending" ]; then
+        echo ""
+        _ck_ok "Everything's already set for $(_autotune_desc "$TUNE_TARGET") — no BIOS changes needed."
+        return 0
+    fi
+    echo ""
+    log "BIOS/UEFI changes for this board, one at a time (highest RandomX impact first):"
+    local n=0 vendor
+    vendor=$(_dmi board_vendor)
+    for id in $pending; do
+        n=$((n + 1))
+        echo ""
+        printf '  %d. %s\n' "$n" "$(_bios_item_label "$id")"
+        _bios_menu "$vendor" "$id" "$TUNE_TARGET" | sed 's/^/     -> /'
+        read -r -p "  Press Enter when you've noted it (nothing is applied now) ... " _ || true
+    done
+    _bios_state_write "$state"
+    echo ""
+    log "Next: reboot into BIOS/UEFI (usually Del/F2 at power-on), apply the item(s) above, Save & Exit."
+    log "Back in Linux, run 'sudo $0 bios' again — it re-reads the same probes and reports what took."
+    _reown_worker
+}
+
+# Run 2+: re-read the saved pending items against fresh probes. An item flips to done only when its
+# OS-visible fingerprint says so — `unknown` NEVER passes (honesty rule from the issue spec).
+_bios_verify() { # <state_file>
+    local state="$1" target saved id before menu fresh_status fresh_before kept="" applied=0 total=0
+    target=$(jq -r '.target // "perf"' "$state")
+    saved=$(jq -r '.saved // "?"' "$state")
+    TUNE_TARGET="$target" # the checklist was built for the saved target; it governs the re-verify wording
+    total=$(jq -r '.items | length' "$state")
+    log "Resuming — $total item(s) were pending from $saved."
+    _bios_detect
+    echo ""
+    log "Re-checking the items you went in to change:"
+    while IFS=$'\t' read -r id before menu; do
+        case "$id" in
+        memory_profile)
+            fresh_status="$B_MEM_STATUS"
+            fresh_before="$B_MEM_BEFORE"
+            ;;
+        smt)
+            fresh_status="$B_SMT_STATUS"
+            fresh_before="$B_SMT_BEFORE"
+            ;;
+        power_boost)
+            fresh_status="$B_BOOST_STATUS"
+            fresh_before="$B_BOOST_BEFORE"
+            ;;
+        *) continue ;;
+        esac
+        if [ "$fresh_status" = ok ]; then
+            _ck_ok "$(_bios_item_label "$id") — now $fresh_before (was $before). Took."
+            applied=$((applied + 1))
+        elif [ "$fresh_status" = pending ]; then
+            _ck_warn "$(_bios_item_label "$id") — still $fresh_before. Didn't take; re-check: $menu"
+            kept="$kept $id"
+        elif [ "$id" = power_boost ]; then
+            _ck_warn "CPU boost — can't verify with the miner stopped; run 'sudo $0 start', let it warm up, then re-run bios."
+            kept="$kept $id"
+        else
+            _ck_warn "$(_bios_item_label "$id") — can't verify (run as root so dmidecode can read the RAM state)."
+            kept="$kept $id"
+        fi
+    done < <(jq -r '.items[] | [.id, .before, .menu] | @tsv' "$state")
+    echo ""
+    if [ -z "$kept" ]; then
+        rm -f "$state"
+        log "All BIOS items applied. Firmware is tuned for: $(_autotune_desc "$target")."
+        log "Next: 'sudo $0 tune --live' — the hardware envelope changed, so re-tune XMRig against it."
+    else
+        # Rewrite the state with only the still-pending items: re-detect filled the B_* globals, so
+        # neutralize the ones that took and let the writer keep the rest.
+        case " $kept " in *" memory_profile "*) : ;; *) B_MEM_STATUS="done" ;; esac
+        case " $kept " in *" smt "*) : ;; *) B_SMT_STATUS="done" ;; esac
+        case " $kept " in *" power_boost "*) : ;; *) B_BOOST_STATUS="done" ;; esac
+        if [ "$B_BOOST_STATUS" = unknown ]; then B_BOOST_STATUS=pending; fi # keep it resumable
+        if [ "$B_MEM_STATUS" = unknown ]; then B_MEM_STATUS=pending; fi
+        _bios_state_write "$state"
+        log "$applied of $total applied, $(jq -r '.items | length' "$state") still pending. Reboot into BIOS to finish, then run 'sudo $0 bios' again."
+    fi
+    _reown_worker
+}
+
+# The guided, resumable BIOS walk-through (#80): a sibling of tune/doctor. Interactive by design —
+# this is the one flow that needs console access for the reboot-into-BIOS step.
+bios() {
+    [ "$OS_TYPE" = Linux ] || error "bios reads Linux firmware interfaces (dmidecode, /sys/class/dmi) and is only supported on Linux."
+    # dmidecode (the memory-profile probe) needs root — auto-elevate exactly like tune.
+    if _tune_should_elevate; then
+        log "bios needs root for the firmware probes — re-running with sudo..."
+        exec sudo "$0" bios "$@"
+    fi
+    local target_set=0
+    if [ -n "${TUNE_TARGET:-}" ]; then target_set=1; fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        --efficiency)
+            TUNE_TARGET=efficiency
+            target_set=1
+            ;;
+        --perf)
+            TUNE_TARGET=perf
+            target_set=1
+            ;;
+        *) error "Unknown option for bios: '$1' (use --perf or --efficiency)." ;;
+        esac
+        shift
+    done
+    parse_config
+    if [ "$target_set" != 1 ]; then TUNE_TARGET="${AUTOTUNE_TARGET:-perf}"; fi
+    local state="$WORKER_ROOT/rigforge-bios.json"
+    log "RigForge guided BIOS tuning — target: $(_autotune_desc "$TUNE_TARGET")"
+    if [ -s "$state" ] && jq -e '.items | length > 0' "$state" >/dev/null 2>&1; then
+        _bios_verify "$state"
+        return 0
+    fi
+    _bios_guide "$state"
+}
+
 usage() {
     cat <<USAGE
 RigForge — provision and maintain an XMRig mining worker.
@@ -3347,6 +3580,10 @@ Tuning:
   bench      run a one-off 'xmrig --bench' and report the hashrate
   autotune   alias of 'tune --now' (and the verb the scheduled timer runs); turn on the schedule with
              autotune:"performance"|"efficiency" in config.json
+  bios       guided, resumable walk-through of the BIOS/UEFI changes for your hardware (XMP/EXPO,
+             SMT, PBO/Eco-Mode; '--efficiency' picks the low-power set). Detects state, hands you a
+             board-specific checklist, and re-verifies what took after the reboot. RigForge never
+             writes BIOS itself
 
 Provision & lifecycle:
   setup      (default) provision the worker: dependencies, build, kernel tuning, service
@@ -3379,6 +3616,10 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     autotune) autotune ;;
     doctor) doctor ;;
+    bios)
+        shift
+        bios "$@"
+        ;;
     api-serve) api_serve ;;
     status) svc_status ;;
     logs) svc_logs ;;
@@ -3399,6 +3640,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, api-serve, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-serve, version, help." ;;
     esac
 fi
