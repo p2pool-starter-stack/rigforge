@@ -39,6 +39,30 @@ die() {
     exit 2
 }
 
+# #183: the shared-rig lock — see tests/e2e-real.sh for the full story. The function is duplicated
+# verbatim there on purpose: the same helper against the same path IS the cross-project contract
+# with Pithead's harness (tests/run.sh guards the two copies against drift). FD 9 is inherited by
+# children — that is what keeps the lock held for the whole run; do not close it. NOTE: rig_lock's
+# own EXIT trap is later REPLACED by snapshot_config's `trap '_cleanup' EXIT` (traps replace, not
+# stack), so _cleanup also removes the holder sidecar.
+rig_lock() { # rig_lock <project> <suite> [shared]
+    local mode=-x
+    [ "${3:-}" = shared ] && mode=-s
+    exec 9>"${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}"
+    chmod 666 "${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}" 2>/dev/null || true # a non-root shared reader can join later
+    if ! flock -n $mode 9; then
+        if [ "${RIG_LOCK_WAIT:-0}" = 1 ]; then
+            echo "rig busy ($(cat "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" 2>/dev/null || echo unknown)) — waiting..." >&2
+            flock $mode 9
+        else
+            echo "miner-0 busy: $(cat "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" 2>/dev/null || echo unknown). Retry with RIG_LOCK_WAIT=1 to queue." >&2
+            exit 75 # EX_TEMPFAIL — callers can tell "busy, retry later" from a real failure
+        fi
+    fi
+    printf '%s %s pid=%s started=%s\n' "$1" "$2" "$$" "$(date -Iseconds)" >"${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}"
+    trap 'rm -f "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}"' EXIT
+}
+
 require_preflight() {
     [ "$(uname -s)" = "Linux" ] || die "Linux-only (this host is $(uname -s)) — run on a real rig."
     [ "$(id -u)" -eq 0 ] || die "must run as root (service control / apply): sudo bash tests/e2e-pithead.sh $*"
@@ -61,6 +85,7 @@ _cleanup() {
         cp "$SAVED_CFG" "$CFG"
         "$RIGFORGE" apply >/dev/null 2>&1 || true
     fi
+    rm -f "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" # #183: the rig lock's display-only sidecar
 }
 snapshot_config() {
     SAVED_CFG="$(mktemp)"
@@ -458,6 +483,14 @@ summary() {
 }
 
 require_preflight "$@"
+case "${1:-all}" in
+connect | worker-api | api-impact | network | stratum-auth | dashboard | dev-fee | all) ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)" ;;
+esac
+# #183: serialize the shared rig — taken after arg parsing, before snapshot_config (its _cleanup
+# runs `apply`, a service restart) and before the first API touch.
+rig_lock rigforge e2e-pithead
+
 snapshot_config
 case "${1:-all}" in
 connect) phase_connect ;;

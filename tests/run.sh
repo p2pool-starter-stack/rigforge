@@ -4255,6 +4255,107 @@ if [ "$APISRV_SKIP" = 0 ]; then
 fi # APISRV_SKIP
 
 # ---------------------------------------------------------------------------
+# #183: rig_lock — the flock both release gates take before touching the shared rig (miner-0).
+# The function under test is extracted from the suites themselves (duplicated there on purpose —
+# no shared lib), so first pin that contract: the two copies must be identical, verbatim. The
+# behaviour tests then drive the real function against sandboxed RIG_LOCK_FILE/RIG_LOCK_HOLDER
+# paths — no root, no /var/lock — with background subshells as the competing "suites".
+echo "== unit: rig_lock — the shared-rig flock (#183) =="
+RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
+assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
+    "$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")" "$RL_SRC"
+if ! command -v flock >/dev/null 2>&1; then
+    echo "  SKIP: no flock(1) on this host (macOS) — the lock-behaviour tests run in the Linux CI jobs"
+else
+    RLD="$(mktemp -d "$SANDBOX/riglock.XXXXXX")"
+    export RIG_LOCK_FILE="$RLD/lock" RIG_LOCK_HOLDER="$RLD/holder"
+    # Acquire in a background subshell, flag readiness, then hold until released (or killed). The
+    # caller reads $! for the holder pid: the lock lives exactly as long as that process — which is
+    # the property under test.
+    rl_hold() { # <project> <suite> <mode-or-empty> <id>
+        (
+            eval "$RL_SRC"
+            rig_lock "$1" "$2" "$3"
+            touch "$RLD/up.$4"
+            while [ ! -f "$RLD/release.$4" ]; do sleep 0.1; done
+        ) &
+    }
+    rl_wait_up() { # <id> — wait on readiness, not sleep-and-hope
+        local i=0
+        while [ ! -f "$RLD/up.$1" ] && [ "$i" -lt 100 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        [ -f "$RLD/up.$1" ]
+    }
+
+    # (a) exclusive vs exclusive: the second exits 75 (EX_TEMPFAIL) and names the holder
+    rl_hold rigforge e2e-real "" a
+    RL_PID_A=$!
+    rl_wait_up a || bad "exclusive holder never came up (#183)" "no up.a marker"
+    out="$( (
+        eval "$RL_SRC"
+        rig_lock pithead dash-e2e ""
+    ) 2>&1)"
+    assert_rc "second exclusive acquire exits 75, EX_TEMPFAIL (#183)" "$?" "75"
+    assert_contains "busy message names the holder: project suite pid (#183)" "$out" "rigforge e2e-real pid="
+    assert_contains "busy message offers the queue knob (#183)" "$out" "RIG_LOCK_WAIT=1"
+
+    # kill -9 the holder: the flock dies with the process, so the next exclusive acquires with no
+    # manual cleanup — the stale sidecar (its trap never ran) is display-only debris, not a lock.
+    kill -9 "$RL_PID_A" 2>/dev/null
+    wait "$RL_PID_A" 2>/dev/null
+    sleep 0.3 # a just-forked `sleep 0.1` inherits fd 9 and can pin the flock for its lifetime
+    (
+        eval "$RL_SRC"
+        rig_lock rigforge after-kill ""
+    ) 2>/dev/null
+    assert_rc "after kill -9 the next exclusive acquires — no stale lock (#183)" "$?" "0"
+
+    # (b) shared + shared coexist
+    rl_hold rigforge reader-1 shared b
+    RL_PID_B=$!
+    rl_wait_up b || bad "shared holder never came up (#183)" "no up.b marker"
+    (
+        eval "$RL_SRC"
+        rig_lock pithead reader-2 shared
+    ) 2>/dev/null
+    assert_rc "shared + shared coexist (#183)" "$?" "0"
+
+    # (c) shared vs exclusive excludes
+    (
+        eval "$RL_SRC"
+        rig_lock rigforge e2e-real ""
+    ) 2>/dev/null
+    assert_rc "exclusive against a shared holder exits 75 (#183)" "$?" "75"
+    touch "$RLD/release.b"
+    wait "$RL_PID_B" 2>/dev/null
+
+    # (d) RIG_LOCK_WAIT=1 queues: blocked while held, acquires once the holder exits
+    rl_hold rigforge e2e-real "" d
+    RL_PID_D=$!
+    rl_wait_up d || bad "wait-test holder never came up (#183)" "no up.d marker"
+    (
+        eval "$RL_SRC"
+        RIG_LOCK_WAIT=1 rig_lock pithead queued ""
+        touch "$RLD/got.q"
+    ) 2>"$RLD/err.q" &
+    RL_PID_Q=$!
+    sleep 1
+    assert_eq "RIG_LOCK_WAIT=1 blocks while the lock is held (#183)" \
+        "$([ -f "$RLD/got.q" ] && echo acquired || echo blocked)" "blocked"
+    assert_contains "queued waiter announces whom it waits on (#183)" "$(cat "$RLD/err.q")" "waiting"
+    touch "$RLD/release.d"
+    wait "$RL_PID_D" 2>/dev/null
+    wait "$RL_PID_Q"
+    assert_rc "queued waiter exits 0 once the holder exits (#183)" "$?" "0"
+    assert_eq "queued waiter actually acquired (#183)" \
+        "$([ -f "$RLD/got.q" ] && echo acquired || echo blocked)" "acquired"
+
+    unset RIG_LOCK_FILE RIG_LOCK_HOLDER
+fi
+
+# ---------------------------------------------------------------------------
 echo ""
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then
