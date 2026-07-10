@@ -422,6 +422,26 @@ assert_eq "first-run writes minimal pools config" "$(jq -c '.pools' "$ecd/config
 # be owner-only from creation — not only after generate_xmrig_config's later chmod.
 if [ "$(uname -s)" = Darwin ]; then ec_mode="$(stat -f '%Lp' "$ecd/config.json")"; else ec_mode="$(stat -c '%a' "$ecd/config.json")"; fi
 assert_eq "bootstrap config.json is owner-only (0600) (#131)" "$ec_mode" "600"
+# #113: the optional stratum-password prompt writes pools[0].pass; EOF/Enter at the prompt skips it
+# (the run above hit EOF there, so its minimal config must stay byte-identical to pre-#113).
+assert_eq "empty pass writes NO pass key (#113)" "$(jq -c '.pools[0] | has("pass")' "$ecd/config.json" 2>/dev/null)" "false"
+ecp="$(mktemp -d "$SANDBOX/ecp.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ecp/config.json"
+    set +eu
+    printf 'y\nstack.lan:3333\nS3cret.pass\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "first-run writes the entered stratum pass (#113)" "$(jq -r '.pools[0].pass' "$ecp/config.json" 2>/dev/null)" "S3cret.pass"
+assert_eq "pass prompt keeps the URL intact (#113)" "$(jq -r '.pools[0].url' "$ecp/config.json" 2>/dev/null)" "stack.lan:3333"
+ecb="$(mktemp -d "$SANDBOX/ecb.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ecb/config.json"
+    set +eu
+    printf 'y\nstack.lan:3333\nbad pass\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "invalid stratum pass writes no config (#113)" "$([ -f "$ecb/config.json" ] && echo yes || echo no)" "no"
 for bad in '' 'stack.lan' ':3333' '[zz]:3333'; do
     ecd2="$(mktemp -d "$SANDBOX/ec2.XXXXXX")"
     (

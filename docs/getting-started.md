@@ -12,7 +12,7 @@ whole process, and most of it is automated.
 > sudo ./rigforge.sh
 > ```
 >
-> Answer one prompt (your pool URL), let it build, and on Linux reboot once to apply the
+> Answer one prompt (your pool URL — plus an optional stratum password if your stack uses one), let it build, and on Linux reboot once to apply the
 > kernel tuning. The `xmrig` service starts automatically after the reboot.
 
 ---
@@ -67,7 +67,7 @@ sudo ./rigforge.sh
 
 1. **Dependencies.** Installs the build toolchain and runtime libraries for your OS.
 2. **First-run config.** If there's no `config.json`, it asks for the one thing it needs, your
-   **pool URL**, and writes a minimal config. (You can also pre-create one; see
+   **pool URL** (and, optionally, the stack's stratum password — Enter skips it), and writes a minimal config. (You can also pre-create one; see
    [Configuration](configuration.md).)
 3. **Build.** Clones and compiles XMRig from source, pinned to a known version/commit and patched to
    your `DONATION` level. Build output is captured to a logfile.
