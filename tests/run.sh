@@ -2379,6 +2379,49 @@ assert_contains "bios: unreadable RAM state degrades honestly (#80)" "$out" "run
 # 9. Unknown flag errors on the house template; macOS refuses.
 out="$(run_bios 'SMT_CONTROL=$DOC/smt_on' --wat)"
 assert_contains "bios: unknown flag -> template error (#80)" "$out" "Unknown option for bios"
+# 10. Coverage of the remaining branches (#80 / the #165 patch-coverage gap):
+# --perf flag, the other vendor menu paths, missing SMT sysfs, elevation, bogus state ids,
+# non-root memory verify, and the dispatch entry.
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_off DMIDECODE=$DOC/dmidecode_xmpoff CPU_SYSFS=$DOC/cpu_throttle CPUFREQ_MAX=$DOC/cpufreq_max' --perf)"
+assert_contains "bios --perf: explicit perf flag honoured (#80)" "$out" "Precision Boost Overdrive"
+menus="$(
+    source "$SCRIPT"
+    _bios_menu "ASRock" memory_profile perf
+    _bios_menu "Gigabyte Technology" memory_profile perf
+    _bios_menu "Micro-Star International" memory_profile perf
+)"
+assert_contains "menu: ASRock path (#80)" "$menus" "OC Tweaker"
+assert_contains "menu: Gigabyte path (#80)" "$menus" "Extreme Memory Profile"
+assert_contains "menu: MSI path (#80)" "$menus" "A-XMP"
+out="$(run_bios 'SMT_CONTROL=$NOHW/smt DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_absent "bios: missing SMT sysfs -> no SMT judgment (#80)" "$out" "SMT / Hyper-Threading:"
+# Elevation: FORCE_ELEVATE + a sudo stub that reports instead of re-executing.
+BSUDO="$(mktemp -d "$SANDBOX/bsudo.XXXXXX")"
+printf '#!/usr/bin/env bash\necho "ELEVATED-VIA-SUDO $*"\nexit 0\n' >"$BSUDO/sudo"
+chmod +x "$BSUDO/sudo"
+out="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    RIGFORGE_FORCE_ELEVATE=1
+    set +e
+    PATH="$BSUDO:$STUBS:$PATH" bios 2>&1
+))"
+assert_contains "bios: auto-elevates via sudo like tune (#80)" "$out" "needs root for the firmware probes"
+assert_contains "bios: elevation re-execs through sudo (#80)" "$out" "ELEVATED-VIA-SUDO"
+# A state file carrying an unknown id is skipped, not fatal; the real item still verifies.
+printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"flux_capacitor","status":"pending","before":"?","menu":"?"},{"id":"smt","status":"pending","before":"off","menu":"SMT"}]}' >"$BIO/rigforge-bios.json"
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: unknown state id skipped, real item verified (#80)" "$out" "SMT / Hyper-Threading — now"
+rm -f "$BIO/rigforge-bios.json"
+# Non-root memory verify: the saved memory item can't be re-read without dmidecode -> honest keep.
+printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"memory_profile","status":"pending","before":"4800 of 6000 MT/s","menu":"EXPO"}]}' >"$BIO/rigforge-bios.json"
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$NOHW/dmidecode-absent CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: unreadable RAM keeps the item with the root hint (#80)" "$out" "can't verify (run as root"
+assert_eq "bios verify: unverifiable memory item stays pending (#80)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["memory_profile"]'
+rm -f "$BIO/rigforge-bios.json"
+# Dispatch: the case entry shifts and forwards flags (any OS: the rc-1 proves the verb was reached).
+out="$( (RIGFORGE_HOME="$BIO" bash "$SCRIPT" bios --wat </dev/null) 2>&1 || true)"
+assert_contains "bios: dispatch forwards to the verb (#80)" "$out" "[ERROR]"
 if [ "$(uname -s)" != Linux ]; then
     out="$( (RIGFORGE_HOME="$BIO" bash "$SCRIPT" bios </dev/null) 2>&1 || true)"
     assert_contains "bios: refuses off-Linux (#80)" "$out" "only supported on Linux"

@@ -3389,13 +3389,11 @@ _bios_menu() { # <board_vendor> <item_id> <target> -> menu-path line(s) on stdou
 # Persist ONLY the still-pending items — done items are not state. jq -n --arg for every value:
 # DMI strings carry spaces/quotes, and the menu strings carry UTF-8 markers.
 _bios_state_write() { # <state_file>; reads the B_* globals + TUNE_TARGET
-    local f="$1" items vendor
+    local f="$1" items="[]" vendor
     vendor=$(_dmi board_vendor)
-    items=$({
-        if [ "$B_MEM_STATUS" = pending ]; then jq -n --arg b "$B_MEM_BEFORE" --arg m "$(_bios_menu "$vendor" memory_profile "$TUNE_TARGET")" '{id: "memory_profile", status: "pending", before: $b, menu: $m}'; fi
-        if [ "$B_SMT_STATUS" = pending ]; then jq -n --arg b "$B_SMT_BEFORE" --arg m "$(_bios_menu "$vendor" smt "$TUNE_TARGET")" '{id: "smt", status: "pending", before: $b, menu: $m}'; fi
-        if [ "$B_BOOST_STATUS" = pending ]; then jq -n --arg b "$B_BOOST_BEFORE" --arg m "$(_bios_menu "$vendor" power_boost "$TUNE_TARGET")" '{id: "power_boost", status: "pending", before: $b, menu: $m}'; fi
-    } | jq -s .)
+    if [ "$B_MEM_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_MEM_BEFORE" --arg m "$(_bios_menu "$vendor" memory_profile "$TUNE_TARGET")" -n '$a + [{id: "memory_profile", status: "pending", before: $b, menu: $m}]'); fi
+    if [ "$B_SMT_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_SMT_BEFORE" --arg m "$(_bios_menu "$vendor" smt "$TUNE_TARGET")" -n '$a + [{id: "smt", status: "pending", before: $b, menu: $m}]'); fi
+    if [ "$B_BOOST_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_BOOST_BEFORE" --arg m "$(_bios_menu "$vendor" power_boost "$TUNE_TARGET")" -n '$a + [{id: "power_boost", status: "pending", before: $b, menu: $m}]'); fi
     jq -n --arg t "$TUNE_TARGET" --arg when "$(date '+%Y-%m-%d %H:%M')" --argjson items "$items" '{target: $t, saved: $when, items: $items}' >"$f"
     log "Saved $(jq -r '.items | length' "$f") pending item(s) to $f."
 }
@@ -3464,6 +3462,8 @@ _bios_verify() { # <state_file>
     TUNE_TARGET="$target" # the checklist was built for the saved target; it governs the re-verify wording
     total=$(jq -r '.items | length' "$state")
     log "Resuming — $total item(s) were pending from $saved."
+    local rows
+    rows=$(jq -r '.items[] | [.id, .before, .menu] | @tsv' "$state")
     _bios_detect
     echo ""
     log "Re-checking the items you went in to change:"
@@ -3496,7 +3496,7 @@ _bios_verify() { # <state_file>
             _ck_warn "$(_bios_item_label "$id") — can't verify (run as root so dmidecode can read the RAM state)."
             kept="$kept $id"
         fi
-    done < <(jq -r '.items[] | [.id, .before, .menu] | @tsv' "$state")
+    done <<<"$rows"
     echo ""
     if [ -z "$kept" ]; then
         rm -f "$state"
