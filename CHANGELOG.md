@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-10
+
 ### Fixed
 
 - **watchdog: wedge recovery actually fires on an unreachable API (#210).** In v1.5.0 the check
