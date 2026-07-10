@@ -149,7 +149,7 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
-    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3; do
+    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3 nft; do
         cat >"$bin/$cmd" <<EOF
 #!/usr/bin/env bash
 echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
@@ -3797,6 +3797,62 @@ assert_rc "non-numeric api_port rejected" "$?" "1"
 c="$(mkconf api_bbad "{ $POOL, \"api_bind\": \"not an ip!\" }")"
 parse_rc "$c" "$ROOT"
 assert_rc "malformed api_bind rejected" "$?" "1"
+
+# #142: api_allow_from — valid IPv4/CIDR parse; bad octets, prefix, IPv6, hostname, and a shell
+# metachar all hard-error (the value reaches an nft file, so the regex is the injection guard too).
+for good in "192.168.1.10" "10.0.0.0/8"; do
+    c="$(mkconf "af_ok_$RANDOM" "{ $POOL, \"api_allow_from\": \"$good\" }")"
+    assert_eq "api_allow_from '$good' parses (#142)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good"
+done
+for bad in "256.1.1.1" "1.2.3.4/33" "fe80::1" "gouda.lan" "1.2.3.4; rm -rf /"; do
+    c="$(mkconf "af_bad_$RANDOM" "{ $POOL, \"api_allow_from\": \"$bad\" }")"
+    parse_rc "$c" "$ROOT"
+    assert_rc "api_allow_from '$bad' rejected (#142)" "$?" "1"
+done
+
+echo "== black-box: install_api_firewall renders + tears down the nft table (#142) =="
+FW="$(mktemp -d "$SANDBOX/fw.XXXXXX")"
+run_fw() { # <allow_from> <api_mode>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$FW"
+        API_ALLOW_FROM="$1"
+        API_MODE="$2"
+        API_PORT=8081
+        set +e
+        PATH="$STUBS:$PATH" CALL_LOG="$FW/calls.log" install_api_firewall 2>&1
+    )
+}
+: >"$FW/calls.log"
+out="$(run_fw "192.168.1.10" disabled)"
+assert_eq "firewall: nft file written when api_allow_from set (#142)" "$([ -f "$FW/api-firewall.nft" ] && echo y || echo n)" "y"
+nft_body="$(cat "$FW/api-firewall.nft")"
+assert_contains "firewall: own inet rigforge table (#142)" "$nft_body" "table inet rigforge"
+assert_contains "firewall: loopback always accepted (#142)" "$nft_body" 'iifname "lo" accept'
+assert_contains "firewall: the configured source is accepted (#142)" "$nft_body" "ip saddr 192.168.1.10 accept"
+assert_contains "firewall: :8080 guarded, others dropped (#142)" "$nft_body" "tcp dport { 8080 }"
+assert_contains "firewall: applied via nft -f (#142)" "$(cat "$FW/calls.log")" "[nft] -f"
+# API enabled -> :8081 joins the guarded set.
+run_fw "192.168.1.0/24" enabled >/dev/null
+assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/api-firewall.nft")" "8080, 8081"
+# Cleared -> table destroyed, file removed.
+: >"$FW/calls.log"
+run_fw "" disabled >/dev/null
+assert_eq "firewall: file removed when cleared (#142)" "$([ -f "$FW/api-firewall.nft" ] && echo y || echo n)" "n"
+assert_contains "firewall: table destroyed on teardown (#142)" "$(cat "$FW/calls.log")" "[nft] destroy table inet rigforge"
+# nft missing while enabled -> hard error (never silently leave the port open thinking it's guarded).
+NONFT="$(mktemp -d "$SANDBOX/nonft.XXXXXX")"
+for cmd in sudo tee; do cp "$STUBS/$cmd" "$NONFT/" 2>/dev/null || true; done
+out="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$FW"
+    API_ALLOW_FROM=10.0.0.1
+    set +e
+    PATH="$NONFT" install_api_firewall 2>&1
+))"
+assert_contains "firewall: missing nft is a hard error, not a silent no-guard (#142)" "$out" "install nftables"
 
 echo "== black-box: install_api server/timer enable/disable (#99/#164) =="
 APS="$(mktemp -d "$SANDBOX/aps.XXXXXX")"
