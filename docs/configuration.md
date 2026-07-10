@@ -45,6 +45,7 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 | Key | Default | What it does |
 |---|---|---|
 | `pools` | *(required)* | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
+| — | — | **Unknown keys warn and are ignored** (with a did-you-mean for near-misses) — a typo'd key, especially `ACCESS_TOKEN`, must never silently not apply. Keys starting with `_` are comments. |
 | `api` | `"disabled"` | `"enabled"` serves the sister API: a second **read-only** port with XMRig's `/1/summary`+`/2/summary` passed through verbatim plus a namespaced `rigforge` object (tune state, RAPL watts, firmware/health probes, pinned versions), and `/health` + `/tune` endpoints. Socket-activated (no resident process); gated by the same `ACCESS_TOKEN`; Linux-only. |
 | `api_port` | `8081` | Sister API port (8080 is rejected — that's XMRig's own API). |
 | `api_bind` | `"0.0.0.0"` | Sister API listen address. |
