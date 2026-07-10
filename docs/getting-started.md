@@ -114,6 +114,7 @@ Confirm the optimizations applied:
 
 ```bash
 sudo ./rigforge.sh doctor                       # the one-stop health check (HugePages, MSR, governor, …)
+sudo ./rigforge.sh bios                         # guided BIOS checklist for what the OS can't set (XMP/EXPO, SMT, PBO)
 grep Huge /proc/meminfo                         # HugePages_Total should be non-zero
 grep -i msr data/worker/xmrig.log               # MSR mod applied (no errors)
 ```
