@@ -7,6 +7,17 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-10
+
+### Fixed
+
+- **Sister API responsiveness under full mining load.** The per-request handler ran at `Nice=19` +
+  `IOSchedulingClass=idle` (SCHED_IDLE-like) — on a rig where XMRig pins every core, that meant it
+  was never scheduled, so a `/health` request took ~51s on a loaded 96-core EPYC. Relaxed to
+  `Nice=10` (still yields to the miner — hashrate is unaffected, verified on the production fleet).
+  The `e2e-pithead` `api-impact` phase now also bounds response latency under load, not just the
+  hashrate hit — the half the original gate missed by running on a rig with spare cores.
+
 ## [1.2.0] - 2026-07-10
 
 ### Added
@@ -560,7 +571,8 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.0...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.1...main
+[1.2.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.1
 [1.2.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0
 [1.0.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.1

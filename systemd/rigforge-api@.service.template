@@ -12,11 +12,13 @@ ExecStart=$SCRIPT_DIR/rigforge.sh api-serve
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal
-# Never compete with the miner for CPU: RandomX is cache/latency-sensitive, so handlers run at the
-# lowest priority — a polling dashboard must not shave hashrate. The e2e-pithead `api-impact` phase
-# proves this on real hardware before a release (#114).
-Nice=19
-IOSchedulingClass=idle
+# Yield to the miner without starving. Nice=19 + IOSchedulingClass=idle (SCHED_IDLE-like) meant "run
+# only when a core is free" — on a rig where XMRig pins every core (e.g. 96 threads on 96 cores) that
+# is NEVER, so a /health request took ~51s on a loaded EPYC. Nice=10 still cedes CPU to the miner
+# (one short-lived handler is a rounding error against N compute threads; the e2e api-impact phase
+# bounds both the hashrate hit AND the response latency) but the scheduler gives it a slice, so the
+# API answers in a few seconds under full load instead of ~51s. (v1.2.1)
+Nice=10
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
