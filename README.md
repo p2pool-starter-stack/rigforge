@@ -127,7 +127,7 @@ git pull && sudo ./rigforge.sh upgrade   # rebuild + restart if the XMRig pin mo
 
 sudo ./rigforge.sh tune --now   # run a live tune now — keep the best prefetch mode
 sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service
-sudo ./rigforge.sh logs         # follow live logs   (also: status / start / stop / restart)
+./rigforge.sh logs              # follow live logs, no root needed (also: status; sudo for start / stop / restart)
 sudo ./rigforge.sh              # provision (or re-provision) the worker — idempotent
 ```
 

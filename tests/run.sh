@@ -1268,7 +1268,29 @@ assert_contains "upgrade --check reaches the check" "$out" "try again later"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" upgrade --bogus </dev/null 2>&1)"
 rc=$?
 assert_rc "upgrade rejects unknown flags" "$rc" "1"
-assert_contains "upgrade unknown-flag message" "$out" "Unexpected argument for upgrade"
+assert_contains "upgrade unknown-flag message" "$out" "Unknown option for upgrade"
+
+# #149 consistency sweep: uninstall joins the prompt-EOF guard and the arg-loop convention; extra
+# args to no-arg verbs error instead of being silently swallowed; one unknown-option template; no
+# error ends in "Aborting." (error() already announces the exit).
+echo "== black-box: consistency sweep — flags, prompts, templates (#149) =="
+out="$(cd "$U" && printf '' | PATH="$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall 2>&1)"
+rc=$?
+assert_rc "piped uninstall (EOF, no -y) aborts cleanly" "$rc" "0"
+assert_contains "piped uninstall takes the default-No path" "$out" "Aborted"
+assert_absent "piped uninstall does not die via the ERR trap" "$out" "aborted while"
+out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --frobnicate </dev/null 2>&1)"
+rc=$?
+assert_rc "uninstall rejects unknown flags" "$rc" "1"
+assert_contains "uninstall unknown-flag template" "$out" "Unknown option for uninstall: '--frobnicate'"
+for v in doctor status bench apply setup; do
+    out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" "$v" --skip-deps </dev/null 2>&1)"
+    rc=$?
+    assert_rc "$v rejects an unexpected extra argument" "$rc" "1"
+    assert_contains "$v extra-arg message points at help" "$out" "help"
+done
+assert_eq "no error message ends in 'Aborting.'" "$(grep -c 'Aborting\."' "$SCRIPT")" "0"
+assert_eq "every verb arg-loop shares the unknown-option template" "$(grep -c 'Unexpected argument for [a-z$]' "$SCRIPT")" "1"
 
 # #11: command surface — version, the service verbs, and help listing them.
 echo "== black-box: command surface (#11) =="
@@ -2093,7 +2115,8 @@ echo "== black-box: completion script + verb-list drift guard (#145) =="
 comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply)$' | sort | tr '\n' ' ')"
+# sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
@@ -2980,6 +3003,16 @@ drc=$?
 assert_rc "doctor: a non-root dmidecode failure doesn't abort doctor (#67)" "$drc" "0"
 assert_absent "doctor: no errexit abort on non-root dmidecode (#67)" "$dout" "aborted while"
 assert_contains "doctor: graceful 'run as root' on non-root dmidecode (#67)" "$dout" "RAM layout not readable"
+
+# #149: doctor exits non-zero when critical issues are found (cron-friendly, matching Pithead's
+# health verb) — and cleanly, via the dispatcher's `|| exit 1`, never through the ERR trap.
+dout="$(cd "$DOC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux \
+    MEMINFO="$DOC/meminfo_zero" MSR_MODULE_DIR="$DOC/nope-missing" GOVERNOR_FILE="$DOC/gov_ps" \
+    HUGEPAGES_1G_NR="$DOC/nr1g_zero" DMIDECODE=/nonexistent CPUFREQ_MAX=/nonexistent CPU_SYSFS=/nonexistent \
+    RIGFORGE_HOME="$DOC" bash "$SCRIPT" doctor </dev/null 2>&1)" && drc=0 || drc=$?
+assert_rc "doctor: unhealthy exits 1 (#149)" "$drc" "1"
+assert_contains "doctor: unhealthy still prints the report (#149)" "$dout" "issue(s) found"
+assert_absent "doctor: unhealthy exit is clean, no ERR trap (#149)" "$dout" "aborted while"
 
 # #78: doctor's BIOS/firmware advisory — board/BIOS context, XMP/EXPO off (rated > configured RAM speed),
 # and SMT off. Detect-and-recommend only (RigForge can't change BIOS from the OS), so it's all advisory
@@ -4282,7 +4315,7 @@ assert_contains "tune build-missing message" "$out" "Run 'setup' first"
 # An unknown tune flag is rejected.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --bogus </dev/null 2>&1)"
 assert_rc "unknown tune flag fails" "$?" "1"
-assert_contains "unknown tune flag message" "$out" "Unknown tune option"
+assert_contains "unknown tune flag message" "$out" "Unknown option for tune"
 
 # #46: autotune does one live trial — reads the API (median of N samples), tries the next prefetch mode,
 # keeps it only if faster. Crucially it MERGES the change into any existing overrides (#46 fix): a prior

@@ -42,6 +42,11 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 
 ## Configuration reference
 
+Key naming: the three legacy keys (`ACCESS_TOKEN`, `DONATION`, `HOME_DIR`) keep their historical
+SCREAMING names forever — renaming them would break deployed fleets, and aliasing would double the
+documented surface. Every other key, and every future one, is lowercase `snake_case`, matching
+Pithead.
+
 | Key | Default | What it does |
 |---|---|---|
 | `pools` | *(required)* | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
