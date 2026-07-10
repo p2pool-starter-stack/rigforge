@@ -1,0 +1,22 @@
+[Unit]
+Description=RigForge sister API server (persistent, serves pre-computed state)
+After=network.target
+
+[Service]
+# The xmrig model (#164): one long-lived process shipping pre-built bytes from /run/rigforge-api —
+# a request costs microseconds and spawns nothing, so polling cannot touch mining performance.
+# The bodies are produced by rigforge-api-refresh.timer, off the request path entirely.
+ExecStart=/usr/bin/python3 $SCRIPT_DIR/util/api-server.py $API_BIND $API_PORT /run/rigforge-api $SCRIPT_DIR/config.json
+Restart=always
+RestartSec=5
+# Lowest priority costs nothing when the work is microseconds — and guarantees the miner every core.
+Nice=19
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

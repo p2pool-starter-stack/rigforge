@@ -7,6 +7,36 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-10
+
+### Added
+
+- **Guided BIOS tuning (#80).** `sudo ./rigforge.sh bios` walks the detect → guide → reboot →
+  re-verify loop for the firmware settings tuning can't reach from the OS: the memory profile
+  (XMP/EXPO/DOCP), SMT, and the CPU power/boost posture (`--efficiency` swaps the boost item for
+  Eco-Mode + Curve Optimizer). Detection reuses `doctor`'s exact probes, the checklist gives the
+  exact BIOS menu path for the detected board (ASUS/ASRock/Gigabyte/MSI + a generic fallback),
+  pending items persist in `rigforge-bios.json` (included in `backup`/`restore`), and the next run
+  re-verifies which changes actually took — an item only counts as applied when its OS-visible
+  fingerprint flips, and an unverifiable item stays pending with an honest note. RigForge never
+  writes BIOS itself.
+
+### Fixed
+
+- **Sister API re-architected so polling cannot shave hashrate (#164).** The release gate caught
+  the v1.2.x per-connection design (systemd `Accept=yes` — the inetd model) costing 3-5% hashrate
+  under worst-case polling on a 16-thread rig: every request paid a full process lifecycle (unit +
+  cgroup + a 3,600-line bash parse + ~15 jq spawns), and four fix iterations (priorities, quotas,
+  caching, pacing) proved no scheduler knob fixes a per-request-process architecture. It now works
+  the way XMRig's own API does: a systemd timer runs the probe pass every 15s at idle priority and
+  writes the response bodies atomically (the node_exporter textfile-collector pattern), and one
+  tiny persistent server (python3 stdlib, ~80 lines, sandboxed, fail-closed on an unreadable
+  config) ships those bytes — a request costs microseconds, on any rig, at any polling rate.
+  Responses are at most ~15s stale, within the resolution of XMRig's own 10s hashrate window. The
+  wire contract is unchanged (same routes, token rule, headers, key sets — the contract tests
+  didn't move); upgrades remove the old socket units automatically. The `api-impact` gate phase
+  now also bounds `/health` latency under full mining load (`E2E_API_LATENCY_S`).
+
 ## [1.2.1] - 2026-07-10
 
 ### Fixed
@@ -571,7 +601,8 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.1...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.3.0...main
+[1.3.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.3.0
 [1.2.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.1
 [1.2.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0

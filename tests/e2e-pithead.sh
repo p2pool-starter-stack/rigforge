@@ -87,6 +87,14 @@ live_hashrate() { # 10s-window hashrate from the worker API, empty if none
     api8080 http://127.0.0.1:8080/2/summary | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true
 }
 
+api8081() { # [curl args...] -> body (empty on failure); token-aware like api8080 — the phases must
+    # work standalone against an operator config that keeps its own ACCESS_TOKEN
+    local tok auth=()
+    tok=$(jq -r '.ACCESS_TOKEN // empty' "$CFG" 2>/dev/null || true)
+    [ -n "$tok" ] && auth=(-H "Authorization: Bearer $tok")
+    curl -fsS --max-time 20 "${auth[@]}" "$@" 2>/dev/null || true
+}
+
 wait_for_job() { # <timeout_s> -> 0 when the log shows a stratum job
     local waited=0
     while [ "$waited" -lt "$1" ]; do
@@ -183,7 +191,7 @@ phase_api_impact() {
     set_cfg '.api = "enabled"'
     local body=""
     for _ in 1 2 3 4 5; do
-        body=$(curl -fsS --max-time 8 http://127.0.0.1:8081/health 2>/dev/null || true)
+        body=$(api8081 http://127.0.0.1:8081/health)
         [ -n "$body" ] && break
         sleep 3
     done
@@ -216,10 +224,20 @@ phase_api_impact() {
     }
     local base loaded p tol="${E2E_API_IMPACT_TOLERANCE_PCT:-3}"
     base=$(sample_mean 6 5)
-    # Worst-case polling: several clients hammering the heaviest endpoint back-to-back (each request
-    # spawns a handler that runs the probes + a 1s RAPL window). MaxConnectionsPerSource caps the rest.
+    # Worst-case polling, measured HONESTLY: a real dashboard polls from the STACK HOST, so the
+    # load generator must not itself churn processes on the rig — per-iteration jq/curl spawns
+    # pollute the same L3 the assertion measures (the v1.3 gate spent three iterations discovering
+    # that). One token read, then ONE long-lived curl per client issuing sequential requests via a
+    # URL range: zero client-side spawns between requests, full pressure on the server path.
+    local htok hauth=()
+    htok=$(jq -r '.ACCESS_TOKEN // empty' "$CFG" 2>/dev/null || true)
+    [ -n "$htok" ] && hauth=(-H "Authorization: Bearer $htok")
     for _ in 1 2 3 4; do
-        (while :; do curl -fsS --max-time 8 http://127.0.0.1:8081/2/summary >/dev/null 2>&1 || true; done) &
+        (
+            while :; do
+                curl -fsS --max-time 300 "${hauth[@]}" "http://127.0.0.1:8081/2/summary?[1-10000]" >/dev/null 2>&1 || true
+            done
+        ) &
         HAMMER_PIDS="$HAMMER_PIDS $!"
     done
     sleep 5 # let the load establish before sampling
@@ -235,15 +253,34 @@ phase_api_impact() {
     else
         bad "sister API load shaved hashrate beyond ${tol}%: ${base} -> ${loaded} H/s"
     fi
+    # Responsiveness is the OTHER half of the perf contract: the guard that stops the API shaving
+    # hashrate must not starve it either (a v1.2.0 handler took ~51s on a loaded 96-core EPYC).
+    # Bound it WHILE the miner is fully loaded.
+    local t0 t1 elapsed budget="${E2E_API_LATENCY_S:-15}"
+    t0=$(date +%s)
+    api8081 http://127.0.0.1:8081/health >/dev/null
+    t1=$(date +%s)
+    elapsed=$((t1 - t0))
+    if [ "$elapsed" -lt "$budget" ]; then
+        ok "sister API answers /health in ${elapsed}s under full mining load (budget ${budget}s)"
+    else
+        bad "sister API too slow under load: /health took >=${budget}s — handler starved (check Nice / MaxConnections)"
+    fi
     set_cfg '.api = "disabled"'
 }
 
 phase_network() {
     phase "network — nothing listens or leaks beyond what the config defines"
-    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep
+    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0
     # Outbound: the miner's ONLY established TCP peers are the configured pool. Anything else would
-    # mean traffic the operator never asked for.
+    # mean traffic the operator never asked for. The previous phase's cleanup `apply` restarts the
+    # miner, so give the stratum connection up to 45s to re-establish before judging.
     remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
+    while [ -z "$remotes" ] && [ "$waited" -lt 45 ]; do
+        sleep 5
+        waited=$((waited + 5))
+        remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
+    done
     if [ -n "$remotes" ]; then
         for r in $remotes; do
             case "$r" in
@@ -274,8 +311,8 @@ phase_network() {
     fi
     # Spirit-of-XMRig on the wire: the sister /2/summary minus `rigforge` must carry EXACTLY the key
     # set XMRig's own API serves — verbatim superset, nothing renamed, dropped, or invented.
-    k1=$(curl -fsS --max-time 8 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -cS 'keys' 2>/dev/null || true)
-    k2=$(curl -fsS --max-time 8 http://127.0.0.1:8081/2/summary 2>/dev/null | jq -cS 'del(.rigforge) | keys' 2>/dev/null || true)
+    k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
+    k2=$(api8081 http://127.0.0.1:8081/2/summary | jq -cS 'del(.rigforge) | keys' 2>/dev/null || true)
     if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then
         ok "wire superset: sister /2/summary = xmrig's keys + rigforge, nothing else"
     else

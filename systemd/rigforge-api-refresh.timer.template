@@ -1,0 +1,10 @@
+[Unit]
+Description=RigForge sister API refresh cadence
+
+[Timer]
+OnBootSec=15
+OnUnitActiveSec=15
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

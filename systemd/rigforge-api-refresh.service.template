@@ -1,0 +1,13 @@
+[Unit]
+Description=RigForge sister API refresh (probe pass -> /run/rigforge-api, off the request path)
+
+[Service]
+Type=oneshot
+# Root for the probes (dmidecode / rdmsr / RAPL); idle priority — a background refresh has no
+# latency requirement, so it must never compete with the miner.
+Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
+ExecStart=$SCRIPT_DIR/rigforge.sh api-refresh
+Nice=19
+IOSchedulingClass=idle
+RuntimeDirectory=rigforge-api
+RuntimeDirectoryPreserve=yes
