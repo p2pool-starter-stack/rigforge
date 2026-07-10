@@ -1077,6 +1077,35 @@ assert_rc "matching commit -> built" "$?" "0"
     xmrig_already_built
 )
 assert_rc "different commit -> rebuild" "$?" "1"
+# #141: the binary's build-time SHA-256 joins the check — mismatch self-heals via rebuild, a
+# missing record (older build) stays "built" so fleets aren't forced into a recompile.
+(
+    source "$SCRIPT"
+    WORKER_ROOT="$b"
+    XMRIG_COMMIT=ABC
+    _sha256 "$b/xmrig/build/xmrig" >"$b/xmrig/.rigforge-sha256"
+    set +e
+    xmrig_already_built
+)
+assert_rc "matching commit + matching sha -> built (#141)" "$?" "0"
+printf 'tampered' >>"$b/xmrig/build/xmrig"
+(
+    source "$SCRIPT"
+    WORKER_ROOT="$b"
+    XMRIG_COMMIT=ABC
+    set +e
+    xmrig_already_built
+)
+assert_rc "changed binary -> rebuild (self-healing) (#141)" "$?" "1"
+rm -f "$b/xmrig/.rigforge-sha256"
+(
+    source "$SCRIPT"
+    WORKER_ROOT="$b"
+    XMRIG_COMMIT=ABC
+    set +e
+    xmrig_already_built
+)
+assert_rc "no sha record (legacy build) -> still built (#141)" "$?" "0"
 rm -f "$b/xmrig/build/xmrig"
 (
     source "$SCRIPT"
@@ -2198,6 +2227,23 @@ printf '{ "http": { "restricted": false } }\n' >"$DOC/home/worker/xmrig/build/co
 out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_contains "doctor: restricted=false warns (#135)" "$out" "NOT read-only"
 assert_contains "doctor: restricted=false counts as an issue (#135)" "$out" "issue(s) found"
+# #141: binary tamper evidence — matching sha OK, changed binary is a counted issue, no record is
+# advisory only.
+mkdir -p "$DOC/home/worker/xmrig/build"
+printf 'fakebinary' >"$DOC/home/worker/xmrig/build/xmrig"
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: no sha record is advisory only (#141)" "$out" "no build-time checksum recorded"
+(
+    source "$SCRIPT"
+    _sha256 "$DOC/home/worker/xmrig/build/xmrig" >"$DOC/home/worker/xmrig/.rigforge-sha256"
+)
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: unchanged binary passes the sha check (#141)" "$out" "matches its build-time SHA-256"
+printf 'tampered' >>"$DOC/home/worker/xmrig/build/xmrig"
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: changed binary warns (#141)" "$out" "CHANGED since it was built"
+assert_contains "doctor: changed binary is a counted issue (#141)" "$out" "issue(s) found"
+rm -rf "$DOC/home/worker/xmrig" # leave $DOC exactly as later doctor tests expect it
 rm -rf "$DOC/home/worker/xmrig" # leave $DOC exactly as the later doctor tests expect it
 
 # #67: doctor flags hashrate-capping HARDWARE (advisory) — single-channel/slow RAM (via dmidecode) and a

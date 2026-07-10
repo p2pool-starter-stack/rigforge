@@ -14,6 +14,11 @@ All notable changes to RigForge are documented here. The format is based on
   `ACCESS_TOKEN` previously just… didn't apply, silently. Warn, not error: an unknown key is at
   worst a no-op, and erroring would break fleet `apply`s on any future rename. `_`-prefixed keys
   are the comment convention; `RIG_NAME` is reserved for the flashable-image seed (#1).
+- **Binary tamper evidence (#141).** `compile_xmrig` records the built binary's SHA-256 next to
+  the existing commit pin; `doctor` recomputes and compares (a changed binary is a counted issue),
+  and a mismatch also fails the "already built" check so the next `setup`/`upgrade` rebuilds —
+  self-healing. Evidence, not proofing (root can rewrite the record too); legacy builds without a
+  record are advisory only, never a forced fleet recompile.
 
 ## [1.3.0] - 2026-07-10
 
