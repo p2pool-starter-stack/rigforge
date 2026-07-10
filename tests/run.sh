@@ -1689,6 +1689,75 @@ hr_auth="$( (
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_contains "Bearer <token> sent when ACCESS_TOKEN is set" "$(cat "$clog")" "Authorization: Bearer miner-0"
 
+# #147: support-bundle — everything a maintainer needs, nothing secret. The redaction is
+# structural (jq paths), and THE test is the whole-bundle grep: with fixture secrets planted in
+# both configs, neither may appear anywhere in the extracted archive.
+echo "== black-box: support-bundle collects + redacts (#147) =="
+SB="$(mktemp -d "$SANDBOX/support.XXXXXX")"
+mkdir -p "$SB/home/worker/xmrig/build"
+cat >"$SB/config.json" <<EOF
+{ "HOME_DIR": "$SB/home", "ACCESS_TOKEN": "FAKETOKEN_ce7a11", "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
+EOF
+cat >"$SB/home/worker/xmrig/build/config.json" <<EOF
+{ "http": {"access-token": "FAKETOKEN_ce7a11"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
+EOF
+printf 'net      use pool pool.lan:3333\nmsr      preset ok\nspeed 10s 1234.5 H/s\n' >"$SB/home/worker/xmrig.log"
+printf '{"randomx":{"scratchpad_prefetch_mode":2}}\n' >"$SB/home/worker/tune-overrides.json"
+sb_out="$(cd "$SB" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" support-bundle </dev/null 2>&1)"
+sb_rc=$?
+assert_rc "support-bundle exits 0 (#147)" "$sb_rc" "0"
+sb_archive="$(find "$SB" -name 'rigforge-support-*.tar.gz' | head -1)"
+assert_eq "support-bundle wrote an archive (#147)" "$([ -n "$sb_archive" ] && echo y || echo n)" "y"
+assert_contains "archive is mode 600 (#147)" "$(ls -l "$sb_archive" | cut -c1-10)" "rw-------"
+SBX="$SB/extracted"
+mkdir -p "$SBX"
+tar -xzf "$sb_archive" -C "$SBX"
+assert_eq "CRITICAL: token appears nowhere in the bundle (#147)" "$(grep -rl "FAKETOKEN_ce7a11" "$SBX" | wc -l | tr -d ' ')" "0"
+assert_eq "CRITICAL: pool pass appears nowhere in the bundle (#147)" "$(grep -rl "FAKEPASS_b0a7" "$SBX" | wc -l | tr -d ' ')" "0"
+assert_eq "wallet masked to first-4…last-4 (#147)" "$(J "$SBX/config.redacted.json" '.pools[0].user')" "4AbC…xyz9"
+assert_eq "generated config token redacted structurally (#147)" "$(J "$SBX/xmrig-config.redacted.json" '.http."access-token"')" "<redacted>"
+assert_eq "log tail collected (#147)" "$([ -f "$SBX/xmrig.log.tail" ] && echo y || echo n)" "y"
+assert_eq "tune overrides collected (#147)" "$([ -f "$SBX/tune-overrides.json" ] && echo y || echo n)" "y"
+assert_eq "manifest lists collected files (#147)" "$(J "$SBX/manifest.json" '.files | length > 3')" "true"
+assert_contains "manifest names what is NOT collected (#147)" "$(J "$SBX/manifest.json" '.not_collected | join(",")')" "journalctl"
+assert_contains "closing output tells the user to review (#147)" "$sb_out" "Review the extracted contents"
+# Short pool user: fully redacted, never partially masked.
+cat >"$SB/config.json" <<EOF
+{ "HOME_DIR": "$SB/home", "pools": [{"url": "pool.lan:3333", "user": "worker1", "pass": "x"}] }
+EOF
+rm -f "$SB"/rigforge-support-*.tar.gz
+(cd "$SB" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" support-bundle </dev/null >/dev/null 2>&1)
+sb_archive="$(find "$SB" -name 'rigforge-support-*.tar.gz' | head -1)"
+rm -rf "$SBX" && mkdir -p "$SBX" && tar -xzf "$sb_archive" -C "$SBX"
+assert_eq "short pool user fully redacted (#147)" "$(J "$SBX/config.redacted.json" '.pools[0].user')" "<redacted>"
+# No config: clear error, rc 1.
+SB2="$(mktemp -d "$SANDBOX/support2.XXXXXX")"
+sb2_rc=0
+(cd "$SB2" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" support-bundle </dev/null >/dev/null 2>&1) || sb2_rc=$?
+assert_rc "support-bundle without a config errors (#147)" "$sb2_rc" "1"
+# Unknown arg: hard error (house style).
+sba_rc=0
+(cd "$SB" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" support-bundle --bogus </dev/null >/dev/null 2>&1) || sba_rc=$?
+assert_rc "support-bundle rejects unknown args (#147)" "$sba_rc" "1"
+# Fail closed: a config jq can't parse is SKIPPED, never shipped unredacted. Seed a malformed
+# generated config; the redacted file must be absent and the manifest must say so.
+cat >"$SB/config.json" <<EOF
+{ "HOME_DIR": "$SB/home", "pools": [{"url": "pool.lan:3333"}] }
+EOF
+printf 'this is NOT json {{{\n' >"$SB/home/worker/xmrig/build/config.json"
+rm -f "$SB"/rigforge-support-*.tar.gz
+(cd "$SB" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" support-bundle </dev/null >/dev/null 2>&1)
+sb_archive="$(find "$SB" -name 'rigforge-support-*.tar.gz' | head -1)"
+rm -rf "$SBX" && mkdir -p "$SBX" && tar -xzf "$sb_archive" -C "$SBX"
+assert_eq "unparseable generated config is NOT in the bundle (fail closed) (#147)" "$([ -f "$SBX/xmrig-config.redacted.json" ] && echo present || echo absent)" "absent"
+assert_contains "manifest flags the skipped file (#147)" "$(J "$SBX/manifest.json" '.not_collected | join(",")')" "unparseable"
+# macOS system-info branch: sysctl reads instead of lscpu/free.
+rm -f "$SB"/rigforge-support-*.tar.gz
+(cd "$SB" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" support-bundle </dev/null >/dev/null 2>&1)
+sb_archive="$(find "$SB" -name 'rigforge-support-*.tar.gz' | head -1)"
+rm -rf "$SBX" && mkdir -p "$SBX" && tar -xzf "$sb_archive" -C "$SBX"
+assert_eq "macOS bundle still collects system.txt (#147)" "$([ -f "$SBX/system.txt" ] && echo y || echo n)" "y"
+
 # #146: `setup --dry-run` prints a numbered read-only plan and touches NOTHING — no sudo, no writes,
 # no modprobe. The drift guard is the load-bearing test: every CURRENT_STEP phrase in main() must
 # appear in the plan, so a new pipeline step can't ship without a plan line.
@@ -1802,7 +1871,9 @@ assert_rc "unknown setup arg errors (#146)" "${setup_arg_rc:-0}" "1"
 # -v/-h flag spellings are deliberately excluded by the ^[a-z]+$ filter.
 echo "== black-box: completion script + verb-list drift guard (#145) =="
 comp_out="$(bash "$SCRIPT" completion bash)"
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z]+$' | sort | tr '\n' ' ')"
+# Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
+# systemd, not operators) are excluded by name.
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply)$' | sort | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'

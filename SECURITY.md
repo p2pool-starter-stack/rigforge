@@ -60,6 +60,11 @@ RigForge is built to be reproducible and tamper-evident:
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
 
+Bug reports: `rigforge.sh support-bundle` produces a redacted tarball (token and pool password
+structurally removed via jq, wallet masked). Redaction covers RigForge's own fields — review the
+extracted bundle before posting it anywhere public; a secret pasted into a custom field is yours
+to catch.
+
 The sister API server itself runs unprivileged (`DynamicUser=`), reads the config through a
 systemd credential rather than owning the 0600 file, compares tokens in constant time, and caps
 request-arrival time so a held-open connection can't wedge it. `doctor` calls out the fully-open
