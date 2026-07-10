@@ -243,9 +243,12 @@ Each timer tick runs one check (`journalctl -u rigforge-watchdog.service` shows 
   marker written; later checks start it again exactly once the temperature drops below
   `max_temp_c - 5` (the 5 °C hysteresis is fixed — enough to outlast the post-restart heat-up
   without stranding the miner). An unreadable sensor skips the thermal check entirely: a missing
-  sensor must not stop a healthy miner. Before setting a cutoff, check what
-  `/sys/class/thermal/thermal_zone0/temp` reports on *your* board — the zone's meaning varies
-  (`THERMAL_ZONE` overrides the path).
+  sensor must not stop a healthy miner. The sensor is `thermal_zone0` when the board exposes one,
+  else the CPU hwmon (`k10temp`/`coretemp`). Before setting a cutoff, check the live reading on
+  *your* board (`THERMAL_ZONE` overrides the path) — k10temp reports **Tctl**, which runs high by
+  design (a loaded EPYC sits near 90 °C Tctl in perfectly normal operation), so a damage-avoidance
+  cutoff belongs well above the everyday reading, not near it. Editing `max_temp_c` takes effect on
+  the next tick — the watchdog re-reads `config.json` every run, no `apply` needed.
 - A miner that's simply **not running** is left alone — dead-process recovery is systemd's job.
 
 Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed

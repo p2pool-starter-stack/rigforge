@@ -1856,8 +1856,26 @@ _read_temp() {
         return 0
     fi
     [ "$OS_TYPE" = "Linux" ] || return 0
-    local z="${THERMAL_ZONE:-/sys/class/thermal/thermal_zone0/temp}"
-    [ -r "$z" ] && awk '{printf "%.1f", $1/1000}' "$z" 2>/dev/null
+    local z="${THERMAL_ZONE:-/sys/class/thermal/thermal_zone0/temp}" h n
+    if [ -r "$z" ]; then
+        awk '{printf "%.1f", $1/1000}' "$z" 2>/dev/null
+        return 0
+    fi
+    # No thermal zone: fall back to the CPU hwmon — k10temp (AMD) / coretemp (Intel), same
+    # millidegree format (#208). None of the production boards exposes a thermal_zone, so without
+    # this the watchdog's max_temp_c and tune's temperature sampling are blind on the real fleet.
+    # Still best-effort: nothing readable -> empty, and every thermal consumer skips (a missing
+    # sensor must never stop a healthy miner). NOTE k10temp reports Tctl — a control temperature
+    # that runs high by design; check the live reading before choosing a cutoff.
+    for h in "${HWMON_DIR:-/sys/class/hwmon}"/hwmon*; do
+        n=$(cat "$h/name" 2>/dev/null || true)
+        case "$n" in
+        k10temp | coretemp)
+            [ -r "$h/temp1_input" ] && awk '{printf "%.1f", $1/1000}' "$h/temp1_input" 2>/dev/null
+            return 0
+            ;;
+        esac
+    done
     return 0
 }
 

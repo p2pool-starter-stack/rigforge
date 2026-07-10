@@ -67,6 +67,7 @@ export DMI_DIR="$NOHW/dmi"
 export SMT_CONTROL="$NOHW/smt"
 export NODE_SYSFS="$NOHW/node" # _nps_suspect's NUMA-node count (#201)
 export THERMAL_ZONE="$NOHW/thermal"
+export HWMON_DIR="$NOHW/hwmon"            # _read_temp's k10temp/coretemp fallback (#208)
 export CPUINFO="$NOHW/cpuinfo"            # util/proposed-grub.sh
 export DMIDECODE="$NOHW/dmidecode-absent" # absolute path that isn't an executable -> `command -v` fails
 export RDMSR_BIN="$NOHW/rdmsr-absent"
@@ -3970,6 +3971,33 @@ assert_contains "reports best efficiency" "$out" "H/s per watt"
 
 # #81: the built-in RAPL reader + the watts-from-energy arithmetic (the default power source, no
 # TUNE_POWER_CMD). Pure helpers, tested directly with a fake powercap tree + fixed energy deltas.
+# #208: _read_temp falls back to the CPU hwmon (k10temp/coretemp temp1_input) when no thermal
+# zone exists — the shape of every rig in the production fleet. Non-CPU hwmons are skipped,
+# nothing readable stays empty (thermal consumers must skip, never stop a miner on a missing
+# sensor), and an existing thermal zone still wins.
+echo "== unit: _read_temp hwmon fallback (#208) =="
+RT="$(mktemp -d "$SANDBOX/rt.XXXXXX")"
+mkdir -p "$RT/hwmon/hwmon0" "$RT/hwmon/hwmon1" "$RT/hwmon/hwmon2"
+printf 'nvme\n' >"$RT/hwmon/hwmon0/name"
+printf '44000\n' >"$RT/hwmon/hwmon0/temp1_input"
+printf 'k10temp\n' >"$RT/hwmon/hwmon1/name"
+printf '89500\n' >"$RT/hwmon/hwmon1/temp1_input"
+printf 'gpu\n' >"$RT/hwmon/hwmon2/name"
+read_temp_with() { # <thermal_zone_path> <hwmon_dir>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        set +e
+        THERMAL_ZONE="$1" HWMON_DIR="$2" TUNE_TEMP_CMD="" _read_temp
+    )
+}
+assert_eq "hwmon fallback skips non-CPU sensors, reads k10temp (#208)" "$(read_temp_with "$RT/nozone" "$RT/hwmon")" "89.5"
+printf '72000\n' >"$RT/zone"
+assert_eq "an existing thermal zone still wins (#208)" "$(read_temp_with "$RT/zone" "$RT/hwmon")" "72.0"
+assert_eq "no zone + no CPU hwmon -> empty (#208)" "$(read_temp_with "$RT/nozone" "$RT/empty-hwmon")" ""
+rm "$RT/hwmon/hwmon1/temp1_input"
+assert_eq "k10temp present but unreadable input -> empty (#208)" "$(read_temp_with "$RT/nozone" "$RT/hwmon")" ""
+
 echo "== unit: power measurement helpers (#81) =="
 PWR="$(mktemp -d "$SANDBOX/pwr.XXXXXX")"
 mkdir -p "$PWR/intel-rapl:0" "$PWR/intel-rapl:0:0" "$PWR/intel-rapl:1"
