@@ -7,6 +7,20 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-10
+
+### Added
+
+- **Guided BIOS tuning (#80).** `sudo ./rigforge.sh bios` walks the detect → guide → reboot →
+  re-verify loop for the firmware settings tuning can't reach from the OS: the memory profile
+  (XMP/EXPO/DOCP), SMT, and the CPU power/boost posture (`--efficiency` swaps the boost item for
+  Eco-Mode + Curve Optimizer). Detection reuses `doctor`'s exact probes, the checklist gives the
+  exact BIOS menu path for the detected board (ASUS/ASRock/Gigabyte/MSI + a generic fallback),
+  pending items persist in `rigforge-bios.json` (included in `backup`/`restore`), and the next run
+  re-verifies which changes actually took — an item only counts as applied when its OS-visible
+  fingerprint flips, and an unverifiable item stays pending with an honest note. RigForge never
+  writes BIOS itself.
+
 ## [1.2.1] - 2026-07-10
 
 ### Fixed
@@ -571,7 +585,8 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.1...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.3.0...main
+[1.3.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.3.0
 [1.2.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.1
 [1.2.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0
