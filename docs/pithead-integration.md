@@ -84,7 +84,11 @@ pithead#235):
   matters.
 
 Same token rule as `:8080`: open when `ACCESS_TOKEN` is unset (the default), the exact `Bearer`
-otherwise. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
+otherwise — the sister API deliberately mirrors XMRig's own API conventions: the versioned `/1`/`/2`
+paths, the same `Bearer`/`401` semantics, JSON-only bodies, and minimal headers. The release gate's
+`network` phase enforces the boundary on the wire: the miner's only TCP peers are the configured
+pool, `:8081` exists exactly while enabled, and no response byte ever contains `ACCESS_TOKEN` or a
+pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
 `api_port`/`api_bind`; it is socket-activated (no resident process) and its handler runs at idle
 CPU priority so polling cannot shave hashrate.
 

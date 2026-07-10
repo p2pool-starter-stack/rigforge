@@ -3702,7 +3702,7 @@ HRESP2="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
 ) | tr -d '\r')"
 assert_eq "health: memory profile on -> xmp true" "$(printf '%s' "$HRESP2" | sed '1,/^$/d' | jq -r '.xmp')" "true"
 # Auth: with ACCESS_TOKEN set, the exact Bearer is required; the token never appears in a response.
-printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "tok1" }\n' >"$APIQ/config2.json"
+printf '{ "pools": [{"url": "h:3333", "pass": "passfx1"}], "ACCESS_TOKEN": "tok1" }\n' >"$APIQ/config2.json"
 resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/config2.json")"
 assert_contains "no header -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
 resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n' "$APIQ/config2.json")"
@@ -3712,6 +3712,11 @@ resp="$(api_req 'GET /health HTTP/1.1\r\nauthorization: Bearer tok1\r\n\r\n' "$A
 assert_contains "right bearer (any header case) -> 200" "$resp" "HTTP/1.1 200 OK"
 resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization:Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
 assert_contains "right bearer (no space after colon) -> 200" "$resp" "HTTP/1.1 200 OK"
+# Leak lock: authed 200 responses from every RigForge endpoint must not carry the token or the
+# stratum pass — the config is read, its secrets must never be serialized back out.
+leak="$(api_req 'GET /2/summary HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")$(api_req 'GET /health HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")$(api_req 'GET /tune HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
+assert_absent "ACCESS_TOKEN never serialized into any authed response" "$leak" "tok1"
+assert_absent "pools[].pass never serialized into any authed response" "$leak" "passfx1"
 # Method / route / timeout / config guards.
 resp="$(api_req 'POST /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
 assert_contains "non-GET -> 405 (read-only API)" "$resp" "HTTP/1.1 405 Method Not Allowed"
@@ -3721,6 +3726,16 @@ resp="$(api_req 'GET /health?verbose=1 HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
 assert_contains "query string is stripped, route still matches" "$resp" "HTTP/1.1 200 OK"
 resp="$(api_req 'HEAD /health HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
 assert_contains "HEAD -> 405 (GET is the whole read-only surface)" "$resp" "HTTP/1.1 405 Method Not Allowed"
+# Spirit-of-XMRig wire shape: JSON content type, minimal headers (no server banner to fingerprint),
+# and the exact key sets of the RigForge-owned endpoints — a wire-contract lock for pithead#235.
+resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+hdrs="$(printf '%s' "$resp" | sed -n '1,/^$/p')"
+assert_contains "responses are application/json" "$hdrs" "Content-Type: application/json"
+assert_absent "no server banner in headers" "$hdrs" "Server:"
+assert_eq "exactly 3 response headers (type, length, connection)" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
+assert_eq "/tune wire contract: exact key set" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -cS 'keys')" '["applied","autotune","candidates_tried","last_best_hs","target"]'
+resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_eq "/health wire contract: exact key set" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -cS 'keys')" '["clock_pct_of_boost","firmware","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","xmp"]'
 resp="$(api_req '' "$APIQ/config.json")"
 assert_contains "empty request -> 408" "$resp" "HTTP/1.1 408 Request Timeout"
 printf '{broken' >"$APIQ/bad.json"

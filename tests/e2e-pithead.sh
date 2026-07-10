@@ -238,6 +238,78 @@ phase_api_impact() {
     set_cfg '.api = "disabled"'
 }
 
+phase_network() {
+    phase "network — nothing listens or leaks beyond what the config defines"
+    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep
+    # Outbound: the miner's ONLY established TCP peers are the configured pool. Anything else would
+    # mean traffic the operator never asked for.
+    remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
+    if [ -n "$remotes" ]; then
+        for r in $remotes; do
+            case "$r" in
+            *:"$port") ;;
+            *)
+                bad_remote=1
+                bad "unexpected xmrig peer: $r"
+                ;;
+            esac
+        done
+        [ "$bad_remote" = 0 ] && ok "outbound: xmrig's only TCP peers are the pool (:$port)"
+    else
+        bad "no established xmrig connections found to inspect"
+    fi
+    # Listeners: the miner owns :8080 and nothing else; :8081 exists exactly while enabled.
+    set_cfg '.api = "enabled"'
+    sleep 3
+    if ss -Htln 2>/dev/null | grep -q ':8081 '; then
+        ok ":8081 listening while api enabled"
+    else
+        bad ":8081 not listening while api enabled"
+    fi
+    xl=$(ss -Htlnp 2>/dev/null | awk '/xmrig/ {print $4}' | grep -v ':8080$' | sort -u || true)
+    if [ -z "$xl" ]; then
+        ok "miner listens on :8080 only"
+    else
+        bad "miner has unexpected listeners: $xl"
+    fi
+    # Spirit-of-XMRig on the wire: the sister /2/summary minus `rigforge` must carry EXACTLY the key
+    # set XMRig's own API serves — verbatim superset, nothing renamed, dropped, or invented.
+    k1=$(curl -fsS --max-time 8 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -cS 'keys' 2>/dev/null || true)
+    k2=$(curl -fsS --max-time 8 http://127.0.0.1:8081/2/summary 2>/dev/null | jq -cS 'del(.rigforge) | keys' 2>/dev/null || true)
+    if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then
+        ok "wire superset: sister /2/summary = xmrig's keys + rigforge, nothing else"
+    else
+        bad "superset mismatch: xmrig keys $k1 vs sister-without-rigforge $k2"
+    fi
+    # Leak sweep: with a token AND a stratum pass configured, no byte of any response on either port
+    # — authed, unauthed, or error, headers included — may contain either secret.
+    set_cfg '.ACCESS_TOKEN = "tok-net1" | .pools[0].pass = "pass-net1"'
+    sleep 3
+    sweep=$(
+        for p in 8080 8081; do
+            for path in /1/summary /2/summary /health /tune /nope; do
+                curl -is --max-time 8 -H "Authorization: Bearer tok-net1" "http://127.0.0.1:$p$path" 2>/dev/null || true
+                curl -is --max-time 8 "http://127.0.0.1:$p$path" 2>/dev/null || true
+            done
+        done
+    )
+    case "$sweep" in
+    *tok-net1*) bad "leak: ACCESS_TOKEN appears in a response" ;;
+    *) ok "leak sweep: ACCESS_TOKEN never appears in any response (both ports, all routes + errors)" ;;
+    esac
+    case "$sweep" in
+    *pass-net1*) bad "leak: the stratum pass appears in a response" ;;
+    *) ok "leak sweep: pools[].pass never appears in any response" ;;
+    esac
+    set_cfg '.api = "disabled" | .ACCESS_TOKEN = "" | .pools[0].pass = "x"'
+    sleep 3
+    if ss -Htln 2>/dev/null | grep -q ':8081 '; then
+        bad ":8081 still listening after api disabled"
+    else
+        ok ":8081 closed when api disabled"
+    fi
+}
+
 phase_stratum_auth() {
     phase "stratum-auth — right pass mines, wrong pass is rejected (#113, stack phase 1)"
     if [ -z "$WLOG" ]; then
@@ -354,6 +426,7 @@ case "${1:-all}" in
 connect) phase_connect ;;
 worker-api) phase_worker_api ;;
 api-impact) phase_api_impact ;;
+network) phase_network ;;
 stratum-auth) phase_stratum_auth ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
@@ -361,10 +434,11 @@ all)
     phase_connect
     phase_worker_api
     phase_api_impact
+    phase_network
     phase_stratum_auth
     phase_dashboard
     phase_dev_fee
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|stratum-auth|dashboard|dev-fee|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)" ;;
 esac
 summary
