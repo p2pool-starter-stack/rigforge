@@ -31,6 +31,15 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
 
+   When a live Pithead stack is reachable, also run the worker↔stack contract gate (stack on its
+   latest release tag — record `pithead version` in the run log). It asserts the mining round-trip,
+   the `:8080` API contract, stratum auth (pass `E2E_STRATUM_PASS` if the stack uses one), dashboard
+   visibility (`E2E_DASH_URL`), and that the sister API does not shave hashrate under polling load:
+
+   ```bash
+   PITHEAD_URL=gouda.lan:3333 sudo -E make e2e-pithead
+   ```
+
    Each phase must report `E2E-REAL (<phase>): PASS`. This proves a release bundle actually
    builds, tunes, and hashes on real hardware, which the suites can't since they all stub XMRig.
    - Put a real, reachable pool in `config.json` first. Without one, `setup` writes an unroutable

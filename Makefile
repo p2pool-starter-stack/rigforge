@@ -34,6 +34,9 @@ coverage: ## Measure rigforge.sh + util coverage via kcov and enforce the commit
 e2e-real: ## Release pre-tag gate (full): real build+tune+bench+doctor+uninstall on a rig (root; see RELEASING.md)
 	bash tests/e2e-real.sh all
 
+e2e-pithead: ## Release gate (worker↔stack): real worker vs a live Pithead stack (root; PITHEAD_URL=host:3333; see RELEASING.md)
+	bash tests/e2e-pithead.sh all
+
 lint: ## shellcheck + shfmt (check) the script, utilities, and test scripts
 	shellcheck --severity=warning $(SHELL_FILES)
 	shfmt -i 4 -d $(SHELL_FILES)
