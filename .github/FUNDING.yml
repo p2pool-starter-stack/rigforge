@@ -1,0 +1,2 @@
+# Points the Sponsor button at the Donate section (an XMR address is not a URL GitHub can render).
+custom: ["https://github.com/p2pool-starter-stack/rigforge#-donate"]

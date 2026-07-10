@@ -3,11 +3,11 @@
 #   pipx install pre-commit   # or: pip install pre-commit
 #   pre-commit install
 #
-# Local == CI: the shell hook calls `make lint`, so the Makefile's SHELL_FILES stays the single
-# source of truth (no duplicated file list here). gitleaks is pinned to the same version CI runs
-# (.github/workflows/security.yml). The config/docs linters (yamllint, markdownlint, lychee) aren't
-# commit-time hooks — run them with `make lint-yaml` / `make lint-md` / `make lint-links`; they gate
-# in CI.
+# Local == CI: every lint hook calls the matching `make` target, so the Makefile's file lists and
+# version pins stay the single source of truth (no duplicated config here). gitleaks is pinned to
+# the same version CI runs (.github/workflows/security.yml). markdown/yaml hooks joined at commit
+# time after a docs-only commit broke CI (2026-07-10) — `make lint` alone never sees .md/.yml.
+# Only lychee (external-network link check) stays CI/weekly-only: `make lint-links`.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1 # keep in lockstep with GITLEAKS_VERSION in .github/workflows/security.yml
@@ -32,4 +32,16 @@ repos:
         entry: make lint
         language: system
         files: \.sh$
+        pass_filenames: false
+      - id: make-lint-md
+        name: markdownlint (make lint-md)
+        entry: make lint-md
+        language: system
+        files: \.md$
+        pass_filenames: false
+      - id: make-lint-yaml
+        name: yamllint (make lint-yaml)
+        entry: make lint-yaml
+        language: system
+        files: \.(ya?ml)$
         pass_filenames: false

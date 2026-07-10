@@ -18,6 +18,7 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 | **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` + `util/` by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
 | **Release smoke (quick)** | [`smoke.sh`](smoke.sh) | Real Linux rig, **manual**. Not in CI. | The compiled binary actually starts and hashes (`xmrig --bench`, fully offline). Fast pre-tag confidence that the worker we ship runs. | `make smoke` |
 | **Release e2e (full)** | [`e2e-real.sh`](e2e-real.sh) | Real Linux rig, **manual, root**. Not in CI. | The real thing end to end: build + tune + kernel tuning + service + a real hash, then a clean uninstall. **The release gate.** | `make e2e-real` (see [`RELEASING.md`](../RELEASING.md)) |
+| **Release e2e (worker↔stack)** | [`e2e-pithead.sh`](e2e-pithead.sh) | Real rig + a **live Pithead stack**, **manual, root**. Not in CI. | The integration contract: mining round-trip against the stack, the `:8080` API posture (open/token/`restricted`), stratum auth accept/reject + rotation, dashboard visibility/drop-off, dev-fee independence, and the sister-API **hashrate-impact guard** (#99 must not shave H/s under polling load). | `PITHEAD_URL=host:3333 sudo -E make e2e-pithead` (see [`RELEASING.md`](../RELEASING.md)) |
 
 The first four run automatically on every push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
 The last two are deliberately kept out of CI, because a real build, HugePages, and live mining are
@@ -46,3 +47,17 @@ flaky by nature and against GitHub Actions' ToS. They're a manual pre-tag gate t
   on macOS); avoid bash-4-only syntax.
 - Lint everything: `make lint` (shellcheck + shfmt). The file list lives in the Makefile's
   `SHELL_FILES` so CI and local stay in sync — add new `tests/*.sh` there.
+
+## Performance testing (standardized)
+
+Three standardized measurements, each owned by exactly one layer, so a release can't regress
+performance unnoticed:
+
+| Measurement | Where | Standard | Knobs |
+|---|---|---|---|
+| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine, compared against the **committed per-host baseline** in [`perf-baselines/`](perf-baselines/). No baseline → the phase reports the measurement and how to record one. | `E2E_PERF_TOLERANCE_PCT` (default 5); `E2E_PERF_RECORD=1` writes/updates the baseline — commit the file. |
+| **Hashrate under API load** | `e2e-pithead.sh` `api-impact` phase | Live 10s-window hashrate, 6×5s samples, baseline vs 4 clients hammering the sister API back-to-back. The handler unit's `Nice=19`/`IOSchedulingClass=idle` is the mechanism; this proves it. | `E2E_API_IMPACT_TOLERANCE_PCT` (default 3). |
+| **Tune improvement** | `e2e-real.sh` `verify` phase (existing) | The short real tune must produce a winner that beats or ties the baseline candidate (#62–#64 machinery: sustained-clock sampling, variance-aware acceptance, live A/B confirm). | `TUNE_BENCH`, `TUNE_ITERS` (see the phase comments). |
+
+Baselines are per-host on purpose: hashrate is hardware. When a rig's hardware or BIOS tuning
+changes deliberately, re-record its baseline in the same PR that documents the change.

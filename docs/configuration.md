@@ -45,8 +45,11 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 | Key | Default | What it does |
 |---|---|---|
 | `pools` | *(required)* | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
+| `api` | `"disabled"` | `"enabled"` serves the sister API: a second **read-only** port with XMRig's `/1/summary`+`/2/summary` passed through verbatim plus a namespaced `rigforge` object (tune state, RAPL watts, firmware/health probes, pinned versions), and `/health` + `/tune` endpoints. Socket-activated (no resident process); gated by the same `ACCESS_TOKEN`; Linux-only. |
+| `api_port` | `8081` | Sister API port (8080 is rejected — that's XMRig's own API). |
+| `api_bind` | `"0.0.0.0"` | Sister API listen address. |
 | `ACCESS_TOKEN` | `""` *(open)* | Optional bearer token for the XMRig HTTP API. Unset (default) leaves the read-only API open, which matches Pithead's default no-auth probe. Set a value to require a `Bearer` token, then match it on the dashboard (`workers.api_auth: token` + `workers.api_token`, or `name` if you set it to the rig name). See [Pithead Integration](pithead-integration.md). |
-| `DONATION` | `1` | XMRig donate level, an integer 0–100 (percent). Patched into the build (`donate.h`) and written to the generated config, so it must be a valid integer or setup fails fast. |
+| `DONATION` | `1` | XMRig donate level, an integer 0–100 (percent). Patched into the build (`donate.h`) and written to the generated config, so it must be a valid integer or setup fails fast. **Lowering it below the level the current binary was compiled with needs a rebuild** — XMRig clamps the config value to its compiled floor (and autosaves the clamped value), so `apply` alone cannot lower it. Raising it works with a plain `apply`. |
 | `HOME_DIR` | `DYNAMIC_HOME` | Where worker files live. `DYNAMIC_HOME` puts them in `data/worker` inside the repo; set an absolute path to use `<path>/worker` instead. |
 | `autotune` | `"disabled"` | Periodic live tuning, as a target: `"disabled"` (default) installs no timer; `"performance"` schedules a periodic tune for raw hashrate; `"efficiency"` schedules one for hashrate-per-watt (needs a power source, built-in RAPL or `TUNE_POWER_CMD`, else it falls back to `performance` with a warning). Legacy booleans still parse (`true` → `performance`, `false` → `disabled`). This key controls the schedule; to run one live pass by hand, use `tune --now` (or `tune --now --long` for a full all-knob sweep). See [Operations › Live auto-tuning](operations.md#live-auto-tuning-opt-in). |
 | `add_to_path` | `false` | When `true`, setup installs a `rigforge` command on your PATH (a symlink in `/usr/local/bin`) so you can run `sudo rigforge <cmd>` from any directory. Off by default. `uninstall` removes it. |
@@ -94,6 +97,7 @@ you care about:
 | `pass` | `"x"` — the stratum password / worker name. For an open Pithead stack the default works; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
 | `keepalive` | `true` |
 | `tls` | `false` — set `true` when you connect on the pool's TLS/SSL port. |
+| `tls-fingerprint` | `null` (no pin) — the pool cert's SHA-256 as 64 hex chars. XMRig does no CA validation on stratum TLS, so the pin is the only server authentication; without it, TLS encrypts but doesn't authenticate. Requires `"tls": true`. See [Pithead Integration › Stratum over TLS](pithead-integration.md#stratum-over-tls-optional). |
 | `enabled` | `true` |
 
 Two common setups follow; pick the one that matches where you're mining.
@@ -138,7 +142,8 @@ in the pool's endpoint and your wallet:
   `WALLET.workername` here to label the rig in their dashboard.
 - `pass` is a worker name (or just `"x"`; most public pools ignore the password).
 - `url` + `tls` is the pool's stratum endpoint. Use the pool's TLS/SSL port (often `:443` or `:5555`)
-  with `"tls": true`; a plain, unencrypted port needs no `tls`. Your pool's *Getting started* /
+  with `"tls": true`; a plain, unencrypted port needs no `tls`. For a self-signed or internal cert,
+  add `tls-fingerprint` to pin it. Your pool's *Getting started* /
   *Connect* page lists its exact host, ports, and whether it wants `wallet` or `wallet.worker`.
 
 Save that as `config.json`, then `sudo ./rigforge.sh apply` (a fresh `setup` picks it up too).

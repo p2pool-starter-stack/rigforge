@@ -7,6 +7,60 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-10
+
+### Added
+
+- **Sister API (#99).** Opt-in (`"api": "enabled"`) read-only stats superset on its own port
+  (default `:8081`): XMRig's `/1/summary`+`/2/summary` passed through verbatim plus a namespaced
+  `rigforge` object — applied tune knobs and the last tune run, RAPL watts and hashrate-per-watt,
+  the doctor probes as JSON, and pinned version provenance — plus bare `/health` and `/tune`.
+  Socket-activated (no resident process, no new dependencies), same `ACCESS_TOKEN` posture as
+  `:8080`, sandboxed read-only handler running at idle CPU priority so it cannot shave hashrate.
+- **Stratum password at first run (#113).** The interactive setup now asks for the stack's stratum
+  password (Enter skips it); the docs gain the rotation runbook. Pairs with Pithead's opt-in
+  `p2pool.stratum_password`.
+- **`pools[].tls-fingerprint` (#115).** Pin the stratum server's certificate by its SHA-256.
+  Verified against the pinned XMRig: without a pin, stratum TLS does **no** server authentication —
+  the docs now state the trust model plainly, and a pin without `"tls": true` is a hard error.
+- **Worker↔stack release gate (#114).** `make e2e-pithead` drives a real provisioned worker against
+  a live Pithead stack: mining round-trip, the `:8080` contract, stratum auth accept/reject/rotation,
+  dashboard visibility, dev-fee vs the compiled `donate.h` floor, and the sister-API
+  hashrate-impact guard.
+- **Standardized performance testing.** `e2e-real` gains a `perf` phase comparing the offline bench
+  against a committed per-host baseline (`tests/perf-baselines/`); `e2e-pithead`'s `api-impact`
+  phase owns the relative under-load measurement. A perf regression fails the release gate.
+- **doctor: read-only API posture check (#135).** Warns when the live config no longer pins
+  `http.restricted: true`.
+- **Developer tooling.** `make dev-setup` (one-command local toolchain + git hooks), `make ci`
+  (the full local CI mirror), actionlint in CI (workflow correctness beside zizmor's security
+  audit), and commit-time markdown/yaml linting in pre-commit — all pinned, all single-sourced
+  through the Makefile.
+
+### Fixed
+
+- **Bootstrap `config.json` permissions (#131).** The interactively created config is `chmod 600`
+  from the moment it exists — previously it sat world-readable (with the wallet the operator is
+  told to paste in) until the first `apply`.
+- **`SERVICE_NAME` override (#133).** `install_service` installed/enabled/started a hardcoded
+  `xmrig.service` regardless of the documented override, leaving a unit `uninstall` couldn't manage.
+- **GRUB cmdline corruption (#134).** Kernel parameters containing `&`, `\`, or `|` now survive the
+  `/etc/default/grub` rewrite (sed-replacement escaping in both `tune` and `uninstall`).
+- **Robustness sweep (#135).** `warn`/`error` print to stderr; the tune cleanup trap is armed at
+  temp-dir creation (no leak on live-mode aborts); a deny-list stops catastrophic `HOME_DIR` values
+  (`/`, `/etc`, bare `/home`) before any `sudo rm -rf`; `awk -v` everywhere; lint file list derived
+  from `git ls-files`.
+
+### Documentation
+
+- SECURITY.md, README and operations no longer claim the `:8080` API is token-gated by default
+  (stale since v1.1.0); SECURITY.md documents the `:8081` posture (#132, #99).
+- README states the licensing split (RigForge MIT, XMRig GPLv3 compiled from source on your
+  machine) and whose wallet the donation address is (#136).
+- `DONATION` docs now state that lowering it below the compiled `donate.h` floor requires a
+  rebuild — XMRig clamps and autosaves the clamped value, so `apply` alone cannot lower it
+  (caught by the first live `e2e-pithead` run).
+
 ## [1.1.0] - 2026-07-01
 
 ### Added
@@ -506,7 +560,8 @@ The full walkthrough — prerequisites, the Linux reboot, and verification — i
 
 </details>
 
-[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.1.0...main
+[Unreleased]: https://github.com/p2pool-starter-stack/rigforge/compare/v1.2.0...main
+[1.2.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.1.0
 [1.0.1]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.1
 [1.0.0]: https://github.com/p2pool-starter-stack/rigforge/releases/tag/v1.0.0

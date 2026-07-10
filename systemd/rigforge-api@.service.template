@@ -1,0 +1,25 @@
+[Unit]
+Description=RigForge sister API per-connection handler
+CollectMode=inactive-or-failed
+
+[Service]
+Type=oneshot
+# Root so the health probes (dmidecode / rdmsr / RAPL) read real values. The handler is read-only by
+# construction (GET only, fixed routes, nothing from the request is executed or logged), and the
+# sandbox below enforces read-only at the filesystem level too — the handler writes nothing.
+Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
+ExecStart=$SCRIPT_DIR/rigforge.sh api-serve
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# Never compete with the miner for CPU: RandomX is cache/latency-sensitive, so handlers run at the
+# lowest priority — a polling dashboard must not shave hashrate. The e2e-pithead `api-impact` phase
+# proves this on real hardware before a release (#114).
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

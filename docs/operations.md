@@ -406,7 +406,7 @@ If you see MSR errors, see Troubleshooting below.
 | HugePages still 0 after reboot | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; RigForge merges its kernel parameters into `GRUB_CMDLINE_LINUX_DEFAULT` rather than overwriting, so other params are preserved. |
 | Low hashrate / few threads | RandomX is L3-bound (~2 MB per thread). A CPU with little L3 runs fewer effective threads; this is expected. See [Hardware › L3 cache](hardware.md#a-note-on-l3-cache). |
 | No AVX2 | RandomX still runs but slower. AVX2 is strongly recommended; there's no fix beyond different hardware. |
-| Dashboard can't read the worker | The HTTP API token must equal the rig name (or be unset), the API must be on `:8080`, and the worker must be reachable from the stack host. See [Pithead Integration › Troubleshooting](pithead-integration.md#troubleshooting). |
+| Dashboard can't read the worker | The API is open (no token) by default, so first check the worker is reachable from the stack host on `:8080`. If you set an `ACCESS_TOKEN`, the dashboard must send the same token (`workers.api_auth: token` + `workers.api_token`, or `name` if the token is the rig name). See [Pithead Integration › Troubleshooting](pithead-integration.md#troubleshooting). |
 | Pool unreachable | Confirm the worker can reach its pool URL (firewall, DHCP/static IP). Workers use plain Stratum on the LAN, no Tor. |
 
 ---
@@ -416,3 +416,17 @@ If you see MSR errors, see Troubleshooting below.
 - [Getting Started](getting-started.md) — first-run setup and verification.
 - [Configuration](configuration.md) — config keys and how the XMRig config is generated.
 - [Pithead Integration](pithead-integration.md) — the dashboard contract.
+
+## Sister API (optional)
+
+Set `"api": "enabled"` in `config.json` and run `sudo ./rigforge.sh apply`. The rig then serves a
+second read-only HTTP endpoint (default `:8081`, keys `api_port`/`api_bind`) with everything the
+`:8080` XMRig API has **plus** the data only RigForge knows: applied tune knobs and the last tune
+run (`/tune`), hashrate-per-watt from RAPL, and the doctor probes — HugePages, MSR state, governor,
+RAM channels/speeds, memory-profile and SMT state, throttling — as JSON (`/health`, or nested under
+`rigforge` in `/1/summary` and `/2/summary`). It is socket-activated: systemd owns the listener and
+spawns one short-lived handler per request, so an idle rig runs no extra process. The same
+`ACCESS_TOKEN` posture applies (open when unset, Bearer required when set), it is read-only by
+construction (GET only), and when XMRig is down the RigForge data still serves with an
+`"xmrig_api": "unreachable"` marker — which is exactly when the health data matters. Linux-only;
+`"api": "disabled"` + `apply` removes the units cleanly.

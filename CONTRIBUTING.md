@@ -35,6 +35,8 @@ RigForge is portable Bash that has to run on Ubuntu/Debian and macOS:
 Install the hooks once and they run on every commit, catching issues before they reach CI:
 
 ```bash
+make dev-setup            # installs the linter toolchain (brew/apt) + the git hooks in one go
+# — or by hand:
 pipx install pre-commit   # or: pip install pre-commit
 pre-commit install
 ```
@@ -52,7 +54,8 @@ The YAML, Markdown, and link checks gate in CI and have matching Make targets fo
 make lint-yaml     # yamllint the workflows + configs   (.yamllint)
 make lint-md       # markdownlint the docs              (.markdownlint-cli2.yaml; needs node)
 make lint-links    # lychee link-check the docs         (.lychee.toml; needs lychee — runs weekly in CI)
-make lint-all      # shell + yaml + markdown in one go
+make lint-all      # shell + yaml + markdown + workflows in one go
+make ci            # everything CI runs that can run locally (adds the container e2e when Docker is up)
 ```
 
 An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final

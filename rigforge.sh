@@ -22,9 +22,9 @@ readonly C_RED='\033[1;31m'
 readonly C_BLUE='\033[1;34m'
 
 log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
-warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1"; }
+warn() { echo -e "${C_YELLOW}[WARN]${C_RESET} $1" >&2; }
 error() {
-    echo -e "${C_RED}[ERROR]${C_RESET} $1"
+    echo -e "${C_RED}[ERROR]${C_RESET} $1" >&2
     exit 1
 }
 
@@ -189,6 +189,15 @@ grub_strip_managed() { # <current cmdline>
     printf '%s' "$preserved"
 }
 
+# Escape a value for use as the REPLACEMENT text of a `sed "s|pat|repl|"` command: backslash-prefix
+# `\`, `&` (whole-match backreference) and the `|` delimiter. Without this, a pre-existing kernel
+# param containing one of them (e.g. memmap=4G&2M) would silently corrupt /etc/default/grub (#134).
+# Implemented with sed, not ${var//}, because bash 5.2's patsub_replacement changed `&` semantics
+# in expansion replacements while our floor is bash 3.2.
+_sed_escape_replacement() { # <value> -> escaped value on stdout
+    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
 # --- Setup: prerequisites & configuration ---
 
 check_prerequisites() {
@@ -249,8 +258,26 @@ ensure_config_exists() {
             *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool URL host '$_host' is not a valid hostname or IP. Aborting." ;;
             esac
 
-            # Minimal config: just the native pools array. jq writes it so the URL is safely quoted.
-            jq -n --arg url "$IN_URL" '{pools: [{url: $url}]}' >"$CONFIG_JSON"
+            # Pithead stratum auth (#113): if the stack sets p2pool.stratum_password, every rig's pool
+            # `pass` must match or the proxy rejects the login. The secret is shown by `pithead status`.
+            # Enter skips it (open stack / non-Pithead pool) — parse_config then defaults pass to "x".
+            # Pre-validate with parse_config's exact pass rule (same reasoning as the host check above:
+            # fail before the write so a bad value doesn't leave a prompt-suppressing config on disk).
+            IN_PASS=""
+            read -r -p "Stratum password, if your stack requires one (shown by 'pithead status'; Enter for none): " IN_PASS || true
+            if [ -n "$IN_PASS" ] && ! [[ "$IN_PASS" =~ ^[[:graph:]]+$ ]]; then
+                error "Stratum password must have no spaces or control characters."
+            fi
+
+            # Minimal config: just the native pools array. jq writes it so the URL (and pass, when
+            # given) are safely quoted; an empty pass writes no key at all, keeping the no-auth
+            # minimal config byte-identical to before.
+            jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" \
+                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end))]}' >"$CONFIG_JSON"
+            # The operator is told (below) to hand-edit this file to add a wallet / ACCESS_TOKEN, and the
+            # first `apply` may be a long way off — chmod now so those secrets are never world-readable
+            # in the interim (generate_xmrig_config's chmod 600 only runs on setup/apply). (#131)
+            chmod 600 "$CONFIG_JSON"
             _reown_worker # hand the freshly-created config.json to the operator, even if setup later fails
             log "Created $CONFIG_JSON successfully."
             # New-user safety net: the minimal config has no wallet, so a PUBLIC-pool miner who stops here
@@ -306,6 +333,12 @@ parse_config() {
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
+    # tls-fingerprint (#115): re-attach the pin from the raw config, emitted ONLY when set — adding
+    # it unconditionally (null) would change the generated config shape for every existing rig on
+    # its next apply. A second single-line pass rather than lines inside the map above: kcov can't
+    # attribute in-string program lines, and the patch-coverage gate needs every new line hittable.
+    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+
     # Validate every pool field — fail fast with a clear message rather than writing a config XMRig
     # would choke on. url must be host:port: a valid hostname / IPv4 / bracketed-IPv6 host and a port
     # in 1-65535; user/pass reject whitespace and shell/control characters; keepalive/tls/enabled
@@ -336,6 +369,20 @@ parse_config() {
         fi
         if ! [[ "$_pass" =~ ^[[:graph:]]+$ ]]; then
             error "Pool pass must be non-empty with no spaces or control characters."
+        fi
+        # TLS fingerprint pin (#115): xmrig does NO cert verification for stratum without a pin
+        # (v6.26.0 Tls.cpp verifyFingerprint returns true when unset), so the fingerprint is the
+        # ONLY server authentication stratum-TLS has. 64 hex chars, either case (xmrig compares
+        # case-insensitively); passed verbatim, never normalized. A pin without tls:true is a hard
+        # error — a silently-ignored pin would leave the operator believing they're protected.
+        _fp=$(jq -r '."tls-fingerprint" // empty' <<<"$_pool")
+        if [ -n "$_fp" ]; then
+            if ! [[ "$_fp" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+                error "Pool tls-fingerprint must be the cert's SHA-256 as 64 hex chars (no colons). Get it with: echo | openssl s_client -connect $_u 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':'"
+            fi
+            if [ "$(jq -r '.tls' <<<"$_pool")" != "true" ]; then
+                error "Pool '$_u' sets tls-fingerprint but not \"tls\": true — the pin only applies to a TLS connection; set both or remove the fingerprint."
+            fi
         fi
         for _f in keepalive tls enabled; do
             _bv=$(jq -r --arg f "$_f" '.[$f]' <<<"$_pool")
@@ -372,6 +419,22 @@ parse_config() {
     # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
     # no system-wide convenience change you didn't ask for.
     ADD_TO_PATH=$(jq -r '.add_to_path // false' "$CONFIG_JSON")
+
+    # Opt-in read-only sister API (#99): serves XMRig's /2/summary enriched with RigForge state
+    # (tune/power/health/provenance) on its own port. Same posture as :8080 — read-only, LAN-bound,
+    # gated by the SAME ACCESS_TOKEN (a second token would re-open the Pithead token-coordination
+    # problem for no gain).
+    _api=$(jq -r '.api // "disabled"' "$CONFIG_JSON")
+    case "$_api" in
+    disabled | false | off | none | null | "") API_MODE=disabled ;;
+    enabled | true | on) API_MODE=enabled ;;
+    *) error "Invalid \"api\" value '$_api' in config.json — use \"disabled\" or \"enabled\"." ;;
+    esac
+    API_PORT=$(jq -r '.api_port // 8081' "$CONFIG_JSON")
+    if ! [[ "$API_PORT" =~ ^[0-9]+$ ]] || [ "$API_PORT" -lt 1 ] || [ "$API_PORT" -gt 65535 ]; then error "api_port must be a port number 1-65535 (got: $API_PORT)."; fi
+    if [ "$API_PORT" = 8080 ]; then error "api_port 8080 collides with XMRig's own API — pick another port."; fi
+    API_BIND=$(jq -r '.api_bind // "0.0.0.0"' "$CONFIG_JSON")
+    [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
 }
 
 # --- Setup: workspace & dependency install ---
@@ -508,6 +571,7 @@ compile_xmrig() {
 
     # Verify we built the exact commit we pinned (supply-chain hardening). On a mismatch, drop the clone so
     # the next run starts clean rather than tripping the not-empty error above.
+    local actual
     actual="$(git -C xmrig rev-parse HEAD)"
     [ "$actual" = "$XMRIG_COMMIT" ] || {
         rm -rf xmrig
@@ -610,7 +674,7 @@ generate_xmrig_config() {
         THREADS="["
         for ((i = 0; i < CORES; i++)); do
             THREADS="${THREADS}-1"
-            if [ $i -lt $((CORES - 1)) ]; then THREADS="${THREADS},"; fi
+            if [ "$i" -lt $((CORES - 1)) ]; then THREADS="${THREADS},"; fi
         done
         THREADS="${THREADS}]"
     fi
@@ -739,13 +803,13 @@ install_service() {
         # Overwrite the existing file. Only the three named vars are substituted; WORKER_ROOT is passed
         # into envsubst's environment for that one command (the template uses it in ReadWritePaths).
         WORKER_ROOT="$WORKER_ROOT" envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT' \
-            <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/xmrig.service" >/dev/null
+            <"$SCRIPT_DIR/systemd/xmrig.service.template" | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 
         # Reload systemd daemon
         sudo systemctl daemon-reload
 
         # Enable service to start on boot
-        sudo systemctl enable xmrig.service
+        sudo systemctl enable "$SERVICE_NAME.service"
 
         if [ "$REBOOT_REQUIRED" = true ]; then
             # HugePages aren't reserved until the GRUB change takes effect on reboot — starting the miner
@@ -756,10 +820,10 @@ install_service() {
             # Restart only when the binary was rebuilt; otherwise just ensure it's running (a running
             # service is left undisturbed on a no-op re-run).
             log "Restarting XMRig service..."
-            sudo systemctl restart xmrig.service
+            sudo systemctl restart "$SERVICE_NAME.service"
         else
             log "No rebuild — ensuring the service is running (no restart)."
-            sudo systemctl start xmrig.service
+            sudo systemctl start "$SERVICE_NAME.service"
         fi
         SERVICE_INSTALLED=true
     else
@@ -793,6 +857,33 @@ install_autotune() {
         <"$SCRIPT_DIR/systemd/rigforge-autotune.timer.template" | sudo tee "$tmr" >/dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable --now rigforge-autotune.timer 2>/dev/null || true
+}
+
+# Sister API (#99): socket-activated — systemd owns the listener; one short-lived
+# `rigforge.sh api-serve` process handles each request. No resident daemon, no new dependencies.
+# Toggle shape mirrors install_autotune above.
+install_api() {
+    [ "$OS_TYPE" == "Linux" ] || return 0
+    local sock="$SYSTEMD_DIR/rigforge-api.socket" svc="$SYSTEMD_DIR/rigforge-api@.service"
+    if [ "${API_MODE:-disabled}" = "disabled" ]; then
+        if [ -f "$sock" ]; then
+            sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
+            sudo rm -f "$sock" "$svc"
+            sudo systemctl daemon-reload 2>/dev/null || true
+            log "Sister API disabled."
+        fi
+        return 0
+    fi
+    # Never echo the token itself — only whether one is required.
+    log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open))..."
+    API_BIND="$API_BIND" API_PORT="$API_PORT" envsubst '$API_BIND $API_PORT' <"$SCRIPT_DIR/systemd/rigforge-api.socket.template" | sudo tee "$sock" >/dev/null
+    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api@.service.template" | sudo tee "$svc" >/dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rigforge-api.socket 2>/dev/null || true
+    # enable --now is a no-op on an already-running socket, and daemon-reload alone never rebinds a
+    # changed ListenStream — an api_port/api_bind edit + `apply` would keep listening on the OLD
+    # address until reboot. Restart rebinds (and is a start when the socket was stopped).
+    sudo systemctl restart rigforge-api.socket 2>/dev/null || true
 }
 
 tune_kernel() {
@@ -852,7 +943,7 @@ tune_kernel() {
             log "GRUB is already configured with optimal HugePages settings."
         else
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$MERGED\"|" "$GRUB_DEFAULT"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$MERGED")\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
@@ -994,6 +1085,8 @@ main() {
     install_service
     CURRENT_STEP="configuring autotune"
     install_autotune
+    CURRENT_STEP="configuring the sister API"
+    install_api
     CURRENT_STEP="linking the rigforge command"
     link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
     CURRENT_STEP="reconciling file ownership"
@@ -1010,7 +1103,7 @@ _wait_miner_live() { # [tries]
     local i hr tries="${1:-30}"
     for i in $(seq 1 "$tries"); do
         hr=$(_read_api_hashrate)
-        [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null && return 0
+        [ -n "$hr" ] && awk -v hr="$hr" 'BEGIN{exit !(hr > 0)}' 2>/dev/null && return 0
         sleep 3
     done
     return 1
@@ -1058,10 +1151,20 @@ upgrade() {
 # returns 1 (invalid) so every consumer fails closed rather than acting on a typo- or attacker-controlled
 # path. Shared by parse_config and the privileged uninstall/backup/restore/doctor consumers.
 _worker_root_for_home() { # <raw HOME_DIR> -> echoes "<root>", or returns 1 if invalid
-    local raw="$1"
+    local raw="$1" trimmed
     if [ "$raw" = "DYNAMIC_HOME" ] || [ -z "$raw" ] || [ "$raw" = "null" ]; then
         echo "$SCRIPT_DIR/data/worker"
     elif [[ "$raw" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$raw" != *..* ]]; then
+        # Syntactically valid is not enough: HOME_DIR feeds mkdir/cd/`sudo rm -rf`, so the
+        # filesystem's own top levels ("/", "/etc", bare "/home", ...) must fail closed too. (#135)
+        # ponytail: strips one trailing slash; the charset regex above already blocks anything
+        # hostile — this is a fat-finger guard, not a security boundary.
+        trimmed="${raw%/}"
+        case "${trimmed:-/}" in
+        / | /bin | /boot | /dev | /etc | /home | /lib | /lib64 | /media | /mnt | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var | /Applications | /Library | /System | /Users | /Volumes | /private)
+            return 1
+            ;;
+        esac
         echo "$raw/worker"
     else
         return 1
@@ -1103,6 +1206,10 @@ uninstall() {
     worker_root=$(_worker_root_from_config)
 
     # 1. systemd service (+ the optional autotune timer, #46)
+    if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ]; then
+        sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service"
+    fi
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-autotune.timer" "$SYSTEMD_DIR/rigforge-autotune.service"
@@ -1145,7 +1252,7 @@ uninstall() {
         stripped=$(grub_strip_managed "$cur")
         if [ "$cur" != "$stripped" ]; then
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
-            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$stripped\"|" "$GRUB_DEFAULT"
+            sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$stripped")\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
                 REBOOT_REQUIRED=true
@@ -2023,6 +2130,10 @@ tune() {
     done
 
     TUNE_TMP=$(mktemp -d)
+    # Cleanup is armed the moment the temp dir exists — an ERR-abort anywhere below (live mode
+    # included) must not leak it. _tune_bench_cleanup is idempotent and only restarts the service
+    # when _TUNE_SVC_STOPPED says the bench path stopped it. (#135)
+    trap '_tune_bench_cleanup' EXIT
     MEMO_FILE="$TUNE_TMP/memo"
     MEMO_SD_FILE="$TUNE_TMP/memo_sd"
     MEMO_THROTTLE_FILE="$TUNE_TMP/memo_throttle"
@@ -2049,7 +2160,6 @@ tune() {
         log "Stopping the '$SERVICE_NAME' service for the benchmark run (restarted automatically afterwards)."
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
         _TUNE_SVC_STOPPED=1
-        trap '_tune_bench_cleanup' EXIT
     fi
 
     local G_best="-1" G_best_key="" G_p="" G_y="" G_t="" G_g="" G_pr="" G_hj="" G_cq="" G_wr="" seed seed_hr
@@ -2087,7 +2197,7 @@ tune() {
         done
     fi
 
-    if [ -z "$G_p" ] || awk "BEGIN{exit !($G_best <= 0)}"; then
+    if [ -z "$G_p" ] || awk -v hr="$G_best" 'BEGIN{exit !(hr <= 0)}'; then
         rm -rf "$TUNE_TMP"
         error "Benchmarks produced no hashrate — check that the worker is built correctly."
     fi
@@ -2163,7 +2273,7 @@ _tune_confirm_live() { # <winner_overrides_json> <previous_overrides_json>
     sleep "$warm"
     base_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$base_hr" ] || base_hr=0
-    if awk "BEGIN{exit !($win_hr > $base_hr * (1 + $margin))}"; then
+    if awk -v w="$win_hr" -v b="$base_hr" -v m="$margin" 'BEGIN{exit !(w > b * (1 + m))}'; then
         printf '%s\n' "$win_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null
         _apply_runtime >/dev/null 2>&1 || true
         log "Confirmed: the tuned config wins live ($win_hr vs $base_hr H/s) — kept and applied."
@@ -2223,7 +2333,7 @@ _autotune_sample() { # <n> <interval> <target>
 # Score a sample for the active target: efficiency -> hashrate-per-watt (falls back to raw H/s if watts
 # are missing so the sweep still progresses); perf -> raw H/s. Drives both ranking and the margin gate.
 _autotune_score() { # <target> <hr> <watts>
-    if [ "$1" = efficiency ] && [ -n "$3" ] && awk "BEGIN{exit !($3 > 0)}"; then
+    if [ "$1" = efficiency ] && [ -n "$3" ] && awk -v w="$3" 'BEGIN{exit !(w > 0)}'; then
         awk -v h="$2" -v w="$3" 'BEGIN{printf "%.4f", h / w}'
     else
         printf '%s' "${2:-0}"
@@ -2231,7 +2341,7 @@ _autotune_score() { # <target> <hr> <watts>
 }
 # Human-readable sample for the log line: "10700 H/s" or "10700 H/s, 83.10 W, 128.84 H/s/W".
 _autotune_fmt() { # <target> <hr> <watts>
-    if [ "$1" = efficiency ] && [ -n "$3" ] && awk "BEGIN{exit !($3 > 0)}"; then
+    if [ "$1" = efficiency ] && [ -n "$3" ] && awk -v w="$3" 'BEGIN{exit !(w > 0)}'; then
         awk -v h="$2" -v w="$3" 'BEGIN{printf "%s H/s, %.2f W, %.2f H/s/W", h, w, h / w}'
     else
         printf '%s H/s' "${2:-0}"
@@ -2301,14 +2411,14 @@ autotune() {
         [ -n "$hr" ] || hr=0
         sc=$(_autotune_score "$target" "$hr" "$w")
         log "autotune: prefetch_mode=$m measured $(_autotune_fmt "$target" "$hr" "$w")."
-        if awk "BEGIN{exit !($sc > $best_score)}"; then
+        if awk -v sc="$sc" -v b="$best_score" 'BEGIN{exit !(sc > b)}'; then
             best_mode="$m"
             best_score="$sc"
         fi
     done
 
     # Adopt the winner only if it beats the baseline by the margin (noise guard); else keep the current mode.
-    if [ "$best_mode" != "$cur" ] && awk "BEGIN{exit !($best_score > $base_score * (1 + $margin))}"; then
+    if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
         log "autotune: best is prefetch_mode=$best_mode at $best_score $unit (vs $base_score baseline) — applying it."
     else
         best_mode="$cur"
@@ -2701,6 +2811,7 @@ apply() {
     _apply_runtime
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
+        install_api >/dev/null 2>&1 || true
         _autotune_apply_notice
     fi
 }
@@ -2841,6 +2952,165 @@ $regs
 EOF
 }
 
+# --- Sister API (#99): read-only stats superset on its own port ---
+
+# Full /2/summary body from the local worker API (empty when unreachable). Sibling of
+# _read_api_hashrate with the same API_CMD test hook and Bearer branch (see the comment there).
+_xmrig_summary_json() {
+    local url="http://127.0.0.1:8080/2/summary"
+    if [ -n "${API_CMD:-}" ]; then
+        eval "$API_CMD"
+        return
+    fi
+    command -v curl >/dev/null 2>&1 || return 0
+    if [ -n "${ACCESS_TOKEN:-}" ]; then
+        curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
+    else
+        curl -fsS --max-time 5 "$url" 2>/dev/null || true
+    fi
+}
+
+# {watts, hs_per_watt} over a 1-second RAPL energy window; nulls when unmeasurable (no RAPL /
+# non-root). RAPL only — TUNE_POWER_CMD is an operator-session env var whose value is eval'd, and
+# config-derived text must never reach eval inside a network-facing handler.
+_api_power_json() { # <hashrate|"">
+    local hr="${1:-}" e0 e1 t0 t1 mx w=""
+    e0=$(_rapl_sum energy_uj || true)
+    t0=$(_now_s)
+    if [ -n "$e0" ]; then
+        sleep 1
+        e1=$(_rapl_sum energy_uj || true)
+        t1=$(_now_s)
+        mx=$(_rapl_sum max_energy_range_uj || true)
+        w=$(_watts_from_energy "$e0" "$e1" "${mx:-0}" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b - a}')")
+    fi
+    jq -n --arg w "$w" --arg hr "$hr" '{watts: (if $w == "" then null else ($w | tonumber) end), hs_per_watt: (if $w == "" or $hr == "" or ($w | tonumber) == 0 then null else (($hr | tonumber) / ($w | tonumber)) end)}'
+}
+
+# Tune/autotune state as JSON — the machine-readable sibling of _tune_history (same sources, same
+# systemctl reads). Every jq program here is single-line: kcov cannot attribute in-string lines.
+_api_tune_json() {
+    local ovr="$WORKER_ROOT/tune-overrides.json" logf="$WORKER_ROOT/rigforge-tune.json"
+    local applied=null target=null best=null n=null aten=false atgt="" asched="" anext=""
+    if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then applied=$(cat "$ovr"); fi
+    if [ -s "$logf" ] && jq -e . "$logf" >/dev/null 2>&1; then
+        target=$(jq -c '.target // null' "$logf" 2>/dev/null || echo null)
+        best=$(jq -c '.best.hashrate // null' "$logf" 2>/dev/null || echo null)
+        n=$(jq -c '.results | length' "$logf" 2>/dev/null || echo null)
+    fi
+    if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
+        aten=true
+        atgt=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=AUTOTUNE_TARGET=//p' | head -1)
+        asched=$(systemctl cat rigforge-autotune.timer 2>/dev/null | sed -nE 's/^OnCalendar=//p' | head -1)
+        anext=$(systemctl show rigforge-autotune.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    fi
+    jq -n --argjson applied "$applied" --argjson target "$target" --argjson best "$best" --argjson n "$n" --argjson aten "$aten" --arg atgt "$atgt" --arg asched "$asched" --arg anext "$anext" '{applied: $applied, target: $target, last_best_hs: $best, candidates_tried: $n, autotune: {enabled: $aten, target: (if $atgt == "" then null else $atgt end), schedule: (if $asched == "" then null else $asched end), next: (if $anext == "" then null else $anext end)}}'
+}
+
+# Health probes as JSON — reuses doctor's probe helpers and comparison expressions verbatim so the
+# wire and the human report can never disagree; doctor stays the judgmental formatter.
+_health_json() {
+    local sa=false hp_total="" hp1g="" gov="" msr_st="" wr="" logf="" mem pop nch spd rated smt="" bv="" bn="" pct="" thr=null xmp=null effk maxk
+    if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then sa=true; fi
+    hp_total=$(awk '/^HugePages_Total:/ {print $2}' "$MEMINFO" 2>/dev/null || true)
+    hp1g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || true)
+    gov=$(cat "$GOVERNOR_FILE" 2>/dev/null || true)
+    wr=$(_worker_root_from_config)
+    [ -n "$wr" ] && logf="$wr/xmrig.log"
+    msr_st=$(_msr_log_status "${logf:-/nonexistent}" | cut -f1)
+    mem=$(_mem_summary)
+    read -r pop nch spd rated <<<"${mem:-0 0 0 0}"
+    if [ "${rated:-0}" -gt 0 ] 2>/dev/null && [ "${spd:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "$spd" -lt "$rated" ]; then xmp=false; else xmp=true; fi
+    fi
+    smt=$(cat "$SMT_CONTROL" 2>/dev/null || true)
+    bv=$(_dmi board_vendor)
+    bn=$(_dmi board_name)
+    if [ "$sa" = true ]; then
+        maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null || true)
+        effk=$(_cpu_eff_khz)
+        if [ -n "$effk" ] && [ "${maxk:-0}" -gt 0 ] 2>/dev/null; then
+            pct=$((effk * 100 / maxk))
+            if [ "$pct" -lt "$MIN_CLOCK_PCT" ]; then thr=true; else thr=false; fi
+        fi
+    fi
+    jq -n --argjson sa "$sa" --arg hpt "${hp_total:-}" --arg hp1g "${hp1g:-}" --arg gov "$gov" --arg msr "${msr_st:-none}" --arg pop "${pop:-0}" --arg nch "${nch:-0}" --arg spd "${spd:-0}" --arg rated "${rated:-0}" --argjson xmp "$xmp" --arg smt "$smt" --arg bv "$bv" --arg bn "$bn" --arg pct "${pct:-}" --argjson thr "$thr" '{service_active: $sa, hugepages_total: (if $hpt == "" then null else ($hpt | tonumber) end), hugepages_1g: (if $hp1g == "" then null else ($hp1g | tonumber) end), governor: (if $gov == "" then null else $gov end), msr: $msr, ram: {modules: ($pop | tonumber), channels: ($nch | tonumber), mts: ($spd | tonumber), rated_mts: ($rated | tonumber)}, xmp: $xmp, smt: (if $smt == "" then null else $smt end), firmware: {vendor: (if $bv == "" then null else $bv end), board: (if $bn == "" then null else $bn end)}, clock_pct_of_boost: (if $pct == "" then null else ($pct | tonumber) end), throttling: $thr}'
+}
+
+# Provenance + tune + power + health, namespaced under one `rigforge` key.
+_api_rigforge_block() { # <hashrate|"">
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health}'
+}
+
+# The only place a response is written. Content-Length in BYTES (wc -c), not ${#body} — bodies can
+# carry multibyte DMI strings.
+_http_respond() { # <code> <reason> <body>
+    local body="$3" len
+    len=$(printf '%s' "$body" | wc -c | tr -d ' ')
+    printf 'HTTP/1.1 %s %s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$1" "$2" "$len" "$body"
+}
+
+# One request in on stdin, one response out on stdout — spawned per connection by the
+# rigforge-api.socket unit (Accept=yes). Read-only by construction: GET only, fixed routes, nothing
+# from the request is ever executed or logged (the auth header is compared, never echoed). Always
+# returns 0 — a non-zero exit would mark the per-connection unit failed and spam the journal for
+# what is just a bad request.
+api_serve() {
+    [ "$OS_TYPE" = Linux ] || error "api-serve is spawned by the rigforge-api systemd socket and is Linux-only."
+    # parse_config error()s — i.e. EXITS — on a bad config, which `||` cannot catch in this shell.
+    # Probe it in a subshell first so a broken config yields a 500 response instead of a dead
+    # connection, then load it for real (now guaranteed not to exit).
+    (parse_config >/dev/null 2>&1) || {
+        _http_respond 500 "Internal Server Error" '{"error":"config unreadable"}'
+        return 0
+    }
+    parse_config >/dev/null 2>&1
+    local reqline="" method="" path="" _rest="" hline="" auth=""
+    IFS= read -t 5 -r reqline || {
+        _http_respond 408 "Request Timeout" '{"error":"timeout"}'
+        return 0
+    }
+    reqline=${reqline%$'\r'}
+    read -r method path _rest <<<"$reqline" || true
+    while IFS= read -t 5 -r hline; do
+        hline=${hline%$'\r'}
+        if [ -z "$hline" ]; then break; fi
+        case "$hline" in
+        [Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:*)
+            # HTTP allows optional whitespace after the colon — strip the name, then leading spaces/tabs.
+            auth="${hline#*:}"
+            while [ "${auth# }" != "$auth" ] || [ "${auth#	}" != "$auth" ]; do auth="${auth# }" auth="${auth#	}"; done
+            ;;
+        esac
+    done
+    if [ "$method" != GET ]; then
+        _http_respond 405 "Method Not Allowed" '{"error":"read-only API"}'
+        return 0
+    fi
+    if [ -n "${ACCESS_TOKEN:-}" ] && [ "$auth" != "Bearer $ACCESS_TOKEN" ]; then
+        _http_respond 401 "Unauthorized" '{"error":"unauthorized"}'
+        return 0
+    fi
+    path=${path%%\?*}
+    local sum="" hr="" rf="" body=""
+    case "$path" in
+    /1/summary | /2/summary)
+        sum=$(_xmrig_summary_json || true)
+        printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
+        hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
+        rf=$(_api_rigforge_block "$hr")
+        # Superset rule: every XMRig field passes through unchanged, plus one namespaced key. When
+        # the miner is down the RigForge data still serves — that is when health matters most.
+        if [ -n "$sum" ]; then body=$(jq -n --argjson x "$sum" --argjson r "$rf" '$x + {rigforge: $r}'); else body=$(jq -n --argjson r "$rf" '{rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
+        _http_respond 200 OK "$body"
+        ;;
+    /health) _http_respond 200 OK "$(_health_json)" ;;
+    /tune) _http_respond 200 OK "$(_api_tune_json)" ;;
+    *) _http_respond 404 "Not Found" '{"error":"not found"}' ;;
+    esac
+    return 0
+}
+
 # --- Doctor: one-stop health check ---
 
 doctor() {
@@ -2884,6 +3154,22 @@ doctor() {
     if [ -f "$CONFIG_JSON" ]; then
         wr=$(_worker_root_from_config)
         log_file="$wr/xmrig.log"
+    fi
+
+    # Read-only API posture (#135): exposing the HTTP API on 0.0.0.0:8080 is safe ONLY because the
+    # generated config pins http.restricted=true — assert the live file still does, so a hand-edit
+    # or a bad merge can't silently turn the read-only API into a control plane. Quiet when there is
+    # no built config yet (setup hasn't run); the service check above already covers that state.
+    local live_cfg="" restricted=""
+    [ -n "$wr" ] && live_cfg="$wr/xmrig/build/config.json"
+    if [ -n "$live_cfg" ] && [ -f "$live_cfg" ]; then
+        restricted=$(jq -r '.http.restricted' "$live_cfg" 2>/dev/null || true)
+        if [ "$restricted" = "true" ]; then
+            _ck_ok "HTTP API is read-only (http.restricted=true in the live config)"
+        else
+            _ck_warn "HTTP API is NOT read-only (http.restricted=${restricted:-unreadable}) — regenerate it with: sudo $0 apply"
+            issues=$((issues + 1))
+        fi
     fi
 
     # MSR mod applied? (#66) The ~10-15% RandomX gain needs three things, checked in order: the msr
@@ -3073,6 +3359,8 @@ Backup:
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
 
 Info:
+  api-serve  (internal) answer one sister-API request on stdin/stdout — spawned per connection
+             by the rigforge-api systemd socket ("api": "enabled" in config.json)
   version    print the RigForge version  (-v, --version)
   help       show this help              (-h, --help)
 
@@ -3091,6 +3379,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     autotune) autotune ;;
     doctor) doctor ;;
+    api-serve) api_serve ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;
@@ -3110,6 +3399,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, api-serve, version, help." ;;
     esac
 fi

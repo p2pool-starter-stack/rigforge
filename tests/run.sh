@@ -145,7 +145,7 @@ EOF
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
-    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g"
+    -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -193,7 +193,7 @@ parse_and_print() { # <config_file> <script_dir> <var>
         local var="$3"
         set +eu
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
-        eval "printf '%s' \"\${$var}\""
+        printf '%s' "${!var}"
     )
 }
 # Convenience: the host of the first resolved pool (POOLS_JSON[0].url with the :port stripped), so the
@@ -283,6 +283,19 @@ c="$(mkconf p_backup "{ \"pools\": [{\"url\":\"a:3333\"},{\"url\":\"b:14444\",\"
 assert_eq "two pools" "$(PJ "$c" | jq -c 'length')" "2"
 assert_eq "order preserved" "$(PJ "$c" | jq -c '[.[].url]')" '["a:3333","b:14444"]'
 assert_eq "backup tls kept" "$(PJ "$c" | jq -c '.[1].tls')" "true"
+# #115: tls-fingerprint passes through verbatim (either case) and the key is absent when unset/null,
+# so pre-#115 configs keep producing byte-identical POOLS_JSON.
+c="$(mkconf p_fp "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+assert_eq "tls-fingerprint passed through (#115)" "$(PJ "$c" | jq -r '.[0]."tls-fingerprint"')" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+c="$(mkconf p_fpu "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}] }")"
+assert_eq "uppercase fingerprint accepted verbatim (#115)" "$(PJ "$c" | jq -r '.[0]."tls-fingerprint"')" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+c="$(mkconf p_nofp "{ \"pools\": [{\"url\":\"h:3333\"}] }")"
+assert_eq "no fingerprint key when unset (#115)" "$(PJ "$c" | jq -c '.[0] | has("tls-fingerprint")')" "false"
+c="$(mkconf p_nullfp "{ \"pools\": [{\"url\":\"h:3333\",\"tls-fingerprint\":null}] }")"
+assert_eq "null fingerprint = absent (#115)" "$(PJ "$c" | jq -c '.[0] | has("tls-fingerprint")')" "false"
+# Index alignment: a pin on the SECOND pool must land on the second pool, not the first.
+c="$(mkconf p_fp2 "{ \"pools\": [{\"url\":\"plain:3333\"}, {\"url\":\"sec:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+assert_eq "second-pool fingerprint stays on the second pool (#115)" "$(PJ "$c" | jq -c '[(.[0] | has("tls-fingerprint")), (.[1]."tls-fingerprint" == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]')" "[false,true]"
 # Validation: bad url, blank url, missing port, non-boolean tls, no pools key, and an empty pools array
 # all fail fast.
 c="$(mkconf p_badurl "{ \"pools\": [{\"url\":\"evil;rm:3333\"}] }")"
@@ -297,6 +310,23 @@ assert_rc "url without a port rejected" "$?" "1"
 c="$(mkconf p_badtls "{ \"pools\": [{\"url\":\"h:3333\",\"tls\":\"yes\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "non-boolean tls rejected" "$?" "1"
+# #115: fingerprint validation — wrong length, colon-separated openssl form, non-string, and the
+# pin-without-tls footgun all fail fast; a valid pin + tls:true parses.
+c="$(mkconf p_fpshort "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"abc123\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "short fingerprint rejected (#115)" "$?" "1"
+c="$(mkconf p_fpcolon "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"AB:CD:EF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "colon-separated fingerprint rejected (#115)" "$?" "1"
+c="$(mkconf p_fpbool "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":true}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "non-string fingerprint rejected (#115)" "$?" "1"
+c="$(mkconf p_fpnotls "{ \"pools\": [{\"url\":\"h:443\",\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "fingerprint without tls:true rejected (#115)" "$?" "1"
+c="$(mkconf p_fpok "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "valid fingerprint + tls accepted (#115)" "$?" "0"
 c="$(mkconf p_nopools "{ }")"
 parse_rc "$c" "$ROOT"
 assert_rc "no pools rejected" "$?" "1"
@@ -356,6 +386,16 @@ assert_rc "HOME_DIR with metachar rejected" "$?" "1"
 c="$(mkconf hd_ok "{ \"HOME_DIR\": \"/opt/rig\", $POOL }")"
 parse_rc "$c" "$ROOT"
 assert_rc "clean absolute HOME_DIR accepted" "$?" "0"
+# #135: catastrophic-but-syntactically-valid HOME_DIR values fail closed before any sudo rm -rf.
+c="$(mkconf hd_slash "{ \"HOME_DIR\": \"//\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "HOME_DIR // (root) rejected (#135)" "$?" "1"
+c="$(mkconf hd_etc "{ \"HOME_DIR\": \"/etc/\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "HOME_DIR /etc rejected (#135)" "$?" "1"
+c="$(mkconf hd_home "{ \"HOME_DIR\": \"/home\", $POOL }")"
+parse_rc "$c" "$ROOT"
+assert_rc "bare /home HOME_DIR rejected (#135)" "$?" "1"
 # ACCESS_TOKEN character set.
 c="$(mkconf at_bad "{ \"ACCESS_TOKEN\": \"bad token\", $POOL }")"
 parse_rc "$c" "$ROOT"
@@ -408,6 +448,30 @@ ecd="$(mktemp -d "$SANDBOX/ec.XXXXXX")"
     printf 'y\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
 )
 assert_eq "first-run writes minimal pools config" "$(jq -c '.pools' "$ecd/config.json" 2>/dev/null)" '[{"url":"stack.lan:3333"}]'
+# #131: the operator hand-edits this file to add a wallet/token before the first `apply`, so it must
+# be owner-only from creation — not only after generate_xmrig_config's later chmod.
+if [ "$(uname -s)" = Darwin ]; then ec_mode="$(stat -f '%Lp' "$ecd/config.json")"; else ec_mode="$(stat -c '%a' "$ecd/config.json")"; fi
+assert_eq "bootstrap config.json is owner-only (0600) (#131)" "$ec_mode" "600"
+# #113: the optional stratum-password prompt writes pools[0].pass; EOF/Enter at the prompt skips it
+# (the run above hit EOF there, so its minimal config must stay byte-identical to pre-#113).
+assert_eq "empty pass writes NO pass key (#113)" "$(jq -c '.pools[0] | has("pass")' "$ecd/config.json" 2>/dev/null)" "false"
+ecp="$(mktemp -d "$SANDBOX/ecp.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ecp/config.json"
+    set +eu
+    printf 'y\nstack.lan:3333\nS3cret.pass\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "first-run writes the entered stratum pass (#113)" "$(jq -r '.pools[0].pass' "$ecp/config.json" 2>/dev/null)" "S3cret.pass"
+assert_eq "pass prompt keeps the URL intact (#113)" "$(jq -r '.pools[0].url' "$ecp/config.json" 2>/dev/null)" "stack.lan:3333"
+ecb="$(mktemp -d "$SANDBOX/ecb.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ecb/config.json"
+    set +eu
+    printf 'y\nstack.lan:3333\nbad pass\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "invalid stratum pass writes no config (#113)" "$([ -f "$ecb/config.json" ] && echo yes || echo no)" "no"
 for bad in '' 'stack.lan' ':3333' '[zz]:3333'; do
     ecd2="$(mktemp -d "$SANDBOX/ec2.XXXXXX")"
     (
@@ -640,6 +704,15 @@ cfg="$d/config.json"
 unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
 assert_eq "explicit pool user kept" "$(J "$cfg" '.pools[0].user')" "fancy-rig"
 
+# #115: a pinned TLS pool's fingerprint survives config generation verbatim (generate only fills user).
+echo "== config-gen: tls-fingerprint passthrough (#115) =="
+export STUB_CPU_MODEL="Intel(R) Xeon" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+SIM_OS=Linux SIM_DON=1 SIM_POOLS='[{"url":"sec:443","user":"","pass":"x","keepalive":true,"tls":true,"enabled":true,"tls-fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]'
+d="$(gen_config)"
+cfg="$d/config.json"
+unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+assert_eq "tls-fingerprint survives generation (#115)" "$(J "$cfg" '.pools[0]."tls-fingerprint"')" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 # #21/#24: fields that must survive generate_xmrig_config unmangled. parse_config-side acceptance is
 # covered above; here we prove the EMITTED config.json (what XMRig actually loads) preserves them — a jq
 # re-emit is exactly where a bracketed IPv6 host or a lone TLS flag could get dropped or reshaped.
@@ -802,6 +875,32 @@ s="$(
     grub_strip_managed "quiet splash"
 )"
 assert_eq "strip leaves a clean cmdline untouched" "$s" "quiet splash"
+
+# #134: values interpolated into the GRUB sed REPLACEMENT must have \ & | escaped, or a legal
+# pre-existing kernel param corrupts /etc/default/grub. The escaper is pure, so test it directly,
+# then prove a real (non-in-place, so BSD-sed-safe) rewrite round-trips the characters literally.
+echo "== unit: _sed_escape_replacement protects the GRUB rewrites (#134) =="
+esc="$(
+    source "$SCRIPT"
+    _sed_escape_replacement 'quiet memmap=4G&2M weird\param a|b'
+)"
+assert_eq "escapes backslash, ampersand and pipe" "$esc" 'quiet memmap=4G\&2M weird\\param a\|b'
+esc2="$(
+    source "$SCRIPT"
+    _sed_escape_replacement 'quiet splash'
+)"
+assert_eq "plain cmdline passes through unchanged" "$esc2" 'quiet splash'
+GESC="$(mktemp -d "$SANDBOX/grubesc.XXXXXX")"
+printf 'GRUB_TIMEOUT=5\nGRUB_CMDLINE_LINUX_DEFAULT="old"\n' >"$GESC/grub"
+rewritten="$(
+    source "$SCRIPT"
+    val='quiet memmap=4G&2M weird\param a|b hugepages=100'
+    sed "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$val")\"|" "$GESC/grub"
+)"
+assert_contains "rewrite keeps & literal" "$rewritten" 'memmap=4G&2M'
+assert_contains "rewrite keeps backslash literal" "$rewritten" 'weird\param'
+assert_contains "rewrite keeps | literal" "$rewritten" 'a|b'
+assert_contains "other lines untouched" "$rewritten" 'GRUB_TIMEOUT=5'
 
 # ---------------------------------------------------------------------------
 # Pinned-build verification (#18): compile_xmrig clones the pinned XMRIG_VERSION and aborts if the
@@ -1137,6 +1236,34 @@ arc_apply() {
 arc_out="$(arc_apply)"
 assert_contains "apply re-bakes the stale timer to the configured target (#95)" "$(cat "$ARC/systemd/rigforge-autotune.service")" "AUTOTUNE_TARGET=efficiency"
 assert_contains "apply reports the reconciled target (#95)" "$arc_out" "Periodic autotune: efficiency"
+
+# #99: apply is the config-change path for the sister API too — toggling `api` on/off via apply must
+# install/remove the socket units without a full setup.
+echo "== black-box: apply reconciles the sister API to config (#99) =="
+cp "$ROOT/systemd/rigforge-api.socket.template" "$ROOT/systemd/rigforge-api@.service.template" "$ARC/systemd/"
+arc_api() { # <enabled|disabled>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ARC"
+        SYSTEMD_DIR="$ARC/systemd"
+        SERVICE_NAME=xmrig
+        REAL_USER=rfop
+        AUTOTUNE_MODE=disabled
+        API_MODE="$1"
+        API_BIND=0.0.0.0
+        API_PORT=8081
+        _apply_runtime() { :; }
+        sudo() { "$@"; }
+        set +e
+        PATH="$STUBS:$PATH" apply 2>&1
+    )
+}
+arc_api enabled >/dev/null
+assert_eq "apply with api enabled installs the socket (#99)" "$([ -f "$ARC/systemd/rigforge-api.socket" ] && echo y || echo n)" "y"
+arc_api disabled >/dev/null
+assert_eq "apply with api disabled removes the socket (#99)" "$([ -f "$ARC/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
+assert_eq "apply with api disabled removes the handler unit (#99)" "$([ -f "$ARC/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
 
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
@@ -1689,7 +1816,12 @@ out="$(mac_run start)"
 assert_rc "macOS start exits 0" "$?" "0"
 assert_contains "macOS start reports a pid" "$out" "Started the miner"
 assert_eq "macOS start wrote a PID file" "$([ -f "$PIDF" ] && echo y || echo n)" "y"
-sleep 0.5 # let the backgrounded fake record its args
+# Bounded poll (the tests/e2e-real.sh pattern): wait up to ~6s for the backgrounded fake to record
+# its args instead of hoping one fixed sleep is enough on a loaded CI runner. (#135)
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if [ -s "$MC/home/worker/xmrig.args" ]; then break; fi
+    sleep 0.5
+done
 out="$(mac_run status)"
 assert_contains "macOS status shows running" "$out" "is running"
 assert_contains "macOS start used the build-dir config" "$(cat "$MC/home/worker/xmrig.args" 2>/dev/null)" "--config=$MCB/config.json"
@@ -1782,6 +1914,29 @@ log_steady="$(svc_run "$(mktemp -d "$SANDBOX/svcst.XXXXXX")" false false)"
 assert_contains "no rebuild, no reboot: service (re)started, not restarted" "$log_steady" "[systemctl] start xmrig.service"
 assert_absent "no rebuild: does not needlessly restart a running miner" "$log_steady" "restart xmrig.service"
 
+# #133: SERVICE_NAME is a documented override and every other verb honors it — install_service must
+# install/enable/start the SAME unit, not a hardcoded xmrig.service nothing else can see.
+echo "== unit: install_service honors SERVICE_NAME override (#133) =="
+SVC_OVR="$(mktemp -d "$SANDBOX/svcovr.XXXXXX")"
+mkdir -p "$SVC_OVR/etc/systemd" "$SVC_OVR/xmrig/build"
+(
+    cd "$SVC_OVR" || exit 1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT" # so envsubst reads the real systemd/xmrig.service.template
+    WORKER_ROOT="$SVC_OVR"
+    SYSTEMD_DIR="$SVC_OVR/etc/systemd"
+    SERVICE_NAME=miner
+    REBOOT_REQUIRED=false
+    XMRIG_REBUILD=true
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$SVC_OVR/calls.log" install_service >/dev/null 2>&1
+)
+assert_eq "SERVICE_NAME=miner writes miner.service (#133)" "$([ -f "$SVC_OVR/etc/systemd/miner.service" ] && echo yes || echo no)" "yes"
+assert_eq "SERVICE_NAME=miner writes NO xmrig.service (#133)" "$([ -f "$SVC_OVR/etc/systemd/xmrig.service" ] && echo yes || echo no)" "no"
+assert_contains "enables miner.service (#133)" "$(cat "$SVC_OVR/calls.log")" "[systemctl] enable miner.service"
+assert_contains "restarts miner.service (#133)" "$(cat "$SVC_OVR/calls.log")" "[systemctl] restart miner.service"
+
 # ---------------------------------------------------------------------------
 # Full end-to-end run of the REAL script with everything stubbed, executed TWICE to prove idempotency.
 # Every /etc target is redirected into the work dir, and passthrough sudo lets the writes land there.
@@ -1800,7 +1955,8 @@ e2e_setup() { # echoes the work dir
         "$W/etc/security" "$W/etc/default" "$W/home" "$W/proc" "$W/sys"
     : >"$W/etc/fstab"
     : >"$W/etc/security/limits.conf"
-    printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$W/etc/default/grub"
+    # memmap=4G&2M: a legal param whose '&' is sed-replacement-special — must survive the rewrite (#134)
+    printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash memmap=4G&2M"\n' >"$W/etc/default/grub"
     printf 'flags : fpu pdpe1gb\n' >"$W/proc/cpuinfo"
     # Use an explicit (dotted) host so this E2E doesn't depend on the .local/mDNS appending that
     # Host is used verbatim (#15 removed the .local appending); the url is host:port.
@@ -1882,6 +2038,7 @@ if [ "$HOST_OS" = Linux ]; then
     assert_absent "limits: not wildcard memlock" "$(cat "$W/etc/security/limits.conf")" "* soft memlock unlimited"
     assert_contains "grub: hugepages params written" "$(cat "$W/etc/default/grub")" "default_hugepagesz=2M"
     assert_contains "grub: preserves existing params (#19)" "$(cat "$W/etc/default/grub")" "quiet splash"
+    assert_contains "grub: sed-special & param survives the rewrite (#134)" "$(cat "$W/etc/default/grub")" 'memmap=4G&2M'
 else
     assert_eq "deploy: macOS huge-pages off" "$(J "$BUILD/config.json" '.cpu."huge-pages"')" "false"
     assert_eq "deploy: macOS http host all v6" "$(J "$BUILD/config.json" '.http.host')" "::"
@@ -1992,6 +2149,18 @@ out="$( (
     PATH="$STUBS:$PATH" doctor 2>&1
 ))"
 assert_contains "doctor: log HUGE PAGES below 100% WARN" "$out" "below 100%"
+
+# #135: doctor asserts the live config keeps the HTTP API read-only (http.restricted=true).
+echo "== unit: doctor checks http.restricted in the live config (#135) =="
+mkdir -p "$DOC/home/worker/xmrig/build"
+printf '{ "http": { "restricted": true } }\n' >"$DOC/home/worker/xmrig/build/config.json"
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: restricted=true passes (#135)" "$out" "HTTP API is read-only"
+printf '{ "http": { "restricted": false } }\n' >"$DOC/home/worker/xmrig/build/config.json"
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: restricted=false warns (#135)" "$out" "NOT read-only"
+assert_contains "doctor: restricted=false counts as an issue (#135)" "$out" "issue(s) found"
+rm -rf "$DOC/home/worker/xmrig" # leave $DOC exactly as the later doctor tests expect it
 
 # #67: doctor flags hashrate-capping HARDWARE (advisory) — single-channel/slow RAM (via dmidecode) and a
 # power/boost-capped clock (effective vs max, while mining). Fakes drive both the WARN and OK paths, and
@@ -3375,6 +3544,240 @@ out="$( (
     parse_config 2>&1
 ))"
 assert_contains "parse_config rejects the unedited template (no accidental deploy)" "$out" "not a valid hostname"
+
+# ---------------------------------------------------------------------------
+# Sister API (#99): config keys, the socket-unit install toggle, and the api-serve request handler.
+echo "== unit: sister API config keys (#99) =="
+api_mode() { parse_and_print "$1" "$ROOT" API_MODE; }
+c="$(mkconf api_def "{ $POOL }")"
+assert_eq "api omitted -> disabled" "$(api_mode "$c")" "disabled"
+assert_eq "api_port default 8081" "$(parse_and_print "$c" "$ROOT" API_PORT)" "8081"
+assert_eq "api_bind default 0.0.0.0" "$(parse_and_print "$c" "$ROOT" API_BIND)" "0.0.0.0"
+c="$(mkconf api_on "{ $POOL, \"api\": \"enabled\", \"api_port\": 9000, \"api_bind\": \"192.168.1.5\" }")"
+assert_eq "api enabled parses" "$(api_mode "$c")" "enabled"
+assert_eq "api_port override honoured" "$(parse_and_print "$c" "$ROOT" API_PORT)" "9000"
+assert_eq "api_bind override honoured" "$(parse_and_print "$c" "$ROOT" API_BIND)" "192.168.1.5"
+c="$(mkconf api_bad "{ $POOL, \"api\": \"maybe\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "invalid api value rejected (typo must not silently disable)" "$?" "1"
+c="$(mkconf api_p0 "{ $POOL, \"api_port\": 8080 }")"
+parse_rc "$c" "$ROOT"
+assert_rc "api_port 8080 collision rejected" "$?" "1"
+c="$(mkconf api_pbig "{ $POOL, \"api_port\": 70000 }")"
+parse_rc "$c" "$ROOT"
+assert_rc "api_port out of range rejected" "$?" "1"
+c="$(mkconf api_pstr "{ $POOL, \"api_port\": \"abc\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "non-numeric api_port rejected" "$?" "1"
+c="$(mkconf api_bbad "{ $POOL, \"api_bind\": \"not an ip!\" }")"
+parse_rc "$c" "$ROOT"
+assert_rc "malformed api_bind rejected" "$?" "1"
+
+echo "== black-box: install_api socket enable/disable (#99) =="
+APS="$(mktemp -d "$SANDBOX/aps.XXXXXX")"
+mkdir -p "$APS/systemd"
+cp "$ROOT/systemd/rigforge-api.socket.template" "$ROOT/systemd/rigforge-api@.service.template" "$APS/systemd/"
+run_api_install() { # <disabled|enabled>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$APS"
+        SYSTEMD_DIR="$APS/systemd"
+        REAL_USER=rfop
+        API_MODE="$1"
+        API_BIND=0.0.0.0
+        API_PORT=8081
+        set +e
+        PATH="$STUBS:$PATH" install_api 2>&1
+    )
+}
+out="$(run_api_install enabled)"
+assert_eq "api enable writes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "y"
+assert_eq "api enable writes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "y"
+assert_contains "socket binds the configured address:port" "$(cat "$APS/systemd/rigforge-api.socket")" "ListenStream=0.0.0.0:8081"
+assert_contains "socket is per-connection (Accept=yes)" "$(cat "$APS/systemd/rigforge-api.socket")" "Accept=yes"
+assert_contains "service invokes the api-serve verb" "$(cat "$APS/systemd/rigforge-api@.service")" "rigforge.sh api-serve"
+assert_contains "service is sandboxed read-only (#99 hardening)" "$(cat "$APS/systemd/rigforge-api@.service")" "ProtectSystem=strict"
+assert_contains "handlers never compete with the miner (#114 perf guard)" "$(cat "$APS/systemd/rigforge-api@.service")" "Nice=19"
+assert_contains "enable log reports token posture without any token value" "$out" "token: open"
+# #99: a port change + apply must REBIND — daemon-reload alone never rebinds a changed ListenStream.
+APS_CALLS="$APS/calls.log"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$APS"
+    SYSTEMD_DIR="$APS/systemd"
+    REAL_USER=rfop
+    API_MODE=enabled
+    API_BIND=0.0.0.0
+    API_PORT=9000
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$APS_CALLS" install_api >/dev/null 2>&1
+)
+assert_contains "port change re-renders the socket (#99)" "$(cat "$APS/systemd/rigforge-api.socket")" "ListenStream=0.0.0.0:9000"
+assert_contains "port change restarts the socket to rebind (#99)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api.socket"
+out="$(run_api_install disabled)"
+assert_eq "api disable removes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
+assert_eq "api disable removes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
+
+echo "== unit: api-serve request handling (#99) =="
+APIQ="$(mktemp -d "$SANDBOX/apiq.XXXXXX")"
+mkdir -p "$APIQ/home/worker"
+printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333"}] }\n' "$APIQ" >"$APIQ/config.json"
+api_req() { # <request (printf %b)> <config_json> -> full response, CRs stripped
+    printf '%b' "$1" | (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$2"
+        set +e
+        PATH="$STUBS:$PATH" api_serve 2>/dev/null
+    ) | tr -d '\r'
+}
+# Happy path: the stub curl answers the local xmrig probe, so the superset rule is provable.
+resp="$(api_req 'GET /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "summary responds 200" "$resp" "HTTP/1.1 200 OK"
+assert_contains "response carries Content-Length" "$resp" "Content-Length:"
+body="$(printf '%s' "$resp" | sed '1,/^$/d')"
+assert_eq "xmrig fields pass through unchanged (superset rule)" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
+assert_eq "rigforge.version = the VERSION file" "$(printf '%s' "$body" | jq -r '.rigforge.version')" "$(cat "$ROOT/VERSION")"
+assert_eq "provenance carries the full pinned commit" "$(printf '%s' "$body" | jq -r '.rigforge.xmrig_commit | length')" "40"
+assert_eq "tune state: no runs yet -> null" "$(printf '%s' "$body" | jq -r '.rigforge.tune.candidates_tried')" "null"
+# /1/summary is the same handler; unreachable xmrig still answers 200 with the marker.
+resp="$(api_req 'GET /1/summary HTTP/1.1\r\n\r\n' /dev/null 2>/dev/null || true)"
+UNREACH="$(printf 'GET /1/summary HTTP/1.1\r\n\r\n' | (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$APIQ/config.json"
+    set +e
+    API_CMD='printf %s ""' api_serve 2>/dev/null
+) | tr -d '\r')"
+assert_contains "xmrig down still answers 200" "$UNREACH" "HTTP/1.1 200 OK"
+assert_contains "xmrig down is marked, not fatal" "$UNREACH" '"xmrig_api": "unreachable"'
+# /tune with seeded state files.
+printf '{"cpu":{"rx":16}}' >"$APIQ/home/worker/tune-overrides.json"
+printf '{"target":"perf","best":{"hashrate":1200},"results":[{},{}]}' >"$APIQ/home/worker/rigforge-tune.json"
+resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+body="$(printf '%s' "$resp" | sed '1,/^$/d')"
+assert_eq "tune: applied overrides served" "$(printf '%s' "$body" | jq -r '.applied.cpu.rx')" "16"
+assert_eq "tune: last best hashrate served" "$(printf '%s' "$body" | jq -r '.last_best_hs')" "1200"
+assert_eq "tune: candidate count served" "$(printf '%s' "$body" | jq -r '.candidates_tried')" "2"
+assert_eq "tune: autotune timer visible (stub systemctl)" "$(printf '%s' "$body" | jq -r '.autotune.enabled')" "true"
+printf '{broken' >"$APIQ/home/worker/tune-overrides.json"
+resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "corrupt tune-overrides still answers 200" "$resp" "HTTP/1.1 200 OK"
+assert_eq "corrupt tune-overrides -> applied null, not a crash" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -r '.applied')" "null"
+printf '{"cpu":{"rx":16}}' >"$APIQ/home/worker/tune-overrides.json"
+# /health against the #78 firmware fixtures (memory profile off, SMT off, throttled clock).
+HRESP="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$APIQ/config.json"
+    MEMINFO="$DOC/meminfo_ok"
+    GOVERNOR_FILE="$DOC/gov_perf"
+    HUGEPAGES_1G_NR="$DOC/nr1g"
+    DMIDECODE="$DOC/dmidecode_xmpoff"
+    SMT_CONTROL="$DOC/smt_off"
+    DMI_DIR="$DOC/dmi"
+    CPUFREQ_MAX="$DOC/cpufreq_max"
+    CPU_SYSFS="$DOC/cpu_throttle"
+    set +e
+    PATH="$STUBS:$PATH" api_serve 2>/dev/null
+) | tr -d '\r')"
+hbody="$(printf '%s' "$HRESP" | sed '1,/^$/d')"
+assert_eq "health: memory profile off -> xmp false" "$(printf '%s' "$hbody" | jq -r '.xmp')" "false"
+assert_eq "health: ram channels from dmidecode" "$(printf '%s' "$hbody" | jq -r '.ram.channels')" "2"
+assert_eq "health: throttled clock flagged (service active via stub)" "$(printf '%s' "$hbody" | jq -r '.throttling')" "true"
+assert_eq "health: hugepages_total is numeric" "$(printf '%s' "$hbody" | jq -r '.hugepages_total | type')" "number"
+HRESP2="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT"
+    CONFIG_JSON="$APIQ/config.json"
+    DMIDECODE="$DOC/dmidecode_xmpon"
+    set +e
+    PATH="$STUBS:$PATH" api_serve 2>/dev/null
+) | tr -d '\r')"
+assert_eq "health: memory profile on -> xmp true" "$(printf '%s' "$HRESP2" | sed '1,/^$/d' | jq -r '.xmp')" "true"
+# Auth: with ACCESS_TOKEN set, the exact Bearer is required; the token never appears in a response.
+printf '{ "pools": [{"url": "h:3333", "pass": "passfx1"}], "ACCESS_TOKEN": "tok1" }\n' >"$APIQ/config2.json"
+resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "no header -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
+resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "wrong bearer -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
+assert_absent "401 body never echoes the token" "$resp" "tok1"
+resp="$(api_req 'GET /health HTTP/1.1\r\nauthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "right bearer (any header case) -> 200" "$resp" "HTTP/1.1 200 OK"
+resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization:Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
+assert_contains "right bearer (no space after colon) -> 200" "$resp" "HTTP/1.1 200 OK"
+# Leak lock: authed 200 responses from every RigForge endpoint must not carry the token or the
+# stratum pass — the config is read, its secrets must never be serialized back out.
+leak="$(api_req 'GET /2/summary HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")$(api_req 'GET /health HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")$(api_req 'GET /tune HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
+assert_absent "ACCESS_TOKEN never serialized into any authed response" "$leak" "tok1"
+assert_absent "pools[].pass never serialized into any authed response" "$leak" "passfx1"
+# Method / route / timeout / config guards.
+resp="$(api_req 'POST /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "non-GET -> 405 (read-only API)" "$resp" "HTTP/1.1 405 Method Not Allowed"
+resp="$(api_req 'GET /nope HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "unknown route -> 404" "$resp" "HTTP/1.1 404 Not Found"
+resp="$(api_req 'GET /health?verbose=1 HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "query string is stripped, route still matches" "$resp" "HTTP/1.1 200 OK"
+resp="$(api_req 'HEAD /health HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_contains "HEAD -> 405 (GET is the whole read-only surface)" "$resp" "HTTP/1.1 405 Method Not Allowed"
+# Spirit-of-XMRig wire shape: JSON content type, minimal headers (no server banner to fingerprint),
+# and the exact key sets of the RigForge-owned endpoints — a wire-contract lock for pithead#235.
+resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+hdrs="$(printf '%s' "$resp" | sed -n '1,/^$/p')"
+assert_contains "responses are application/json" "$hdrs" "Content-Type: application/json"
+assert_absent "no server banner in headers" "$hdrs" "Server:"
+assert_eq "exactly 3 response headers (type, length, connection)" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
+assert_eq "/tune wire contract: exact key set" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -cS 'keys')" '["applied","autotune","candidates_tried","last_best_hs","target"]'
+resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
+assert_eq "/health wire contract: exact key set" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -cS 'keys')" '["clock_pct_of_boost","firmware","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","xmp"]'
+resp="$(api_req '' "$APIQ/config.json")"
+assert_contains "empty request -> 408" "$resp" "HTTP/1.1 408 Request Timeout"
+printf '{broken' >"$APIQ/bad.json"
+resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/bad.json")"
+assert_contains "unreadable config -> 500, not a crash" "$resp" "HTTP/1.1 500 Internal Server Error"
+# Power: a static RAPL reading covers the measured branch (0 W over the window -> hs_per_watt null).
+RAPLF="$APIQ/rapl"
+mkdir -p "$RAPLF/intel-rapl:0"
+printf 'package-0' >"$RAPLF/intel-rapl:0/name"
+printf '5000000' >"$RAPLF/intel-rapl:0/energy_uj"
+printf '262143328850' >"$RAPLF/intel-rapl:0/max_energy_range_uj"
+pw="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    RAPL_DIR="$RAPLF"
+    # Deterministic clock: macOS date lacks %N, and a real 1s window is flaky. _now_s runs inside
+    # command substitutions (subshells), so the tick must live in a file, not a variable.
+    CLK="$RAPLF/clk"
+    _now_s() {
+        local t
+        t=$(cat "$CLK" 2>/dev/null || echo 100)
+        echo "$t"
+        echo $((t + 1)) >"$CLK"
+    }
+    set +e
+    _api_power_json 1000
+) | jq -c '[.watts == 0, .hs_per_watt]')"
+assert_eq "power: static RAPL energy -> 0 W, no hs-per-watt" "$pw" '[true,null]'
+pw="$( (
+    source "$SCRIPT"
+    set +e
+    _api_power_json ""
+) | jq -c '{w: .watts, hpw: .hs_per_watt}')"
+assert_eq "power: no RAPL -> nulls" "$pw" '{"w":null,"hpw":null}'
+# Dispatch: the verb is wired (Linux answers on stdin; elsewhere it refuses as socket-spawned only).
+if [ "$(uname -s)" = Linux ]; then
+    out="$(printf '' | RIGFORGE_HOME="$APIQ" PATH="$STUBS:$PATH" bash "$SCRIPT" api-serve 2>/dev/null | tr -d '\r' || true)"
+    assert_contains "black-box api-serve dispatch answers (Linux)" "$out" "408"
+else
+    out="$( (printf '' | RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-serve) 2>&1 || true)"
+    assert_contains "api-serve refuses off-Linux" "$out" "Linux-only"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
