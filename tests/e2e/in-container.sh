@@ -27,10 +27,10 @@ assert_absent() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contains [$3]
 #    are intentionally NOT hard-pinned: Ubuntu's archive rotates superseded versions out of the
 #    release pocket, so a pinned `jq=<ver>` would 404 and break the run once a new build lands.
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null && apt-get install -y -qq jq gettext-base >/dev/null || {
+apt-get update -qq >/dev/null && apt-get install -y -qq jq gettext-base python3 >/dev/null || {
     # No set -e in this harness (it counts assertions), so a dead archive/network must abort here
     # explicitly — every later assertion depends on jq + envsubst existing. (#135)
-    echo "FATAL: apt-get install jq gettext-base failed (no network / archive down) — aborting the e2e run." >&2
+    echo "FATAL: apt-get install jq gettext-base python3 failed (no network / archive down) — aborting the e2e run." >&2
     exit 1
 }
 
@@ -114,11 +114,11 @@ assert_eq "in-script: no dead cpu.hwloc key" "$(jq -r '.cpu.hwloc' "$BUILD/confi
 assert_eq "in-script: huge-pages-jit off (XMRig default)" "$(jq -r '.cpu."huge-pages-jit"' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "in-script default: randomx.mode fast" "$(jq -r '.randomx.mode' "$BUILD/config.json" 2>/dev/null)" "fast"
 assert_eq "in-script default: http.port 8080" "$(jq -r '.http.port' "$BUILD/config.json" 2>/dev/null)" "8080"
-# Sister API (#99) against the real /etc: the socket-activated units land rendered, not templated.
-assert_eq "deploy: sister API socket installed" "$([ -f /etc/systemd/system/rigforge-api.socket ] && echo y || echo n)" "y"
-assert_contains "deploy: socket binds the default port" "$(cat /etc/systemd/system/rigforge-api.socket 2>/dev/null)" "ListenStream=0.0.0.0:8081"
-assert_eq "deploy: sister API handler unit installed" "$([ -f '/etc/systemd/system/rigforge-api@.service' ] && echo y || echo n)" "y"
-assert_absent "deploy: handler unit fully rendered (no unexpanded vars)" "$(cat '/etc/systemd/system/rigforge-api@.service' 2>/dev/null)" '$SCRIPT_DIR'
+# Sister API (#99/#164) against the real /etc: the persistent server + refresh timer land rendered.
+assert_eq "deploy: sister API server unit installed" "$([ -f /etc/systemd/system/rigforge-api.service ] && echo y || echo n)" "y"
+assert_contains "deploy: server unit carries the default bind:port" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" "api-server.py 0.0.0.0 8081"
+assert_eq "deploy: refresh timer installed" "$([ -f /etc/systemd/system/rigforge-api-refresh.timer ] && echo y || echo n)" "y"
+assert_absent "deploy: server unit fully rendered (no unexpanded vars)" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" '$SCRIPT_DIR'
 assert_eq "in-script default: opencl off" "$(jq -r '.opencl' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "in-script default: cuda off" "$(jq -r '.cuda' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "no bundled template shipped" "$([ -e "$WORK/worker-config" ] && echo present || echo gone)" "gone"
@@ -230,8 +230,8 @@ rc3=$?
 assert_rc "uninstall exits 0" "$rc3" "0"
 [ "$rc3" = 0 ] || printf '%s\n' "$out3" | tail -20
 assert_eq "uninstall: service unit removed" "$([ -f /etc/systemd/system/xmrig.service ] && echo y || echo n)" "n"
-assert_eq "uninstall: sister API socket removed (#99)" "$([ -f /etc/systemd/system/rigforge-api.socket ] && echo y || echo n)" "n"
-assert_eq "uninstall: sister API handler unit removed (#99)" "$([ -f '/etc/systemd/system/rigforge-api@.service' ] && echo y || echo n)" "n"
+assert_eq "uninstall: sister API server removed (#99)" "$([ -f /etc/systemd/system/rigforge-api.service ] && echo y || echo n)" "n"
+assert_eq "uninstall: refresh timer removed (#99)" "$([ -f /etc/systemd/system/rigforge-api-refresh.timer ] && echo y || echo n)" "n"
 assert_eq "uninstall: fstab hugepages reverted" "$(grep -c 'hugetlbfs' /etc/fstab)" "0"
 assert_eq "uninstall: memlock reverted" "$(grep -c 'memlock unlimited' /etc/security/limits.conf)" "0"
 assert_eq "uninstall: msr.conf removed" "$([ -f /etc/modules-load.d/msr.conf ] && echo y || echo n)" "n"

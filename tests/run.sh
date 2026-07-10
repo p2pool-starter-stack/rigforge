@@ -149,7 +149,7 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
-    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl; do
+    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3; do
         cat >"$bin/$cmd" <<EOF
 #!/usr/bin/env bash
 echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
@@ -1240,7 +1240,7 @@ assert_contains "apply reports the reconciled target (#95)" "$arc_out" "Periodic
 # #99: apply is the config-change path for the sister API too — toggling `api` on/off via apply must
 # install/remove the socket units without a full setup.
 echo "== black-box: apply reconciles the sister API to config (#99) =="
-cp "$ROOT/systemd/rigforge-api.socket.template" "$ROOT/systemd/rigforge-api@.service.template" "$ARC/systemd/"
+cp "$ROOT/systemd/rigforge-api.service.template" "$ROOT/systemd/rigforge-api-refresh.service.template" "$ROOT/systemd/rigforge-api-refresh.timer.template" "$ARC/systemd/"
 arc_api() { # <enabled|disabled>
     (
         source "$SCRIPT"
@@ -1260,10 +1260,11 @@ arc_api() { # <enabled|disabled>
     )
 }
 arc_api enabled >/dev/null
-assert_eq "apply with api enabled installs the socket (#99)" "$([ -f "$ARC/systemd/rigforge-api.socket" ] && echo y || echo n)" "y"
+assert_eq "apply with api enabled installs the server (#99/#164)" "$([ -f "$ARC/systemd/rigforge-api.service" ] && echo y || echo n)" "y"
+assert_eq "apply with api enabled installs the refresh timer (#99/#164)" "$([ -f "$ARC/systemd/rigforge-api-refresh.timer" ] && echo y || echo n)" "y"
 arc_api disabled >/dev/null
-assert_eq "apply with api disabled removes the socket (#99)" "$([ -f "$ARC/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
-assert_eq "apply with api disabled removes the handler unit (#99)" "$([ -f "$ARC/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
+assert_eq "apply with api disabled removes the server (#99)" "$([ -f "$ARC/systemd/rigforge-api.service" ] && echo y || echo n)" "n"
+assert_eq "apply with api disabled removes the refresh timer (#99)" "$([ -f "$ARC/systemd/rigforge-api-refresh.timer" ] && echo y || echo n)" "n"
 
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
@@ -3714,11 +3715,12 @@ c="$(mkconf api_bbad "{ $POOL, \"api_bind\": \"not an ip!\" }")"
 parse_rc "$c" "$ROOT"
 assert_rc "malformed api_bind rejected" "$?" "1"
 
-echo "== black-box: install_api socket enable/disable (#99) =="
+echo "== black-box: install_api server/timer enable/disable (#99/#164) =="
 APS="$(mktemp -d "$SANDBOX/aps.XXXXXX")"
 mkdir -p "$APS/systemd"
-cp "$ROOT/systemd/rigforge-api.socket.template" "$ROOT/systemd/rigforge-api@.service.template" "$APS/systemd/"
-run_api_install() { # <disabled|enabled>
+cp "$ROOT/systemd/rigforge-api.service.template" "$ROOT/systemd/rigforge-api-refresh.service.template" "$ROOT/systemd/rigforge-api-refresh.timer.template" "$APS/systemd/"
+cp -R "$ROOT/util" "$APS/" 2>/dev/null || true
+run_api_install() { # <disabled|enabled> [port]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
@@ -3727,25 +3729,22 @@ run_api_install() { # <disabled|enabled>
         REAL_USER=rfop
         API_MODE="$1"
         API_BIND=0.0.0.0
-        API_PORT=8081
+        API_PORT="${2:-8081}"
         set +e
         PATH="$STUBS:$PATH" install_api 2>&1
     )
 }
 out="$(run_api_install enabled)"
-assert_eq "api enable writes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "y"
-assert_eq "api enable writes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "y"
-assert_contains "socket binds the configured address:port" "$(cat "$APS/systemd/rigforge-api.socket")" "ListenStream=0.0.0.0:8081"
-assert_contains "socket is per-connection (Accept=yes)" "$(cat "$APS/systemd/rigforge-api.socket")" "Accept=yes"
-assert_contains "one handler at a time (CPU-theft + DoS bound) (#80 gate finding)" "$(cat "$APS/systemd/rigforge-api.socket")" "MaxConnections=1"
-assert_contains "service invokes the api-serve verb" "$(cat "$APS/systemd/rigforge-api@.service")" "rigforge.sh api-serve"
-assert_contains "service is sandboxed read-only (#99 hardening)" "$(cat "$APS/systemd/rigforge-api@.service")" "ProtectSystem=strict"
-assert_eq "handlers yield without starving: exactly Nice=10 as a directive (#114/#161)" "$(grep -c '^Nice=10$' "$APS/systemd/rigforge-api@.service")" "1"
-assert_eq "no idle scheduling class (starved a pinned 96-core rig) (#161)" "$(grep -c '^IOSchedulingClass' "$APS/systemd/rigforge-api@.service")" "0"
-assert_eq "hard CPU ceiling for adversarial polling (#164)" "$(grep -c '^CPUQuota=40%$' "$APS/systemd/rigforge-api@.service")" "1"
-assert_eq "writable cache dir under the strict sandbox (#164)" "$(grep -c '^RuntimeDirectory=rigforge-api$' "$APS/systemd/rigforge-api@.service")" "1"
+assert_eq "api enable writes the persistent server unit" "$([ -f "$APS/systemd/rigforge-api.service" ] && echo y || echo n)" "y"
+assert_eq "api enable writes the refresh service" "$([ -f "$APS/systemd/rigforge-api-refresh.service" ] && echo y || echo n)" "y"
+assert_eq "api enable writes the refresh timer" "$([ -f "$APS/systemd/rigforge-api-refresh.timer" ] && echo y || echo n)" "y"
+assert_contains "server unit runs the stdlib server with the configured bind/port" "$(cat "$APS/systemd/rigforge-api.service")" "api-server.py 0.0.0.0 8081"
+assert_eq "server is maximally polite: exactly Nice=19 as a directive (#164)" "$(grep -c '^Nice=19$' "$APS/systemd/rigforge-api.service")" "1"
+assert_eq "server is sandboxed read-only (#99 hardening)" "$(grep -c '^ProtectSystem=strict$' "$APS/systemd/rigforge-api.service")" "1"
+assert_eq "refresh runs at idle priority off the request path (#164)" "$(grep -c '^IOSchedulingClass=idle$' "$APS/systemd/rigforge-api-refresh.service")" "1"
+assert_contains "refresh timer fires every 15s" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnUnitActiveSec=15"
 assert_contains "enable log reports token posture without any token value" "$out" "token: open"
-# #99: a port change + apply must REBIND — daemon-reload alone never rebinds a changed ListenStream.
+# Port change re-renders + restarts the server (config re-read on restart).
 APS_CALLS="$APS/calls.log"
 (
     source "$SCRIPT"
@@ -3759,193 +3758,126 @@ APS_CALLS="$APS/calls.log"
     set +e
     PATH="$STUBS:$PATH" CALL_LOG="$APS_CALLS" install_api >/dev/null 2>&1
 )
-assert_contains "port change re-renders the socket (#99)" "$(cat "$APS/systemd/rigforge-api.socket")" "ListenStream=0.0.0.0:9000"
-assert_contains "port change restarts the socket to rebind (#99)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api.socket"
+assert_contains "port change re-renders the server unit (#99)" "$(cat "$APS/systemd/rigforge-api.service")" "api-server.py 0.0.0.0 9000"
+assert_contains "port change restarts the server to re-read config (#99)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api.service"
+# Legacy v1.2.x socket pair is removed on sight (upgrade convergence).
+printf 'x' >"$APS/systemd/rigforge-api.socket"
+printf 'x' >"$APS/systemd/rigforge-api@.service"
+run_api_install enabled >/dev/null
+assert_eq "legacy per-connection socket removed on upgrade (#164)" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
+assert_eq "legacy per-connection handler removed on upgrade (#164)" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
 out="$(run_api_install disabled)"
-assert_eq "api disable removes the .socket" "$([ -f "$APS/systemd/rigforge-api.socket" ] && echo y || echo n)" "n"
-assert_eq "api disable removes the @.service" "$([ -f "$APS/systemd/rigforge-api@.service" ] && echo y || echo n)" "n"
+assert_eq "api disable removes the server unit" "$([ -f "$APS/systemd/rigforge-api.service" ] && echo y || echo n)" "n"
+assert_eq "api disable removes the refresh service" "$([ -f "$APS/systemd/rigforge-api-refresh.service" ] && echo y || echo n)" "n"
+assert_eq "api disable removes the refresh timer" "$([ -f "$APS/systemd/rigforge-api-refresh.timer" ] && echo y || echo n)" "n"
 
-echo "== unit: api-serve request handling (#99) =="
+echo "== unit: api-refresh produces the response files (#99/#164) =="
 APIQ="$(mktemp -d "$SANDBOX/apiq.XXXXXX")"
 mkdir -p "$APIQ/home/worker"
 printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333"}] }\n' "$APIQ" >"$APIQ/config.json"
-api_req() { # <request (printf %b)> <config_json> -> full response, CRs stripped
-    printf '%b' "$1" | (
-        source "$SCRIPT"
-        OS_TYPE=Linux
-        SCRIPT_DIR="$ROOT"
-        CONFIG_JSON="$2"
-        set +e
-        PATH="$STUBS:$PATH" api_serve 2>/dev/null
-    ) | tr -d '\r'
-}
-# Happy path: the stub curl answers the local xmrig probe, so the superset rule is provable.
-resp="$(api_req 'GET /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-assert_contains "summary responds 200" "$resp" "HTTP/1.1 200 OK"
-assert_contains "response carries Content-Length" "$resp" "Content-Length:"
-body="$(printf '%s' "$resp" | sed '1,/^$/d')"
-assert_eq "xmrig fields pass through unchanged (superset rule)" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
-assert_eq "rigforge.version = the VERSION file" "$(printf '%s' "$body" | jq -r '.rigforge.version')" "$(cat "$ROOT/VERSION")"
-assert_eq "provenance carries the full pinned commit" "$(printf '%s' "$body" | jq -r '.rigforge.xmrig_commit | length')" "40"
-assert_eq "tune state: no runs yet -> null" "$(printf '%s' "$body" | jq -r '.rigforge.tune.candidates_tried')" "null"
-# /1/summary is the same handler; unreachable xmrig still answers 200 with the marker.
-resp="$(api_req 'GET /1/summary HTTP/1.1\r\n\r\n' /dev/null 2>/dev/null || true)"
-UNREACH="$(printf 'GET /1/summary HTTP/1.1\r\n\r\n' | (
-    source "$SCRIPT"
-    OS_TYPE=Linux
-    SCRIPT_DIR="$ROOT"
-    CONFIG_JSON="$APIQ/config.json"
-    set +e
-    API_CMD='printf %s ""' api_serve 2>/dev/null
-) | tr -d '\r')"
-assert_contains "xmrig down still answers 200" "$UNREACH" "HTTP/1.1 200 OK"
-assert_contains "xmrig down is marked, not fatal" "$UNREACH" '"xmrig_api": "unreachable"'
-# /tune with seeded state files.
-printf '{"cpu":{"rx":16}}' >"$APIQ/home/worker/tune-overrides.json"
-printf '{"target":"perf","best":{"hashrate":1200},"results":[{},{}]}' >"$APIQ/home/worker/rigforge-tune.json"
-resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-body="$(printf '%s' "$resp" | sed '1,/^$/d')"
-assert_eq "tune: applied overrides served" "$(printf '%s' "$body" | jq -r '.applied.cpu.rx')" "16"
-assert_eq "tune: last best hashrate served" "$(printf '%s' "$body" | jq -r '.last_best_hs')" "1200"
-assert_eq "tune: candidate count served" "$(printf '%s' "$body" | jq -r '.candidates_tried')" "2"
-assert_eq "tune: autotune timer visible (stub systemctl)" "$(printf '%s' "$body" | jq -r '.autotune.enabled')" "true"
-printf '{broken' >"$APIQ/home/worker/tune-overrides.json"
-resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-assert_contains "corrupt tune-overrides still answers 200" "$resp" "HTTP/1.1 200 OK"
-assert_eq "corrupt tune-overrides -> applied null, not a crash" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -r '.applied')" "null"
-printf '{"cpu":{"rx":16}}' >"$APIQ/home/worker/tune-overrides.json"
-# /health against the #78 firmware fixtures (memory profile off, SMT off, throttled clock).
-HRESP="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
-    source "$SCRIPT"
-    OS_TYPE=Linux
-    SCRIPT_DIR="$ROOT"
-    CONFIG_JSON="$APIQ/config.json"
-    MEMINFO="$DOC/meminfo_ok"
-    GOVERNOR_FILE="$DOC/gov_perf"
-    HUGEPAGES_1G_NR="$DOC/nr1g"
-    DMIDECODE="$DOC/dmidecode_xmpoff"
-    SMT_CONTROL="$DOC/smt_off"
-    DMI_DIR="$DOC/dmi"
-    CPUFREQ_MAX="$DOC/cpufreq_max"
-    CPU_SYSFS="$DOC/cpu_throttle"
-    set +e
-    PATH="$STUBS:$PATH" api_serve 2>/dev/null
-) | tr -d '\r')"
-hbody="$(printf '%s' "$HRESP" | sed '1,/^$/d')"
-assert_eq "health: memory profile off -> xmp false" "$(printf '%s' "$hbody" | jq -r '.xmp')" "false"
-assert_eq "health: ram channels from dmidecode" "$(printf '%s' "$hbody" | jq -r '.ram.channels')" "2"
-assert_eq "health: throttled clock flagged (service active via stub)" "$(printf '%s' "$hbody" | jq -r '.throttling')" "true"
-assert_eq "health: hugepages_total is numeric" "$(printf '%s' "$hbody" | jq -r '.hugepages_total | type')" "number"
-HRESP2="$(printf 'GET /health HTTP/1.1\r\n\r\n' | (
-    source "$SCRIPT"
-    OS_TYPE=Linux
-    SCRIPT_DIR="$ROOT"
-    CONFIG_JSON="$APIQ/config.json"
-    DMIDECODE="$DOC/dmidecode_xmpon"
-    set +e
-    PATH="$STUBS:$PATH" api_serve 2>/dev/null
-) | tr -d '\r')"
-assert_eq "health: memory profile on -> xmp true" "$(printf '%s' "$HRESP2" | sed '1,/^$/d' | jq -r '.xmp')" "true"
-# Auth: with ACCESS_TOKEN set, the exact Bearer is required; the token never appears in a response.
-printf '{ "pools": [{"url": "h:3333", "pass": "passfx1"}], "ACCESS_TOKEN": "tok1" }\n' >"$APIQ/config2.json"
-resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/config2.json")"
-assert_contains "no header -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
-resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n' "$APIQ/config2.json")"
-assert_contains "wrong bearer -> 401" "$resp" "HTTP/1.1 401 Unauthorized"
-assert_absent "401 body never echoes the token" "$resp" "tok1"
-resp="$(api_req 'GET /health HTTP/1.1\r\nauthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
-assert_contains "right bearer (any header case) -> 200" "$resp" "HTTP/1.1 200 OK"
-resp="$(api_req 'GET /health HTTP/1.1\r\nAuthorization:Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
-assert_contains "right bearer (no space after colon) -> 200" "$resp" "HTTP/1.1 200 OK"
-# Leak lock: authed 200 responses from every RigForge endpoint must not carry the token or the
-# stratum pass — the config is read, its secrets must never be serialized back out.
-leak="$(api_req 'GET /2/summary HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")$(api_req 'GET /health HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")$(api_req 'GET /tune HTTP/1.1\r\nAuthorization: Bearer tok1\r\n\r\n' "$APIQ/config2.json")"
-assert_absent "ACCESS_TOKEN never serialized into any authed response" "$leak" "tok1"
-assert_absent "pools[].pass never serialized into any authed response" "$leak" "passfx1"
-# Method / route / timeout / config guards.
-resp="$(api_req 'POST /2/summary HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-assert_contains "non-GET -> 405 (read-only API)" "$resp" "HTTP/1.1 405 Method Not Allowed"
-resp="$(api_req 'GET /nope HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-assert_contains "unknown route -> 404" "$resp" "HTTP/1.1 404 Not Found"
-resp="$(api_req 'GET /health?verbose=1 HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-assert_contains "query string is stripped, route still matches" "$resp" "HTTP/1.1 200 OK"
-resp="$(api_req 'HEAD /health HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-assert_contains "HEAD -> 405 (GET is the whole read-only surface)" "$resp" "HTTP/1.1 405 Method Not Allowed"
-# Spirit-of-XMRig wire shape: JSON content type, minimal headers (no server banner to fingerprint),
-# and the exact key sets of the RigForge-owned endpoints — a wire-contract lock for pithead#235.
-resp="$(api_req 'GET /tune HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-hdrs="$(printf '%s' "$resp" | sed -n '1,/^$/p')"
-assert_contains "responses are application/json" "$hdrs" "Content-Type: application/json"
-assert_absent "no server banner in headers" "$hdrs" "Server:"
-assert_eq "exactly 3 response headers (type, length, connection)" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
-assert_eq "/tune wire contract: exact key set" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -cS 'keys')" '["applied","autotune","candidates_tried","last_best_hs","target"]'
-resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/config.json")"
-assert_eq "/health wire contract: exact key set" "$(printf '%s' "$resp" | sed '1,/^$/d' | jq -cS 'keys')" '["clock_pct_of_boost","firmware","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","xmp"]'
-resp="$(api_req '' "$APIQ/config.json")"
-assert_contains "empty request -> 408" "$resp" "HTTP/1.1 408 Request Timeout"
-printf '{broken' >"$APIQ/bad.json"
-resp="$(api_req 'GET /health HTTP/1.1\r\n\r\n' "$APIQ/bad.json")"
-assert_contains "unreadable config -> 500, not a crash" "$resp" "HTTP/1.1 500 Internal Server Error"
-# Power: a static RAPL reading covers the measured branch (0 W over the window -> hs_per_watt null).
-RAPLF="$APIQ/rapl"
-mkdir -p "$RAPLF/intel-rapl:0"
-printf 'package-0' >"$RAPLF/intel-rapl:0/name"
-printf '5000000' >"$RAPLF/intel-rapl:0/energy_uj"
-printf '262143328850' >"$RAPLF/intel-rapl:0/max_energy_range_uj"
-pw="$( (
-    source "$SCRIPT"
-    OS_TYPE=Linux
-    RAPL_DIR="$RAPLF"
-    # Deterministic clock: macOS date lacks %N, and a real 1s window is flaky. _now_s runs inside
-    # command substitutions (subshells), so the tick must live in a file, not a variable.
-    CLK="$RAPLF/clk"
-    _now_s() {
-        local t
-        t=$(cat "$CLK" 2>/dev/null || echo 100)
-        echo "$t"
-        echo $((t + 1)) >"$CLK"
-    }
-    set +e
-    _api_power_json 1000
-) | jq -c '[.watts == 0, .hs_per_watt]')"
-assert_eq "power: static RAPL energy -> 0 W, no hs-per-watt" "$pw" '[true,null]'
-pw="$( (
-    source "$SCRIPT"
-    set +e
-    _api_power_json ""
-) | jq -c '{w: .watts, hpw: .hs_per_watt}')"
-assert_eq "power: no RAPL -> nulls" "$pw" '{"w":null,"hpw":null}'
-# #164: probe cache — a fresh cache is SERVED (poison proves the hit), a disabled TTL recomputes.
-APIC="$(mktemp -d "$SANDBOX/apic.XXXXXX")"
-api_req_cached() { # <ttl>
-    printf 'GET /health HTTP/1.1\r\n\r\n' | (
+run_refresh() { # [env pairs...]
+    (
         source "$SCRIPT"
         OS_TYPE=Linux
         SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$APIQ/config.json"
-        RIGFORGE_API_CACHE="$APIC"
-        RIGFORGE_API_CACHE_TTL="$1"
+        RIGFORGE_API_DATA="$APIQ/data"
+        eval "${1:-true}"
         set +e
-        PATH="$STUBS:$PATH" api_serve 2>/dev/null
-    ) | tr -d '\r'
+        PATH="$STUBS:$PATH" api_refresh 2>/dev/null
+    )
 }
-resp="$(api_req_cached 5)"
-assert_eq "cache: first request stores the health probe (#164)" "$([ -f "$APIC/health.json" ] && echo y || echo n)" "y"
-printf '{"service_active":"POISON"}' >"$APIC/health.json"
-resp="$(api_req_cached 5)"
-assert_contains "cache: fresh cache served without re-probing (#164)" "$resp" "POISON"
-resp="$(api_req_cached 0)"
-assert_absent "cache: TTL=0 bypasses and recomputes (#164)" "$resp" "POISON"
-assert_contains "cache: recomputed body is the real probe set (#164)" "$resp" "service_active"
-
-# Dispatch: the verb is wired (Linux answers on stdin; elsewhere it refuses as socket-spawned only).
+run_refresh # stub curl answers the xmrig probe
+assert_eq "refresh writes all three response files" "$(ls "$APIQ/data" | sort | tr '\n' ' ')" "health.json summary.json tune.json "
+assert_eq "summary: xmrig fields pass through unchanged (superset rule)" "$(jq -r '.hashrate.total[0]' "$APIQ/data/summary.json")" "1234.5"
+assert_eq "summary: rigforge.version = the VERSION file" "$(jq -r '.rigforge.version' "$APIQ/data/summary.json")" "$(cat "$ROOT/VERSION")"
+assert_eq "summary: provenance carries the full pinned commit" "$(jq -r '.rigforge.xmrig_commit | length' "$APIQ/data/summary.json")" "40"
+assert_eq "/health wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/health.json")" '["clock_pct_of_boost","firmware","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","xmp"]'
+assert_eq "/tune wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/tune.json")" '["applied","autotune","candidates_tried","last_best_hs","target"]'
+run_refresh 'API_CMD="printf %s \"\""'
+assert_eq "xmrig down: summary still produced with the marker" "$(jq -r '.rigforge.xmrig_api' "$APIQ/data/summary.json")" "unreachable"
+printf '{broken' >"$APIQ/home/worker/tune-overrides.json"
+run_refresh
+assert_eq "corrupt tune-overrides -> applied null, not a crash" "$(jq -r '.applied' "$APIQ/data/tune.json")" "null"
+rm -f "$APIQ/home/worker/tune-overrides.json"
+# The dispatch entry is wired (any OS: rc + message prove the verb was reached).
+out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
-    out="$(printf '' | RIGFORGE_HOME="$APIQ" PATH="$STUBS:$PATH" bash "$SCRIPT" api-serve 2>/dev/null | tr -d '\r' || true)"
-    assert_contains "black-box api-serve dispatch answers (Linux)" "$out" "408"
+    assert_contains "black-box api-refresh dispatch runs (Linux)" "$out" ""
 else
-    out="$( (printf '' | RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-serve) 2>&1 || true)"
-    assert_contains "api-serve refuses off-Linux" "$out" "Linux-only"
+    assert_contains "api-refresh refuses off-Linux" "$out" "Linux-only"
 fi
+
+echo "== black-box: the persistent api server (#164, the xmrig model) =="
+# python3 is the server's runtime (stock on Ubuntu runners, macOS dev boxes, and the container
+# e2e). The kcov coverage container is deliberately apt-free and lacks it — skip LOUDLY there;
+# the suite still enforces this block in CI's Test suite, the macOS job, and locally, and
+# api-server.py is python (outside kcov's bash coverage) so no coverage is lost by skipping.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "  SKIP: python3 not present (kcov container) — the api-server wire suite runs in the other CI jobs"
+    APISRV_SKIP=1
+else
+    APISRV_SKIP=0
+fi
+if [ "$APISRV_SKIP" = 0 ]; then
+    python3 -m py_compile "$ROOT/util/api-server.py" && ok "api-server.py compiles" || bad "api-server.py does not compile" ""
+    APISRV="$(mktemp -d "$SANDBOX/apisrv.XXXXXX")"
+    printf '%s' '{"hashrate":{"total":[1234.5]},"rigforge":{"version":"t"}}' >"$APISRV/summary.json"
+    printf '%s' '{"service_active":true}' >"$APISRV/health.json"
+    printf '%s' '{"applied":null}' >"$APISRV/tune.json"
+    STOK="tok-srv1"
+    printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "%s" }\n' "$STOK" >"$APISRV/config.json"
+    APIPORT=$((20000 + RANDOM % 20000))
+    python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" &
+    APISRV_PID=$!
+    srv_up=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$APIPORT/health" 2>/dev/null; then
+            srv_up=1
+            break
+        fi
+        sleep 0.3
+    done
+    assert_eq "server comes up" "$srv_up" "1"
+    hdrs="$(curl -isS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/tune" 2>/dev/null | tr -d '\r' | sed -n '1,/^$/p')"
+    assert_contains "server: 200 with the exact status line" "$hdrs" "HTTP/1.1 200 OK"
+    assert_contains "server: application/json" "$hdrs" "Content-Type: application/json"
+    assert_absent "server: no server banner to fingerprint" "$hdrs" "Server:"
+    assert_absent "server: no date banner either" "$hdrs" "Date:"
+    assert_eq "server: exactly 3 response headers" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
+    body="$(curl -fsS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
+    assert_eq "server: serves the produced summary verbatim" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$APIPORT/2/summary")"
+    assert_eq "server: unauthed -> 401" "$code" "401"
+    resp="$(curl -sS --max-time 5 "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
+    assert_absent "server: 401 body never echoes the token" "$resp" "$STOK"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer wrong" "http://127.0.0.1:$APIPORT/health")"
+    assert_eq "server: wrong bearer -> 401" "$code" "401"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization:Bearer $STOK" "http://127.0.0.1:$APIPORT/health")"
+    assert_eq "server: bearer without a space after the colon -> 200" "$code" "200"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/health?verbose=1")"
+    assert_eq "server: query string stripped, route matches" "$code" "200"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/nope")"
+    assert_eq "server: unknown route -> 404" "$code" "404"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X PUT -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/1/config")"
+    assert_eq "server: non-GET -> 405 (read-only)" "$code" "405"
+    rm -f "$APISRV/health.json"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/health")"
+    assert_eq "server: missing state file -> 503 warming up" "$code" "503"
+    kill "$APISRV_PID" 2>/dev/null || true
+    # Fail-closed: a config that exists but cannot be parsed must refuse to start (a dropped token
+    # would silently open the API).
+    printf '{broken' >"$APISRV/config.json"
+    python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" 2>/dev/null &
+    BROKEN_PID=$!
+    sleep 1
+    if kill -0 "$BROKEN_PID" 2>/dev/null; then
+        bad "server started despite an unreadable config (token posture unknown)" ""
+        kill "$BROKEN_PID" 2>/dev/null || true
+    else
+        ok "server refuses to start on an unreadable config (fail closed)"
+    fi
+fi # APISRV_SKIP
 
 # ---------------------------------------------------------------------------
 echo ""

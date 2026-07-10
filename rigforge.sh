@@ -500,7 +500,7 @@ install_dependencies() {
         local check_cmd=""
 
         if command -v apt-get &>/dev/null; then
-            dependencies="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base"
+            dependencies="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3"
             if [ "$OS_TYPE" == "Linux" ]; then
                 # msr-tools (rdmsr): lets `doctor` verify the prefetcher MSR mod actually applied (#66).
                 dependencies="$dependencies linux-tools-common msr-tools"
@@ -864,26 +864,35 @@ install_autotune() {
 # Toggle shape mirrors install_autotune above.
 install_api() {
     [ "$OS_TYPE" == "Linux" ] || return 0
-    local sock="$SYSTEMD_DIR/rigforge-api.socket" svc="$SYSTEMD_DIR/rigforge-api@.service"
+    local svc="$SYSTEMD_DIR/rigforge-api.service" rsvc="$SYSTEMD_DIR/rigforge-api-refresh.service" rtmr="$SYSTEMD_DIR/rigforge-api-refresh.timer"
+    # v1.2.x shipped a per-connection socket pair (Accept=yes) — remove it on sight so upgrades converge.
+    if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ]; then
+        sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service"
+        sudo systemctl daemon-reload 2>/dev/null || true
+    fi
     if [ "${API_MODE:-disabled}" = "disabled" ]; then
-        if [ -f "$sock" ]; then
-            sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
-            sudo rm -f "$sock" "$svc"
+        if [ -f "$svc" ] || [ -f "$rtmr" ]; then
+            sudo systemctl disable --now rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
+            sudo rm -f "$svc" "$rsvc" "$rtmr"
             sudo systemctl daemon-reload 2>/dev/null || true
             log "Sister API disabled."
         fi
         return 0
     fi
+    command -v python3 >/dev/null 2>&1 || error "The sister API server needs python3 (stock on Ubuntu 24.04). Install it or set \"api\": \"disabled\"."
     # Never echo the token itself — only whether one is required.
-    log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open))..."
-    API_BIND="$API_BIND" API_PORT="$API_PORT" envsubst '$API_BIND $API_PORT' <"$SCRIPT_DIR/systemd/rigforge-api.socket.template" | sudo tee "$sock" >/dev/null
-    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api@.service.template" | sudo tee "$svc" >/dev/null
+    log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open); state refreshes every 15s)..."
+    API_BIND="$API_BIND" API_PORT="$API_PORT" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$API_BIND $API_PORT $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null
+    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null
+    sudo tee "$rtmr" <"$SCRIPT_DIR/systemd/rigforge-api-refresh.timer.template" >/dev/null
     sudo systemctl daemon-reload
-    sudo systemctl enable --now rigforge-api.socket 2>/dev/null || true
-    # enable --now is a no-op on an already-running socket, and daemon-reload alone never rebinds a
-    # changed ListenStream — an api_port/api_bind edit + `apply` would keep listening on the OLD
-    # address until reboot. Restart rebinds (and is a start when the socket was stopped).
-    sudo systemctl restart rigforge-api.socket 2>/dev/null || true
+    sudo systemctl enable --now rigforge-api-refresh.timer 2>/dev/null || true
+    sudo systemctl enable rigforge-api.service 2>/dev/null || true
+    # restart, not just enable --now: a bind/port/token change must be re-read (restart also starts).
+    sudo systemctl restart rigforge-api.service 2>/dev/null || true
+    # Prime the state files so the first poll isn't a 503 for a whole timer period.
+    sudo systemctl start rigforge-api-refresh.service 2>/dev/null || true
 }
 
 tune_kernel() {
@@ -1206,9 +1215,10 @@ uninstall() {
     worker_root=$(_worker_root_from_config)
 
     # 1. systemd service (+ the optional autotune timer, #46)
-    if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ]; then
-        sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
-        sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service"
+    if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ] || [ -f "$SYSTEMD_DIR/rigforge-api.service" ]; then
+        sudo systemctl disable --now rigforge-api.socket rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service" \
+            "$SYSTEMD_DIR/rigforge-api.service" "$SYSTEMD_DIR/rigforge-api-refresh.service" "$SYSTEMD_DIR/rigforge-api-refresh.timer"
     fi
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
@@ -3037,104 +3047,32 @@ _health_json() {
     jq -n --argjson sa "$sa" --arg hpt "${hp_total:-}" --arg hp1g "${hp1g:-}" --arg gov "$gov" --arg msr "${msr_st:-none}" --arg pop "${pop:-0}" --arg nch "${nch:-0}" --arg spd "${spd:-0}" --arg rated "${rated:-0}" --argjson xmp "$xmp" --arg smt "$smt" --arg bv "$bv" --arg bn "$bn" --arg pct "${pct:-}" --argjson thr "$thr" '{service_active: $sa, hugepages_total: (if $hpt == "" then null else ($hpt | tonumber) end), hugepages_1g: (if $hp1g == "" then null else ($hp1g | tonumber) end), governor: (if $gov == "" then null else $gov end), msr: $msr, ram: {modules: ($pop | tonumber), channels: ($nch | tonumber), mts: ($spd | tonumber), rated_mts: ($rated | tonumber)}, xmp: $xmp, smt: (if $smt == "" then null else $smt end), firmware: {vendor: (if $bv == "" then null else $bv end), board: (if $bn == "" then null else $bn end)}, clock_pct_of_boost: (if $pct == "" then null else ($pct | tonumber) end), throttling: $thr}'
 }
 
-# Serve a fresh-enough cached copy of an expensive JSON producer, or recompute and store it
-# atomically. The probe pass (dmidecode, per-core sysfs sweeps, ~15 jq spawns) is the whole cost of
-# a request — under continuous polling that shaved 4.5% hashrate on a 16-thread rig and cost ~10s
-# latency on a loaded 96-core one (#164). Firmware/tune state changes on reboots and tune runs, not
-# between dashboard polls, so a short TTL is honest. The unit's RuntimeDirectory provides the
-# writable spot under ProtectSystem=strict; when it's absent (tests, manual runs) we compute fresh
-# and skip the store. TTL override: RIGFORGE_API_CACHE_TTL (seconds; 0 disables caching).
-_api_cached() { # <name> <producer-fn> -> JSON on stdout
-    local name="$1" fn="$2" dir="${RIGFORGE_API_CACHE:-/run/rigforge-api}" ttl="${RIGFORGE_API_CACHE_TTL:-5}" f now mt out
-    f="$dir/$name.json"
-    if [ -f "$f" ] && [ "$ttl" -gt 0 ] 2>/dev/null; then
-        now=$(date +%s)
-        mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
-        if [ $((now - mt)) -lt "$ttl" ]; then
-            cat "$f"
-            return 0
-        fi
-    fi
-    out=$("$fn")
-    if [ -d "$dir" ]; then
-        printf '%s' "$out" >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" 2>/dev/null || true
-    fi
-    printf '%s' "$out"
-}
-
-# Provenance + tune + power + health, namespaced under one `rigforge` key. Health and tune ride the
-# cache (the expensive probes); power stays fresh — its hs-per-watt is coupled to the live hashrate.
+# Provenance + tune + power + health, namespaced under one `rigforge` key. Runs in the refresh
+# timer, never on a request path, so it can afford the full probe pass every time.
 _api_rigforge_block() { # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_cached tune _api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_api_cached health _health_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health}'
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health}'
 }
 
-# The only place a response is written. Content-Length in BYTES (wc -c), not ${#body} — bodies can
-# carry multibyte DMI strings.
-_http_respond() { # <code> <reason> <body>
-    local body="$3" len
-    len=$(printf '%s' "$body" | wc -c | tr -d ' ')
-    printf 'HTTP/1.1 %s %s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$1" "$2" "$len" "$body"
-}
-
-# One request in on stdin, one response out on stdout — spawned per connection by the
-# rigforge-api.socket unit (Accept=yes). Read-only by construction: GET only, fixed routes, nothing
-# from the request is ever executed or logged (the auth header is compared, never echoed). Always
-# returns 0 — a non-zero exit would mark the per-connection unit failed and spam the journal for
-# what is just a bad request.
-api_serve() {
-    [ "$OS_TYPE" = Linux ] || error "api-serve is spawned by the rigforge-api systemd socket and is Linux-only."
-    # parse_config error()s — i.e. EXITS — on a bad config, which `||` cannot catch in this shell.
-    # Probe it in a subshell first so a broken config yields a 500 response instead of a dead
-    # connection, then load it for real (now guaranteed not to exit).
-    (parse_config >/dev/null 2>&1) || {
-        _http_respond 500 "Internal Server Error" '{"error":"config unreadable"}'
-        return 0
-    }
-    parse_config >/dev/null 2>&1
-    local reqline="" method="" path="" _rest="" hline="" auth=""
-    IFS= read -t 5 -r reqline || {
-        _http_respond 408 "Request Timeout" '{"error":"timeout"}'
-        return 0
-    }
-    reqline=${reqline%$'\r'}
-    read -r method path _rest <<<"$reqline" || true
-    while IFS= read -t 5 -r hline; do
-        hline=${hline%$'\r'}
-        if [ -z "$hline" ]; then break; fi
-        case "$hline" in
-        [Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:*)
-            # HTTP allows optional whitespace after the colon — strip the name, then leading spaces/tabs.
-            auth="${hline#*:}"
-            while [ "${auth# }" != "$auth" ] || [ "${auth#	}" != "$auth" ]; do auth="${auth# }" auth="${auth#	}"; done
-            ;;
-        esac
-    done
-    if [ "$method" != GET ]; then
-        _http_respond 405 "Method Not Allowed" '{"error":"read-only API"}'
-        return 0
-    fi
-    if [ -n "${ACCESS_TOKEN:-}" ] && [ "$auth" != "Bearer $ACCESS_TOKEN" ]; then
-        _http_respond 401 "Unauthorized" '{"error":"unauthorized"}'
-        return 0
-    fi
-    path=${path%%\?*}
-    local sum="" hr="" rf="" body=""
-    case "$path" in
-    /1/summary | /2/summary)
-        sum=$(_xmrig_summary_json || true)
-        printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
-        hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
-        rf=$(_api_rigforge_block "$hr")
-        # Superset rule: every XMRig field passes through unchanged, plus one namespaced key. When
-        # the miner is down the RigForge data still serves — that is when health matters most.
-        if [ -n "$sum" ]; then body=$(jq -n --argjson x "$sum" --argjson r "$rf" '$x + {rigforge: $r}'); else body=$(jq -n --argjson r "$rf" '{rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
-        _http_respond 200 OK "$body"
-        ;;
-    /health) _http_respond 200 OK "$(_api_cached health _health_json)" ;;
-    /tune) _http_respond 200 OK "$(_api_cached tune _api_tune_json)" ;;
-    *) _http_respond 404 "Not Found" '{"error":"not found"}' ;;
-    esac
-    return 0
+# Produce the sister API's response bodies: compute once, write atomically (tmp + rename, the
+# node_exporter textfile pattern), and let the persistent server ship bytes. Driven by
+# rigforge-api-refresh.timer every 15s at idle priority — the REQUEST path never runs a probe,
+# which is how xmrig's own API costs nothing (#164; four gate iterations proved every
+# per-request-process design shaves hashrate one way or another).
+api_refresh() {
+    [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
+    parse_config >/dev/null
+    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body
+    mkdir -p "$dir"
+    sum=$(_xmrig_summary_json || true)
+    printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
+    hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
+    rf=$(_api_rigforge_block "$hr")
+    # Superset rule: every XMRig field passes through unchanged, plus one namespaced key. When the
+    # miner is down the RigForge data still serves — that is when health matters most.
+    if [ -n "$sum" ]; then body=$(jq -n --argjson x "$sum" --argjson r "$rf" '$x + {rigforge: $r}'); else body=$(jq -n --argjson r "$rf" '{rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
+    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json"
+    printf '%s' "$rf" | jq -c '.health' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
+    printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
 }
 
 # --- Doctor: one-stop health check ---
@@ -3622,8 +3560,8 @@ Backup:
   restore    restore config.json + tuning from a backup archive: restore [-y] <archive>
 
 Info:
-  api-serve  (internal) answer one sister-API request on stdin/stdout — spawned per connection
-             by the rigforge-api systemd socket ("api": "enabled" in config.json)
+  api-refresh (internal) recompute the sister API's response files — driven every 15s by the
+             rigforge-api-refresh systemd timer ("api": "enabled" in config.json)
   version    print the RigForge version  (-v, --version)
   help       show this help              (-h, --help)
 
@@ -3646,16 +3584,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         bios "$@"
         ;;
-    api-serve)
-        api_serve
-        # Admission control: with the serialized socket (MaxConnections=1), holding the slot one
-        # extra second bounds the ACCEPT RATE to <1/s no matter how hard anything polls. The v1.3
-        # gate proved the residual hashrate shave is L3-cache pollution from per-request process
-        # churn — proportional to request RATE, immune to Nice/CPUQuota — so the fix is pacing, not
-        # priorities. The response is already on the wire (curl completes at Content-Length), so a
-        # real dashboard polling every 5-15s never notices. Sleep costs no CPU and no cache. (#164)
-        sleep 1
-        ;;
+    api-refresh) api_refresh ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;
@@ -3675,6 +3604,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-serve, version, help." ;;
+    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, version, help." ;;
     esac
 fi
