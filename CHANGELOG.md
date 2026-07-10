@@ -23,21 +23,19 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
-- **Sister API polling can no longer shave hashrate.** The release gate caught a 3.1% dip under
-  worst-case polling on a 16-thread rig (four concurrent handlers). The socket now admits ONE
-  handler at a time (`MaxConnections=1`) — concurrency was the CPU-theft multiplier, and the real
-  consumer is a single dashboard poller, so queueing costs nothing. The `api-impact` gate phase
-  now also bounds `/health` latency under full load (`E2E_API_LATENCY_S`, default 15s), closing the
-  responsiveness half of the perf contract. Serialization alone wasn't enough under *continuous*
-  hammering (the same work just queued — 4.5% measured), so the expensive probe blocks are now
-  cached with a 5s TTL in the unit's `RuntimeDirectory` (#164 — also cuts loaded 96-core latency
-  from ~10s to ~1s) and the handler cgroup carries a `CPUQuota=40%` hard ceiling: at most 40% of
-  one core, no matter how hard anything polls. The final layer is admission control: the residual
-  shave proved to be L3-cache pollution from per-request process churn (rate-proportional, immune
-  to priorities and quotas — most visible on the 7800X3D's V-cache), so the serialized handler
-  holds its socket slot one extra second after responding, bounding the accept rate itself to
-  under one request per second. A dashboard polling every few seconds never notices; a flood
-  cannot exceed it.
+- **Sister API re-architected so polling cannot shave hashrate (#164).** The release gate caught
+  the v1.2.x per-connection design (systemd `Accept=yes` — the inetd model) costing 3-5% hashrate
+  under worst-case polling on a 16-thread rig: every request paid a full process lifecycle (unit +
+  cgroup + a 3,600-line bash parse + ~15 jq spawns), and four fix iterations (priorities, quotas,
+  caching, pacing) proved no scheduler knob fixes a per-request-process architecture. It now works
+  the way XMRig's own API does: a systemd timer runs the probe pass every 15s at idle priority and
+  writes the response bodies atomically (the node_exporter textfile-collector pattern), and one
+  tiny persistent server (python3 stdlib, ~80 lines, sandboxed, fail-closed on an unreadable
+  config) ships those bytes — a request costs microseconds, on any rig, at any polling rate.
+  Responses are at most ~15s stale, within the resolution of XMRig's own 10s hashrate window. The
+  wire contract is unchanged (same routes, token rule, headers, key sets — the contract tests
+  didn't move); upgrades remove the old socket units automatically. The `api-impact` gate phase
+  now also bounds `/health` latency under full mining load (`E2E_API_LATENCY_S`).
 
 ## [1.2.1] - 2026-07-10
 

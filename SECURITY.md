@@ -31,10 +31,12 @@ per-rig stats over the LAN. Know exactly what it is:
 
 The optional sister API (`:8081`, `"api": "enabled"` — **off by default**) follows the same
 posture: read-only by construction (GET only, fixed routes, nothing from a request is executed or
-logged), gated by the same `ACCESS_TOKEN`, and socket-activated with a sandboxed per-request
-handler (`ProtectSystem=strict`, `NoNewPrivileges`, idle CPU priority so it can never compete with
-the miner). It additionally serves RigForge's tune/health/power data — still stats, never a
-control surface.
+logged), gated by the same `ACCESS_TOKEN`, and served by a single persistent python3-stdlib
+process that only ships pre-computed files (`ProtectSystem=strict`, `NoNewPrivileges`, lowest CPU
+priority — it can never compete with the miner, and a config it cannot parse is fatal at startup
+rather than silently dropping the token). The probe pass that produces those files runs from a
+separate idle-priority timer. It additionally serves RigForge's tune/health/power data — still
+stats, never a control surface.
 
 Not running Pithead? Nothing else needs the port; `tune` and `doctor` read
 the API over `127.0.0.1`. So if you mine solo or to a public pool, you can firewall

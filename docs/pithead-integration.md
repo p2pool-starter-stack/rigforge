@@ -89,8 +89,9 @@ paths, the same `Bearer`/`401` semantics, JSON-only bodies, and minimal headers.
 `network` phase enforces the boundary on the wire: the miner's only TCP peers are the configured
 pool, `:8081` exists exactly while enabled, and no response byte ever contains `ACCESS_TOKEN` or a
 pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
-`api_port`/`api_bind`; it is socket-activated (no resident process) and its handler runs at idle
-CPU priority so polling cannot shave hashrate.
+`api_port`/`api_bind`. Architecture mirrors XMRig's own API: a tiny persistent server ships
+pre-computed state (a request costs microseconds — polling cannot shave hashrate), refreshed every
+15s by an idle-priority timer, so responses are at most ~15s stale.
 
 ### Stratum over TLS (optional)
 

@@ -438,8 +438,11 @@ second read-only HTTP endpoint (default `:8081`, keys `api_port`/`api_bind`) wit
 `:8080` XMRig API has **plus** the data only RigForge knows: applied tune knobs and the last tune
 run (`/tune`), hashrate-per-watt from RAPL, and the doctor probes — HugePages, MSR state, governor,
 RAM channels/speeds, memory-profile and SMT state, throttling — as JSON (`/health`, or nested under
-`rigforge` in `/1/summary` and `/2/summary`). It is socket-activated: systemd owns the listener and
-spawns one short-lived handler per request, so an idle rig runs no extra process. The same
+`rigforge` in `/1/summary` and `/2/summary`). It follows XMRig's own architecture: one tiny
+persistent server (python3 stdlib, ~10 MB idle) ships pre-computed bytes, so a request costs
+microseconds and cannot touch mining performance; a systemd timer recomputes the state every 15
+seconds at idle priority, off the request path — responses are at most ~15s stale, within the
+resolution of XMRig's own 10s hashrate window. The same
 `ACCESS_TOKEN` posture applies (open when unset, Bearer required when set), it is read-only by
 construction (GET only), and when XMRig is down the RigForge data still serves with an
 `"xmrig_api": "unreachable"` marker — which is exactly when the health data matters. Linux-only;
