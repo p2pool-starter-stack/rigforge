@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-10
+
 ### Security
 
 - **Sister API hardening (2026-07-10 audit).** The one network-facing process no longer runs as
