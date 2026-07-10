@@ -1689,6 +1689,23 @@ hr_auth="$( (
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_contains "Bearer <token> sent when ACCESS_TOKEN is set" "$(cat "$clog")" "Authorization: Bearer miner-0"
 
+# #145: `completion` prints a static tab-completion script. Static means drift is the one real risk,
+# so this diffs the script's verb list against the dispatch case itself — adding a verb without
+# updating _rigforge_verbs fails here. Hyphenated internal verbs (api-refresh, msr-apply) and the
+# -v/-h flag spellings are deliberately excluded by the ^[a-z]+$ filter.
+echo "== black-box: completion script + verb-list drift guard (#145) =="
+comp_out="$(bash "$SCRIPT" completion bash)"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z]+$' | sort | tr '\n' ' ')"
+completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
+assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
+assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
+assert_contains "completion zsh: bashcompinit shim first (#145)" "$(bash "$SCRIPT" completion zsh | head -1)" "bashcompinit"
+printf '%s\n' "$comp_out" >"$SANDBOX/rigforge-completion.bash"
+bash -c "source '$SANDBOX/rigforge-completion.bash' && type _rigforge >/dev/null" && ok "completion script sources cleanly (#145)" || bad "completion script failed to source (#145)"
+comp_rc=0
+bash "$SCRIPT" completion >/dev/null 2>&1 || comp_rc=$?
+assert_rc "completion without a shell errors with usage (#145)" "$comp_rc" "1"
+
 # #143: `status` prepends a one-glance live summary from ONE /2/summary fetch — facts, no ✓/! markers,
 # never sudo. Unreachable API (miner stopped / http off) degrades to a single explanatory line and the
 # untouched platform block; a bad config can't crash it (parse_config runs in a subshell).

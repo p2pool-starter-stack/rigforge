@@ -9,6 +9,10 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **Shell completion (#145).** `completion bash|zsh` prints a static, zero-dependency tab-completion
+  script (nothing auto-installs; `source <(rigforge completion bash)` opts in). Verbs and per-verb
+  flags complete; a suite drift-guard diffs the script's verb list against the dispatch case, so a
+  new verb can't ship without completion. zsh rides bash's script via bashcompinit — one list.
 - **Live status summary (#143).** `status` now opens with a one-glance block from a single
   worker-API fetch — hashrate, pool, uptime (`1d 2h 3m`), accepted/rejected shares, huge pages —
   then the unchanged platform detail. Facts only (no ✓/! judgment — that's doctor's), never sudo,
