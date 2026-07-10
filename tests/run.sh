@@ -2156,11 +2156,15 @@ EOF
     _autotune_apply_notice() { :; }
     sudo() { "$@"; }
     set +e
-    PATH="$STUBS:$PATH" apply >/dev/null 2>&1
+    PATH="$STUBS:$PATH" CALL_LOG="$APR/calls.log" apply >/dev/null 2>&1
 )
 apr_unit="$(cat "$APR/sysd/xmrig.service")"
 assert_contains "apply: unit re-rendered to the configured user (#140)" "$apr_unit" "User=rf-appuser"
 assert_contains "apply: re-rendered unit carries the msr-apply pre-step (#140)" "$apr_unit" "rigforge.sh msr-apply"
+# Regression (caught live on miner-0, v1.4.0 gate): apply is the documented path for TOGGLING
+# miner_user, so it must also CREATE the user — a unit saying User=<absent user> crash-loops with
+# status=217/USER. The real `id` reports rf-appuser absent, so apply must call useradd.
+assert_contains "apply: absent miner user is created, not just rendered (#140)" "$(cat "$APR/calls.log" 2>/dev/null)" "[useradd] --system --no-create-home --shell /usr/sbin/nologin rf-appuser"
 
 # #133: SERVICE_NAME is a documented override and every other verb honors it — install_service must
 # install/enable/start the SAME unit, not a hardcoded xmrig.service nothing else can see.

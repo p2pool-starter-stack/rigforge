@@ -9,6 +9,13 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [1.4.0] - 2026-07-10
 
+### Fixed
+
+- **`apply` creates the miner user (#140).** Toggling `miner_user` via `apply` (its documented
+  config-change path) rendered `User=` into the unit but only `setup` created the user, so the
+  service crash-looped with `status=217/USER`. Caught live on miner-0 during the release gate;
+  `apply` now runs the same guarded `useradd` as `setup`.
+
 ### Added
 
 - **Signed releases (#137).** The release workflow signs `SHA256SUMS` with minisign
