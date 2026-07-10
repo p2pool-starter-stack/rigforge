@@ -271,10 +271,16 @@ phase_api_impact() {
 
 phase_network() {
     phase "network — nothing listens or leaks beyond what the config defines"
-    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep
+    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0
     # Outbound: the miner's ONLY established TCP peers are the configured pool. Anything else would
-    # mean traffic the operator never asked for.
+    # mean traffic the operator never asked for. The previous phase's cleanup `apply` restarts the
+    # miner, so give the stratum connection up to 45s to re-establish before judging.
     remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
+    while [ -z "$remotes" ] && [ "$waited" -lt 45 ]; do
+        sleep 5
+        waited=$((waited + 5))
+        remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
+    done
     if [ -n "$remotes" ]; then
         for r in $remotes; do
             case "$r" in
