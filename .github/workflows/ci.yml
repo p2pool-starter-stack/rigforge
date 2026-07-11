@@ -4,6 +4,7 @@ on:
   push:
     branches: [main, develop] # develop is the integration branch; main is the release branch
   pull_request:
+  workflow_dispatch: # dispatched onto bot branches (xmrig-bump #225) whose token-created PRs can't self-trigger
 
 # Least privilege: every job here only reads the repo to lint/test/build — nothing publishes or
 # writes. Set the floor once at the top so all jobs inherit a read-only GITHUB_TOKEN (zizmor:

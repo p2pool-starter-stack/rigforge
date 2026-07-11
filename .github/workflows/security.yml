@@ -13,6 +13,7 @@ on:
   push:
     branches: [main, develop] # develop is the integration branch; main is the release branch
   pull_request:
+  workflow_dispatch: # dispatched onto bot branches (xmrig-bump #225) whose token-created PRs can't self-trigger
   # Re-audit main on a schedule so a newly-published advisory against an action we pin trips the gate
   # even during quiet periods with no pushes — the online zizmor audit is time-varying by design.
   schedule:

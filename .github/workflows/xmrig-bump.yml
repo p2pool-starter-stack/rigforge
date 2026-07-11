@@ -1,0 +1,117 @@
+name: XMRig pin bump
+
+# Self-healing pin hygiene (#225): watch upstream XMRig releases and open a reviewable,
+# BUILD-VERIFIED PR when the pin goes stale. Same supply-chain posture as the rest of the repo
+# (#18, #148): the bot proposes, CI gates, a human clicks merge — nothing is fetched-and-run on
+# rigs, and the changelog entry is curated at release time like every other change.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC, an hour before the zizmor re-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # The one job that writes: it pushes the bump branch, opens the PR, and dispatches the CI
+    # workflows onto the branch head (a GITHUB_TOKEN-created PR does not trigger `on:
+    # pull_request` runs by itself, so the required checks would otherwise never start).
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # zizmor: artipacked — never persist the token in .git/config; the push step below
+          # authenticates explicitly with the job token instead.
+          persist-credentials: false
+      - name: Detect a newer upstream release
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          current=$(grep -oE 'XMRIG_VERSION:-v[0-9.]+' rigforge.sh | head -1 | sed 's/^XMRIG_VERSION:-//')
+          latest=$(gh api repos/xmrig/xmrig/releases/latest --jq .tag_name)
+          # Third-party input: validate hard before it goes anywhere near a command or a ref.
+          if ! printf '%s' "$latest" | grep -qE '^v[0-9]+(\.[0-9]+)*$'; then
+            echo "::error::upstream tag '$latest' failed validation"; exit 1
+          fi
+          if [ "$current" = "$latest" ]; then
+            echo "pin is current ($current)"
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Resolve the (possibly annotated) tag to its commit.
+          commit=$(git ls-remote https://github.com/xmrig/xmrig.git "refs/tags/${latest}^{}" | cut -f1)
+          [ -n "$commit" ] || commit=$(git ls-remote https://github.com/xmrig/xmrig.git "refs/tags/${latest}" | cut -f1)
+          if ! printf '%s' "$commit" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::could not resolve ${latest} to a commit"; exit 1
+          fi
+          existing=$(gh pr list --state open --head "bot/xmrig-${latest}" --json number --jq length)
+          if [ "$existing" != "0" ]; then
+            echo "PR for ${latest} already open"
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "stale=true"
+            echo "current=$current"
+            echo "latest=$latest"
+            echo "commit=$commit"
+          } >>"$GITHUB_OUTPUT"
+      - name: Build-verify the new pin (build only — nothing is executed beyond --version)
+        if: steps.detect.outputs.stale == 'true'
+        env:
+          TAG: ${{ steps.detect.outputs.latest }}
+          COMMIT: ${{ steps.detect.outputs.commit }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake libuv1-dev libssl-dev libhwloc-dev
+          git clone --depth 50 --branch "$TAG" https://github.com/xmrig/xmrig.git /tmp/xmrig
+          cd /tmp/xmrig
+          # The same commit-verification the deploy does: the tag must be exactly this commit.
+          [ "$(git rev-parse HEAD)" = "$COMMIT" ] || { echo "::error::tag/commit mismatch — refusing to propose it"; exit 1; }
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release >/dev/null
+          make -j"$(nproc)" >/dev/null
+          test -x xmrig
+          ./xmrig --version | head -1
+      - name: Open the bump PR and start its required checks
+        if: steps.detect.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.detect.outputs.current }}
+          TAG: ${{ steps.detect.outputs.latest }}
+          COMMIT: ${{ steps.detect.outputs.commit }}
+        run: |
+          set -Eeuo pipefail
+          branch="bot/xmrig-${TAG}"
+          git checkout -b "$branch"
+          sed -i "s|XMRIG_VERSION:-${CURRENT}|XMRIG_VERSION:-${TAG}|" rigforge.sh
+          sed -i "s|XMRIG_COMMIT:-[0-9a-f]\{40\}|XMRIG_COMMIT:-${COMMIT}|" rigforge.sh
+          grep -q "XMRIG_VERSION:-${TAG}" rigforge.sh
+          grep -q "XMRIG_COMMIT:-${COMMIT}" rigforge.sh
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: bump the XMRig pin to ${TAG} (bot, build-verified)"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          {
+            printf 'Automated pin bump (#225): upstream released %s (pinned: %s).\n\n' "$TAG" "$CURRENT"
+            printf -- '- Commit resolved from the release tag and verified: %s\n' "$COMMIT"
+            printf -- '- Full Release build succeeded on this runner (see the build-verify step of this run)\n'
+            printf -- '- Upstream notes: https://github.com/xmrig/xmrig/releases/tag/%s\n\n' "$TAG"
+            printf 'Deploys via the normal path after merge: upgrade rebuilds only where the pin changed.\n'
+            printf 'Changelog gets its line at release curation, like every pin bump.\n'
+          } >/tmp/pr-body.md
+          gh pr create --base develop --head "$branch" \
+            --title "chore: bump the XMRig pin to ${TAG} (bot, build-verified)" \
+            --body-file /tmp/pr-body.md
+          # A token-created PR does not trigger `on: pull_request` — dispatch the two required
+          # workflows onto the branch head so the checks actually run and the PR is mergeable.
+          gh workflow run ci.yml --ref "$branch"
+          gh workflow run security.yml --ref "$branch"
