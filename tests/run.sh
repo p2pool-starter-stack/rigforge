@@ -65,6 +65,7 @@ export CPU_SYSFS="$NOHW/cpu"
 export RAPL_DIR="$NOHW/powercap"
 export DMI_DIR="$NOHW/dmi"
 export SMT_CONTROL="$NOHW/smt"
+export NODE_SYSFS="$NOHW/node" # _nps_suspect's NUMA-node count (#201)
 export THERMAL_ZONE="$NOHW/thermal"
 export CPUINFO="$NOHW/cpuinfo"            # util/proposed-grub.sh
 export DMIDECODE="$NOHW/dmidecode-absent" # absolute path that isn't an executable -> `command -v` fails
@@ -3089,6 +3090,34 @@ assert_absent "doctor: no false 'items below' when nothing to apply (#78)" "$out
 out="$(DMI_DIR="/nonexistent-dmi" SMT_CONTROL="/nonexistent-smt" DMIDECODE="$DOC/dmidecode_xmpon" \
     run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_absent "doctor: no firmware context when DMI unreadable (#78)" "$out" "Firmware:"
+
+# #201: NPS regression detection — an EPYC reporting ONE NUMA node is NPS1 (a BIOS reset ate the
+# NPS4 setting); desktop parts correctly report one node and must never be flagged; a missing
+# node sysfs is unverifiable, not suspect. Advisory only, shared by doctor and `bios`.
+echo "== unit: EPYC NPS detection (#201) =="
+NPS="$(mktemp -d "$SANDBOX/nps.XXXXXX")"
+mkdir -p "$NPS/one/node0" "$NPS/four/node0" "$NPS/four/node1" "$NPS/four/node2" "$NPS/four/node3"
+nps_sus() { (source "$SCRIPT" && set +e && NODE_SYSFS="$2" _nps_suspect "$1"); }
+assert_eq "EPYC + 1 node -> suspect (#201)" "$(nps_sus "AMD EPYC 7642 48-Core Processor" "$NPS/one")" "1"
+assert_eq "EPYC + 4 nodes -> fine (#201)" "$(nps_sus "AMD EPYC 7642 48-Core Processor" "$NPS/four")" ""
+assert_eq "desktop + 1 node -> never flagged (#201)" "$(nps_sus "AMD Ryzen 7 7800X3D 8-Core Processor" "$NPS/one")" ""
+assert_eq "EPYC + missing sysfs -> unverifiable, not suspect (#201)" "$(nps_sus "AMD EPYC 7642 48-Core Processor" "$NPS/nowhere")" ""
+out="$(STUB_CPU_MODEL="AMD EPYC 7642 48-Core Processor" NODE_SYSFS="$NPS/one" DMI_DIR="$DOC/dmi" SMT_CONTROL="$DOC/smt_on" DMIDECODE="$DOC/dmidecode_xmpon" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: NPS1 EPYC gets the advisory (#201)" "$out" "single NUMA node (NPS1)"
+assert_contains "doctor: advisory names the AMD CBS menu (#201)" "$out" "NUMA nodes per socket"
+out="$(STUB_CPU_MODEL="AMD EPYC 7642 48-Core Processor" NODE_SYSFS="$NPS/four" DMI_DIR="$DOC/dmi" SMT_CONTROL="$DOC/smt_on" DMIDECODE="$DOC/dmidecode_xmpon" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_absent "doctor: NPS4 EPYC stays quiet (#201)" "$out" "NPS1"
+bd_nps() { (
+    source "$SCRIPT" && OS_TYPE=Linux && set +e && NODE_SYSFS="$1" STUB_CPU_MODEL="$2" PATH="$STUBS:$PATH" _bios_detect >/dev/null 2>&1
+    echo "$B_NPS_STATUS"
+); }
+assert_eq "bios detect: NPS1 EPYC pending (#201)" "$(bd_nps "$NPS/one" "AMD EPYC 7642 48-Core Processor")" "pending"
+assert_eq "bios detect: NPS4 EPYC ok (#201)" "$(bd_nps "$NPS/four" "AMD EPYC 7642 48-Core Processor")" "ok"
+assert_eq "bios detect: desktop unknown — never listed (#201)" "$(bd_nps "$NPS/one" "Generic CPU")" "unknown"
+assert_contains "bios menu: NPS item names the CBS path (#201)" "$( (source "$SCRIPT" && _bios_menu generic numa_nps perf))" "NPS4"
+assert_contains "bios menu: generic power_boost speaks EPYC too (#201)" "$( (source "$SCRIPT" && _bios_menu generic power_boost perf))" "cTDP"
 
 # ---------------------------------------------------------------------------
 # Guided BIOS flow (#80): detect -> guide -> save -> re-verify, against the #78 firmware fixtures.

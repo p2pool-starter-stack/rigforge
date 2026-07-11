@@ -7,6 +7,15 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **EPYC NPS regression detection (#201).** A multi-CCD EPYC reporting a single NUMA node is NPS1
+  — a BIOS update or CMOS reset silently eats the NPS4 setting and costs RandomX its per-node
+  datasets. `doctor`'s firmware advisory and the guided `bios` walkthrough now flag it (with the
+  AMD CBS menu path) via one shared detector; desktop parts and unverifiable topologies are never
+  flagged. The generic `power_boost` menu text also gains the server-board spellings (cTDP /
+  Package Power Limit / Determinism) — 7 of 8 fleet rigs fall through to the generic vendor.
+
 ## [1.5.1] - 2026-07-10
 
 ### Fixed
