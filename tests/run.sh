@@ -4835,6 +4835,67 @@ fi # APISRV_SKIP
 # no shared lib), so first pin that contract: the two copies must be identical, verbatim. The
 # behaviour tests then drive the real function against sandboxed RIG_LOCK_FILE/RIG_LOCK_HOLDER
 # paths — no root, no /var/lock — with background subshells as the competing "suites".
+# #214: perf recording judges BEFORE it writes — the recording run is the only perf gate most
+# rigs ever get, so a regressed measurement must fail the phase and leave the baseline untouched
+# (E2E_PERF_FORCE=1 is the conscious override). Helpers extracted from e2e-real.sh the same way
+# the rig_lock tests do it; ok/bad/phase and the bench are stubbed.
+echo "== unit: e2e-real perf record gate (#214) =="
+PJ="$(mktemp -d "$SANDBOX/pj.XXXXXX")"
+sed -n '/^_perf_judge()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
+sed -n '/^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
+cat >"$PJ/rigforge-stub" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = bench ] && echo "${STUB_BENCH_HS:-10000.0} H/s"
+exit 0
+EOF
+chmod +x "$PJ/rigforge-stub"
+run_perf() { # env: STUB_BENCH_HS E2E_PERF_RECORD E2E_PERF_FORCE; prints output; rc = #bad calls
+    (
+        cd "$PJ" || exit 9
+        HERE="$PJ"
+        RIGFORGE="$PJ/rigforge-stub"
+        BADS=0
+        ok() { echo "OK: $1"; }
+        bad() {
+            echo "BAD: $1"
+            BADS=$((BADS + 1))
+        }
+        phase() { :; }
+        source "$PJ/fns.sh"
+        set +e
+        perf
+        exit "$BADS"
+    )
+}
+host="$(hostname)"
+mkdir -p "$PJ/tests/perf-baselines"
+printf '{"bench_1m_hs": 10000.0, "cpu": "x", "recorded": "2026-07-10"}\n' >"$PJ/tests/perf-baselines/$host.json"
+printf '{"tag":"v0","recorded":"2026-07-10","bench_1m_hs":10000.0}\n' >"$PJ/tests/perf-baselines/$host.history.jsonl"
+out="$(STUB_BENCH_HS=9990.0 E2E_PERF_RECORD=1 run_perf)"
+rc=$?
+assert_rc "record: healthy measurement passes the judge (#214)" "$rc" "0"
+assert_contains "record: healthy measurement is recorded (#214)" "$out" "baseline recorded"
+assert_eq "record: baseline updated (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9990.0"
+assert_eq "record: history appended (#214)" "$(grep -c . "$PJ/tests/perf-baselines/$host.history.jsonl")" "2"
+out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 run_perf)"
+rc=$?
+[ "$rc" -ge 1 ] && ok "record: regression fails the phase (#214)" || bad "record: regression fails the phase (#214)" "rc=$rc"
+assert_contains "record: regression refuses to write (#214)" "$out" "NOT recorded"
+assert_eq "record: regressed baseline untouched (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9990.0"
+assert_eq "record: regressed history untouched (#214)" "$(grep -c . "$PJ/tests/perf-baselines/$host.history.jsonl")" "2"
+out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 E2E_PERF_FORCE=1 run_perf)"
+assert_contains "record: FORCE records a regression loudly (#214)" "$out" "REGRESSED measurement"
+assert_eq "record: FORCE actually wrote (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
+out="$(STUB_BENCH_HS=9000.0 run_perf)"
+rc=$?
+[ "$rc" -ge 1 ] && ok "judge: regression vs best-ever still fails (#214)" || bad "judge: regression vs best-ever still fails (#214)" "rc=$rc"
+assert_contains "judge: ratchet names best-ever (#214)" "$out" "RATCHET"
+rm "$PJ/tests/perf-baselines/$host.json" "$PJ/tests/perf-baselines/$host.history.jsonl"
+out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 run_perf)"
+rc=$?
+assert_rc "record: first-ever recording needs no judge (#214)" "$rc" "0"
+assert_eq "record: first-ever wrote the baseline (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
+
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
