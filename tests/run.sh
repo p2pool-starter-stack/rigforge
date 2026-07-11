@@ -4815,8 +4815,25 @@ assert_eq "refresh writes all three response files" "$(ls "$APIQ/data" | sort | 
 assert_eq "summary: xmrig fields pass through unchanged (superset rule)" "$(jq -r '.hashrate.total[0]' "$APIQ/data/summary.json")" "1234.5"
 assert_eq "summary: rigforge.version = the VERSION file" "$(jq -r '.rigforge.version' "$APIQ/data/summary.json")" "$(cat "$ROOT/VERSION")"
 assert_eq "summary: provenance carries the full pinned commit" "$(jq -r '.rigforge.xmrig_commit | length' "$APIQ/data/summary.json")" "40"
-assert_eq "/health wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/health.json")" '["clock_pct_of_boost","firmware","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","xmp"]'
+assert_eq "/health wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/health.json")" '["clock_pct_of_boost","firmware","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","watchdog","xmp"]'
 assert_eq "/tune wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/tune.json")" '["applied","autotune","candidates_tried","last_best_hs","target"]'
+# #212: watchdog state on the wire. Disabled (no key in config) -> the one-field object.
+assert_eq "watchdog disabled -> {mode: disabled} (#212)" "$(jq -cS '.rigforge.watchdog' "$APIQ/data/summary.json")" '{"mode":"disabled"}'
+# Enabled with a thermal hold + one strike: the API must explain the stopped miner.
+printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333"}], "watchdog": "enabled", "max_temp_c": 90 }\n' "$APIQ" >"$APIQ/config-wd.json"
+touch "$APIQ/home/worker/watchdog.thermal-hold"
+printf '1\n' >"$APIQ/home/worker/watchdog.fails"
+run_refresh "CONFIG_JSON=$APIQ/config-wd.json TUNE_TEMP_CMD='echo 97.2'"
+assert_eq "watchdog hold: thermal_hold true (#212)" "$(jq -r '.rigforge.watchdog.thermal_hold' "$APIQ/data/summary.json")" "true"
+assert_eq "watchdog hold: resume threshold on the wire (#212)" "$(jq -r '.rigforge.watchdog.resumes_below_c' "$APIQ/data/summary.json")" "85"
+assert_eq "watchdog hold: live temp on the wire (#212)" "$(jq -r '.rigforge.watchdog.temp_c' "$APIQ/data/summary.json")" "97.2"
+assert_eq "watchdog hold: strike count (#212)" "$(jq -r '.rigforge.watchdog.strikes' "$APIQ/data/summary.json")" "1"
+assert_eq "/health names the thermal hold (#212)" "$(jq -r '.watchdog.thermal_hold' "$APIQ/data/health.json")" "true"
+# Garbled state files degrade to defaults, never fail the refresh.
+printf 'xx\n' >"$APIQ/home/worker/watchdog.fails"
+run_refresh "CONFIG_JSON=$APIQ/config-wd.json"
+assert_eq "garbled strike file -> 0, refresh survives (#212)" "$(jq -r '.rigforge.watchdog.strikes' "$APIQ/data/summary.json")" "0"
+rm -f "$APIQ/home/worker/watchdog.thermal-hold" "$APIQ/home/worker/watchdog.fails"
 run_refresh 'API_CMD="printf %s \"\""'
 assert_eq "xmrig down: summary still produced with the marker" "$(jq -r '.rigforge.xmrig_api' "$APIQ/data/summary.json")" "unreachable"
 printf '{broken' >"$APIQ/home/worker/tune-overrides.json"

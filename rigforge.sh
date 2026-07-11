@@ -3843,10 +3843,28 @@ _health_json() {
     jq -n --argjson sa "$sa" --arg hpt "${hp_total:-}" --arg hp1g "${hp1g:-}" --arg gov "$gov" --arg msr "${msr_st:-none}" --arg pop "${pop:-0}" --arg nch "${nch:-0}" --arg spd "${spd:-0}" --arg rated "${rated:-0}" --argjson xmp "$xmp" --arg smt "$smt" --arg bv "$bv" --arg bn "$bn" --arg pct "${pct:-}" --argjson thr "$thr" '{service_active: $sa, hugepages_total: (if $hpt == "" then null else ($hpt | tonumber) end), hugepages_1g: (if $hp1g == "" then null else ($hp1g | tonumber) end), governor: (if $gov == "" then null else $gov end), msr: $msr, ram: {modules: ($pop | tonumber), channels: ($nch | tonumber), mts: ($spd | tonumber), rated_mts: ($rated | tonumber)}, xmp: $xmp, smt: (if $smt == "" then null else $smt end), firmware: {vendor: (if $bv == "" then null else $bv end), board: (if $bn == "" then null else $bn end)}, clock_pct_of_boost: (if $pct == "" then null else ($pct | tonumber) end), throttling: $thr}'
 }
 
+# Watchdog state as JSON (#212): when the watchdog stops the miner, the sister API is the one
+# component still alive — a thermally-held rig must say "held, resumes below N" on the wire, not
+# look mystery-dead. Reads the same state files watchdog() writes; absent or garbled files
+# degrade to defaults and never fail the refresh.
+_watchdog_json() {
+    local wr hold=false strikes t=""
+    if [ "${WATCHDOG_MODE:-disabled}" = disabled ]; then
+        jq -n '{mode: "disabled"}'
+        return 0
+    fi
+    wr=$(_worker_root_from_config)
+    [ -n "$wr" ] && [ -f "$wr/watchdog.thermal-hold" ] && hold=true
+    strikes=$(cat "$wr/watchdog.fails" 2>/dev/null || true)
+    [[ "$strikes" =~ ^[0-9]+$ ]] || strikes=0
+    t=$(_read_temp 2>/dev/null || true)
+    jq -n --argjson hold "$hold" --arg mt "${MAX_TEMP_C:-}" --arg t "$t" --arg s "$strikes" '{mode: "enabled", thermal_hold: $hold, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end), resumes_below_c: (if $mt == "" then null else (($mt | tonumber) - 5) end), temp_c: (if $t == "" then null else ($t | tonumber) end), strikes: ($s | tonumber)}'
+}
+
 # Provenance + tune + power + health, namespaced under one `rigforge` key. Runs in the refresh
 # timer, never on a request path, so it can afford the full probe pass every time.
 _api_rigforge_block() { # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health}'
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog}'
 }
 
 # Produce the sister API's response bodies: compute once, write atomically (tmp + rename, the
@@ -3867,7 +3885,7 @@ api_refresh() {
     # miner is down the RigForge data still serves — that is when health matters most.
     if [ -n "$sum" ]; then body=$(jq -n --argjson x "$sum" --argjson r "$rf" '$x + {rigforge: $r}'); else body=$(jq -n --argjson r "$rf" '{rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     printf '%s' "$body" >"$dir/summary.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json"
-    printf '%s' "$rf" | jq -c '.health' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
+    printf '%s' "$rf" | jq -c '.health + {watchdog: .watchdog}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
     printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
 }
 
