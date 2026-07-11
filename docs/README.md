@@ -22,6 +22,12 @@ individual topics once you're up and running.
 For how RigForge is versioned and released, see [`RELEASING.md`](../RELEASING.md) and
 [`CHANGELOG.md`](../CHANGELOG.md).
 
+## Design decisions
+
+Significant, cross-cutting decisions are recorded as ADRs under [`adr/`](adr/):
+
+- [ADR 0001: Writable worker-config control path](adr/0001-writable-worker-config-control-path.md) — *Accepted.* How the stack applies config changes through RigForge without breaking the read-only sister API.
+
 ## Quick links
 
 - **Just want to start mining?** → [Getting Started](getting-started.md)

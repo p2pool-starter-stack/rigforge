@@ -493,6 +493,32 @@ parse_config() {
     API_BIND=$(jq -r '.api_bind // "0.0.0.0"' "$CONFIG_JSON")
     [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
 
+    # Opt-in WRITABLE control path (#236): a SEPARATE authenticated endpoint that lets the stack
+    # (pithead #185) apply validated config changes THROUGH RigForge, so config.json stays the
+    # source of truth. Distinct from the read-only sister API — its own port, its own units, an
+    # unprivileged receiver decoupled from the privileged applier (see docs/adr/0001). Default off.
+    _control=$(jq -r '.control // "disabled"' "$CONFIG_JSON")
+    case "$_control" in
+    disabled | false | off | none | null | "") CONTROL_MODE=disabled ;;
+    enabled | true | on) CONTROL_MODE=enabled ;;
+    *) error "Invalid \"control\" value '$_control' in config.json — use \"disabled\" or \"enabled\"." ;;
+    esac
+    CONTROL_PORT=$(jq -r '.control_port // 8082' "$CONFIG_JSON")
+    if ! [[ "$CONTROL_PORT" =~ ^[0-9]+$ ]] || [ "$CONTROL_PORT" -lt 1 ] || [ "$CONTROL_PORT" -gt 65535 ]; then error "control_port must be a port number 1-65535 (got: $CONTROL_PORT)."; fi
+    if [ "$CONTROL_PORT" = 8080 ]; then error "control_port 8080 collides with XMRig's own API — pick another port."; fi
+    CONTROL_BIND=$(jq -r '.control_bind // "0.0.0.0"' "$CONFIG_JSON")
+    [[ "$CONTROL_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "control_bind must be an IP address (got: $CONTROL_BIND)."
+    if [ "$CONTROL_MODE" = enabled ]; then
+        if [ "${API_MODE:-disabled}" = enabled ] && [ "$CONTROL_PORT" = "$API_PORT" ]; then
+            error "control_port ($CONTROL_PORT) collides with the sister API port — pick another port."
+        fi
+        # Fail-closed dual auth: the writable path demands BOTH a Bearer token AND a pinned source.
+        # Missing either would expose an unauthenticated remote config write, so this is a hard
+        # error, not a warning — a writable control surface must never come up open by omission.
+        [ -n "${ACCESS_TOKEN:-}" ] || error "control: \"enabled\" requires ACCESS_TOKEN — a writable API with no token is an open remote config write. Set ACCESS_TOKEN in config.json."
+        [ -n "${API_ALLOW_FROM:-}" ] || error "control: \"enabled\" requires api_allow_from — the writable path must be pinned to the stack host. Set api_allow_from in config.json."
+    fi
+
     # Privilege separation (#140): run the miner as this dedicated non-root system user. Empty
     # (default) keeps today's root behavior exactly. `root` is rejected — it would silently mean
     # "no separation". useradd-portable names only.
@@ -514,7 +540,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c"
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -1078,7 +1104,8 @@ install_api_firewall() {
     command -v nft >/dev/null 2>&1 || error "api_allow_from is set but 'nft' is missing — install nftables (sudo apt-get install nftables) or clear the key."
     # Port set: :8080 (XMRig's API) always, plus :8081 (the sister API) when it's enabled.
     local ports="8080"
-    [ "${API_MODE:-disabled}" = enabled ] && ports="8080, ${API_PORT:-8081}"
+    [ "${API_MODE:-disabled}" = enabled ] && ports="$ports, ${API_PORT:-8081}"
+    [ "${CONTROL_MODE:-disabled}" = enabled ] && ports="$ports, ${CONTROL_PORT:-8082}"
     sudo tee "$nft_file" >/dev/null <<NFT
 destroy table inet rigforge
 table inet rigforge {
@@ -1125,6 +1152,37 @@ install_api() {
     sudo systemctl restart rigforge-api.service 2>/dev/null || true
     # Prime the state files so the first poll isn't a 503 for a whole timer period.
     sudo systemctl start rigforge-api-refresh.service 2>/dev/null || true
+}
+
+# Writable control path (#236): the unprivileged receiver server plus the path-triggered privileged
+# applier. Same opt-in/teardown shape as install_api; its own units so it enables independently.
+# parse_config has already refused to reach here without a token + api_allow_from (fail-closed).
+install_control() {
+    [ "$OS_TYPE" == "Linux" ] || return 0
+    local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
+    if [ "${CONTROL_MODE:-disabled}" = "disabled" ]; then
+        if [ -f "$svc" ] || [ -f "$apath" ]; then
+            sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path 2>/dev/null || true
+            sudo rm -f "$svc" "$asvc" "$apath"
+            sudo systemctl daemon-reload 2>/dev/null || true
+            log "Writable control path disabled."
+        fi
+        return 0
+    fi
+    command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
+    log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT' \
+        <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null
+    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
+        envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' \
+        <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null
+    sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rigforge-control-apply.path 2>/dev/null || true
+    sudo systemctl enable rigforge-control.service 2>/dev/null || true
+    # restart, not just enable --now: a bind/port/token change must be re-read (restart also starts).
+    sudo systemctl restart rigforge-control.service 2>/dev/null || true
 }
 
 # #65 (read-only): the thread count the HugePages reservation is sized for — the tuned cpu.rx if
@@ -1414,6 +1472,11 @@ _setup_plan() {
     else
         _p "configuring the sister API" "disabled — installed units would be removed"
     fi
+    if [ "$CONTROL_MODE" = enabled ]; then
+        _p "configuring the control path" "install rigforge-control.service (:$CONTROL_PORT, writable, token+source pinned) + the staged applier"
+    else
+        _p "configuring the control path" "disabled — installed units would be removed"
+    fi
     if [ -n "${API_ALLOW_FROM:-}" ]; then
         _p "configuring the API firewall" "nftables 'inet rigforge' table scoping the API port(s) to $API_ALLOW_FROM + loopback"
     else
@@ -1468,6 +1531,8 @@ main() {
     install_watchdog
     CURRENT_STEP="configuring the sister API"
     install_api
+    CURRENT_STEP="configuring the control path"
+    install_control
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
     CURRENT_STEP="linking the rigforge command"
@@ -1660,6 +1725,10 @@ uninstall() {
         sudo systemctl disable --now rigforge-api.socket rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service" \
             "$SYSTEMD_DIR/rigforge-api.service" "$SYSTEMD_DIR/rigforge-api-refresh.service" "$SYSTEMD_DIR/rigforge-api-refresh.timer"
+    fi
+    if [ -f "$SYSTEMD_DIR/rigforge-control.service" ] || [ -f "$SYSTEMD_DIR/rigforge-control-apply.path" ]; then
+        sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path"
     fi
     command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
@@ -3362,7 +3431,7 @@ svc_disable() {
 # `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
 # (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
 # dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
-# verbs (api-refresh, msr-apply) and the -v/-h flag spellings are deliberately not completed.
+# verbs (api-refresh, msr-apply, control-apply) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
 _rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
@@ -3484,9 +3553,148 @@ apply() {
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || true
         install_api >/dev/null 2>&1 || true
+        install_control >/dev/null 2>&1 || true
         install_api_firewall || true
         _autotune_apply_notice
     fi
+}
+
+# --- Writable control path applier (#236) ---
+
+# Merge a staged control change into config.json — the security-critical core, isolated so it is
+# testable without systemd or a live miner. Only allowlisted keys are applied; the merged result
+# must pass parse_config BEFORE anything touches disk, so an invalid change never lands; only then
+# is the old config snapshotted to config-backups/ (history + recovery) and the new one written
+# atomically + fsynced. Echoes "committed <backup>" or "rejected <reason>"; returns 0 / 1.
+_control_commit() { # <staged.json> <backups-dir>
+    local staged="$1" backups="$2"
+    local CONTROL_WRITABLE_KEYS="pools DONATION autotune watchdog watchdog_interval_min max_temp_c"
+    local change allow badkeys stamp backup cand msg
+    change=$(cat "$staged" 2>/dev/null) || {
+        echo "rejected unreadable-staged-file"
+        return 1
+    }
+    # Structural re-validation (never trust the spool blindly): a non-empty JSON object, keys ⊆ allowlist.
+    printf '%s' "$change" | jq -e 'type == "object" and length > 0' >/dev/null 2>&1 || {
+        echo "rejected not-a-config-object"
+        return 1
+    }
+    allow=$(jq -n --arg s "$CONTROL_WRITABLE_KEYS" '$s | split(" ")')
+    badkeys=$(printf '%s' "$change" | jq -r --argjson a "$allow" '[keys[] | select(. as $k | $a | index($k) | not)] | join(",")')
+    if [ -n "$badkeys" ]; then
+        echo "rejected non-writable-keys:$badkeys"
+        return 1
+    fi
+    # Build the candidate: current config with ONLY the allowlisted staged keys overlaid (pools and
+    # other arrays replace, scalars replace). Filter again so a stray key can never ride in.
+    cand="$CONFIG_JSON.control.$$"
+    if ! jq -n --slurpfile base "$CONFIG_JSON" --argjson chg "$change" --argjson a "$allow" '$base[0] * ($chg | with_entries(select(.key as $k | $a | index($k))))' >"$cand" 2>/dev/null; then
+        rm -f "$cand"
+        echo "rejected merge-failed"
+        return 1
+    fi
+    # The merged config must be valid RigForge config BEFORE it lands — parse_config is the
+    # authoritative semantic gate (pool shapes, ranges, the dual-auth rule). Run it isolated so a
+    # failure can't corrupt the caller's globals, and so a bad change can never reach config.json.
+    if ! msg=$( (CONFIG_JSON="$cand" && parse_config) 2>&1); then
+        rm -f "$cand"
+        echo "rejected invalid-config:$(printf '%s' "$msg" | grep -o '\[ERROR\][^\"]*' | head -1 | sed "s/'.*//")"
+        return 1
+    fi
+    # Only now, with a valid candidate, snapshot the old config and commit. A backup is a HARD
+    # precondition (ADR): never commit a change without first snapshotting the config it replaces —
+    # if the snapshot can't be written, reject the whole change and leave config.json untouched.
+    stamp=$(date -u +%Y%m%d-%H%M%S)
+    backup="$backups/config-$stamp.json"
+    if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$backup"); then
+        rm -f "$cand"
+        echo "rejected backup-failed"
+        return 1
+    fi
+    # config.json is secret-bearing (ACCESS_TOKEN, pool creds) and 0600 by contract; mv inherits the
+    # candidate's mode, so pin it to 0600 BEFORE the rename or the live config goes world-readable.
+    chmod 600 "$cand"
+    # Durable: flush the candidate's data and the backup to disk, then atomically rename over
+    # config.json (a crash leaves either the old file or the whole new one, never a torn config).
+    sync
+    mv -f "$cand" "$CONFIG_JSON"
+    sync
+    echo "committed $backup"
+    return 0
+}
+
+# Prune config-backups/ to the retention cap and hand it to the operator so they can inspect or
+# restore old configs without sudo (recovery = `cp config-backups/config-<stamp>.json config.json`
+# then `sudo rigforge apply`). Override the cap with KEEP_CONFIG_BACKUPS.
+_reown_config_backups() { # <backups-dir>
+    local dir="$1" keep="${KEEP_CONFIG_BACKUPS:-20}" old
+    # shellcheck disable=SC2012  # names are controlled (config-YYYYmmdd-HHMMSS.json); ls -t orders by recency
+    old=$(ls -t "$dir"/config-*.json 2>/dev/null | tail -n +"$((keep + 1))" || true)
+    if [ -n "$old" ]; then
+        printf '%s\n' "$old" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
+    fi
+    if [ "$(id -u)" -eq 0 ] && [ -n "${REAL_USER:-}" ]; then sudo chown -R "$REAL_USER" "$dir" 2>/dev/null || true; fi
+}
+
+# The apply + liveness check control-apply gates its rollback on. Split out so tests can stub it.
+_control_do_apply() {
+    apply >/dev/null 2>&1
+    _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"
+}
+
+# Record the outcome for the receiver's GET /status (mode 644 so the DynamicUser server reads it back).
+_control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
+    local f="$1"
+    mkdir -p "$(dirname "$f")"
+    jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end)}' >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
+}
+
+# control-apply (#236): the privileged half of the writable control path, run by the
+# rigforge-control-apply.path unit when the receiver stages a change. Applies the NEWEST staged
+# change (older staged ones are superseded, so we never restart twice), reconciles the live miner,
+# and rolls back to the pre-change snapshot if it doesn't come back live. Every failure path
+# returns 0 with a recorded status — a bad request must not wedge the oneshot.
+control_apply() {
+    [ "$OS_TYPE" != "Linux" ] && error "control-apply is driven by the rigforge-control-apply.path unit and is Linux-only."
+    parse_config
+    local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status backups
+    spool="$state/spool"
+    status="$state/status.json"
+    backups="$SCRIPT_DIR/config-backups"
+    local newest older cid change_keys result rc backup
+    newest=$(ls -t "$spool"/pending-*.json 2>/dev/null | head -1) || true
+    if [ -z "$newest" ]; then
+        log "control-apply: nothing staged."
+        return 0
+    fi
+    older=$(ls -t "$spool"/pending-*.json 2>/dev/null | tail -n +2) || true
+    if [ -n "$older" ]; then
+        printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
+    fi
+    cid=$(basename "$newest" .json)
+    cid="${cid#pending-}"
+    change_keys=$(jq -r 'keys | join(",")' "$newest" 2>/dev/null || echo "?")
+    result=$(_control_commit "$newest" "$backups")
+    rc=$?
+    rm -f "$newest"
+    if [ "$rc" -ne 0 ]; then
+        _control_status "$status" rejected "$cid" "$change_keys" "$result" ""
+        warn "control-apply: change $cid rejected (${result#rejected }) — config.json untouched."
+        return 0
+    fi
+    backup="${result#committed }"
+    _reown_config_backups "$backups"
+    log "control-apply: committed change $cid (keys: $change_keys); applying..."
+    if _control_do_apply; then
+        _control_status "$status" applied "$cid" "$change_keys" "" "$backup"
+        log "control-apply: change $cid applied."
+    else
+        warn "control-apply: change $cid did not come back live — rolling back to $backup."
+        cp "$backup" "$CONFIG_JSON"
+        _control_do_apply || true
+        _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate" "$backup"
+    fi
+    return 0
 }
 
 # Miner watchdog (#139): ONE health check per invocation — rigforge-watchdog.timer provides the
@@ -4482,6 +4690,8 @@ Info:
              ExecStartPre when miner_user is set (the unprivileged miner can't write MSRs)
   api-refresh (internal) recompute the sister API's response files — driven every 15s by the
              rigforge-api-refresh systemd timer ("api": "enabled" in config.json)
+  control-apply (internal) persist + apply a config change staged by the control server — run by
+             the rigforge-control-apply.path unit ("control": "enabled" in config.json)
   support-bundle  collect doctor/version/configs/log-tail into a redacted tarball for bug reports
   completion print a bash/zsh tab-completion script: completion bash|zsh
   version    print the RigForge version  (-v, --version)
@@ -4496,7 +4706,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
     # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
     case "${1:-setup}" in
-    autotune | watchdog | doctor | api-refresh | msr-apply | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
+    autotune | watchdog | doctor | api-refresh | msr-apply | control-apply | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
@@ -4528,6 +4738,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     api-refresh) api_refresh ;;
     msr-apply) msr_apply ;;
+    control-apply) control_apply ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;

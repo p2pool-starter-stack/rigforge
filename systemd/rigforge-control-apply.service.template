@@ -1,0 +1,14 @@
+[Unit]
+Description=RigForge control apply (persist + apply a staged config change, off the request path)
+
+[Service]
+Type=oneshot
+# Root, because it writes config.json and restarts the miner — the privileged half the network
+# receiver deliberately is not. Triggered by rigforge-control-apply.path when a change is staged;
+# idle priority so a config apply never competes with the miner for CPU or IO. It re-validates the
+# staged change, snapshots the old config to config-backups/, applies, and rolls back on a failed
+# restart. RIGFORGE_OPERATOR (baked at setup) is who the new config + backups get handed back to.
+Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
+ExecStart=$SCRIPT_DIR/rigforge.sh control-apply
+Nice=19
+IOSchedulingClass=idle

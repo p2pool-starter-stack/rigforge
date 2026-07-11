@@ -534,3 +534,54 @@ resolution of XMRig's own 10s hashrate window. The same
 construction (GET only), and when XMRig is down the RigForge data still serves with an
 `"xmrig_api": "unreachable"` marker — which is exactly when the health data matters. Linux-only;
 `"api": "disabled"` + `apply` removes the units cleanly.
+
+## Writable control path (opt-in)
+
+The sister API above is read-only by design. The control path is its separate, opt-in, writable
+counterpart (#236): it lets a Pithead stack **apply config changes through RigForge** so
+`config.json` stays the single source of truth (the producer for pithead's Worker Inspect). It is
+off by default and deliberately paranoid, because it is the one endpoint that accepts writes.
+
+Turn it on by setting three things in `config.json` and running `sudo ./rigforge.sh apply`:
+
+```jsonc
+"control": "enabled",
+"ACCESS_TOKEN": "<a shared secret>",   // required — a writable API with no token is refused
+"api_allow_from": "10.0.0.5"           // required — the stack host/CIDR that may write; refused if unset
+```
+
+Both `ACCESS_TOKEN` and `api_allow_from` are mandatory when `control` is enabled — setup/apply
+**hard-errors** without them, because a writable path with no token or no pinned source is an open
+remote config write. The control port (default `:8082`, `control_port`/`control_bind`) is scoped by
+the same nftables rule as the read API, so only the stack host and loopback can reach it.
+
+How a change flows:
+
+1. The stack `POST`s a JSON object of changed keys to `:8082/apply` with the Bearer token. Only
+   `pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`, and `max_temp_c` are
+   writable; identity/trust/path keys (`ACCESS_TOKEN`, `miner_user`, `HOME_DIR`, the `api_*` and
+   `control_*` keys) are operator-only and rejected. The receiver validates the shape, stages the
+   change, and returns `202 Accepted` with a change id. It holds no privilege and never touches the
+   miner, so a write cannot cost hashrate.
+2. A path-triggered root oneshot picks up the staged change, snapshots the current `config.json` to
+   `config-backups/config-<UTC-stamp>.json`, merges only the allowlisted keys, and re-validates the
+   result with the same rules `apply` uses. An invalid change is rejected and **nothing is written**.
+3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied through the
+   normal `apply` path. If the miner does not come back to a live hashrate, the snapshot is restored
+   and re-applied, and the outcome is recorded as `rolled_back`.
+4. `GET :8082/status` returns the last change's outcome (`applied` / `rejected` / `rolled_back`, with
+   `source: "control"`, the changed keys, and the backup path); the new effective config shows up on
+   the read API's `/2/summary` once apply completes.
+
+**Recovery.** Every applied change leaves a timestamped snapshot in `config-backups/` (owner-readable,
+the newest `KEEP_CONFIG_BACKUPS`, default 20, are kept). To inspect or roll back by hand:
+
+```bash
+ls -t config-backups/                                   # newest first
+cp config-backups/config-20260711-120000.json config.json
+sudo ./rigforge.sh apply
+```
+
+`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
+The design and the decisions behind it are recorded in
+[ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).
