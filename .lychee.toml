@@ -10,3 +10,9 @@ accept = ["200..=299", "429"]
 
 # Some hosts reject non-browser user agents; present a common one.
 user_agent = "Mozilla/5.0 (compatible; lychee/0.24; +https://github.com/lycheeverse/lychee)"
+
+# no-color.org resolves fine in a browser but consistently times out from GitHub runner IPs
+# (reproduced twice, 2026-07-11 — 0 real errors both runs, only this timeout). Exclude it rather
+# than let one hostile-to-bots host fail the whole docs check; the link stays in the docs for
+# human readers.
+exclude = ["^https://no-color\\.org"]
