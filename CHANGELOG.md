@@ -9,6 +9,12 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **Thermal sensing works on hwmon-only boards (#208).** `_read_temp` falls back to the CPU hwmon
+  (`k10temp`/`coretemp` `temp1_input`) when no `thermal_zone` exists — the shape of every rig in
+  the production fleet, where the watchdog's `max_temp_c` and tune's temperature sampling were
+  silently blind. A thermal zone still wins when present; nothing readable stays empty (a missing
+  sensor never stops a miner). Docs carry the Tctl caveat: k10temp reads a control temperature
+  that runs high by design, so damage-avoidance cutoffs belong well above the everyday reading.
 - **EPYC NPS regression detection (#201).** A multi-CCD EPYC reporting a single NUMA node is NPS1
   — a BIOS update or CMOS reset silently eats the NPS4 setting and costs RandomX its per-node
   datasets. `doctor`'s firmware advisory and the guided `bios` walkthrough now flag it (with the
