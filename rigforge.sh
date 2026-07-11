@@ -3358,6 +3358,9 @@ _rigforge() {
     fi
     case "$verb" in
     tune) COMPREPLY=($(compgen -W "--now --short --long --live --bench --confirm --efficiency --perf --history --clear" -- "$cur")) ;;
+    setup | apply) COMPREPLY=($(compgen -W "--dry-run" -- "$cur")) ;;
+    upgrade) COMPREPLY=($(compgen -W "--check" -- "$cur")) ;;
+    bios) COMPREPLY=($(compgen -W "--perf --efficiency" -- "$cur")) ;;
     uninstall | backup) COMPREPLY=($(compgen -W "-y --yes" -- "$cur")) ;;
     restore) COMPREPLY=($(compgen -W "-y --yes" -- "$cur") $(compgen -f -- "$cur")) ;;
     completion) COMPREPLY=($(compgen -W "bash zsh" -- "$cur")) ;;
