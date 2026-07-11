@@ -65,6 +65,6 @@ ci: lint-all test-suite ## Everything CI runs that can run locally (adds the con
 	@if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then $(MAKE) test-e2e; else echo "docker unavailable — skipped the container e2e (CI runs it)"; fi
 
 lint-links: ## lychee link-check the docs — uses .lychee.toml (needs lychee; hits external links)
-	lychee $(MD_FILES)
+	lychee --config .lychee.toml $(MD_FILES)
 
 lint-all: lint lint-yaml lint-md lint-actions ## run every fast linter (shell + yaml + markdown + workflows; not the link check)
