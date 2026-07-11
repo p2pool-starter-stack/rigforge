@@ -21,6 +21,12 @@ All notable changes to RigForge are documented here. The format is based on
   AMD CBS menu path) via one shared detector; desktop parts and unverifiable topologies are never
   flagged. The generic `power_boost` menu text also gains the server-board spellings (cTDP /
   Package Power Limit / Determinism) — 7 of 8 fleet rigs fall through to the generic vendor.
+- **Watchdog state on the wire (#212).** The sister API's `rigforge` object gains a `watchdog`
+  block — mode, `thermal_hold`, `max_temp_c` / `resumes_below_c`, live `temp_c`, and the strike
+  count — and `/health` carries it too. A thermally-held miner now says "held, resumes below N"
+  on the one component still alive instead of looking mystery-dead; a wedge being counted is
+  visible before the restart lands. Absent or garbled state files degrade to defaults, never a
+  failed refresh.
 
 ## [1.5.1] - 2026-07-10
 
