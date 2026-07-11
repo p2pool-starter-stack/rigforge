@@ -5082,14 +5082,65 @@ printf '%s' '{"DONATION":9}' >"$recov/s.json"
 )
 assert_eq "commit: backup preserves the OLD config for recovery" "$(jq -r '.DONATION' "$recov/backups"/config-*.json)" "1"
 assert_eq "commit: new config carries the change" "$(jq -r '.DONATION' "$recov/config.json")" "9"
+# CRITICAL regression (2026-07-11 security review): a commit must NOT downgrade config.json off 0600
+# (mv inherits the candidate's mode; without a chmod the live ACCESS_TOKEN + pool creds go
+# world-readable on every control-apply).
+modechk="$(mktemp -d "$SANDBOX/mode.XXXXXX")"
+printf '%s\n' "$CFG_236" >"$modechk/config.json"
+chmod 600 "$modechk/config.json"
+printf '%s' '{"DONATION":6}' >"$modechk/s.json"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$modechk/config.json"
+    SCRIPT_DIR="$modechk"
+    set +e
+    PATH="$STUBS:$PATH" _control_commit "$modechk/s.json" "$modechk/bk" >/dev/null 2>&1
+)
+assert_eq "commit: config.json stays 0600 (secrets not world-readable)" "$(stat -c '%a' "$modechk/config.json" 2>/dev/null || stat -f '%Lp' "$modechk/config.json")" "600"
+assert_eq "commit: the backup snapshot is owner-only 0600" "$(stat -c '%a' "$modechk/bk"/config-*.json 2>/dev/null || stat -f '%Lp' "$modechk/bk"/config-*.json)" "600"
+# MEDIUM regression: a rejected reason must not echo a raw config value (parse_config value-bearing
+# errors quote the value; the reason is truncated at the first quote before it reaches 0644 status.json).
+redd="$(mktemp -d "$SANDBOX/red.XXXXXX")"
+printf '%s\n' "$CFG_236" >"$redd/config.json"
+printf '%s' '{"pools":[{"url":"SECRETMARKER host:3333"}]}' >"$redd/s.json"
+red_out="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$redd/config.json"
+    SCRIPT_DIR="$redd"
+    set +e
+    PATH="$STUBS:$PATH" _control_commit "$redd/s.json" "$redd/bk"
+) 2>/dev/null)"
+assert_contains "reject: invalid pool change rejected" "$red_out" "rejected"
+assert_absent "reject reason does not echo the raw config value" "$red_out" "SECRETMARKER"
+# tls-fingerprint is a per-pool field (not a top-level key): it is writable AS PART OF a pools change.
+tlsfp="$(printf 'a%.0s' $(seq 1 64))"
+assert_eq "commit: pools change carrying tls-fingerprint lands" "$(commit_case "$CFG_236" "{\"pools\":[{\"url\":\"h:3333\",\"tls\":true,\"tls-fingerprint\":\"$tlsfp\"}]}")" "committed|don=1|pool=h:3333|bk=1|tmp=0"
+# A backup is a HARD precondition: if the snapshot can't be written, the change is rejected and
+# config.json is left untouched (never commit a change we couldn't back up).
+bkfail="$(mktemp -d "$SANDBOX/bkf.XXXXXX")"
+printf '%s\n' "$CFG_236" >"$bkfail/config.json"
+printf '%s' '{"DONATION":4}' >"$bkfail/s.json"
+: >"$bkfail/backups" # a FILE where the backups dir must go -> mkdir -p fails
+bkf_out="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$bkfail/config.json"
+    SCRIPT_DIR="$bkfail"
+    set +e
+    PATH="$STUBS:$PATH" _control_commit "$bkfail/s.json" "$bkfail/backups"
+) 2>/dev/null)"
+assert_contains "commit: unwritable backup dir -> rejected" "$bkf_out" "rejected backup-failed"
+assert_eq "commit: backup failure leaves config.json untouched (donation 1)" "$(jq -r .DONATION "$bkfail/config.json")" "1"
 
 echo "== unit: control_apply orchestration + rollback (#236) =="
 CA="$(mktemp -d "$SANDBOX/ca.XXXXXX")"
 ca_exec() {
     (
         source "$SCRIPT"
-        parse_config() { :; }                                # the live config is already valid; don't re-validate it
-        _control_do_apply() { [ "${CA_APPLY_OK:-1}" = 1 ]; } # stub apply+liveness; 0 = miner didn't come back
+        parse_config() { :; } # the live config is already valid; don't re-validate it
+        # Stub apply + liveness (not _control_do_apply itself) so its real body runs: apply is a
+        # no-op, CA_APPLY_OK drives whether the miner "comes back" (0 -> the rollback path).
+        apply() { return 0; }
+        _wait_miner_live() { [ "${CA_APPLY_OK:-1}" = 1 ]; }
         OS_TYPE=Linux
         SCRIPT_DIR="$CA"
         CONFIG_JSON="$CA/config.json"
@@ -5196,6 +5247,7 @@ else
     assert_eq "POST not JSON -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d 'nope')" "400"
     assert_eq "POST empty object -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{}')" "400"
     assert_eq "POST wrong content-type -> 415" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: text/plain' -d '{"DONATION":2}')" "415"
+    assert_eq "POST without a Content-Length -> 411" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -H 'Transfer-Encoding: chunked' -d '{"DONATION":2}')" "411"
     assert_eq "POST unknown route -> 404" "$(hc -X POST "$U/nope" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "404"
     assert_eq "PUT -> 405 (writes only via /apply)" "$(hc -X PUT "$U/apply" -H "Authorization: Bearer $CTOK")" "405"
     assert_eq "GET /status before any apply -> 503" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "503"

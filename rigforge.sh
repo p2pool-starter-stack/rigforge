@@ -3598,15 +3598,24 @@ _control_commit() { # <staged.json> <backups-dir>
     # failure can't corrupt the caller's globals, and so a bad change can never reach config.json.
     if ! msg=$( (CONFIG_JSON="$cand" && parse_config) 2>&1); then
         rm -f "$cand"
-        echo "rejected invalid-config:$(printf '%s' "$msg" | grep -o '\[ERROR\][^\"]*' | head -1)"
+        echo "rejected invalid-config:$(printf '%s' "$msg" | grep -o '\[ERROR\][^\"]*' | head -1 | sed "s/'.*//")"
         return 1
     fi
-    # Only now, with a valid candidate, snapshot the old config and commit. Durable: fsync the
-    # data, atomic rename over config.json, fsync the directory entry.
-    mkdir -p "$backups"
-    stamp=$(date +%Y%m%d-%H%M%S)
+    # Only now, with a valid candidate, snapshot the old config and commit. A backup is a HARD
+    # precondition (ADR): never commit a change without first snapshotting the config it replaces —
+    # if the snapshot can't be written, reject the whole change and leave config.json untouched.
+    stamp=$(date -u +%Y%m%d-%H%M%S)
     backup="$backups/config-$stamp.json"
-    (umask 077 && cp "$CONFIG_JSON" "$backup")
+    if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$backup"); then
+        rm -f "$cand"
+        echo "rejected backup-failed"
+        return 1
+    fi
+    # config.json is secret-bearing (ACCESS_TOKEN, pool creds) and 0600 by contract; mv inherits the
+    # candidate's mode, so pin it to 0600 BEFORE the rename or the live config goes world-readable.
+    chmod 600 "$cand"
+    # Durable: flush the candidate's data and the backup to disk, then atomically rename over
+    # config.json (a crash leaves either the old file or the whole new one, never a torn config).
     sync
     mv -f "$cand" "$CONFIG_JSON"
     sync

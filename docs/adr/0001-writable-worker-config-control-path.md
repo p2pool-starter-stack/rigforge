@@ -16,9 +16,10 @@ The maintainer's sign-off resolved the open questions and added two hard require
 - **D-OPEN-3 → pool switching is allowed.** `api_allow_from` pins the only writer to the stack host,
   so remote failover orchestration is in scope.
 - **D-OPEN-4 → version deferred** to release curation (a backwards-compatible MINOR feature).
-- **Durability (new requirement):** the merged config is written to a temp file, `sync`-ed, atomically
-  renamed over `config.json`, and the directory entry `sync`-ed — the change is durable the instant it
-  is acknowledged, never torn.
+- **Durability (new requirement):** the merged config is written to a temp file, flushed to disk with `sync`, then
+  atomically renamed over `config.json` (a crash leaves either the old file or the whole new one,
+  never a torn config). A backup is a hard precondition — a change that can't be snapshotted first
+  is rejected, never committed.
 - **Timestamped backups (new requirement):** every applied change first snapshots the current
   `config.json` to `config-backups/config-<UTC-stamp>.json` (owner-readable, pruned to
   `KEEP_CONFIG_BACKUPS`, default 20), so the operator can inspect old configs or recover by copying
@@ -54,7 +55,8 @@ The control path accepts changes only to a fixed allowlist of operationally-muta
 
 - `pools` (validated with the same host/port/pass rules `parse_config` and first-run setup already enforce)
 - `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`, `max_temp_c`
-- per-pool `tls-fingerprint`
+
+A per-pool `tls-fingerprint` rides inside a `pools` change (it is a field on a pool object, not a top-level key).
 
 Explicitly **not** writable through this path (they change identity, trust, filesystem paths, or the control path's own auth, so remote mutation would be a privilege or trust escalation): `HOME_DIR`, `miner_user`, `ACCESS_TOKEN`, `api`/`api_port`/`api_bind`/`api_allow_from`, and `control`/`control_port` themselves. Those stay operator-only, changed on the rig.
 
