@@ -181,7 +181,7 @@ daily loop that churns the miner to re-confirm a result that rarely changes.
 - After an `upgrade`, the real trigger. The fastest knobs can shift between XMRig versions, so once a
   rebuild finishes (and the new build is live) RigForge re-tunes it automatically.
 - A monthly safety-net timer. The default cadence is monthly, to catch slow drift (thermal, ambient
-  temperature, fan/dust). Change it with `AUTOTUNE_ONCALENDAR` (any [systemd calendar](https://www.freedesktop.org/software/systemd/man/systemd.time.html)
+  temperature, fan/dust). Change it with `AUTOTUNE_ONCALENDAR` (any [systemd calendar](https://www.freedesktop.org/software/systemd/man/latest/systemd.time.html)
   spec) before `setup`, e.g. `AUTOTUNE_ONCALENDAR=weekly sudo ./rigforge.sh setup`.
 
 Review the schedule, the next run, and recent decisions any time with `rigforge tune --history` (or

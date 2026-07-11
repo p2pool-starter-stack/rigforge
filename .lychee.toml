@@ -8,8 +8,9 @@ timeout = 20
 # anonymous limit. Still accept 429 so a transient rate-limit on some other host can't fail the run.
 accept = ["200..=299", "429"]
 
-# Some hosts reject non-browser user agents; present a common one.
-user_agent = "Mozilla/5.0 (compatible; lychee/0.24; +https://github.com/lycheeverse/lychee)"
+# No custom user_agent: lychee's default passes every link we have, while the old
+# "Mozilla-compatible" string tripped freedesktop.org's bot detection (HTTP 418) the moment the
+# config actually started loading (see the --config fix in the Makefile).
 
 # no-color.org resolves fine in a browser but consistently times out from GitHub runner IPs
 # (reproduced twice, 2026-07-11 — 0 real errors both runs, only this timeout). Exclude it rather
