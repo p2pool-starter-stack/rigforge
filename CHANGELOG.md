@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-11
+
 ### Added
 
 - **Writable control path (#236).** An opt-in, fail-closed producer for pithead's Worker Inspect:
