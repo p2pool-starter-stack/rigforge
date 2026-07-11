@@ -46,11 +46,14 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Security
 
-- **The canonical release refuses to ship unsigned (#205).** When `MINISIGN_SECRET_KEY` is absent
-  on this repository the release workflow fails with instructions instead of publishing with a
-  buried notice — v1.4.0 and v1.5.0 both shipped unsigned exactly that way. Forks keep the
-  unsigned-with-notice path. Dependabot now watches the SHA-pinned actions (the repo's only
-  dependency ecosystem).
+- **Release signing removed by decision; checksums stay (#205).** The minisign machinery from
+  #137 never actually signed a release (no keypair existed until the 2026-07-11 audit), and its
+  protection only materializes for users who pin the public key outside the repo — nobody, for a
+  project deployed from git tags. Rather than carry key-custody forever for a hypothetical,
+  releases now ship `SHA256SUMS` only, and SECURITY.md says plainly what that does and doesn't
+  prove. The signing machinery stays in git history if a download-based user base ever makes the
+  trade worth it. Dependabot now watches the SHA-pinned actions, and a weekly workflow opens
+  build-verified PRs when upstream XMRig releases (#225).
 
 ## [1.5.1] - 2026-07-10
 

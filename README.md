@@ -85,14 +85,14 @@ the `xmrig` service then starts automatically.
 ➡️ **Full walkthrough:** [docs/getting-started.md](docs/getting-started.md)
 
 Installing from a [release download](https://github.com/p2pool-starter-stack/rigforge/releases)
-instead of a clone? Verify it first — releases ship a minisign-signed checksum file:
+instead of a clone? Verify the checksums first:
 
 ```bash
-minisign -Vm SHA256SUMS -p minisign.pub   # pubkey from the repo / SECURITY.md, not the download
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-See [SECURITY.md › Release signing](SECURITY.md#release-signing) for the key and details.
+See [SECURITY.md › Release integrity](SECURITY.md#release-integrity) for what this does and
+doesn't prove — deploying from a git checkout at the release tag is the stronger anchor.
 
 ---
 
