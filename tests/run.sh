@@ -149,7 +149,8 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
     -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g" \
-    -e "s|\${WATCHDOG_INTERVAL_MIN}|${WATCHDOG_INTERVAL_MIN:-}|g"
+    -e "s|\${WATCHDOG_INTERVAL_MIN}|${WATCHDOG_INTERVAL_MIN:-}|g" \
+    -e "s|\$CONTROL_BIND|${CONTROL_BIND:-}|g" -e "s|\$CONTROL_PORT|${CONTROL_PORT:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
     local cmd
@@ -2148,7 +2149,7 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
 # sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
@@ -4918,6 +4919,310 @@ if [ "$APISRV_SKIP" = 0 ]; then
         ok "server refuses to start on an unreadable config (fail closed)"
     fi
 fi # APISRV_SKIP
+
+# ---------------------------------------------------------------------------
+# Writable control path (#236): the producer for pithead #185. Separate opt-in endpoint, fail-closed
+# dual auth, an allowlist of mutable keys, an unprivileged staged receiver, and a privileged applier
+# that snapshots + validates before it commits and rolls back a change that doesn't come back live.
+CFG_236='{ "pools": [{"url":"h:3333"}], "DONATION": 1 }'
+
+echo "== unit: parse_config — control keys + fail-closed dual auth (#236) =="
+cm236() { parse_and_print "$1" "$ROOT" CONTROL_MODE; }
+c="$(mkconf ctl_def "{ $POOL }")"
+assert_eq "control absent -> disabled" "$(cm236 "$c")" "disabled"
+assert_eq "control_port defaults to 8082" "$(parse_and_print "$c" "$ROOT" CONTROL_PORT)" "8082"
+assert_eq "control_bind defaults to 0.0.0.0" "$(parse_and_print "$c" "$ROOT" CONTROL_BIND)" "0.0.0.0"
+c="$(mkconf ctl_off "{ $POOL, \"control\": \"disabled\" }")"
+assert_eq "control disabled -> disabled" "$(cm236 "$c")" "disabled"
+c="$(mkconf ctl_notok "{ $POOL, \"control\": \"enabled\", \"api_allow_from\": \"10.0.0.5\" }")"
+assert_contains "control enabled w/o token hard-errors (fail closed)" "$(parse_fails "$c")" "requires ACCESS_TOKEN"
+c="$(mkconf ctl_noallow "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\" }")"
+assert_contains "control enabled w/o api_allow_from hard-errors (fail closed)" "$(parse_fails "$c")" "requires api_allow_from"
+c="$(mkconf ctl_ok "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\" }")"
+assert_eq "control enabled w/ token + source -> enabled" "$(cm236 "$c")" "enabled"
+c="$(mkconf ctl_true "{ $POOL, \"control\": true, \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\" }")"
+assert_eq "control legacy true -> enabled" "$(cm236 "$c")" "enabled"
+c="$(mkconf ctl_badval "{ $POOL, \"control\": \"maybe\" }")"
+assert_contains "control typo hard-errors" "$(parse_fails "$c")" 'Invalid "control" value'
+c="$(mkconf ctl_p0 "{ $POOL, \"control_port\": 0 }")"
+assert_contains "control_port 0 rejected" "$(parse_fails "$c")" "control_port must be"
+c="$(mkconf ctl_pbig "{ $POOL, \"control_port\": 99999 }")"
+assert_contains "control_port 99999 rejected" "$(parse_fails "$c")" "control_port must be"
+c="$(mkconf ctl_p8080 "{ $POOL, \"control_port\": 8080 }")"
+assert_contains "control_port 8080 (XMRig) rejected" "$(parse_fails "$c")" "collides with XMRig"
+c="$(mkconf ctl_pcol "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"api\": \"enabled\", \"api_port\": 8082, \"control_port\": 8082 }")"
+assert_contains "control_port colliding with the sister API rejected" "$(parse_fails "$c")" "collides with the sister API"
+c="$(mkconf ctl_bind "{ $POOL, \"control_bind\": \"nope\" }")"
+assert_contains "control_bind non-IP rejected" "$(parse_fails "$c")" "control_bind must be"
+c="$(mkconf ctl_keys "{ $POOL, \"control\": \"disabled\", \"control_port\": 8082, \"control_bind\": \"0.0.0.0\" }")"
+ctl_warns="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
+))"
+assert_absent "control* keys are known (no unknown-key warning) (#138/#236)" "$ctl_warns" "unknown key"
+
+echo "== black-box: install_control units enable/disable (#236) =="
+CPS="$(mktemp -d "$SANDBOX/cps.XXXXXX")"
+mkdir -p "$CPS/systemd"
+cp "$ROOT/systemd/rigforge-control.service.template" "$ROOT/systemd/rigforge-control-apply.service.template" "$ROOT/systemd/rigforge-control-apply.path.template" "$CPS/systemd/"
+cp -R "$ROOT/util" "$CPS/" 2>/dev/null || true
+run_control_install() { # <disabled|enabled> [port]
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$CPS"
+        SYSTEMD_DIR="$CPS/systemd"
+        REAL_USER=rfop
+        CONTROL_MODE="$1"
+        CONTROL_BIND=0.0.0.0
+        CONTROL_PORT="${2:-8082}"
+        API_ALLOW_FROM=10.0.0.5
+        API_PORT=8081
+        ACCESS_TOKEN=tok-secret
+        set +e
+        PATH="$STUBS:$PATH" install_control 2>&1
+    )
+}
+out="$(run_control_install enabled)"
+assert_eq "control enable writes the server unit" "$([ -f "$CPS/systemd/rigforge-control.service" ] && echo y || echo n)" "y"
+assert_eq "control enable writes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "y"
+assert_eq "control enable writes the path watcher" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
+assert_contains "server unit runs control-server.py with the configured bind/port" "$(cat "$CPS/systemd/rigforge-control.service")" "control-server.py 0.0.0.0 8082"
+assert_eq "server is unprivileged (DynamicUser)" "$(grep -c '^DynamicUser=yes$' "$CPS/systemd/rigforge-control.service")" "1"
+assert_eq "server has a writable StateDirectory spool" "$(grep -c '^StateDirectory=rigforge-control$' "$CPS/systemd/rigforge-control.service")" "1"
+assert_contains "applier unit baked with the operator (#reown)" "$(cat "$CPS/systemd/rigforge-control-apply.service")" "RIGFORGE_OPERATOR=rfop"
+assert_contains "path watcher globs the pending files" "$(cat "$CPS/systemd/rigforge-control-apply.path")" "PathExistsGlob=/var/lib/rigforge-control/spool/pending-*.json"
+assert_absent "no token baked into any control unit" "$(cat "$CPS/systemd/rigforge-control.service" "$CPS/systemd/rigforge-control-apply.service" "$CPS/systemd/rigforge-control-apply.path")" "tok-secret"
+out="$(run_control_install enabled 9099)"
+assert_contains "control server honours the port override" "$(cat "$CPS/systemd/rigforge-control.service")" "control-server.py 0.0.0.0 9099"
+out="$(run_control_install disabled)"
+assert_eq "control disable removes the server unit" "$([ -f "$CPS/systemd/rigforge-control.service" ] && echo y || echo n)" "n"
+assert_eq "control disable removes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "n"
+assert_eq "control disable removes the path watcher" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "n"
+run_ctl_fw() { # <api_mode> <control_mode> -> the rendered nft rule
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$CPS/wr"
+        mkdir -p "$CPS/wr"
+        API_ALLOW_FROM=10.0.0.5
+        API_MODE="$1"
+        API_PORT=8081
+        CONTROL_MODE="$2"
+        CONTROL_PORT=8082
+        set +e
+        PATH="$STUBS:$PATH" install_api_firewall >/dev/null 2>&1
+        cat "$CPS/wr/api-firewall.nft" 2>/dev/null
+    )
+}
+assert_contains "firewall scopes control_port when control enabled (#236)" "$(run_ctl_fw disabled enabled)" "8082"
+assert_absent "firewall omits control_port when control disabled" "$(run_ctl_fw disabled disabled)" "8082"
+
+echo "== unit: _control_commit — validate, backup, merge, atomic (#236) =="
+commit_case() { # <config-json> <staged-json> -> "<verb>|don=<d>|pool=<host>|bk=<n>|tmp=<n>"
+    local d
+    d=$(mktemp -d "$SANDBOX/cc.XXXXXX")
+    printf '%s\n' "$1" >"$d/config.json"
+    printf '%s' "$2" >"$d/staged.json"
+    local out verb
+    out=$( (
+        source "$SCRIPT"
+        CONFIG_JSON="$d/config.json"
+        SCRIPT_DIR="$d"
+        set +e
+        PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
+    ) 2>/dev/null)
+    verb="${out%% *}"
+    printf '%s|don=%s|pool=%s|bk=%s|tmp=%s' "$verb" \
+        "$(jq -r '.DONATION // "-"' "$d/config.json")" \
+        "$(jq -r '.pools[0].url // "-"' "$d/config.json")" \
+        "$(ls "$d/backups"/config-*.json 2>/dev/null | wc -l | tr -d ' ')" \
+        "$(ls "$d/config.json".control.* 2>/dev/null | wc -l | tr -d ' ')"
+}
+assert_eq "commit: valid scalar change lands + one backup" "$(commit_case "$CFG_236" '{"DONATION":5}')" "committed|don=5|pool=h:3333|bk=1|tmp=0"
+assert_eq "commit: pools array replaced" "$(commit_case "$CFG_236" '{"pools":[{"url":"newpool:4444"}]}')" "committed|don=1|pool=newpool:4444|bk=1|tmp=0"
+assert_eq "commit: non-writable key rejected, nothing written" "$(commit_case "$CFG_236" '{"ACCESS_TOKEN":"x"}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: invalid value rejected (parse gate), nothing written" "$(commit_case "$CFG_236" '{"DONATION":200}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: non-object rejected" "$(commit_case "$CFG_236" '[1,2]')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: empty object rejected" "$(commit_case "$CFG_236" '{}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: writable+non-writable mix rejected atomically" "$(commit_case "$CFG_236" '{"DONATION":3,"HOME_DIR":"/x"}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+# missing staged file -> unreadable branch; broken config -> merge-fail branch
+missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
+printf '%s\n' "$CFG_236" >"$missing_d/config.json"
+assert_contains "commit: unreadable staged file rejected" "$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$missing_d/config.json"
+    SCRIPT_DIR="$missing_d"
+    set +e
+    PATH="$STUBS:$PATH" _control_commit "$missing_d/nope.json" "$missing_d/bk"
+) 2>/dev/null)" "rejected"
+broken_d=$(mktemp -d "$SANDBOX/cb.XXXXXX")
+printf '%s' '{broken json' >"$broken_d/config.json"
+printf '%s' '{"DONATION":2}' >"$broken_d/s.json"
+assert_contains "commit: unmergeable base config rejected (not committed)" "$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$broken_d/config.json"
+    SCRIPT_DIR="$broken_d"
+    set +e
+    PATH="$STUBS:$PATH" _control_commit "$broken_d/s.json" "$broken_d/bk"
+) 2>/dev/null)" "rejected"
+# recovery: the backup is a faithful copy of the PRE-change config
+recov="$(mktemp -d "$SANDBOX/rec.XXXXXX")"
+printf '%s\n' "$CFG_236" >"$recov/config.json"
+printf '%s' '{"DONATION":9}' >"$recov/s.json"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$recov/config.json"
+    SCRIPT_DIR="$recov"
+    set +e
+    PATH="$STUBS:$PATH" _control_commit "$recov/s.json" "$recov/backups" >/dev/null 2>&1
+)
+assert_eq "commit: backup preserves the OLD config for recovery" "$(jq -r '.DONATION' "$recov/backups"/config-*.json)" "1"
+assert_eq "commit: new config carries the change" "$(jq -r '.DONATION' "$recov/config.json")" "9"
+
+echo "== unit: control_apply orchestration + rollback (#236) =="
+CA="$(mktemp -d "$SANDBOX/ca.XXXXXX")"
+ca_exec() {
+    (
+        source "$SCRIPT"
+        parse_config() { :; }                                # the live config is already valid; don't re-validate it
+        _control_do_apply() { [ "${CA_APPLY_OK:-1}" = 1 ]; } # stub apply+liveness; 0 = miner didn't come back
+        OS_TYPE=Linux
+        SCRIPT_DIR="$CA"
+        CONFIG_JSON="$CA/config.json"
+        REAL_USER=rfop
+        RIGFORGE_CONTROL_STATE="$CA/state"
+        set +e
+        PATH="$STUBS:$PATH" control_apply >/dev/null 2>&1
+    )
+}
+ca_run() { # <config> <staged|""> <apply_ok 1|0>
+    rm -rf "$CA"
+    mkdir -p "$CA/state/spool"
+    printf '%s\n' "$1" >"$CA/config.json"
+    [ -n "$2" ] && printf '%s' "$2" >"$CA/state/spool/pending-abc123.json"
+    CA_APPLY_OK="$3" ca_exec
+}
+cst() { jq -r ".$1" "$CA/state/status.json" 2>/dev/null; }
+ca_run "$CFG_236" "" 1
+assert_eq "apply: nothing staged writes no status" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "n"
+ca_run "$CFG_236" '{"DONATION":7}' 1
+assert_eq "apply: valid change -> status applied" "$(cst status)" "applied"
+assert_eq "apply: source stamped 'control'" "$(cst source)" "control"
+assert_eq "apply: changed_keys recorded" "$(cst 'changed_keys[0]')" "DONATION"
+assert_eq "apply: config committed (donation 7)" "$(jq -r .DONATION "$CA/config.json")" "7"
+assert_eq "apply: exactly one backup made" "$(ls "$CA"/config-backups/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "apply: spool drained" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+ca_run "$CFG_236" '{"ACCESS_TOKEN":"x"}' 1
+assert_eq "apply: non-writable staged -> status rejected" "$(cst status)" "rejected"
+assert_eq "apply: rejected leaves config untouched (donation 1)" "$(jq -r .DONATION "$CA/config.json")" "1"
+assert_eq "apply: rejected drains the spool" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+ca_run "$CFG_236" '{"DONATION":42}' 0
+assert_eq "apply: failed liveness -> status rolled_back" "$(cst status)" "rolled_back"
+assert_eq "apply: rollback restores the old config (donation 1)" "$(jq -r .DONATION "$CA/config.json")" "1"
+# supersede: two staged -> only the newest applies, older dropped, no double restart
+rm -rf "$CA"
+mkdir -p "$CA/state/spool"
+printf '%s\n' "$CFG_236" >"$CA/config.json"
+printf '%s' '{"DONATION":3}' >"$CA/state/spool/pending-old.json"
+sleep 1
+printf '%s' '{"DONATION":8}' >"$CA/state/spool/pending-new.json"
+CA_APPLY_OK=1 ca_exec
+assert_eq "apply: newest staged change wins (donation 8)" "$(jq -r .DONATION "$CA/config.json")" "8"
+assert_eq "apply: superseded staged changes all drained" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+# prune: KEEP_CONFIG_BACKUPS caps the history
+PB="$(mktemp -d "$SANDBOX/pb.XXXXXX")"
+mkdir -p "$PB/bk"
+for i in 1 2 3 4 5; do printf '{}' >"$PB/bk/config-2026010$i-000000.json"; done
+(
+    source "$SCRIPT"
+    set +e
+    KEEP_CONFIG_BACKUPS=2 _reown_config_backups "$PB/bk"
+)
+assert_eq "backups pruned to KEEP_CONFIG_BACKUPS" "$(ls "$PB/bk"/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "2"
+# black-box dispatch: Linux-only guard + extra-arg rejection
+cb_out="$( (STUB_UNAME_S=Darwin RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply </dev/null) 2>&1 || true)"
+if [ "$(uname -s)" = Linux ]; then
+    assert_contains "control-apply on Linux needs a config (reached the verb)" "$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply </dev/null) 2>&1 || true)" "configuration"
+else
+    assert_contains "control-apply refuses off-Linux" "$cb_out" "Linux-only"
+fi
+cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply --extra </dev/null) 2>&1 || true)"
+assert_contains "control-apply rejects extra args" "$cb_out" "Unexpected argument for control-apply"
+
+echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
+bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
+py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
+assert_eq "control writable-keys match across rigforge.sh + control-server.py (#236)" "$bash_ckeys" "$py_ckeys"
+
+echo "== black-box: the control server (#236) =="
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "  SKIP: python3 not present (kcov container) — the control-server wire suite runs in the other CI jobs"
+else
+    python3 -m py_compile "$ROOT/util/control-server.py" && ok "control-server.py compiles" || bad "control-server.py does not compile" ""
+    CSRV="$(mktemp -d "$SANDBOX/csrv.XXXXXX")"
+    mkdir -p "$CSRV/state"
+    CTOK="tok-ctl1"
+    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s" }\n' "$CTOK" >"$CSRV/config.json"
+    CPORT=$((20000 + RANDOM % 20000))
+    python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT" "$CSRV/state" "$CSRV/config.json" &
+    CSRV_PID=$!
+    U="http://127.0.0.1:$CPORT"
+    cup=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -s -o /dev/null --max-time 2 -H "Authorization: Bearer $CTOK" "$U/status" 2>/dev/null; then
+            cup=1
+            break
+        fi
+        sleep 0.3
+    done
+    assert_eq "control server comes up" "$cup" "1"
+    hc() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
+    assert_eq "POST unauthed -> 401" "$(hc -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
+    assert_eq "POST wrong token -> 401" "$(hc -X POST "$U/apply" -H "Authorization: Bearer nope" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
+    resp="$(curl -sS --max-time 5 -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"
+    assert_absent "401 body never echoes the token" "$resp" "$CTOK"
+    body="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"
+    assert_contains "POST allowed key -> accepted" "$body" '"status": "accepted"'
+    assert_contains "accepted returns a change_id" "$body" '"change_id"'
+    assert_eq "one change staged as pending-*.json" "$(ls "$CSRV/state/spool"/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "1"
+    assert_eq "no temp file left in the spool (atomic stage)" "$(ls "$CSRV/state/spool"/.tmp-* 2>/dev/null | wc -l | tr -d ' ')" "0"
+    body="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"ACCESS_TOKEN":"x"}' 2>/dev/null)"
+    assert_contains "POST non-writable key -> 400 naming it" "$body" "ACCESS_TOKEN"
+    assert_eq "POST non-writable key -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"HOME_DIR":"/x"}')" "400"
+    assert_eq "POST not JSON -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d 'nope')" "400"
+    assert_eq "POST empty object -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{}')" "400"
+    assert_eq "POST wrong content-type -> 415" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: text/plain' -d '{"DONATION":2}')" "415"
+    assert_eq "POST unknown route -> 404" "$(hc -X POST "$U/nope" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "404"
+    assert_eq "PUT -> 405 (writes only via /apply)" "$(hc -X PUT "$U/apply" -H "Authorization: Bearer $CTOK")" "405"
+    assert_eq "GET /status before any apply -> 503" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "503"
+    printf '{"status":"applied","change_id":"z"}' >"$CSRV/state/status.json"
+    assert_eq "GET /status after an apply -> 200" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "200"
+    bigbody="$(head -c 70000 /dev/zero | tr '\0' 'a')"
+    assert_eq "POST oversized body -> 413" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' --data-binary "$bigbody")" "413"
+    kill "$CSRV_PID" 2>/dev/null || true
+    wait "$CSRV_PID" 2>/dev/null || true
+    # Fail closed: a config with no ACCESS_TOKEN must make the WRITABLE path refuse everyone.
+    printf '{ "pools":[{"url":"h:3333"}] }\n' >"$CSRV/config.json"
+    python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT" "$CSRV/state" "$CSRV/config.json" &
+    NT_PID=$!
+    ntup=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -X POST "$U/apply" -H 'Content-Type: application/json' -d '{}' 2>/dev/null)"
+        [ -n "$code" ] && [ "$code" != "000" ] && {
+            ntup=1
+            break
+        }
+        sleep 0.3
+    done
+    assert_eq "no-token control server bound" "$ntup" "1"
+    assert_eq "no-token control server: POST -> 403 (fail closed)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer anything" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "403"
+    kill "$NT_PID" 2>/dev/null || true
+    wait "$NT_PID" 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # #183: rig_lock — the flock both release gates take before touching the shared rig (miner-0).

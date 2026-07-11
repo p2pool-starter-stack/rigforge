@@ -7,6 +7,21 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Writable control path (#236).** An opt-in, fail-closed producer for pithead's Worker Inspect:
+  a *separate* authenticated endpoint (default `:8082`, `control`/`control_port`/`control_bind`)
+  that lets the stack apply config changes through RigForge, so `config.json` stays the source of
+  truth. Enabling it requires *both* `ACCESS_TOKEN` and `api_allow_from` (a writable API with no
+  token or no pinned source is refused with a hard error), and the nftables scoping extends to the
+  control port. An unprivileged receiver validates the shape of a change and stages it off the
+  request path (so a write never touches mining); a path-triggered root oneshot snapshots the old
+  config to a timestamped `config-backups/`, re-validates against RigForge's key allowlist (only
+  `pools`, `DONATION`, `autotune`, `watchdog`(+interval), `max_temp_c` are writable — never
+  identity, trust, path, or auth keys), writes it durably (fsync + atomic rename), applies it, and
+  rolls back anything that doesn't come back to a live hashrate. `GET /status` reports the outcome
+  with `source: "control"`. Design and decisions in `docs/adr/0001`. Linux-only; off by default.
+
 ## [1.6.0] - 2026-07-11
 
 ### Added

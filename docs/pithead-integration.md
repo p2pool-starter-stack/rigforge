@@ -165,6 +165,22 @@ connects from, also need matching configuration on both sides
 
 ---
 
+## 3. Writable control path (`:8082`, producer for Worker Inspect)
+
+Off by default. When you set `"control": "enabled"` (plus the required `ACCESS_TOKEN` and
+`api_allow_from`), the rig serves a *separate* authenticated write endpoint that lets the stack
+apply config changes through RigForge — the RigForge-side producer for pithead's Worker Inspect
+(pithead #185). It is deliberately independent of the read API: a `POST :8082/apply` of an
+allowlisted change (`pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`,
+`max_temp_c`) returns `202 Accepted`; RigForge validates, snapshots the old config, applies it, and
+rolls back anything that doesn't come back live. The stack reads the new effective config back from
+`:8081/2/summary` and polls `:8082/status` for the outcome. The write path is pinned to the stack
+host by `api_allow_from` (mandatory) — the miner never accepts a config from anywhere else. Full
+mechanics and the security model: [Operations › Writable control path](operations.md#writable-control-path-opt-in)
+and [ADR 0001](adr/0001-writable-worker-config-control-path.md).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |

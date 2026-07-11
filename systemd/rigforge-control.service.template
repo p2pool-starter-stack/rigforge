@@ -1,0 +1,31 @@
+[Unit]
+Description=RigForge control server (writable config endpoint, staged apply)
+After=network.target
+
+[Service]
+# The writable counterpart to the sister API (#236). This process is UNPRIVILEGED and only stages
+# validated changes to its StateDirectory spool; a separate root oneshot applies them. So a write
+# never touches mining, and a compromise here can at most drop a staged change the applier
+# re-validates. ${STATE_DIRECTORY}/spool holds pending changes; ${STATE_DIRECTORY}/status.json is
+# the last applied result (written by the root applier, served here). ${CREDENTIALS_DIRECTORY} is
+# expanded by systemd: root loads the 0600 config.json as a credential so this DynamicUser can read
+# the ACCESS_TOKEN without owning the file. RIGFORGE_API_PORT only decorates the 202 response hint.
+ExecStart=/usr/bin/python3 $SCRIPT_DIR/util/control-server.py $CONTROL_BIND $CONTROL_PORT ${STATE_DIRECTORY} ${CREDENTIALS_DIRECTORY}/config
+LoadCredential=config:$SCRIPT_DIR/config.json
+Environment=RIGFORGE_API_PORT=$API_PORT
+Restart=always
+RestartSec=5
+# Never root: it faces the network and takes writes, so a throwaway dynamic user turns a would-be
+# root compromise into nobody's. StateDirectory gives it a writable spool that survives restarts.
+DynamicUser=yes
+StateDirectory=rigforge-control
+Nice=19
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

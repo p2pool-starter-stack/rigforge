@@ -26,7 +26,7 @@ For how RigForge is versioned and released, see [`RELEASING.md`](../RELEASING.md
 
 Significant, cross-cutting decisions are recorded as ADRs under [`adr/`](adr/):
 
-- [ADR 0001: Writable worker-config control path](adr/0001-writable-worker-config-control-path.md) — *Proposed.* How the stack applies config changes through RigForge without breaking the read-only sister API.
+- [ADR 0001: Writable worker-config control path](adr/0001-writable-worker-config-control-path.md) — *Accepted.* How the stack applies config changes through RigForge without breaking the read-only sister API.
 
 ## Quick links
 

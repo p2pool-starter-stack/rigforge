@@ -1,0 +1,12 @@
+[Unit]
+Description=RigForge control spool watcher (fires the applier when a change is staged)
+
+[Path]
+# Event-driven, zero idle cost: fire the applier the instant a staged change appears, and re-arm
+# once it drains the spool. The pending-*.json glob skips the receiver's dot-prefixed temp files,
+# so the applier never sees a half-written request.
+PathExistsGlob=/var/lib/rigforge-control/spool/pending-*.json
+Unit=rigforge-control-apply.service
+
+[Install]
+WantedBy=paths.target

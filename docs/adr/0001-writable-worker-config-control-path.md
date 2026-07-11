@@ -1,8 +1,28 @@
 # ADR 0001: Writable worker-config control path
 
-- **Status:** Proposed (decision-gating — see [#236](https://github.com/p2pool-starter-stack/rigforge/issues/236)). Not to be implemented until the marked decisions are signed off by the maintainer and coordinated with the pithead consumer.
+- **Status:** Accepted and implemented (#236). The maintainer signed off the open decisions on 2026-07-11 (see Resolution); the pithead #185 consumer contract is coordinated cross-repo.
 - **Date:** 2026-07-11
 - **Deciders:** RigForge maintainer + pithead #185 owner (cross-repo).
+
+## Resolution (2026-07-11)
+
+The maintainer's sign-off resolved the open questions and added two hard requirements:
+
+- **D-OPEN-1 → decoupled/staged (D2).** "Must not hit performance" settles it: the receiver stays
+  unprivileged and off the mining path; the privileged applier is a separate path-triggered
+  oneshot. The contract is accepted-then-poll.
+- **D-OPEN-2 → a dedicated `control_port` (8082).** RigForge stays independently usable; the write
+  path does not depend on pithead's internal channel.
+- **D-OPEN-3 → pool switching is allowed.** `api_allow_from` pins the only writer to the stack host,
+  so remote failover orchestration is in scope.
+- **D-OPEN-4 → version deferred** to release curation (a backwards-compatible MINOR feature).
+- **Durability (new requirement):** the merged config is written to a temp file, `sync`-ed, atomically
+  renamed over `config.json`, and the directory entry `sync`-ed — the change is durable the instant it
+  is acknowledged, never torn.
+- **Timestamped backups (new requirement):** every applied change first snapshots the current
+  `config.json` to `config-backups/config-<UTC-stamp>.json` (owner-readable, pruned to
+  `KEEP_CONFIG_BACKUPS`, default 20), so the operator can inspect old configs or recover by copying
+  one back and running `apply`.
 
 ## Context
 
@@ -10,7 +30,7 @@ The sister API (#99/#164, `util/api-server.py`) is read-only by construction: `d
 
 pithead #185 ("Worker Inspect": read *and edit* a worker's config from the dashboard, with versioned history and hashrate-per-config) needs a **producer** on the RigForge side that does not yet exist. Writing straight to XMRig's native `/1/config` is rejected upfront: it bypasses RigForge, so the change would not persist (lost on the next `apply`/restart), would fight the autotune and watchdog timers, and would skip RigForge's validation. RigForge owns `config.json` and must remain the single source of truth, which means RigForge must mediate any remote write.
 
-This ADR decides the **shape** of that control path so implementation can follow. It does not implement it.
+This ADR decides the **shape** of that control path; it is now implemented (#236). The read-only sister API is unchanged.
 
 ## Decision
 
@@ -20,13 +40,13 @@ Add a **separate, opt-in, fail-closed control path** distinct from the read-only
 
 The read server stays GET-only and untouched. The control path is its own opt-in mechanism behind its own config key (`control`, default `"disabled"`) and its own port (`control_port`), never sharing the read API's process or port. Rationale: a mutation is a different trust posture than a read (mirrors pithead #33's host-mutation discipline), and the read process is `DynamicUser` and cannot write the 0600 `config.json` or run `apply` anyway.
 
-### D2. Unprivileged receiver, decoupled privileged applier (RECOMMENDED — needs sign-off)
+### D2. Unprivileged receiver, decoupled privileged applier (DECIDED)
 
 The network-facing receiver runs unprivileged. It authenticates, validates, and **stages** an accepted change to a spool file it is allowed to write; it does not itself persist to `config.json` or restart anything. A privileged, systemd-triggered oneshot (a `systemd.path` unit watching the spool, running `rigforge.sh apply` as root) performs the persist + restart through the existing gated path, keeping autotune and watchdog coherent.
 
 Consequence: the write is **accepted-then-applied**, not applied inline. The HTTP response is `202 Accepted` with a change id; pithead reads the new effective config back from the existing read API (`/2/summary`, which the refresh timer already serves) once apply completes. This preserves the invariant that reads never touch mutation and mutations never touch the read fast-path.
 
-The alternative — a receiver that runs with just enough privilege (a narrow `sudoers` entry for `rigforge.sh apply`) to persist and restart synchronously, so the HTTP call can return the applied result inline — is simpler for the consumer but puts a network-facing process one call away from a root apply. **This synchronous-vs-decoupled choice is the central open decision (see D-OPEN-1).**
+The alternative — a receiver that runs with just enough privilege (a narrow `sudoers` entry for `rigforge.sh apply`) to persist and restart synchronously, so the HTTP call can return the applied result inline — is simpler for the consumer but puts a network-facing process one call away from a root apply. The decoupled model was chosen (see Resolution, D-OPEN-1).
 
 ### D3. Bounded write unit: an allowlist of mutable knobs, not arbitrary config
 
@@ -48,9 +68,9 @@ Enabling `control` requires **both** `ACCESS_TOKEN` set **and** `api_allow_from`
 
 Validation runs on the staged change before anything is written. `config.json` is written by `jq` (values quoted structurally, as today), and the pool-field regexes are the injection guards, following the `api_allow_from` precedent where the validating regex is also the injection guard. A failed validation refuses the change and persists nothing.
 
-### D6. Rollback on failed apply (RECOMMENDED — needs sign-off)
+### D6. Rollback on failed apply (DECIDED)
 
-Before a control-applied change, snapshot the current `config.json` to a `.last-good` copy; if `apply` fails to bring the miner back to a live hashrate, restore `.last-good` and report the failure. A remote edit that wedges a rig must self-heal, not require a truck roll.
+Before a control-applied change lands, the current `config.json` is snapshotted to `config-backups/config-<stamp>.json`; if `apply` does not bring the miner back to a live hashrate, that snapshot is restored and re-applied, and the outcome is recorded as `rolled_back`. A remote edit that wedges a rig must self-heal, not require a truck roll.
 
 ### D7. Report source of change
 
@@ -70,7 +90,7 @@ Stamp each applied change with `source: "control"` and a timestamp, surfaced on 
 - Backwards compatible: a new MINOR capability. Version/milestone sequencing is the maintainer's call (see D-OPEN-4) given v1.6.0 was framed as the final 1.x before the appliance era.
 - The consumer contract is: `POST` a bounded change → `202 Accepted` + change id → poll `/2/summary` for the new effective config. pithead keeps its own versioned history and hashrate-per-config correlation.
 
-## Open questions (must be resolved before implementation)
+## Open questions (resolved 2026-07-11 — see Resolution above)
 
 - **D-OPEN-1 (central):** Synchronous scoped-privilege receiver vs. decoupled staged applier (D2). Recommendation: decoupled/staged. Confirm, because it sets the consumer contract (inline applied-result vs accepted-then-poll).
 - **D-OPEN-2 (cross-repo):** Stand up a new `control_port`, or ride pithead's existing per-worker authenticated channel (pithead #172)? A new port is self-contained; reusing #172 avoids a second auth surface. Needs the pithead owner.

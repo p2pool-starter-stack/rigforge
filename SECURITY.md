@@ -40,6 +40,18 @@ rather than silently dropping the token). The probe pass that produces those fil
 separate idle-priority timer. It additionally serves RigForge's tune/health/power data — still
 stats, never a control surface.
 
+The optional writable control path (`:8082`, `"control": "enabled"` — **off by default**, #236) is
+the one endpoint that accepts writes, and it is fail-closed by construction. Enabling it requires
+*both* a Bearer `ACCESS_TOKEN` and an `api_allow_from` source pin, or setup refuses to start it —
+the stack host is the only trusted writer, so the miner never accepts a config from a
+miner-advertised or arbitrary host. The network receiver is unprivileged (`DynamicUser`) and only
+stages a change; a separate root oneshot re-validates it against RigForge's key allowlist (only
+operationally-mutable keys — never `ACCESS_TOKEN`, `miner_user`, `HOME_DIR`, or the API/control keys
+themselves), writes it durably, and rolls back anything that doesn't come back live. Config is
+written by `jq` (values quoted structurally) and the old config is snapshotted to `config-backups/`
+first, so a bad or hostile change cannot inject a command, corrupt `config.json`, or lose the
+previous config. See [ADR 0001](docs/adr/0001-writable-worker-config-control-path.md).
+
 Not running Pithead? Nothing else needs the port; `tune` and `doctor` read
 the API over `127.0.0.1`. So if you mine solo or to a public pool, you can firewall
 `:8080` off entirely without losing anything:
