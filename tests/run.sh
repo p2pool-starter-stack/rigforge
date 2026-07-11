@@ -2151,6 +2151,22 @@ dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
+# #207: per-verb FLAG drift guard — hand-maintained map (verbs gain flags rarely; the failure
+# message says exactly where to add one). The verb-level guard above can't see flags.
+while IFS=: read -r cverb cflags; do
+    for cf in $cflags; do
+        case "$comp_out" in
+        *"$cf"*) ok "completion: $cverb offers $cf (#207)" ;;
+        *) bad "completion: $cverb offers $cf (#207)" "add '$cf' to the $cverb) COMPREPLY case in _completion_bash" ;;
+        esac
+    done
+done <<'FLAGMAP'
+setup:--dry-run
+apply:--dry-run
+upgrade:--check
+bios:--perf --efficiency
+uninstall:-y --yes
+FLAGMAP
 assert_contains "completion zsh: bashcompinit shim first (#145)" "$(bash "$SCRIPT" completion zsh | head -1)" "bashcompinit"
 printf '%s\n' "$comp_out" >"$SANDBOX/rigforge-completion.bash"
 bash -c "source '$SANDBOX/rigforge-completion.bash' && type _rigforge >/dev/null" && ok "completion script sources cleanly (#145)" || bad "completion script failed to source (#145)"
