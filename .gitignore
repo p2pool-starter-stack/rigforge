@@ -10,6 +10,9 @@ config.json
 # Backup archives (rigforge backup)
 /backups/
 
+# Config snapshots written by the control path before each applied change (#236)
+/config-backups/
+
 # Coverage output + cache (make coverage / CI coverage job)
 /coverage/
 /.coverage-cache/
