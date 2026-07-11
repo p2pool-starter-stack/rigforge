@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-11
+
 ### Added
 
 - **Thermal sensing works on hwmon-only boards (#208).** `_read_temp` falls back to the CPU hwmon
@@ -15,18 +17,40 @@ All notable changes to RigForge are documented here. The format is based on
   silently blind. A thermal zone still wins when present; nothing readable stays empty (a missing
   sensor never stops a miner). Docs carry the Tctl caveat: k10temp reads a control temperature
   that runs high by design, so damage-avoidance cutoffs belong well above the everyday reading.
-- **EPYC NPS regression detection (#201).** A multi-CCD EPYC reporting a single NUMA node is NPS1
-  — a BIOS update or CMOS reset silently eats the NPS4 setting and costs RandomX its per-node
-  datasets. `doctor`'s firmware advisory and the guided `bios` walkthrough now flag it (with the
-  AMD CBS menu path) via one shared detector; desktop parts and unverifiable topologies are never
-  flagged. The generic `power_boost` menu text also gains the server-board spellings (cTDP /
-  Package Power Limit / Determinism) — 7 of 8 fleet rigs fall through to the generic vendor.
 - **Watchdog state on the wire (#212).** The sister API's `rigforge` object gains a `watchdog`
   block — mode, `thermal_hold`, `max_temp_c` / `resumes_below_c`, live `temp_c`, and the strike
   count — and `/health` carries it too. A thermally-held miner now says "held, resumes below N"
   on the one component still alive instead of looking mystery-dead; a wedge being counted is
   visible before the restart lands. Absent or garbled state files degrade to defaults, never a
   failed refresh.
+- **EPYC NPS regression detection (#201).** A multi-CCD EPYC reporting a single NUMA node is NPS1
+  — a BIOS update or CMOS reset silently eats the NPS4 setting and costs RandomX its per-node
+  datasets. `doctor`'s firmware advisory and the guided `bios` walkthrough now flag it (with the
+  AMD CBS menu path) via one shared detector; desktop parts and unverifiable topologies are never
+  flagged. The generic `power_boost` menu text also gains the server-board spellings (cTDP /
+  Package Power Limit / Determinism).
+
+### Changed
+
+- **Per-rig benchmark recording is now also the per-rig perf gate (#214).** `E2E_PERF_RECORD=1`
+  judges against the committed baseline and best-ever history *before* writing; a regressed
+  measurement fails the phase and records nothing (`E2E_PERF_FORCE=1` is the conscious
+  re-record override). Previously the recording run — the only perf run most rigs ever got —
+  skipped the judgment entirely.
+- **Perf recording tells you how to finish the job (#206).** A recorded run prints the files to
+  collect and the post-merge rig reset (`git checkout -- tests/perf-baselines/`) that keeps the
+  next tag deploy from aborting on a dirty checkout; RELEASING.md carries the same step.
+- **Tab completion caught up with the CLI (#207).** `setup`/`apply --dry-run`, `upgrade --check`,
+  and `bios --perf/--efficiency` now complete, and a flag-level drift guard keeps future flags
+  from shipping uncompleted.
+
+### Security
+
+- **The canonical release refuses to ship unsigned (#205).** When `MINISIGN_SECRET_KEY` is absent
+  on this repository the release workflow fails with instructions instead of publishing with a
+  buried notice — v1.4.0 and v1.5.0 both shipped unsigned exactly that way. Forks keep the
+  unsigned-with-notice path. Dependabot now watches the SHA-pinned actions (the repo's only
+  dependency ecosystem).
 
 ## [1.5.1] - 2026-07-10
 
