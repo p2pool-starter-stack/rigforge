@@ -20,9 +20,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ github.ref_name }}
-      # Pinned + checksum-verified, same discipline as the shellcheck/shfmt installs in ci.yml.
-      MINISIGN_VERSION: "0.12"
-      MINISIGN_SHA256: "9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -51,43 +48,6 @@ jobs:
           sha256sum "$stage.zip" "$stage.tar.gz" > SHA256SUMS
           echo "--- SHA256SUMS ---"; cat SHA256SUMS
 
-      # Origin proof, not just integrity (#137): sign SHA256SUMS so a swapped checksums file is
-      # detectable. Fork-safe — without the MINISIGN_SECRET_KEY secret the release publishes
-      # unsigned (checksums only) with a notice, so forks and dry-runs never break.
-      - name: Sign SHA256SUMS (minisign)
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        run: |
-          set -Eeuo pipefail
-          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
-            # Forks and dry-runs may publish unsigned; the canonical repo must NOT (#205) —
-            # SECURITY.md promises verifiable releases, and a ::notice on a green run is
-            # invisible. v1.4.0 and v1.5.0 both shipped unsigned exactly this way.
-            if [ "${GITHUB_REPOSITORY}" = "p2pool-starter-stack/rigforge" ]; then
-              echo "::error::MINISIGN_SECRET_KEY is not set on the canonical repo — add the repo secret (Settings > Secrets) or this release cannot ship. See SECURITY.md > Release signing."
-              exit 1
-            fi
-            echo "::notice::MINISIGN_SECRET_KEY not set - publishing unsigned (fork or dry-run)."
-            exit 0
-          fi
-          tarball="minisign-${MINISIGN_VERSION}-linux.tar.gz"
-          curl -fsSL "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/${tarball}" -o "$tarball"
-          echo "${MINISIGN_SHA256}  ${tarball}" | sha256sum -c -
-          tar -xzf "$tarball"
-          sudo install "minisign-linux/x86_64/minisign" /usr/local/bin/minisign
-          minisign -v
-          # The key exists only in $RUNNER_TEMP, 0600, for the lifetime of this step.
-          umask 077
-          keyfile="$RUNNER_TEMP/minisign.key"
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$keyfile"
-          # -t ties the signature to this tag so a valid .minisig can't be replayed onto another
-          # release's SHA256SUMS.
-          minisign -Sm SHA256SUMS -s "$keyfile" -W -t "RigForge $TAG"
-          rm -f "$keyfile"
-          # Fail the release NOW if the secret and the committed pubkey have drifted apart —
-          # better than shipping a signature nobody can verify.
-          minisign -Vm SHA256SUMS -p minisign.pub
-
       - name: Extract release notes from CHANGELOG.md
         run: |
           set -euo pipefail
@@ -113,9 +73,9 @@ jobs:
           # Create the release as a DRAFT so a human reviews the generated notes + bundles and clicks
           # "Publish" — a deliberate gate for a tool that installs a root miner. Drop --draft here to
           # go back to publishing automatically on tag push.
+          # Checksums only, by decision (2026-07-11): release signing was removed — see
+          # SECURITY.md > Release integrity. SHA256SUMS proves the bundle matches what CI built.
           assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS)
-          # Present only when the signing step ran (MINISIGN_SECRET_KEY set).
-          [ -f SHA256SUMS.minisig ] && assets+=(SHA256SUMS.minisig)
           gh release create "$TAG" $pre --draft \
             --title "RigForge $TAG" \
             --notes-file RELEASE_NOTES.md \
