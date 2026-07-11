@@ -60,6 +60,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            # Forks and dry-runs may publish unsigned; the canonical repo must NOT (#205) —
+            # SECURITY.md promises verifiable releases, and a ::notice on a green run is
+            # invisible. v1.4.0 and v1.5.0 both shipped unsigned exactly this way.
+            if [ "${GITHUB_REPOSITORY}" = "p2pool-starter-stack/rigforge" ]; then
+              echo "::error::MINISIGN_SECRET_KEY is not set on the canonical repo — add the repo secret (Settings > Secrets) or this release cannot ship. See SECURITY.md > Release signing."
+              exit 1
+            fi
             echo "::notice::MINISIGN_SECRET_KEY not set - publishing unsigned (fork or dry-run)."
             exit 0
           fi
