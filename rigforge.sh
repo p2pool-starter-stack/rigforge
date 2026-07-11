@@ -4087,8 +4087,14 @@ EOF
     case "$smt" in
     off | forceoff) smt_rec="SMT/Hyper-Threading is disabled — enable it in BIOS (SMT / Hyper-Threading) so RandomX can use every logical core." ;;
     esac
+    # NPS on EPYC (#201): a BIOS update or CMOS reset silently drops NPS4 to NPS1 and costs
+    # RandomX its per-node datasets — detectable, so say so. Advisory only; NPS1 mines, just slower.
+    local nps_rec=""
+    if [ -n "$(_nps_suspect "$cpu")" ]; then
+        nps_rec="EPYC reports a single NUMA node (NPS1) — set NUMA nodes per socket to NPS4 in BIOS ($(_bios_menu "$bvendor" numa_nps perf)) so RandomX gets quadrant-local memory."
+    fi
     if [ -n "$bvendor$board$bios" ]; then
-        if [ -n "$xmp_rec$smt_rec" ]; then
+        if [ -n "$xmp_rec$smt_rec$nps_rec" ]; then
             _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the BIOS/UEFI item(s) below (RigForge can't change them from the OS)."
         else
             _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — no BIOS changes recommended."
@@ -4096,6 +4102,7 @@ EOF
     fi
     if [ -n "$xmp_rec" ]; then _ck_warn "$xmp_rec"; fi
     if [ -n "$smt_rec" ]; then _ck_warn "$smt_rec"; fi
+    if [ -n "$nps_rec" ]; then _ck_warn "$nps_rec"; fi
 
     # XMRig's own startup report (HUGE PAGES 100% means the dataset is fully backed). Reuses the
     # log_file resolved above for the MSR-applied check.
@@ -4126,9 +4133,37 @@ EOF
 # One probe pass; results in globals (the S_* style tune uses). Detection expressions are byte-for-
 # byte doctor's (#78: memory 2998-form, SMT, boost) so `bios` and `doctor` can never disagree about
 # the same rig. Each item: B_<X>_STATUS = ok|pending|unknown, B_<X>_BEFORE = short human value.
+# NPS regression detection (#201): a multi-CCD EPYC at NPS1 (one NUMA node) leaves quadrant-local
+# memory on the table — XMRig allocates one RandomX dataset per NUMA node. Echoes "1" when the
+# topology looks wrong (EPYC model + exactly one node dir), else nothing. Desktop parts correctly
+# report one node and are never flagged; missing sysfs (n=0) is unverifiable, not suspect.
+# Shared by doctor's #78 advisory and _bios_detect (the #80 rule: they can never disagree).
+_nps_suspect() { # <cpu_model> -> echoes the node count when suspect, else nothing
+    case "$1" in *EPYC*) ;; *) return 0 ;; esac
+    local n=0 d
+    for d in "${NODE_SYSFS:-/sys/devices/system/node}"/node[0-9]*; do
+        [ -d "$d" ] && n=$((n + 1))
+    done
+    [ "$n" -eq 1 ] && echo "$n"
+    return 0
+}
+
 _bios_detect() {
-    local mem pop nch spd rated smt effk maxk pct
+    local mem pop nch spd rated smt effk maxk pct cpu_m
     B_MEM_STATUS=unknown B_MEM_BEFORE="" B_SMT_STATUS=unknown B_SMT_BEFORE="" B_BOOST_STATUS=unknown B_BOOST_BEFORE=""
+    B_NPS_STATUS=unknown B_NPS_BEFORE=""
+    cpu_m=$(lscpu 2>/dev/null | awk -F: '/^Model name:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || true)
+    case "$cpu_m" in
+    *EPYC*)
+        if [ -n "$(_nps_suspect "$cpu_m")" ]; then
+            B_NPS_STATUS=pending
+            B_NPS_BEFORE="1 NUMA node (NPS1)"
+        else
+            B_NPS_STATUS=ok
+            B_NPS_BEFORE="multiple NUMA nodes"
+        fi
+        ;;
+    esac
     mem=$(_mem_summary)
     read -r pop nch spd rated <<<"${mem:-0 0 0 0}"
     if [ "${rated:-0}" -gt 0 ] 2>/dev/null && [ "${spd:-0}" -gt 0 ] 2>/dev/null; then
@@ -4178,11 +4213,12 @@ _bios_menu() { # <board_vendor> <item_id> <target> -> menu-path line(s) on stdou
     memory_profile:msi) echo "OC ▸ A-XMP / EXPO ▸ Profile 1" ;;
     memory_profile:*) echo "look for the memory profile setting (XMP / EXPO / DOCP) and enable profile 1" ;;
     smt:*) echo "Advanced ▸ CPU Configuration ▸ SMT / Hyper-Threading ▸ Enabled" ;;
+    numa_nps:*) echo "Advanced ▸ AMD CBS ▸ DF Common Options ▸ Memory Addressing ▸ NUMA nodes per socket ▸ NPS4" ;;
     power_boost:*)
         if [ "$3" = efficiency ]; then
-            printf '%s\n' "PBO ▸ Eco Mode (65 W TDP)" "Curve Optimizer ▸ All Cores ▸ Negative ▸ 20"
+            printf '%s\n' "PBO ▸ Eco Mode (65 W TDP)" "Curve Optimizer ▸ All Cores ▸ Negative ▸ 20" "Server boards (EPYC): AMD CBS ▸ NBIO ▸ cTDP — set the lower cTDP the SKU supports"
         else
-            echo "Advanced ▸ AMD Overclocking ▸ Precision Boost Overdrive ▸ Enabled (Advanced) (Intel: lift the PL1/PL2 power limits)"
+            printf '%s\n' "Advanced ▸ AMD Overclocking ▸ Precision Boost Overdrive ▸ Enabled (Advanced) (Intel: lift the PL1/PL2 power limits)" "Server boards (EPYC): AMD CBS ▸ NBIO ▸ cTDP / Package Power Limit at the SKU maximum, Determinism Control ▸ Performance"
         fi
         ;;
     esac
@@ -4196,6 +4232,7 @@ _bios_state_write() { # <state_file>; reads the B_* globals + TUNE_TARGET
     if [ "$B_MEM_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_MEM_BEFORE" --arg m "$(_bios_menu "$vendor" memory_profile "$TUNE_TARGET")" -n '$a + [{id: "memory_profile", status: "pending", before: $b, menu: $m}]'); fi
     if [ "$B_SMT_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_SMT_BEFORE" --arg m "$(_bios_menu "$vendor" smt "$TUNE_TARGET")" -n '$a + [{id: "smt", status: "pending", before: $b, menu: $m}]'); fi
     if [ "$B_BOOST_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_BOOST_BEFORE" --arg m "$(_bios_menu "$vendor" power_boost "$TUNE_TARGET")" -n '$a + [{id: "power_boost", status: "pending", before: $b, menu: $m}]'); fi
+    if [ "$B_NPS_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_NPS_BEFORE" --arg m "$(_bios_menu "$vendor" numa_nps "$TUNE_TARGET")" -n '$a + [{id: "numa_nps", status: "pending", before: $b, menu: $m}]'); fi
     jq -n --arg t "$TUNE_TARGET" --arg when "$(date '+%Y-%m-%d %H:%M')" --argjson items "$items" '{target: $t, saved: $when, items: $items}' >"$f"
     log "Saved $(jq -r '.items | length' "$f") pending item(s) to $f."
 }
@@ -4205,6 +4242,7 @@ _bios_item_label() { # <id> -> human label
     memory_profile) printf 'Memory profile' ;;
     smt) printf 'SMT / Hyper-Threading' ;;
     power_boost) printf 'CPU boost / power' ;;
+    numa_nps) printf 'NUMA per socket (NPS)' ;;
     esac
 }
 
