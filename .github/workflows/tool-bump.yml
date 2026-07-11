@@ -1,0 +1,120 @@
+name: CI tool pin bump
+
+# Self-healing pin hygiene, part 2 (#228): the CI tools installed by curl-with-checksum or docker
+# digest — shellcheck, shfmt, gitleaks, kcov — are the pins Dependabot can't see. Weekly, each
+# stale tool becomes its own bot PR with the version AND the recomputed checksum/digest. The
+# dispatched checks on the branch are the verification: a shellcheck bump is linted BY the new
+# shellcheck, a gitleaks bump scans with the new gitleaks, a kcov bump measures on the new image.
+# Same posture as the xmrig bump (#225): bot proposes, CI gates, a human clicks merge.
+on:
+  schedule:
+    - cron: "30 6 * * 1" # Mondays 06:30 UTC, between the xmrig bump and the zizmor re-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write # dispatch ci.yml/security.yml onto bump branches (token PRs can't self-trigger)
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false # zizmor: artipacked; the push authenticates explicitly below
+      - name: Check every pinned tool, open one PR per stale pin
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          failed=0
+
+          # <branch> <title> <bodyfile>: commit whatever is staged, push, PR, start required checks.
+          open_pr() {
+            local branch="$1" title="$2" bodyfile="$3"
+            git checkout -b "$branch"
+            git commit -am "$title"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+            gh pr create --base develop --head "$branch" --title "$title" --body-file "$bodyfile"
+            gh workflow run ci.yml --ref "$branch"
+            gh workflow run security.yml --ref "$branch"
+            git checkout -q -
+          }
+
+          # <name> <upstream-repo> <current> -> prints the newer bare version, or nothing
+          newer_release() {
+            local name="$1" repo="$2" current="$3" latest
+            latest=$(gh api "repos/${repo}/releases/latest" --jq .tag_name)
+            latest="${latest#v}"
+            if ! printf '%s' "$latest" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+              echo "::error::${name}: upstream tag '${latest}' failed validation" >&2
+              return 2 # distinct from the benign empty-output paths: the caller records a failure
+            fi
+            [ "$latest" = "$current" ] && return 0
+            if [ "$(gh pr list --state open --head "bot/${name}-${latest}" --json number --jq length)" != "0" ]; then
+              echo "${name}: PR for ${latest} already open" >&2
+              return 0
+            fi
+            printf '%s' "$latest"
+          }
+
+          # <url> -> prints the artifact's sha256
+          artifact_sha() {
+            curl -fsSL "$1" -o /tmp/artifact
+            sha256sum /tmp/artifact | cut -d' ' -f1
+          }
+
+          # --- shellcheck (ci.yml) ---
+          cur=$(grep -oE 'SHELLCHECK_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
+          if new=$(newer_release shellcheck koalaman/shellcheck "$cur") && [ -n "$new" ]; then
+            sha=$(artifact_sha "https://github.com/koalaman/shellcheck/releases/download/v${new}/shellcheck-v${new}.linux.x86_64.tar.xz")
+            sed -i "s|SHELLCHECK_VERSION: \"${cur}\"|SHELLCHECK_VERSION: \"${new}\"|; s|SHELLCHECK_SHA256: \"[0-9a-f]*\"|SHELLCHECK_SHA256: \"${sha}\"|" .github/workflows/ci.yml
+            printf 'Automated pin bump (#228): shellcheck %s -> %s, checksum recomputed from the release artifact.\n\nThe Lint check on this PR runs the NEW shellcheck — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/shellcheck-${new}" "chore(ci): bump shellcheck to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- shfmt (ci.yml) ---
+          cur=$(grep -oE 'SHFMT_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
+          if new=$(newer_release shfmt mvdan/sh "$cur") && [ -n "$new" ]; then
+            sha=$(artifact_sha "https://github.com/mvdan/sh/releases/download/v${new}/shfmt_v${new}_linux_amd64")
+            sed -i "s|SHFMT_VERSION: \"${cur}\"|SHFMT_VERSION: \"${new}\"|; s|SHFMT_SHA256: \"[0-9a-f]*\"|SHFMT_SHA256: \"${sha}\"|" .github/workflows/ci.yml
+            printf 'Automated pin bump (#228): shfmt %s -> %s, checksum recomputed.\n\nThe Lint check on this PR formats with the NEW shfmt — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/shfmt-${new}" "chore(ci): bump shfmt to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- gitleaks (security.yml + .pre-commit-config.yaml, kept in lockstep) ---
+          cur=$(grep -oE 'GITLEAKS_VERSION: "[0-9.]+"' .github/workflows/security.yml | grep -oE '[0-9.]+')
+          if new=$(newer_release gitleaks gitleaks/gitleaks "$cur") && [ -n "$new" ]; then
+            sha=$(artifact_sha "https://github.com/gitleaks/gitleaks/releases/download/v${new}/gitleaks_${new}_linux_x64.tar.gz")
+            sed -i "s|GITLEAKS_VERSION: \"${cur}\"|GITLEAKS_VERSION: \"${new}\"|; s|GITLEAKS_SHA256: \"[0-9a-f]*\"|GITLEAKS_SHA256: \"${sha}\"|" .github/workflows/security.yml
+            sed -i "s|rev: v${cur}|rev: v${new}|" .pre-commit-config.yaml
+            printf 'Automated pin bump (#228): gitleaks %s -> %s in security.yml AND .pre-commit-config.yaml (lockstep), checksum recomputed.\n\nThe Secret scan on this PR runs the NEW gitleaks over full history — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/gitleaks-${new}" "chore(ci): bump gitleaks to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- kcov (tests/coverage.sh, digest-pinned docker image) ---
+          cur=$(grep -oE '# kcov v[0-9]+' tests/coverage.sh | grep -oE '[0-9]+')
+          latest=$(curl -fsS "https://hub.docker.com/v2/repositories/kcov/kcov/tags?page_size=100" | jq -r '.results[].name' | grep -E '^v[0-9]+$' | sort -V | tail -1)
+          if printf '%s' "$latest" | grep -qE '^v[0-9]+$' && [ "v${cur}" != "$latest" ]; then
+            if [ "$(gh pr list --state open --head "bot/kcov-${latest}" --json number --jq length)" = "0" ]; then
+              digest=$(curl -fsS "https://hub.docker.com/v2/repositories/kcov/kcov/tags/${latest}" | jq -r .digest)
+              if printf '%s' "$digest" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+                sed -i "s|kcov/kcov@sha256:[0-9a-f]*|kcov/kcov@${digest}|; s|# kcov v${cur} |# kcov ${latest} |" tests/coverage.sh
+                printf 'Automated pin bump (#228): kcov image v%s -> %s, digest re-pinned from Docker Hub.\n\nThe Coverage check on this PR measures under the NEW image — passing checks are the verification.\n' "$cur" "$latest" >/tmp/body.md
+                open_pr "bot/kcov-${latest}" "chore(ci): bump the kcov image to ${latest} (bot)" /tmp/body.md
+              else
+                echo "::error::kcov: digest for ${latest} failed validation"; failed=1
+              fi
+            else
+              echo "kcov: PR for ${latest} already open"
+            fi
+          else
+            echo "kcov: pin is current (v${cur}) — or Docker Hub was unreachable this run"
+          fi
+
+          exit "$failed"
