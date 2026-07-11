@@ -84,13 +84,13 @@ The public key (also committed as [`minisign.pub`](./minisign.pub) at the repo r
 repo, not from the release download you are verifying):
 
 ```text
-MINISIGN_PUBKEY_PLACEHOLDER
+RWRKYil2M08SdLLstyBQAG8q7+z6HD5q8HCEcu0DKJT/j3RFdUjn6Y0u
 ```
 
 To verify a release: download the assets plus `SHA256SUMS` and `SHA256SUMS.minisig`, then
 
 ```bash
-minisign -Vm SHA256SUMS -P "MINISIGN_PUBKEY_PLACEHOLDER"   # or: -p minisign.pub from a repo checkout
+minisign -Vm SHA256SUMS -P "RWRKYil2M08SdLLstyBQAG8q7+z6HD5q8HCEcu0DKJT/j3RFdUjn6Y0u"   # or: -p minisign.pub from a repo checkout
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
