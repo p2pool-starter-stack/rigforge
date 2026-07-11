@@ -564,6 +564,36 @@ summary() {
 # benchmarks are never lost to an overwrite. The gate then checks the measurement against BOTH the
 # current baseline AND the best history entry — refreshing the baseline every release can never
 # ratchet hashrate downward tolerance-by-tolerance without a visible failure.
+# Judge a measurement against the committed baseline AND the best-ever history entry (#186).
+# Prints the ok/bad verdict lines and returns 1 on any regression — shared by judge mode and
+# record mode (#214), so the two can never disagree about what "regressed" means.
+_perf_judge() { # <hr> <baseline.json> <history.jsonl> <tolerance_pct>
+    local hr="$1" bl="$2" hist="$3" tol="$4" base best rcj=0
+    base=$(jq -r '.bench_1m_hs // empty' "$bl" 2>/dev/null || true)
+    if [ -z "$base" ]; then
+        bad "perf: baseline $bl is unreadable"
+        return 1
+    fi
+    if awk -v h="$hr" -v b="$base" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
+        ok "perf: $hr H/s within ${tol}% of baseline $base ($(jq -r '.recorded' "$bl" 2>/dev/null))"
+    else
+        bad "perf REGRESSION: $hr H/s vs baseline $base H/s (tolerance ${tol}%) — investigate before releasing"
+        rcj=1
+    fi
+    if [ -f "$hist" ]; then
+        best=$(jq -s 'map(.bench_1m_hs) | max // empty' "$hist" 2>/dev/null || true)
+        if [ -n "$best" ]; then
+            if awk -v h="$hr" -v b="$best" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
+                ok "perf: $hr H/s within ${tol}% of this host's best-ever $best"
+            else
+                bad "perf RATCHET: $hr H/s vs best-ever $best H/s (tolerance ${tol}%) — slow drift across releases; investigate before releasing"
+                rcj=1
+            fi
+        fi
+    fi
+    return "$rcj"
+}
+
 perf() {
     phase "perf — offline bench vs the committed $(hostname) baseline"
     local bl hist out hr base best tol="${E2E_PERF_TOLERANCE_PCT:-5}"
@@ -583,6 +613,16 @@ perf() {
         return 0
     fi
     if [ -n "${E2E_PERF_RECORD:-}" ]; then
+        # #214: judge BEFORE writing — recording is the only perf run most rigs ever get, and a
+        # regressed number must never become the new baseline by default. E2E_PERF_FORCE=1 is the
+        # conscious "re-record anyway" override from RELEASING.md's investigate-or-re-record flow.
+        if [ -f "$bl" ] && ! _perf_judge "$hr" "$bl" "$hist" "$tol"; then
+            if [ -z "${E2E_PERF_FORCE:-}" ]; then
+                bad "perf: NOT recorded — the measurement regressed (see above). Fix the regression, or consciously re-record with E2E_PERF_FORCE=1."
+                return 0
+            fi
+            printf '  \033[1;33m∙\033[0m E2E_PERF_FORCE=1 — recording a REGRESSED measurement as the new baseline\n'
+        fi
         mkdir -p "$(dirname "$bl")"
         jq -n --arg hs "$hr" --arg cpu "$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1)" --arg when "$(date '+%Y-%m-%d')" '{bench_1m_hs: ($hs | tonumber), cpu: $cpu, recorded: $when}' >"$bl"
         jq -cn --arg hs "$hr" --arg tag "${E2E_PERF_TAG:-}" --arg when "$(date '+%Y-%m-%d')" '{tag: $tag, recorded: $when, bench_1m_hs: ($hs | tonumber)}' >>"$hist"
@@ -597,28 +637,8 @@ perf() {
         printf '  \033[1;33m∙\033[0m no baseline for %s — measured %s H/s; record with E2E_PERF_RECORD=1 and commit tests/perf-baselines/\n' "$(hostname)" "$hr"
         return 0
     fi
-    base=$(jq -r '.bench_1m_hs // empty' "$bl" 2>/dev/null || true)
-    if [ -z "$base" ]; then
-        bad "perf: baseline $bl is unreadable"
-        return 0
-    fi
-    if awk -v h="$hr" -v b="$base" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
-        ok "perf: $hr H/s within ${tol}% of baseline $base ($(jq -r '.recorded' "$bl" 2>/dev/null))"
-    else
-        bad "perf REGRESSION: $hr H/s vs baseline $base H/s (tolerance ${tol}%) — investigate before releasing"
-    fi
-    # Anti-ratchet: also judge against the best benchmark this host has EVER recorded, so a
-    # baseline refreshed each release can't walk hashrate down a few percent at a time.
-    if [ -f "$hist" ]; then
-        best=$(jq -s 'map(.bench_1m_hs) | max // empty' "$hist" 2>/dev/null || true)
-        if [ -n "$best" ]; then
-            if awk -v h="$hr" -v b="$best" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
-                ok "perf: $hr H/s within ${tol}% of this host's best-ever $best"
-            else
-                bad "perf RATCHET: $hr H/s vs best-ever $best H/s (tolerance ${tol}%) — slow drift across releases; investigate before releasing"
-            fi
-        fi
-    fi
+    # The bad lines inside the judge already counted any failure; nothing more to decide here.
+    _perf_judge "$hr" "$bl" "$hist" "$tol" || true
 }
 
 case "${1:-}" in

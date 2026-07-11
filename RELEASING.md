@@ -111,7 +111,10 @@ Pushing the tag triggers the release pipeline
 After the fleet is re-tagged, record each rig's benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
 the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
-catch slow drift across releases (see `tests/perf-baselines/README.md`). Once the collected
+catch slow drift across releases (see `tests/perf-baselines/README.md`). The recording is also
+the per-rig perf gate (#214): it judges against the committed baseline and best-ever history
+before writing, refuses to record a regressed number (fix it, or consciously override with
+`E2E_PERF_FORCE=1`), so a failed rig means investigate before calling the fleet healthy. Once the collected
 baselines are merged, reset each rig's copy (`sudo git checkout -- tests/perf-baselines/` in
 `/opt/rigforge`): the recording dirties the rig's checkout, and the *next* release's
 `git checkout <tag>` aborts on exactly those files (this bit both the v1.4.0 and v1.5.0 deploys).
