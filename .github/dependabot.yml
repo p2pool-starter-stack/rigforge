@@ -1,22 +1,11 @@
-# Keep the SHA-pinned GitHub Actions current. Dependabot bumps the commit pin AND the trailing
-# "# vX.Y.Z" comment together, and opens PRs for any security advisories affecting an action we use.
-#
-# Scope is github-actions ONLY (#117): RigForge is pure shell — no pip, npm, or docker ecosystems
-# to track. The XMRig source is pinned by version+commit and verified at build time, not via a
-# package manager, so it isn't a Dependabot ecosystem either.
+# Dependabot for the one dependency ecosystem this repo has: GitHub Actions.
+# Every action is SHA-pinned (zizmor enforces hygiene); this keeps the pins patched —
+# a bump PR lands when a pinned action ships a fix or a CVE.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/" # github-actions ecosystem watches .github/workflows/
+    directory: "/"
     schedule:
       interval: "weekly"
-    commit-message:
-      prefix: "ci" # -> "ci(deps): bump actions/checkout ..."
-      include: "scope"
     labels:
       - "infra"
-    groups:
-      # One rollup PR for all action bumps rather than one-per-action — low-noise for a repo this small.
-      github-actions:
-        patterns:
-          - "*"
