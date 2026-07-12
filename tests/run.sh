@@ -5569,6 +5569,24 @@ else
     assert_eq "refuses a symlinked lock path (scan hardening)" "$([ -f "$RLD/sym.acquired" ] && echo acquired || echo refused)" "refused"
     rm -f "$RLD/sym.lock"
 
+    # (#249) the kernel flock is genuinely HELD for the whole run — probe with a RAW `flock -n`
+    # (not rig_lock's own busy-check) so we assert the actual advisory lock sits on FD 9. The bug
+    # #249 caught was rig_lock returning success while the flock was never held (`exec 9>` failing
+    # silently on a root-owned lock under fs.protected_regular), leaving the shared box UNRESERVED.
+    # The read-open (#242) sidesteps that; here we prove the hold directly. (Re-confirmed live on
+    # the rig during the v1.8.0 gate: a raw `flock -n` failed 91/91 one-second probes over a perf run.)
+    RIG_LOCK_FILE="$RLD/held" RIG_LOCK_HOLDER="$RLD/held.holder"
+    rl_hold rigforge held-probe "" p
+    RL_PID_P=$!
+    rl_wait_up p || bad "held-probe holder never came up (#249)" "no up.p marker"
+    flock -n -x "$RIG_LOCK_FILE" true 2>/dev/null
+    assert_rc "raw flock -n FAILS while rig_lock holds it — flock genuinely held mid-run (#249)" "$?" "1"
+    touch "$RLD/release.p"
+    wait "$RL_PID_P" 2>/dev/null
+    sleep 0.3 # let a just-forked child that inherited fd 9 exit before the free-probe
+    flock -n -x "$RIG_LOCK_FILE" true 2>/dev/null
+    assert_rc "raw flock -n succeeds after the holder exits — flock released (#249)" "$?" "0"
+
     unset RIG_LOCK_FILE RIG_LOCK_HOLDER
 fi
 
