@@ -531,6 +531,12 @@ parse_config() {
         [ -n "${ACCESS_TOKEN:-}" ] || error "control: \"enabled\" requires ACCESS_TOKEN — a writable API with no token is an open remote config write. Set ACCESS_TOKEN in config.json."
         [ -n "${API_ALLOW_FROM:-}" ] || error "control: \"enabled\" requires api_allow_from — the writable path must be pinned to the stack host. Set api_allow_from in config.json."
     fi
+    # #243/scan: an IPv6 api_allow_from only scopes traffic the APIs actually receive over IPv6, but
+    # api_bind/control_bind default to IPv4 (0.0.0.0). Warn on the silent no-op — it fails safe (no
+    # reachable v6 to scope), but the operator's intent isn't met until they bind "::".
+    if [ "${API_ALLOW_FAMILY:-ip}" = ip6 ] && [[ "$API_BIND" != *:* ]] && [[ "$CONTROL_BIND" != *:* ]]; then
+        warn "api_allow_from is IPv6 but api_bind/control_bind are IPv4 (0.0.0.0) — the APIs aren't reachable over IPv6, so the v6 scope takes no effect. Set api_bind/control_bind to \"::\" to serve + scope IPv6."
+    fi
 
     # Privilege separation (#140): run the miner as this dedicated non-root system user. Empty
     # (default) keeps today's root behavior exactly. `root` is rejected — it would silently mean
@@ -1130,7 +1136,13 @@ table inet rigforge {
     }
 }
 NFT
-    sudo nft -f "$nft_file"
+    # Fail CLOSED: if nft rejects the ruleset (e.g. a charset-valid but structurally-invalid IPv6
+    # slipped past parse_config's guard), the API ports are NOT scoped — never log success. This is
+    # a security control, so a load failure is a hard error, not a warning swallowed by apply's
+    # `install_api_firewall || true`.
+    if ! sudo nft -f "$nft_file"; then
+        error "API firewall FAILED to load — nft rejected the ruleset for api_allow_from='$API_ALLOW_FROM'. The API ports are NOT restricted. Fix api_allow_from and re-run."
+    fi
     log "API firewall active — port(s) $ports reachable only from $API_ALLOW_FROM and loopback."
 }
 

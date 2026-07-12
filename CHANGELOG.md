@@ -18,6 +18,13 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **API firewall fails closed on a rejected ruleset (pre-release scan).** `install_api_firewall` now
+  checks that `nft -f` actually loaded the rules and hard-errors if it didn't, rather than `apply`
+  swallowing the failure with `|| true` and still logging "firewall active". A charset-valid but
+  structurally-invalid IPv6 `api_allow_from` could otherwise pass parse_config, fail to load, and
+  leave the API ports open while the log claimed they were scoped. parse_config also now warns when
+  `api_allow_from` is IPv6 but `api_bind`/`control_bind` are still IPv4 — a silent no-op scope.
+
 - **rig-lock helper: portable timestamp + non-root holder default (#244).** The shared `rig_lock`
   breadcrumb now defaults beside the lock (`<lockfile>.holder`) instead of root-owned
   `/run/rig-e2e.holder` (a non-root box couldn't write there — noise, no breadcrumb), and stamps
@@ -26,6 +33,7 @@ All notable changes to RigForge are documented here. The format is based on
   scan: dropped the `sudo chmod` fallback and added a symlink-path guard on the lock/holder (a
   planted symlink in world-writable `/run/lock` could otherwise redirect a root-side write).
   Test-infra only.
+
 - **rig-lock survives a non-root reserve (#242).** The shared `rig_lock` helper now opens
   `/var/lock/rig-e2e.lock` read-only (`9<`) instead of write (`9>`). A lock file first created by a
   non-root `flock` (a manual reserve after a reboot clears the `/run/lock` tmpfs) is owned by that
