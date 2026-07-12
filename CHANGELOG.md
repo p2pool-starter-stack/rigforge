@@ -18,6 +18,18 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **rig-lock holder write can never drop the flock (#249).** The shared `rig_lock` holder-marker
+  write is now strictly display-only and best-effort (`plain write → sudo -n tee → || true`); under
+  `set -Eeuo pipefail` a failed write to a non-writable holder path used to abort the run *after* the
+  flock was acquired, dropping it and leaving the shared box UNRESERVED — the exact collision the
+  lock exists to prevent. The EXIT-trap cleanup gained a `sudo -n rm` fallback for a root-written
+  marker. A new self-test probes the kernel flock directly (a raw `flock -n` fails while a run holds
+  it, succeeds after) so a "reports success but never held" regression can't return; this was also
+  re-confirmed live on the rig during the release gate (a raw `flock -n` failed 91/91 probes across a
+  perf run). The read-open from #242 stays the canonical approach — it holds the flock on FD 9 for the
+  whole run and survives `fs.protected_regular=2`, which the sibling pithead#484 `exec 9>` does not;
+  the pithead mirror should adopt the read-open for the two to be byte-identical. Test-infra only.
+
 - **API firewall fails closed on a rejected ruleset (pre-release scan).** `install_api_firewall` now
   checks that `nft -f` actually loaded the rules and hard-errors if it didn't, rather than `apply`
   swallowing the failure with `|| true` and still logging "firewall active". A charset-valid but
