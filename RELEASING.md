@@ -47,9 +47,6 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    API doesn't shave live hashrate. A perf regression fails the gate — investigate or consciously
    re-record the baseline before tagging.
 
-   ```bash
-   ```
-
    Each phase must report `E2E-REAL (<phase>): PASS`. This proves a release bundle actually
    builds, tunes, and hashes on real hardware, which the suites can't since they all stub XMRig.
    - Put a real, reachable pool in `config.json` first. Without one, `setup` writes an unroutable
