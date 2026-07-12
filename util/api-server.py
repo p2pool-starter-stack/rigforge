@@ -15,6 +15,7 @@ config typo into an open API.
 import hmac
 import json
 import os
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -85,4 +86,17 @@ if __name__ == "__main__":
     # single-threaded is that one held-open connection would block everyone (slowloris), so cap
     # how long a request may take to arrive.
     Handler.timeout = 10
-    HTTPServer((bind, port), Handler).serve_forever()
+    if ":" in bind:  # IPv6 bind (bind = :: or a v6 addr, #243); dual-stack so IPv4 clients still reach it
+        class _V6(HTTPServer):
+            address_family = socket.AF_INET6
+
+            def server_bind(self):
+                try:
+                    self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                except OSError:
+                    pass
+                HTTPServer.server_bind(self)
+
+        _V6((bind, port), Handler).serve_forever()
+    else:
+        HTTPServer((bind, port), Handler).serve_forever()

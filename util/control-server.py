@@ -21,6 +21,7 @@ Python3 stdlib only. GET /status returns the last applied change's result; POST 
 import hmac
 import json
 import os
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -160,4 +161,17 @@ if __name__ == "__main__":
     # Single-threaded like the read server: staging is microseconds, concurrency would only add ways
     # to race the spool. Cap request-arrival time so one held-open connection can't wedge it.
     Handler.timeout = 10
-    HTTPServer((bind, port), Handler).serve_forever()
+    if ":" in bind:  # IPv6 bind (bind = :: or a v6 addr, #243); dual-stack so IPv4 clients still reach it
+        class _V6(HTTPServer):
+            address_family = socket.AF_INET6
+
+            def server_bind(self):
+                try:
+                    self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                except OSError:
+                    pass
+                HTTPServer.server_bind(self)
+
+        _V6((bind, port), Handler).serve_forever()
+    else:
+        HTTPServer((bind, port), Handler).serve_forever()

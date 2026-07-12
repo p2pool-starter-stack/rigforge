@@ -4663,16 +4663,23 @@ c="$(mkconf api_bbad "{ $POOL, \"api_bind\": \"not an ip!\" }")"
 parse_rc "$c" "$ROOT"
 assert_rc "malformed api_bind rejected" "$?" "1"
 
-# #142: api_allow_from — valid IPv4/CIDR parse; bad octets, prefix, IPv6, hostname, and a shell
-# metachar all hard-error (the value reaches an nft file, so the regex is the injection guard too).
+# #142/#243: api_allow_from — valid IPv4 OR IPv6 address/CIDR parse (with the right nft family);
+# bad octets, prefixes, hostnames, and shell metachars all hard-error (the value reaches an nft
+# file, so the per-family charset is the injection guard too).
 for good in "192.168.1.10" "10.0.0.0/8"; do
     c="$(mkconf "af_ok_$RANDOM" "{ $POOL, \"api_allow_from\": \"$good\" }")"
-    assert_eq "api_allow_from '$good' parses (#142)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good"
+    assert_eq "api_allow_from '$good' parses IPv4 (#142)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good"
+    assert_eq "api_allow_from '$good' -> family ip (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip"
 done
-for bad in "256.1.1.1" "1.2.3.4/33" "fe80::1" "gouda.lan" "1.2.3.4; rm -rf /"; do
+for good6 in "fd00::/64" "2605:59c8::5" "fe80::1" "::1"; do
+    c="$(mkconf "af6_ok_$RANDOM" "{ $POOL, \"api_allow_from\": \"$good6\" }")"
+    assert_eq "api_allow_from '$good6' parses IPv6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good6"
+    assert_eq "api_allow_from '$good6' -> family ip6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip6"
+done
+for bad in "256.1.1.1" "1.2.3.4/33" "fd00::/200" "xyz::1" "gouda.lan" "1.2.3.4; rm -rf /" "fd00::/64 accept; drop"; do
     c="$(mkconf "af_bad_$RANDOM" "{ $POOL, \"api_allow_from\": \"$bad\" }")"
     parse_rc "$c" "$ROOT"
-    assert_rc "api_allow_from '$bad' rejected (#142)" "$?" "1"
+    assert_rc "api_allow_from '$bad' rejected (#142/#243)" "$?" "1"
 done
 
 # #140: miner_user — valid name parses; root and malformed names hard-error; absent = empty.
@@ -4718,6 +4725,23 @@ assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$
 run_fw "" disabled >/dev/null
 assert_eq "firewall: file removed when cleared (#142)" "$([ -f "$FW/api-firewall.nft" ] && echo y || echo n)" "n"
 assert_contains "firewall: table destroyed on teardown (#142)" "$(cat "$FW/calls.log")" "[nft] destroy table inet rigforge"
+# #243: an IPv6 api_allow_from renders an `ip6 saddr` rule (the inet table carries both families).
+run_fw6() {
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$FW"
+        API_ALLOW_FROM="$1"
+        API_ALLOW_FAMILY="$2"
+        API_MODE=disabled
+        API_PORT=8081
+        set +e
+        PATH="$STUBS:$PATH" CALL_LOG="$FW/calls.log" install_api_firewall >/dev/null 2>&1
+        cat "$FW/api-firewall.nft" 2>/dev/null
+    )
+}
+assert_contains "firewall: IPv6 source renders ip6 saddr (#243)" "$(run_fw6 "fd00::/64" ip6)" "ip6 saddr fd00::/64 accept"
+assert_contains "firewall: IPv4 source still renders ip saddr (#243)" "$(run_fw6 "10.0.0.9" ip)" "ip saddr 10.0.0.9 accept"
 # nft missing while enabled -> hard error (never silently leave the port open thinking it's guarded).
 NONFT="$(mktemp -d "$SANDBOX/nonft.XXXXXX")"
 for cmd in sudo tee; do cp "$STUBS/$cmd" "$NONFT/" 2>/dev/null || true; done
