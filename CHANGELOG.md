@@ -18,6 +18,14 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **rig-lock helper: portable timestamp + non-root holder default (#244).** The shared `rig_lock`
+  breadcrumb now defaults beside the lock (`<lockfile>.holder`) instead of root-owned
+  `/run/rig-e2e.holder` (a non-root box couldn't write there — noise, no breadcrumb), and stamps
+  `date -u +%Y-%m-%dT%H:%M:%SZ` instead of the GNU-only `date -Iseconds` (BSD/macOS rejects `-I`).
+  Mirrors the sibling pithead fix; both e2e helper copies stay identical. Also from a pre-release
+  scan: dropped the `sudo chmod` fallback and added a symlink-path guard on the lock/holder (a
+  planted symlink in world-writable `/run/lock` could otherwise redirect a root-side write).
+  Test-infra only.
 - **rig-lock survives a non-root reserve (#242).** The shared `rig_lock` helper now opens
   `/var/lock/rig-e2e.lock` read-only (`9<`) instead of write (`9>`). A lock file first created by a
   non-root `flock` (a manual reserve after a reboot clears the `/run/lock` tmpfs) is owned by that
