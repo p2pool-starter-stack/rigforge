@@ -4676,6 +4676,25 @@ for good6 in "fd00::/64" "2605:59c8::5" "fe80::1" "::1"; do
     assert_eq "api_allow_from '$good6' parses IPv6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good6"
     assert_eq "api_allow_from '$good6' -> family ip6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip6"
 done
+# scan/#243: an IPv6 allow_from with IPv4 (default) binds is a silent no-op — warn, don't fail.
+c="$(mkconf ipv6_nobind "{ $POOL, \"api\": \"enabled\", \"api_allow_from\": \"fd00::/64\" }")"
+w6="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
+))"
+assert_contains "IPv6 allow_from + IPv4 bind warns of the no-op scope (#243)" "$w6" "aren't reachable over IPv6"
+c="$(mkconf ipv6_bound "{ $POOL, \"api\": \"enabled\", \"api_allow_from\": \"fd00::/64\", \"api_bind\": \"::\" }")"
+w6b="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
+))"
+assert_absent "IPv6 allow_from + :: bind: no warn (#243)" "$w6b" "aren't reachable over IPv6"
 for bad in "256.1.1.1" "1.2.3.4/33" "fd00::/200" "xyz::1" "gouda.lan" "1.2.3.4; rm -rf /" "fd00::/64 accept; drop"; do
     c="$(mkconf "af_bad_$RANDOM" "{ $POOL, \"api_allow_from\": \"$bad\" }")"
     parse_rc "$c" "$ROOT"
@@ -4754,6 +4773,25 @@ out="$( (
     PATH="$NONFT" install_api_firewall 2>&1
 ))"
 assert_contains "firewall: missing nft is a hard error, not a silent no-guard (#142)" "$out" "install nftables"
+# scan: nft REJECTING the ruleset (not just missing) must also fail closed. A charset-valid but
+# structurally-invalid IPv6 can pass parse_config's guard yet make `nft -f` fail; install_api_firewall
+# now checks that exit and errors, instead of `apply`'s `|| true` swallowing it + a false success log.
+BADNFT="$(mktemp -d "$SANDBOX/badnft.XXXXXX")"
+printf '#!/usr/bin/env bash\n[ "$1" = -f ] && exit 1\nexit 0\n' >"$BADNFT/nft"
+chmod +x "$BADNFT/nft"
+fwrej="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$FW"
+    API_ALLOW_FROM="fd00::/64"
+    API_ALLOW_FAMILY=ip6
+    API_MODE=disabled
+    API_PORT=8081
+    set +e
+    PATH="$BADNFT:$STUBS:$PATH" install_api_firewall 2>&1
+))"
+assert_contains "firewall: nft load rejection fails closed (scan)" "$fwrej" "FAILED to load"
+assert_absent "firewall: no false 'active' log when nft rejects the ruleset (scan)" "$fwrej" "firewall active"
 
 echo "== black-box: install_api server/timer enable/disable (#99/#164) =="
 APS="$(mktemp -d "$SANDBOX/aps.XXXXXX")"
@@ -4943,6 +4981,34 @@ if [ "$APISRV_SKIP" = 0 ]; then
         ok "server refuses to start on an unreadable config (fail closed)"
     fi
 fi # APISRV_SKIP
+
+echo "== black-box: api-server IPv6 dual-stack bind (#243) =="
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import socket; s=socket.socket(socket.AF_INET6); s.bind(("::1",0)); s.close()' 2>/dev/null; then
+    V6="$(mktemp -d "$SANDBOX/v6.XXXXXX")"
+    printf '%s' '{"hashrate":{"total":[4242.5]}}' >"$V6/summary.json"
+    printf '%s' '{}' >"$V6/health.json"
+    printf '%s' '{}' >"$V6/tune.json"
+    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"tok-v6" }\n' >"$V6/config.json"
+    V6PORT=$((20000 + RANDOM % 20000))
+    python3 "$ROOT/util/api-server.py" "::" "$V6PORT" "$V6" "$V6/config.json" &
+    V6PID=$!
+    v6up=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        curl -s -g -o /dev/null --max-time 2 -H "Authorization: Bearer tok-v6" "http://[::1]:$V6PORT/health" 2>/dev/null && {
+            v6up=1
+            break
+        }
+        sleep 0.3
+    done
+    assert_eq "api-server binds :: and is reachable over IPv6 (#243)" "$v6up" "1"
+    assert_eq "IPv6-reachable api-server serves the summary (#243)" "$(curl -fsS -g --max-time 5 -H 'Authorization: Bearer tok-v6' "http://[::1]:$V6PORT/2/summary" 2>/dev/null | jq -r '.hashrate.total[0]')" "4242.5"
+    # IPV6_V6ONLY=0 -> the same :: socket also answers IPv4 loopback (v4-mapped), so v4 clients still reach it.
+    assert_eq "dual-stack :: also answers IPv4 loopback (#243)" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -H 'Authorization: Bearer tok-v6' "http://127.0.0.1:$V6PORT/health" 2>/dev/null)" "200"
+    kill "$V6PID" 2>/dev/null || true
+    wait "$V6PID" 2>/dev/null || true
+else
+    echo "  SKIP: no IPv6 loopback / python3 absent — api-server IPv6 bind test (#243)"
+fi
 
 # ---------------------------------------------------------------------------
 # Writable control path (#236): the producer for pithead #185. Separate opt-in endpoint, fail-closed
