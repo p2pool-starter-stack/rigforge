@@ -4671,11 +4671,18 @@ for good in "192.168.1.10" "10.0.0.0/8"; do
     assert_eq "api_allow_from '$good' parses IPv4 (#142)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good"
     assert_eq "api_allow_from '$good' -> family ip (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip"
 done
-for good6 in "fd00::/64" "2605:59c8::5" "fe80::1" "::1"; do
+# incl. the all-zeros address (::) and the v6 default route (::/0 — permissive but valid) as edges.
+for good6 in "fd00::/64" "2605:59c8::5" "fe80::1" "::1" "::" "::/0"; do
     c="$(mkconf "af6_ok_$RANDOM" "{ $POOL, \"api_allow_from\": \"$good6\" }")"
     assert_eq "api_allow_from '$good6' parses IPv6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good6"
     assert_eq "api_allow_from '$good6' -> family ip6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip6"
 done
+# The IPv6 guard is charset + prefix-bound only — a charset-valid but STRUCTURALLY-invalid address
+# (>8 groups) deliberately passes parse and is caught fail-closed at `nft -f` load (see the
+# install_api_firewall rejection test). Pin that boundary so the split of responsibility is a
+# conscious contract, not an accident. (#243/scan)
+c="$(mkconf af6_toolong "{ $POOL, \"api_allow_from\": \"1:2:3:4:5:6:7:8:9\" }")"
+assert_eq "structurally-invalid IPv6 passes parse's charset guard; nft fail-closes it (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip6"
 # scan/#243: an IPv6 allow_from with IPv4 (default) binds is a silent no-op — warn, don't fail.
 c="$(mkconf ipv6_nobind "{ $POOL, \"api\": \"enabled\", \"api_allow_from\": \"fd00::/64\" }")"
 w6="$( (
@@ -5364,6 +5371,33 @@ else
     assert_eq "no-token control server: POST -> 403 (fail closed)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer anything" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "403"
     kill "$NT_PID" 2>/dev/null || true
     wait "$NT_PID" 2>/dev/null || true
+
+    # #243: the WRITABLE control server must bind IPv6 dual-stack when its bind addr is v6, same as the
+    # sister API — an IPv6-primary stack has to reach the control port too. Mirrors the api-server IPv6
+    # test; skip cleanly if the host has no IPv6 loopback.
+    if python3 -c 'import socket; s=socket.socket(socket.AF_INET6); s.bind(("::1",0)); s.close()' 2>/dev/null; then
+        printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s" }\n' "$CTOK" >"$CSRV/config.json"
+        printf '{"status":"applied","change_id":"z6"}' >"$CSRV/state/status.json"
+        C6PORT=$((20000 + RANDOM % 20000))
+        python3 "$ROOT/util/control-server.py" "::" "$C6PORT" "$CSRV/state" "$CSRV/config.json" &
+        C6_PID=$!
+        c6up=0
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            curl -s -g -o /dev/null --max-time 2 -H "Authorization: Bearer $CTOK" "http://[::1]:$C6PORT/status" 2>/dev/null && {
+                c6up=1
+                break
+            }
+            sleep 0.3
+        done
+        assert_eq "control-server binds :: and answers over IPv6 (#243)" "$c6up" "1"
+        assert_eq "IPv6 control-server: authed GET /status -> 200 (#243)" "$(hc -g -H "Authorization: Bearer $CTOK" "http://[::1]:$C6PORT/status")" "200"
+        assert_eq "IPv6 control-server: unauthed POST -> 401 (#243)" "$(hc -g -X POST "http://[::1]:$C6PORT/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
+        assert_eq "dual-stack :: control-server also answers IPv4 loopback (#243)" "$(hc -H "Authorization: Bearer $CTOK" "http://127.0.0.1:$C6PORT/status")" "200"
+        kill "$C6_PID" 2>/dev/null || true
+        wait "$C6_PID" 2>/dev/null || true
+    else
+        echo "  SKIP: no IPv6 loopback — control-server IPv6 bind test (#243)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -5586,6 +5620,24 @@ else
     sleep 0.3 # let a just-forked child that inherited fd 9 exit before the free-probe
     flock -n -x "$RIG_LOCK_FILE" true 2>/dev/null
     assert_rc "raw flock -n succeeds after the holder exits — flock released (#249)" "$?" "0"
+
+    # (#249) even if the holder marker CANNOT be written at all — plain write AND `sudo -n tee` both
+    # fail (here: an unwritable parent dir) — the run must still ACQUIRE and HOLD the flock. The
+    # best-effort `|| true` must never let a failed DISPLAY-ONLY write abort the run and drop the lock.
+    RIG_LOCK_FILE="$RLD/hf.lock" RIG_LOCK_HOLDER="$RLD/no-such-dir/holder"
+    (eval "$RL_SRC" && rig_lock rigforge hf-fail "" && touch "$RLD/hf.up" && while [ ! -f "$RLD/hf.rel" ]; do sleep 0.1; done) &
+    HF_PID=$!
+    _i=0
+    while [ ! -f "$RLD/hf.up" ] && [ "$_i" -lt 50 ]; do
+        sleep 0.1
+        _i=$((_i + 1))
+    done
+    assert_eq "rig_lock acquires despite an unwritable holder path (#249)" "$([ -f "$RLD/hf.up" ] && echo up || echo dead)" "up"
+    flock -n -x "$RLD/hf.lock" true 2>/dev/null
+    assert_rc "flock stays HELD even when the holder write fails entirely (#249)" "$?" "1"
+    assert_eq "the unwritable holder was indeed never created (#249)" "$([ -f "$RLD/no-such-dir/holder" ] && echo y || echo n)" "n"
+    touch "$RLD/hf.rel"
+    wait "$HF_PID" 2>/dev/null
 
     unset RIG_LOCK_FILE RIG_LOCK_HOLDER
 fi
