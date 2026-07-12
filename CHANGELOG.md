@@ -7,6 +7,15 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **IPv6 `api_allow_from` (#243).** The API firewall scoping now accepts an IPv6 address/CIDR
+  (rendering an `ip6 saddr` rule in the `inet rigforge` table) as well as IPv4, and the sister/control
+  servers bind dual-stack when `api_bind`/`control_bind` is set to `::`. On an IPv6-primary LAN you
+  can now pin the writable control path to the stack's v6 source instead of falling back to a broad
+  LAN CIDR. The per-family charset stays the injection guard; malformed addresses and a bad prefix
+  hard-error.
+
 ### Fixed
 
 - **rig-lock survives a non-root reserve (#242).** The shared `rig_lock` helper now opens

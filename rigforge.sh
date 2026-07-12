@@ -416,18 +416,31 @@ parse_config() {
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
 
     # Opt-in firewall scoping (#142): restrict the read-only API port(s) to one source + loopback.
-    # Empty (default) = RigForge manages no firewall. IPv4/CIDR only — the Pithead contract and the
-    # fleet are IPv4 LAN; the strict regex is also the injection guard (the value reaches an nft file).
+    # Empty (default) = RigForge manages no firewall. Accepts IPv4 or IPv6 address/CIDR (#243): the
+    # strict per-family charset is the injection guard (the value reaches an nft file), and
+    # API_ALLOW_FAMILY (ip|ip6) picks the nft match keyword.
     API_ALLOW_FROM=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON")
+    API_ALLOW_FAMILY=ip
     if [ -n "$API_ALLOW_FROM" ]; then
         if [[ "$API_ALLOW_FROM" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
             local _a _b _c _d _p
             IFS='./' read -r _a _b _c _d _p <<<"$API_ALLOW_FROM"
             if [ "$_a" -gt 255 ] || [ "$_b" -gt 255 ] || [ "$_c" -gt 255 ] || [ "$_d" -gt 255 ] || [ "${_p:-0}" -gt 32 ]; then
-                error "api_allow_from must be a valid IPv4 address or CIDR (e.g. 192.168.1.10 or 192.168.1.0/24); got: '$API_ALLOW_FROM'."
+                error "api_allow_from must be a valid IPv4/IPv6 address or CIDR (e.g. 192.168.1.0/24 or fd00::/64); got: '$API_ALLOW_FROM'."
             fi
+            API_ALLOW_FAMILY=ip
+        elif [[ "$API_ALLOW_FROM" =~ ^[0-9A-Fa-f:]+(/[0-9]{1,3})?$ ]] && [[ "$API_ALLOW_FROM" == *:*:* ]]; then
+            # IPv6/CIDR: hex-and-colons charset (the injection guard) + >=2 colons + a 0-128 prefix.
+            # nft rejects a truly malformed address at load, so this is the guard, not a full RFC
+            # validator — same posture as the IPv4 octet check above.
+            local _pfx=""
+            case "$API_ALLOW_FROM" in */*) _pfx="${API_ALLOW_FROM##*/}" ;; esac
+            if [ -n "$_pfx" ] && { ! [[ "$_pfx" =~ ^[0-9]+$ ]] || [ "$_pfx" -gt 128 ]; }; then
+                error "api_allow_from IPv6 prefix must be 0-128 (got: '$API_ALLOW_FROM')."
+            fi
+            API_ALLOW_FAMILY=ip6
         else
-            error "api_allow_from must be an IPv4 address or CIDR (e.g. 192.168.1.10 or 192.168.1.0/24); got: '$API_ALLOW_FROM'."
+            error "api_allow_from must be an IPv4/IPv6 address or CIDR (e.g. 192.168.1.0/24 or fd00::/64); got: '$API_ALLOW_FROM'."
         fi
     fi
     # When set, the token is sent as an HTTP Authorization header, so keep it to safe, header-clean
@@ -1112,7 +1125,7 @@ table inet rigforge {
     chain api {
         type filter hook input priority filter; policy accept;
         tcp dport { $ports } iifname "lo" accept
-        tcp dport { $ports } ip saddr $API_ALLOW_FROM accept
+        tcp dport { $ports } ${API_ALLOW_FAMILY:-ip} saddr $API_ALLOW_FROM accept
         tcp dport { $ports } drop
     }
 }
