@@ -5475,6 +5475,34 @@ else
     assert_eq "normalizes + acquires a restrictive-mode lock file (#242)" "$([ -f "$RLD/ro.ok" ] && echo y || echo n)" "y"
     chmod 666 "$RLD/ro" 2>/dev/null || true
 
+    # #244: with RIG_LOCK_HOLDER unset, the breadcrumb defaults BESIDE the lock (not root-owned
+    # /run) and its timestamp is the portable Zulu form, not GNU-only `date -Iseconds` (+00:00).
+    RIG_LOCK_FILE="$RLD/def.lock"
+    (unset RIG_LOCK_HOLDER && eval "$RL_SRC" && rig_lock rigforge deftest "" && touch "$RLD/def.up" && while [ ! -f "$RLD/def.rel" ]; do sleep 0.1; done) &
+    DEF_PID=$!
+    _i=0
+    while [ ! -f "$RLD/def.up" ] && [ "$_i" -lt 50 ]; do
+        sleep 0.1
+        _i=$((_i + 1))
+    done
+    assert_eq "holder defaults beside the lock, not /run (#244)" "$([ -f "$RLD/def.lock.holder" ] && echo y || echo n)" "y"
+    def_holder="$(cat "$RLD/def.lock.holder" 2>/dev/null)"
+    assert_contains "holder uses a portable UTC timestamp (#244)" "$def_holder" "started=$(date -u +%Y-%m-%dT)"
+    assert_absent "holder timestamp isn't the GNU -Iseconds offset form (#244)" "$def_holder" "+00:00"
+    touch "$RLD/def.rel"
+    wait "$DEF_PID" 2>/dev/null
+    assert_eq "holder cleaned up on exit (#244)" "$([ -f "$RLD/def.lock.holder" ] && echo present || echo gone)" "gone"
+
+    # scan hardening: refuse a symlinked lock path (a planted symlink in world-writable /run/lock
+    # could otherwise redirect the root-side create/chmod/holder-write onto another file).
+    ln -s "$RLD/some-target" "$RLD/sym.lock"
+    (
+        RIG_LOCK_FILE="$RLD/sym.lock"
+        eval "$RL_SRC" && rig_lock rigforge symtest "" && touch "$RLD/sym.acquired"
+    ) 2>/dev/null
+    assert_eq "refuses a symlinked lock path (scan hardening)" "$([ -f "$RLD/sym.acquired" ] && echo acquired || echo refused)" "refused"
+    rm -f "$RLD/sym.lock"
+
     unset RIG_LOCK_FILE RIG_LOCK_HOLDER
 fi
 

@@ -50,25 +50,38 @@ rig_lock() { # rig_lock <project> <suite> [shared]
     local mode=-x
     [ "${3:-}" = shared ] && mode=-s
     local lf="${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}"
+    # Holder breadcrumb defaults BESIDE the lock, not under root-owned /run (a non-root box can't
+    # write /run/rig-e2e.holder — the lock still holds, but the write errors with stderr noise). (#244)
+    local hf="${RIG_LOCK_HOLDER:-$lf.holder}"
+    # /run/lock is world-writable + sticky; refuse a symlinked lock/holder path so a planted symlink
+    # can't redirect our root-side create/chmod/holder-write onto another file (defence for a
+    # multi-tenant box; single-tenant rigs aren't exposed, but the guard is free).
+    { [ -L "$lf" ] || [ -L "$hf" ]; } && {
+        echo "rig_lock: lock/holder path is a symlink — refusing" >&2
+        exit 1
+    }
     # Open the lock READ-only (9<). A lock file first created by a NON-root flock (a manual reserve
     # after a reboot clears the /run/lock tmpfs) is owned by that user, and fs.protected_regular then
     # blocks even root's O_CREAT-*write* of it (a 9> open) with EACCES. A read-open is never guarded,
     # and flock -x/-s works fine on a read fd, so this sidesteps it without rm-ing a possibly-held
     # lock. Create it first if absent; keep it 0666 so a shared reader can still join. (#242)
     [ -e "$lf" ] || : >"$lf" 2>/dev/null || true
-    chmod 666 "$lf" 2>/dev/null || sudo chmod 666 "$lf" 2>/dev/null || true
+    chmod 666 "$lf" 2>/dev/null || true # best-effort world-writable; a read-open (9<) only needs o+r
     exec 9<"$lf"
     if ! flock -n $mode 9; then
         if [ "${RIG_LOCK_WAIT:-0}" = 1 ]; then
-            echo "rig busy ($(cat "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" 2>/dev/null || echo unknown)) — waiting..." >&2
+            echo "rig busy ($(cat "$hf" 2>/dev/null || echo unknown)) — waiting..." >&2
             flock $mode 9
         else
-            echo "miner-0 busy: $(cat "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" 2>/dev/null || echo unknown). Retry with RIG_LOCK_WAIT=1 to queue." >&2
+            echo "miner-0 busy: $(cat "$hf" 2>/dev/null || echo unknown). Retry with RIG_LOCK_WAIT=1 to queue." >&2
             exit 75 # EX_TEMPFAIL — callers can tell "busy, retry later" from a real failure
         fi
     fi
-    printf '%s %s pid=%s started=%s\n' "$1" "$2" "$$" "$(date -Iseconds)" >"${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}"
-    trap 'rm -f "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}"' EXIT
+    # date -u +...Z, not the GNU-only `date -Iseconds` (BSD/macOS rejects -I). (#244)
+    printf '%s %s pid=%s started=%s\n' "$1" "$2" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$hf"
+    # Single-quoted so it expands at EXIT, not now ($hf is a local, out of scope by then); the
+    # env-var default re-derives the same path $hf resolved to above.
+    trap 'rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}"' EXIT
 }
 
 require_preflight() {
