@@ -97,11 +97,17 @@ rig_lock() { # rig_lock <project> <suite> [shared]
             exit 75 # EX_TEMPFAIL — callers can tell "busy, retry later" from a real failure
         fi
     fi
-    # date -u +...Z, not the GNU-only `date -Iseconds` (BSD/macOS rejects -I). (#244)
-    printf '%s %s pid=%s started=%s\n' "$1" "$2" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$hf"
-    # Single-quoted so it expands at EXIT, not now ($hf is a local, out of scope by then); the
-    # env-var default re-derives the same path $hf resolved to above.
-    trap 'rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}"' EXIT
+    # DISPLAY-ONLY and strictly best-effort. The flock is already HELD on FD 9 above; a holder
+    # marker we can't write (a root-owned RIG_LOCK_HOLDER + a non-root runner) must NEVER abort
+    # under set -e and drop the lock — that would leave the box UNRESERVED, the exact bug (#249).
+    # Plain write, then passwordless sudo, then swallow. Portable UTC stamp — the GNU-only
+    # `date -Iseconds` errors on BSD/macOS. (#244)
+    local _line
+    _line="$(printf '%s %s pid=%s started=%s' "$1" "$2" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+    { printf '%s\n' "$_line" >"$hf" || printf '%s\n' "$_line" | sudo -n tee "$hf" >/dev/null; } 2>/dev/null || true
+    # The trap fires at EXIT when the $hf local is out of scope, so re-derive the path from the
+    # durable env/default; best-effort removal, may need sudo for a root-written marker. (#244/#249)
+    trap 'rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || sudo -n rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
 }
 
 # Drive `rigforge enable|disable` to a settled systemd boot-state. The gate hammers the service
