@@ -5435,6 +5435,22 @@ else
     assert_eq "queued waiter actually acquired (#183)" \
         "$([ -f "$RLD/got.q" ] && echo acquired || echo blocked)" "acquired"
 
+    # #242: the lock is opened READ-only, so a pre-existing lock file (a leftover a non-root
+    # reserve created earlier) is acquired without needing to O_CREAT-write it — which is what
+    # dodges fs.protected_regular's block on root re-opening a non-root-created file in /run/lock.
+    RIG_LOCK_FILE="$RLD/pre" RIG_LOCK_HOLDER="$RLD/pre.holder"
+    : >"$RIG_LOCK_FILE" # pre-exists before any rig_lock call
+    (eval "$RL_SRC" && rig_lock rigforge pre-existing "" && touch "$RLD/pre.ok") 2>/dev/null
+    assert_eq "acquires a pre-existing lock file (#242)" "$([ -f "$RLD/pre.ok" ] && echo y || echo n)" "y"
+    # A lock file left at a restrictive mode is normalized and still acquired (the root+sticky
+    # protected_regular sidestep itself — read-open of a non-root-created file — needs a live root
+    # rig and is covered by the e2e gate, not this sandbox).
+    RIG_LOCK_FILE="$RLD/ro" RIG_LOCK_HOLDER="$RLD/ro.holder"
+    : >"$RIG_LOCK_FILE" && chmod 444 "$RIG_LOCK_FILE"
+    (eval "$RL_SRC" && rig_lock rigforge restrictive "" && touch "$RLD/ro.ok") 2>/dev/null
+    assert_eq "normalizes + acquires a restrictive-mode lock file (#242)" "$([ -f "$RLD/ro.ok" ] && echo y || echo n)" "y"
+    chmod 666 "$RLD/ro" 2>/dev/null || true
+
     unset RIG_LOCK_FILE RIG_LOCK_HOLDER
 fi
 

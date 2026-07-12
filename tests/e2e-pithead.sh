@@ -49,8 +49,15 @@ die() {
 rig_lock() { # rig_lock <project> <suite> [shared]
     local mode=-x
     [ "${3:-}" = shared ] && mode=-s
-    exec 9>"${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}"
-    chmod 666 "${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}" 2>/dev/null || true # a non-root shared reader can join later
+    local lf="${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}"
+    # Open the lock READ-only (9<). A lock file first created by a NON-root flock (a manual reserve
+    # after a reboot clears the /run/lock tmpfs) is owned by that user, and fs.protected_regular then
+    # blocks even root's O_CREAT-*write* of it (a 9> open) with EACCES. A read-open is never guarded,
+    # and flock -x/-s works fine on a read fd, so this sidesteps it without rm-ing a possibly-held
+    # lock. Create it first if absent; keep it 0666 so a shared reader can still join. (#242)
+    [ -e "$lf" ] || : >"$lf" 2>/dev/null || true
+    chmod 666 "$lf" 2>/dev/null || sudo chmod 666 "$lf" 2>/dev/null || true
+    exec 9<"$lf"
     if ! flock -n $mode 9; then
         if [ "${RIG_LOCK_WAIT:-0}" = 1 ]; then
             echo "rig busy ($(cat "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" 2>/dev/null || echo unknown)) — waiting..." >&2

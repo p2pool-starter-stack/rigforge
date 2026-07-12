@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **rig-lock survives a non-root reserve (#242).** The shared `rig_lock` helper now opens
+  `/var/lock/rig-e2e.lock` read-only (`9<`) instead of write (`9>`). A lock file first created by a
+  non-root `flock` (a manual reserve after a reboot clears the `/run/lock` tmpfs) is owned by that
+  user, and `fs.protected_regular=2` then blocked even root's `O_CREAT`-write of it with EACCES,
+  aborting the release perf gate until someone `rm`ed the file. A read-open is never guarded and
+  `flock` works fine on a read fd, so this sidesteps it without ever removing a possibly-held lock.
+  The `~/README.md` box contracts also now say to reserve as root. Test-infra only.
+
 ## [1.7.0] - 2026-07-11
 
 ### Added
