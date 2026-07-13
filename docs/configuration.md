@@ -44,8 +44,9 @@ proxy listens on `3333`). The interactive first-run setup writes exactly this mi
 
 Key naming: the three legacy keys (`ACCESS_TOKEN`, `DONATION`, `HOME_DIR`) keep their historical
 SCREAMING names forever — renaming them would break deployed fleets, and aliasing would double the
-documented surface. Every other key, and every future one, is lowercase `snake_case`, matching
-Pithead.
+documented surface. Every other *documented* key, and every future one, is lowercase `snake_case`,
+matching Pithead. (`RIG_NAME` is a reserved SCREAMING name seeded by the appliance image build; it is
+not read by `parse_config` today, so it isn't in the table below.)
 
 | Key | Default | What it does |
 |---|---|---|

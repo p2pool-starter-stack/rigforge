@@ -523,8 +523,10 @@ If you see MSR errors, see Troubleshooting below.
 Set `"api": "enabled"` in `config.json` and run `sudo ./rigforge.sh apply`. The rig then serves a
 second read-only HTTP endpoint (default `:8081`, keys `api_port`/`api_bind`) with everything the
 `:8080` XMRig API has **plus** the data only RigForge knows: applied tune knobs and the last tune
-run (`/tune`), hashrate-per-watt from RAPL, and the doctor probes — HugePages, MSR state, governor,
-RAM channels/speeds, memory-profile and SMT state, throttling — as JSON (`/health`, or nested under
+run (`/tune`), hashrate-per-watt from RAPL, the doctor probes — HugePages, MSR state, governor,
+RAM channels/speeds, memory-profile and SMT state, throttling — the watchdog's armed/thermal state,
+the effective **writable** config (`config`, pool secrets masked; #253), and a config revision +
+last-change provenance (`config_meta`; #254) — as JSON (`/health`, or nested under
 `rigforge` in `/1/summary` and `/2/summary`). It follows XMRig's own architecture: one tiny
 persistent server (python3 stdlib, ~10 MB idle) ships pre-computed bytes, so a request costs
 microseconds and cannot touch mining performance; a systemd timer recomputes the state every 15
@@ -560,9 +562,13 @@ How a change flows:
 1. The stack `POST`s a JSON object of changed keys to `:8082/apply` with the Bearer token. Only
    `pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`, and `max_temp_c` are
    writable; identity/trust/path keys (`ACCESS_TOKEN`, `miner_user`, `HOME_DIR`, the `api_*` and
-   `control_*` keys) are operator-only and rejected. The receiver validates the shape, stages the
+   `control_*` keys) are operator-only and rejected. The remote path is a *tuning* channel, not a
+   safety-removal one: a change that would disable the `watchdog` or unset / out-of-band `max_temp_c`
+   (a rig's thermal protection) is refused with `400` — remove thermal protection locally with
+   `rigforge.sh` if that's really intended (#257). The receiver validates the shape, stages the
    change, and returns `202 Accepted` with a change id. It holds no privilege and never touches the
-   miner, so a write cannot cost hashrate.
+   miner, so a write cannot cost hashrate. The token is write-capable and travels in cleartext HTTP —
+   isolate the mining LAN (#256; see [Security](../SECURITY.md#what-rigforge-exposes-and-what-it-doesnt)).
 2. A path-triggered root oneshot picks up the staged change, snapshots the current `config.json` to
    `config-backups/config-<UTC-stamp>.json`, merges only the allowlisted keys, and re-validates the
    result with the same rules `apply` uses. An invalid change is rejected and **nothing is written**.
@@ -570,8 +576,11 @@ How a change flows:
    normal `apply` path. If the miner does not come back to a live hashrate, the snapshot is restored
    and re-applied, and the outcome is recorded as `rolled_back`.
 4. `GET :8082/status` returns the last change's outcome (`applied` / `rejected` / `rolled_back`, with
-   `source: "control"`, the changed keys, and the backup path); the new effective config shows up on
-   the read API's `/2/summary` once apply completes.
+   `source: "control"`, the changed keys, the backup path, and a `warnings[]` for any change that
+   touched thermal protection). `GET :8082/status?change_id=<16hex>` returns a **specific** change's
+   outcome (or `404`) so a concurrent change can't steal your confirmation (#255). The new effective
+   config shows up on the read API as `rigforge.config`, with a `rigforge.config_meta.revision` that
+   bumps whenever it changes (#253/#254), on `/1/summary` (= `/2/summary`) once apply completes.
 
 **Recovery.** Every applied change leaves a timestamped snapshot in `config-backups/` (owner-readable,
 the newest `KEEP_CONFIG_BACKUPS`, default 20, are kept). To inspect or roll back by hand:

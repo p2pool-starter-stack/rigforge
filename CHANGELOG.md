@@ -54,7 +54,7 @@ All notable changes to RigForge are documented here. The format is based on
   whole run and survives `fs.protected_regular=2`, which the sibling pithead#484 `exec 9>` does not;
   the pithead mirror should adopt the read-open for the two to be byte-identical. Test-infra only.
 
-- **API firewall fails closed on a rejected ruleset (pre-release scan).** `install_api_firewall` now
+- **API firewall fails closed on a rejected ruleset (#248, pre-release scan).** `install_api_firewall` now
   checks that `nft -f` actually loaded the rules and hard-errors if it didn't, rather than `apply`
   swallowing the failure with `|| true` and still logging "firewall active". A charset-valid but
   structurally-invalid IPv6 `api_allow_from` could otherwise pass parse_config, fail to load, and

@@ -5160,6 +5160,22 @@ assert_eq "commit: max_temp_c band ceiling 110 commits (#257)" "$(commit_case "$
 assert_eq "commit: max_temp_c 111 just-over refused (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":111}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 assert_eq "commit: max_temp_c non-integer 40.5 refused (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":40.5}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 assert_eq "commit: watchdog invalid 0 rejected — not a silent disable (#257)" "$(commit_case "$CFG_236" '{"watchdog":0}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+# #257: the receiver (control-server.py unsafe_reasons) and the applier (_control_commit) must reach
+# the SAME safety verdict on every input — the "behavioural drift test" the control-server comment cites.
+if command -v python3 >/dev/null 2>&1; then
+    recv_verdict() { # <json> -> reject|allow, from the Python receiver's unsafe_reasons()
+        python3 -c 'import sys,types,json; s=open(sys.argv[2]).read().split("if __name__")[0]; m=types.ModuleType("cs"); exec(s, m.__dict__); print("reject" if m.unsafe_reasons(json.loads(sys.argv[1])) else "allow")' "$1" "$ROOT/util/control-server.py"
+    }
+    for scase in '{"watchdog":"disabled"}' '{"watchdog":false}' '{"watchdog":"off"}' '{"max_temp_c":999}' '{"max_temp_c":null}' '{"max_temp_c":39}' '{"max_temp_c":40.5}' '{"watchdog":"enabled"}' '{"max_temp_c":80}' '{"DONATION":2}'; do
+        rv="$(recv_verdict "$scase")"
+        av="$(commit_case "$CFG_236" "$scase")"
+        av="${av%%|*}"
+        want=$([ "$rv" = reject ] && echo rejected || echo committed)
+        assert_eq "safety lockstep: receiver==applier for $scase (#257)" "$av" "$want"
+    done
+else
+    echo "  SKIP: python3 absent — receiver/applier safety lockstep (#257)"
+fi
 
 # #257: /status carries a warnings[] whenever a change touches thermal protection (even an allowed one),
 # so the operator/dashboard can require an extra confirm — additive to the /status shape.
@@ -5277,6 +5293,26 @@ noopmeta="$(
     ) 2>/dev/null
 )"
 assert_eq "config_meta: a re-stamp of the same config keeps the prior source/id (no false bump) (#254)" "$noopmeta" "control cid0000000000abcd"
+
+# contract pin (#253/#254 + v1.7.0 backward-compat): the enriched rigforge block emits the full v1.7.0
+# key set PLUS the additive config + config_meta. pithead#209 reads these off the LIVE feed, so unit
+# tests of the helpers aren't enough — assert the assembled block actually carries them.
+rfblk="$(
+    rfd=$(mktemp -d "$SANDBOX/rfblk.XXXXXX")
+    printf '1.8.0' >"$rfd/VERSION"
+    printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"secret"}] }' >"$rfd/config.json"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$rfd/config.json"
+        SCRIPT_DIR="$rfd"
+        CONFIG_META_FILE="$rfd/meta.json"
+        set +e
+        PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
+        _api_rigforge_block ""
+    ) 2>/dev/null
+)"
+assert_eq "feed: rigforge block carries the v1.7.0 keys + config + config_meta (contract)" "$(printf '%s' "$rfblk" | jq -r '[has("version"), has("xmrig_version"), has("xmrig_commit"), has("tune"), has("power"), has("health"), has("watchdog"), has("config"), has("config_meta")] | all')" "true"
+assert_eq "feed: served config still masks pass + config_meta has a revision (contract)" "$(printf '%s' "$rfblk" | jq -r '((.config.pools[0] | has("pass")) | not) and ((.config_meta.revision | length) > 0)')" "true"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
