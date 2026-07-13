@@ -66,7 +66,7 @@ your environment needs encryption, terminate TLS at a reverse proxy in front of 
 The control path is a tuning channel, not a safety-removal one (#257). A remote `POST /apply` that
 would strip a rig's thermal protection — disabling the `watchdog`, or unsetting / setting an
 out-of-band `max_temp_c` — is refused with `400`; only a local `rigforge.sh apply` on the box (the
-operator is physically present) can remove thermal protection. Any *allowed* change that touches
+operator is physically present) can remove thermal protection. Any change that touches
 `watchdog`/`max_temp_c` is flagged in `:8082/status` `warnings[]` so the dashboard can force an extra
 confirmation. So a fat-finger or a captured token cannot silently leave a rig without its thermal cutoff.
 
