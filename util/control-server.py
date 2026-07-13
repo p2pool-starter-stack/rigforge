@@ -49,12 +49,19 @@ def unsafe_reasons(change):
         if mt is None or (isinstance(mt, str) and not mt.strip()):
             out.append("max_temp_c cannot be unset (that removes the thermal cutoff)")
         else:
-            try:
-                v = int(mt)
-            except (TypeError, ValueError):
+            # max_temp_c is a WHOLE number of degC (matches parse_config's `^[0-9]+$` gate). Accept an
+            # int or an all-digit string in band; reject floats / non-numeric here so the receiver's
+            # verdict is identical to the applier + parse_config — no "staged at the receiver, then
+            # rejected downstream" divergence (bool is an int subclass, so exclude it explicitly).
+            v = None
+            if isinstance(mt, bool):
                 v = None
+            elif isinstance(mt, int):
+                v = mt
+            elif isinstance(mt, str) and mt.strip().isdigit():
+                v = int(mt.strip())
             if v is None or v < TEMP_MIN or v > TEMP_MAX:
-                out.append("max_temp_c must stay within %d-%d degC" % (TEMP_MIN, TEMP_MAX))
+                out.append("max_temp_c must be a whole number %d-%d degC" % (TEMP_MIN, TEMP_MAX))
     return out
 
 MAX_BODY = 65536  # a config change is small; cap the body so a large POST can't exhaust memory
