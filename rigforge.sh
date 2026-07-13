@@ -76,6 +76,9 @@ SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 # (the operator captured at setup time), keeping the scheduled run from re-owning files to root.
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
+# #254: config-change provenance marker (revision/source/last_change_id/changed_at), a sidecar next to
+# config.json. Env-overridable so tests can sandbox it.
+CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$SCRIPT_DIR/.rigforge-config-meta.json}"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 
@@ -3126,6 +3129,7 @@ restore() {
     # config.json -> repo root; tuning -> the worker root resolved from the RESTORED config (so it lands
     # correctly even if this machine's paths differ from the source's).
     cp "$stage/config.json" "$CONFIG_JSON"
+    _stamp_config_meta restore # #254: attribute this config to a restore (bumps revision if it differs)
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
     for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
@@ -3582,6 +3586,11 @@ apply() {
         install_api_firewall || true
         _autotune_apply_notice
     fi
+    # #254: record who put this config into effect. Default source "local" (a bare `apply` after a
+    # hand-edit); control-apply and restore set RIGFORGE_CONFIG_SOURCE first. No-op unless the writable
+    # config actually changed (so tune/autotune restarts, which reuse _apply_runtime not apply(), and
+    # a re-apply of the same config, never bump the revision).
+    _stamp_config_meta "${RIGFORGE_CONFIG_SOURCE:-local}" "${RIGFORGE_CONFIG_CHANGE_ID:-}"
 }
 
 # --- Writable control path applier (#236) ---
@@ -3688,12 +3697,23 @@ _control_do_apply() {
 
 # Record the outcome for the receiver's GET /status (mode 644 so the DynamicUser server reads it back).
 _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
-    local f="$1"
+    local f="$1" cid="$3" body cdir
     mkdir -p "$(dirname "$f")"
     # #257: warnings[] flags a safety-relevant change (watchdog / max_temp_c = thermal protection) even
     # when it was allowed, so the operator and the dashboard see it and can require an extra confirm.
     # Additive to the /status shape (a new warnings[] is a backward-compatible extension of the contract).
-    jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end), warnings: ($k | split(",") | map(select(. == "watchdog" or . == "max_temp_c")) | map("thermal protection changed: " + .))}' >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
+    body=$(jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end), warnings: ($k | split(",") | map(select(. == "watchdog" or . == "max_temp_c")) | map("thermal protection changed: " + .))}')
+    printf '%s' "$body" >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
+    # #255: also index this outcome by change_id so a caller can GET /status?change_id=<cid> even after
+    # a concurrent change overwrote the most-recent status.json. cid is server-generated 16-hex; guard it
+    # anyway (it becomes a filename). Keep only the last ~20 outcomes.
+    if [[ "$cid" =~ ^[0-9a-f]{16}$ ]]; then
+        cdir="$(dirname "$f")/changes"
+        mkdir -p "$cdir"
+        printf '%s' "$body" >"$cdir/$cid.json.tmp.$$" 2>/dev/null && mv -f "$cdir/$cid.json.tmp.$$" "$cdir/$cid.json" && chmod 644 "$cdir/$cid.json" 2>/dev/null || true
+        # shellcheck disable=SC2012  # names are controlled 16-hex; ls -t orders by recency
+        ls -t "$cdir"/*.json 2>/dev/null | tail -n +21 | while IFS= read -r old; do [ -n "$old" ] && rm -f "$old"; done
+    fi
 }
 
 # control-apply (#236): the privileged half of the writable control path, run by the
@@ -3732,6 +3752,9 @@ control_apply() {
     backup="${result#committed }"
     _reown_config_backups "$backups"
     log "control-apply: committed change $cid (keys: $change_keys); applying..."
+    # #254: attribute this (and the rollback re-apply) to the control path with its change_id — the
+    # nested apply()'s _stamp_config_meta reads these via dynamic scope.
+    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
     if _control_do_apply; then
         _control_status "$status" applied "$cid" "$change_keys" "" "$backup"
         log "control-apply: change $cid applied."
@@ -4118,20 +4141,59 @@ _watchdog_json() {
 
 # Provenance + tune + power + health, namespaced under one `rigforge` key. Runs in the refresh
 # timer, never on a request path, so it can afford the full probe pass every time.
-# #253: the effective WRITABLE config, exactly the keys the control path accepts, so a consumer can
-# round-trip: read this -> edit -> POST the same keys to :control_port/apply. Read the same way
-# parse_config does (canonical strings: perf->performance, on/true->enabled), served from config.json
-# so it's present even when the miner is down. Secrets masked: pools[].pass and any tls-fingerprint
-# are dropped — the enriched read is open by default, so it must never leak a pool credential.
-_api_config_json() {
+# #253/#254: the effective WRITABLE config in CANONICAL form — exactly the control-path allowlist,
+# read the same way parse_config does (canonical strings perf->performance, on/true->enabled), keys
+# sorted. Single source of truth for the masked feed view (#253) AND the revision hash (#254), so what
+# a consumer reads, hashes, and can POST back all agree. UNMASKED here (pool pass included): the hash
+# is one-way so it never leaks, and the revision must bump on ANY writable change incl. a pool password.
+_writable_config_canonical() {
     local pools
-    pools=$(jq -c '[.pools[]? | del(.pass, ."tls-fingerprint")]' "$CONFIG_JSON" 2>/dev/null || echo '[]')
+    pools=$(jq -c '.pools // []' "$CONFIG_JSON" 2>/dev/null || echo '[]')
     [ -n "$pools" ] || pools='[]'
-    jq -n --argjson pools "$pools" --argjson don "${DONATION:-1}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
+    jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-1}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
+}
+
+# #254: a short content hash of the canonical writable config — the load-bearing "did it change"
+# signal a polling consumer compares against. Changes iff the effective writable config changes.
+_writable_config_hash() { _sha256 <(_writable_config_canonical) | cut -c1-16; }
+
+# #253: the MASKED view for the open feed — pool pass + tls-fingerprint dropped so no credential is
+# ever served on the token-optional read.
+_api_config_json() {
+    _writable_config_canonical | jq -c '.pools = [.pools[]? | del(.pass, ."tls-fingerprint")]'
+}
+
+# #254: config-change provenance marker. Stamped by every path that rewrites the writable config
+# (local apply, control-apply, restore) via _stamp_config_meta; updated ONLY when the writable hash
+# actually changes, so a no-op apply never false-bumps it. (autotune tunes runtime params — threads,
+# MSR — not the writable config, so it is never a source here.)
+_stamp_config_meta() { # <source> [change_id] — record provenance IFF the writable config changed
+    local src="$1" cid="${2:-}" newrev oldrev
+    # Self-sufficient + error-isolated: parse the current config.json in a subshell, so this is safe to
+    # call from restore/apply/control regardless of whether the caller has parsed (and a bad config
+    # can't abort the caller).
+    newrev=$( (parse_config >/dev/null 2>&1 && _writable_config_hash) 2>/dev/null) || newrev=""
+    [ -n "$newrev" ] || return 0
+    oldrev=$(jq -r '.revision // ""' "$CONFIG_META_FILE" 2>/dev/null || echo "")
+    [ "$newrev" = "$oldrev" ] && return 0
+    jq -n --arg r "$newrev" --arg s "$src" --arg c "$cid" --arg w "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{revision: $r, source: $s, last_change_id: (if $c == "" then null else $c end), changed_at: $w}' >"$CONFIG_META_FILE.tmp.$$" 2>/dev/null && mv -f "$CONFIG_META_FILE.tmp.$$" "$CONFIG_META_FILE" && chmod 644 "$CONFIG_META_FILE" 2>/dev/null || true
+}
+
+# #254: the config_meta block for the feed. revision is recomputed here (authoritative — catches even
+# a raw hand-edit that never ran apply); source/changed_at/last_change_id come from the marker
+# (best-effort attribution, null on a fresh rig that hasn't changed its config yet).
+_api_config_meta_json() {
+    local rev
+    rev=$(_writable_config_hash)
+    if [ -f "$CONFIG_META_FILE" ]; then
+        jq --arg rev "$rev" '{revision: $rev, changed_at: .changed_at, source: .source, last_change_id: .last_change_id}' "$CONFIG_META_FILE" 2>/dev/null || jq -n --arg rev "$rev" '{revision: $rev, changed_at: null, source: null, last_change_id: null}'
+    else
+        jq -n --arg rev "$rev" '{revision: $rev, changed_at: null, source: null, last_change_id: null}'
+    fi
 }
 
 _api_rigforge_block() { # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config}'
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta}'
 }
 
 # Produce the sister API's response bodies: compute once, write atomically (tmp + rename, the

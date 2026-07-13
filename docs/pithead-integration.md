@@ -78,8 +78,11 @@ pithead#235):
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
   as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
-  `watchdog` (armed state, thermal-hold, `max_temp_c`), and `config` (the effective **writable**
-  config — exactly the control-path allowlist, pool secrets masked; see the prefill note in §3).
+  `watchdog` (armed state, thermal-hold, `max_temp_c`), `config` (the effective **writable**
+  config — exactly the control-path allowlist, pool secrets masked; see the prefill note in §3), and
+  `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a content hash of the
+  writable config that changes iff that config changes, so a poller can detect a change made directly
+  on the rig; `source` is `control`/`local`/`restore`; see §3).
 - `GET /health` and `GET /tune` — the `rigforge.health` / `rigforge.tune` objects bare.
 - When XMRig's own API is unreachable the response is still `200` with
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
@@ -180,6 +183,14 @@ rolls back anything that doesn't come back live. The stack reads the new effecti
 host by `api_allow_from` (mandatory) — the miner never accepts a config from anywhere else. Full
 mechanics and the security model: [Operations › Writable control path](operations.md#writable-control-path-opt-in)
 and [ADR 0001](adr/0001-writable-worker-config-control-path.md).
+
+**Polling a specific change (`?change_id`).** The no-arg `GET :8082/status` returns the *most
+recent* change's outcome, which a concurrent change (another dashboard edit, a local `apply`, an
+autotune restart) can step on between your `POST` and your poll. To avoid that race, poll
+`GET :8082/status?change_id=<the 16-hex id from the 202>` — it returns *that* change's recorded
+outcome (`applied`/`rejected`/`rolled_back` + `reason`/`backup`/`changed_keys`/`warnings`), or `404`
+if it isn't among the last ~20 recorded. Same bearer auth as `/status`. Pair it with
+`config_meta.revision` on the read feed to confirm the effective config actually moved.
 
 **Prefill from a live read (`rigforge.config`).** The enriched feed exposes the rig's current
 writable config as `rigforge.config` on `:8081/1/summary` (= `/2/summary`) — exactly the keys

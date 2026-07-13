@@ -9,6 +9,22 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **Config revision + last-change provenance in the enriched feed (#254).** `rigforge.config_meta`
+  now rides `GET :api_port/1/summary`: `{revision, changed_at, source, last_change_id}`. `revision` is
+  a short content hash of the effective writable config — it changes iff that config changes, so a
+  polling consumer can tell "same as last time I looked" from "changed under me" (and invalidate a
+  stale editor prefill). It's over the *unmasked* config, so a pool-password change bumps it too. It's
+  stamped on every path that rewrites the writable config — local `apply`, control-apply, restore —
+  recording `source` (`control`/`local`/`restore`) and, for a control change, its `last_change_id`; a
+  no-op apply or an autotune restart (autotune tunes runtime params, not the writable config) never
+  false-bumps it. Additive.
+
+- **Query a specific `change_id` on the control API (#255).** `GET :control_port/status?change_id=<16hex>`
+  returns that change's recorded outcome (or `404`), so a caller whose confirmation was stepped on by
+  a concurrent change can still record its own result — removing the accepted→poll race. The applier
+  indexes each outcome under `changes/<change_id>.json` (last ~20). The no-arg `GET /status` still
+  returns the most recent (backward compatible); auth unchanged (bearer). Additive.
+
 - **Effective writable config in the enriched feed (#253).** `GET :api_port/1/summary` (= `/2/summary`)
   now carries `rigforge.config` — the rig's current writable config (`pools`, `DONATION`, `autotune`,
   `watchdog`, `watchdog_interval_min`, `max_temp_c`), exactly the keys the control path accepts, read

@@ -5179,6 +5179,14 @@ assert_eq "status: warnings[] flags a max_temp_c change (#257)" "$(jq -r '.warni
     _control_status "$wst/s3.json" applied cidP "pools,DONATION" "" ""
 ) 2>/dev/null
 assert_eq "status: no warnings for a non-thermal change (#257)" "$(jq -c '.warnings' "$wst/s3.json")" "[]"
+# #255: _control_status also indexes each outcome under changes/<cid>.json so a caller can query it.
+csidx="$(mktemp -d "$SANDBOX/csidx.XXXXXX")"
+(
+    source "$SCRIPT"
+    _control_status "$csidx/status.json" applied 0123456789abcdef "DONATION" "" ""
+) 2>/dev/null
+assert_eq "status: most-recent status.json still written (#255 compat)" "$(jq -r .change_id "$csidx/status.json")" "0123456789abcdef"
+assert_eq "status: outcome indexed under changes/<cid>.json (#255)" "$(jq -r .status "$csidx/changes/0123456789abcdef.json" 2>/dev/null)" "applied"
 
 # #253: the enriched feed exposes the effective WRITABLE config so the dashboard can prefill/round-trip.
 echo "== unit: _api_config_json — effective writable config, secrets masked (#253) =="
@@ -5209,6 +5217,66 @@ assert_eq "config: max_temp_c null when unset (#253)" "$(printf '%s' "$blk2" | j
 assert_eq "config: autotune/watchdog default to disabled (#253)" "$(printf '%s' "$blk2" | jq -r '"\(.autotune) \(.watchdog)"')" "disabled disabled"
 # round-trip contract: the config block's keys are EXACTLY the control writable allowlist.
 assert_eq "config: keys == the control writable allowlist, round-trippable (#253)" "$(printf '%s' "$blk2" | jq -r 'keys_unsorted | sort | join(",")')" "DONATION,autotune,max_temp_c,pools,watchdog,watchdog_interval_min"
+
+# #254: config revision + last-change provenance in the feed (rigforge.config_meta).
+echo "== unit: config_meta — revision + last-change provenance (#254) =="
+whash() { # <config-json> -> _writable_config_hash
+    local d
+    d=$(mktemp -d "$SANDBOX/whash.XXXXXX")
+    printf '%s\n' "$1" >"$d/config.json"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$d/config.json"
+        SCRIPT_DIR="$d"
+        set +e
+        PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
+        _writable_config_hash
+    ) 2>/dev/null
+}
+metablk() { # <config-json> [source] [change_id] -> _api_config_meta_json after an optional stamp
+    local d
+    d=$(mktemp -d "$SANDBOX/cmeta.XXXXXX")
+    printf '%s\n' "$1" >"$d/config.json"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$d/config.json"
+        SCRIPT_DIR="$d"
+        CONFIG_META_FILE="$d/meta.json"
+        set +e
+        PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
+        [ -n "${2:-}" ] && _stamp_config_meta "$2" "${3:-}"
+        _api_config_meta_json
+    ) 2>/dev/null
+}
+C254A='{ "pools":[{"url":"h:3333"}], "DONATION":1 }'
+r1="$(whash "$C254A")"
+assert_eq "config_meta: revision is a stable content hash (#254)" "$([ -n "$r1" ] && [ "$r1" = "$(whash "$C254A")" ] && echo stable || echo unstable)" "stable"
+assert_eq "config_meta: revision changes iff the writable config changes (#254)" "$([ "$r1" != "$(whash '{ "pools":[{"url":"h:3333"}], "DONATION":2 }')" ] && echo changed || echo same)" "changed"
+# canonicalized: perf==performance, on==enabled -> same effective config -> SAME revision (no false bump)
+assert_eq "config_meta: aliases hash identically, perf==performance (#254)" "$([ "$(whash '{ "pools":[{"url":"h:3333"}], "autotune":"perf" }')" = "$(whash '{ "pools":[{"url":"h:3333"}], "autotune":"performance" }')" ] && echo same || echo differ)" "same"
+# hash is over the UNMASKED config, so a pool-password change bumps revision even though the feed masks pass
+assert_eq "config_meta: a pool pass change bumps the revision (#254)" "$([ "$(whash '{ "pools":[{"url":"h:3333","pass":"a"}] }')" != "$(whash '{ "pools":[{"url":"h:3333","pass":"b"}] }')" ] && echo changed || echo same)" "changed"
+assert_eq "config_meta: fresh rig -> revision present, source null (#254)" "$(metablk "$C254A" | jq -r '"\(.revision|length>0) \(.source) \(.last_change_id)"')" "true null null"
+assert_eq "config_meta: control stamp records source + change_id + changed_at (#254)" "$(metablk "$C254A" control abc0123456789def | jq -r '"\(.source) \(.last_change_id) \(.changed_at!=null)"')" "control abc0123456789def true"
+assert_eq "config_meta: local source recorded (#254)" "$(metablk "$C254A" local | jq -r .source)" "local"
+assert_eq "config_meta: restore source recorded (#254)" "$(metablk "$C254A" restore | jq -r .source)" "restore"
+# a re-stamp of the SAME writable config is a no-op: keeps the prior provenance (a no-op apply/autotune restart never false-bumps).
+noopmeta="$(
+    d=$(mktemp -d "$SANDBOX/noop.XXXXXX")
+    printf '%s\n' "$C254A" >"$d/config.json"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$d/config.json"
+        SCRIPT_DIR="$d"
+        CONFIG_META_FILE="$d/meta.json"
+        set +e
+        PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
+        _stamp_config_meta control cid0000000000abcd
+        _stamp_config_meta local
+        _api_config_meta_json | jq -r '"\(.source) \(.last_change_id)"'
+    ) 2>/dev/null
+)"
+assert_eq "config_meta: a re-stamp of the same config keeps the prior source/id (no false bump) (#254)" "$noopmeta" "control cid0000000000abcd"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
@@ -5426,6 +5494,17 @@ else
     assert_eq "GET /status before any apply -> 503" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "503"
     printf '{"status":"applied","change_id":"z"}' >"$CSRV/state/status.json"
     assert_eq "GET /status after an apply -> 200" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "200"
+    # #255: query a SPECIFIC change_id, unaffected by a later change (index written by the applier).
+    mkdir -p "$CSRV/state/changes"
+    printf '{"status":"applied","change_id":"1111222233334444","changed_keys":["DONATION"]}' >"$CSRV/state/changes/1111222233334444.json"
+    printf '{"status":"rolled_back","change_id":"aaaabbbbccccdddd","reason":"x"}' >"$CSRV/state/changes/aaaabbbbccccdddd.json"
+    assert_eq "GET /status?change_id=<known> -> 200 (#255)" "$(hc "$U/status?change_id=1111222233334444" -H "Authorization: Bearer $CTOK")" "200"
+    assert_eq "?change_id returns THAT change, not the most-recent (#255)" "$(curl -s --max-time 5 -H "Authorization: Bearer $CTOK" "$U/status?change_id=aaaabbbbccccdddd" | jq -r .status)" "rolled_back"
+    assert_eq "GET /status?change_id=<unknown 16hex> -> 404 (#255)" "$(hc "$U/status?change_id=deadbeefdeadbeef" -H "Authorization: Bearer $CTOK")" "404"
+    assert_eq "GET /status?change_id=<non-hex / traversal> -> 400 (#255)" "$(hc "$U/status?change_id=..%2f..%2fetc%2fpasswd" -H "Authorization: Bearer $CTOK")" "400"
+    assert_eq "GET /status?change_id=<too short> -> 400 (#255)" "$(hc "$U/status?change_id=abc" -H "Authorization: Bearer $CTOK")" "400"
+    assert_eq "no-arg GET /status still returns most-recent (#255 compat)" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "200"
+    assert_eq "?change_id still requires the bearer (#255)" "$(hc "$U/status?change_id=1111222233334444")" "401"
     bigbody="$(head -c 70000 /dev/zero | tr '\0' 'a')"
     assert_eq "POST oversized body -> 413" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' --data-binary "$bigbody")" "413"
     kill "$CSRV_PID" 2>/dev/null || true

@@ -21,8 +21,10 @@ Python3 stdlib only. GET /status returns the last applied change's result; POST 
 import hmac
 import json
 import os
+import re
 import socket
 import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # The keys the control path may change. Operationally-mutable only — identity, trust, filesystem
@@ -131,12 +133,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._authed():
             return
-        if self.path.split("?", 1)[0] != "/status":
+        parts = self.path.split("?", 1)
+        if parts[0] != "/status":
             return self._send(404, "Not Found", {"error": "not found"})
+        # #255: ?change_id=<16hex> returns THAT change's recorded outcome (or 404), so a caller whose
+        # confirmation got stepped on by a concurrent change can still read its own result. The no-arg
+        # form stays most-recent for compatibility. Validate the id as 16 hex before it becomes a path
+        # component — never allow traversal.
+        cid = urllib.parse.parse_qs(parts[1]).get("change_id", [""])[0] if len(parts) == 2 else ""
+        if cid:
+            if not re.fullmatch(r"[0-9a-f]{16}", cid):
+                return self._send(400, "Bad Request", {"error": "change_id must be 16 lowercase hex chars"})
+            target = os.path.join(STATE_DIR, "changes", cid + ".json")
+        else:
+            target = os.path.join(STATE_DIR, "status.json")
         try:
-            with open(os.path.join(STATE_DIR, "status.json"), "rb") as f:
+            with open(target, "rb") as f:
                 body = f.read()
         except OSError:
+            if cid:
+                return self._send(404, "Not Found", {"error": "no recorded outcome for that change_id"})
             return self._send(503, "Service Unavailable", {"status": "no change applied yet"})
         self.send_response_only(200, "OK")
         self.send_header("Content-Type", "application/json")

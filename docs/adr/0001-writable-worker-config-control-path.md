@@ -88,6 +88,14 @@ Decision: the **remote** control path is a *tuning* channel, not a *safety-remov
 
 The bearer travels in cleartext over the LAN (stdlib `HTTPServer`, no TLS), and with #236 it is now write-capable and safety-relevant. `api_allow_from` scopes the *source*, not the token in flight, so a same-subnet sniffer/MITM could replay it. Decision: **document the posture** — the mining LAN is the trust boundary; isolate it, treat `ACCESS_TOKEN` as a secret (SECURITY.md, pithead docs/workers.md carry the equivalent). TLS on the LAN API is **deliberately deferred** (cert-management burden for a LAN appliance whose model is already "trusted subnet"; a reverse proxy is the escape hatch if needed). Revisit if the control path ever needs to cross an untrusted segment.
 
+### D10. Config revision + provenance on the read feed, not a change log on the rig (#254)
+
+D7 stamps `source: "control"` on a control apply. #254 extends the provenance to *every* path that rewrites the writable config so a consumer can detect a change made **directly on the rig** (a local `apply`, a restore). The rig still keeps no change history (that's pithead's job); instead the enriched feed carries a cheap `config_meta` = `{revision, changed_at, source, last_change_id}`. `revision` is a short **content hash of the canonical writable config** — chosen over a persisted monotonic counter so it is stateless (survives restarts, no counter file to race or reset) and self-correcting: it changes iff the effective writable config changes, computed at feed time from `config.json`. It is hashed **unmasked** (pool `pass` included) so a credential change bumps it too, while the feed still masks `pass` in `rigforge.config` — the hash is one-way, so no secret leaks. The `source`/`last_change_id` marker (`.rigforge-config-meta.json`, a sidecar) is stamped only when the hash actually changes, so a no-op apply or an autotune restart (autotune tunes threads/MSR, not the writable config) never false-bumps `changed_at`/`source`.
+
+### D11. Query a specific change_id, not just the most recent (#255)
+
+The accepted→poll contract (D2) has a race: a concurrent change between a caller's `POST` and its poll makes the no-arg `GET /status` report the *newer* change, so the caller can't confirm its own. #255 adds `GET /status?change_id=<16hex>` returning that change's recorded outcome (or `404`) — the applier already writes each outcome, so it additionally indexes them under `changes/<change_id>.json` (last ~20; the id is server-generated 16-hex and re-validated before it becomes a path component). The no-arg form stays most-recent for compatibility; auth is unchanged. Chosen over a `/changes` ring-buffer endpoint (issue Option B) as the smaller, direct change.
+
 ## Alternatives considered
 
 - **Write verbs on the sister API.** Rejected: violates the read-only invariant, and the `DynamicUser` read process cannot persist or apply.
