@@ -19,3 +19,6 @@ config.json
 
 # OS
 .DS_Store
+
+# #254 config-change provenance marker (runtime state)
+.rigforge-config-meta.json
