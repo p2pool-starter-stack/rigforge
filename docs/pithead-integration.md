@@ -204,7 +204,7 @@ round-trip that re-sends the `pools` array must re-supply the pool password (the
 **The control path is a tuning channel, not a safety-removal one.** A `POST /apply` that would
 disable the `watchdog` or unset / set an out-of-band `max_temp_c` (a rig's thermal cutoff) is refused
 with `400` — change thermal protection locally on the rig with `rigforge.sh` if that's really
-intended. Any *allowed* change touching `watchdog`/`max_temp_c` is surfaced in `:8082/status` as a
+intended. Any change touching `watchdog`/`max_temp_c` is surfaced in `:8082/status` as a
 `warnings[]` entry, so the dashboard can require an extra confirmation. The control token is
 write-capable and travels in cleartext HTTP; `api_allow_from` scopes the source but doesn't protect
 the token in flight, so isolate the mining LAN — see
