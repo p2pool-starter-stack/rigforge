@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-13
+
 ### Added
 
 - **Config revision + last-change provenance in the enriched feed (#254).** `rigforge.config_meta`
