@@ -52,6 +52,24 @@ written by `jq` (values quoted structurally) and the old config is snapshotted t
 first, so a bad or hostile change cannot inject a command, corrupt `config.json`, or lose the
 previous config. See [ADR 0001](docs/adr/0001-writable-worker-config-control-path.md).
 
+The control token is write-capable and travels in cleartext (#256). The `Authorization: Bearer`
+header rides plain HTTP — the sister and control APIs are python3-stdlib `HTTPServer` with no TLS —
+and with the control path enabled that token now grants **writes** (redirect a rig's `pools`, change
+its thermal settings). `api_allow_from` scopes *who may connect* (source IP); it does **not** encrypt
+the token in flight, so a same-subnet passive sniffer or an ARP-spoof MITM that captures the header
+could replay it. The mining LAN is the trust boundary: **isolate it from untrusted devices, treat
+`ACCESS_TOKEN` as a secret, and don't enable the control path on a shared or hostile network.** TLS
+on the LAN API is intentionally *not* shipped — it adds cert-management burden for a LAN appliance
+whose threat model is already "trusted mining subnet," and LAN isolation is the supported posture; if
+your environment needs encryption, terminate TLS at a reverse proxy in front of `:8082`/`:8081`.
+
+The control path is a tuning channel, not a safety-removal one (#257). A remote `POST /apply` that
+would strip a rig's thermal protection — disabling the `watchdog`, or unsetting / setting an
+out-of-band `max_temp_c` — is refused with `400`; only a local `rigforge.sh apply` on the box (the
+operator is physically present) can remove thermal protection. Any *allowed* change that touches
+`watchdog`/`max_temp_c` is flagged in `:8082/status` `warnings[]` so the dashboard can force an extra
+confirmation. So a fat-finger or a captured token cannot silently leave a rig without its thermal cutoff.
+
 Not running Pithead? Nothing else needs the port; `tune` and `doctor` read
 the API over `127.0.0.1`. So if you mine solo or to a public pool, you can firewall
 `:8080` off entirely without losing anything:

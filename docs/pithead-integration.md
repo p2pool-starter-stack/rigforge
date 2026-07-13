@@ -179,6 +179,24 @@ host by `api_allow_from` (mandatory) — the miner never accepts a config from a
 mechanics and the security model: [Operations › Writable control path](operations.md#writable-control-path-opt-in)
 and [ADR 0001](adr/0001-writable-worker-config-control-path.md).
 
+**Prefill from a live read (`rigforge.config`).** The enriched feed exposes the rig's current
+writable config as `rigforge.config` on `:8081/1/summary` (= `/2/summary`) — exactly the keys
+`/apply` accepts (`pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`,
+`max_temp_c`), read the same way RigForge parses them (canonical strings, e.g. `perf` →
+`performance`). Worker Inspect can prefill its editor from this live read instead of its own
+last-applied record, and it's served even when the miner is down (it comes from `config.json`, not
+XMRig). Pool secrets are masked: `pools[].pass` and any `tls-fingerprint` are omitted — so a
+round-trip that re-sends the `pools` array must re-supply the pool password (the read never carries it).
+
+**The control path is a tuning channel, not a safety-removal one.** A `POST /apply` that would
+disable the `watchdog` or unset / set an out-of-band `max_temp_c` (a rig's thermal cutoff) is refused
+with `400` — change thermal protection locally on the rig with `rigforge.sh` if that's really
+intended. Any *allowed* change touching `watchdog`/`max_temp_c` is surfaced in `:8082/status` as a
+`warnings[]` entry, so the dashboard can require an extra confirmation. The control token is
+write-capable and travels in cleartext HTTP; `api_allow_from` scopes the source but doesn't protect
+the token in flight, so isolate the mining LAN — see
+[Security › what RigForge exposes](../SECURITY.md#what-rigforge-exposes-and-what-it-doesnt).
+
 ---
 
 ## Troubleshooting

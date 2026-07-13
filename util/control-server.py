@@ -30,6 +30,33 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # Kept in lockstep with control_apply()'s CONTROL_WRITABLE_KEYS in rigforge.sh (a drift test guards it).
 WRITABLE = {"pools", "DONATION", "autotune", "watchdog", "watchdog_interval_min", "max_temp_c"}
 
+# #257: the control path is a TUNING channel, not a safety-removal one. The REMOTE path may not strip
+# a rig's thermal protection — disable the watchdog, or unset / out-of-band max_temp_c. A local
+# `rigforge.sh apply` on the box keeps full control (the operator is physically present). Mirrored in
+# rigforge.sh's _control_commit (a behavioural drift test pins the two together), so a spool-staged
+# change is caught applier-side too.
+WATCHDOG_OFF = {"disabled", "false", "off", "none", ""}
+TEMP_MIN, TEMP_MAX = 40, 110
+
+
+def unsafe_reasons(change):
+    """Safety-critical values the remote control path must refuse (#257). Empty list = OK to stage."""
+    out = []
+    if "watchdog" in change and str(change["watchdog"]).strip().lower() in WATCHDOG_OFF:
+        out.append("the watchdog cannot be disabled")
+    if "max_temp_c" in change:
+        mt = change["max_temp_c"]
+        if mt is None or (isinstance(mt, str) and not mt.strip()):
+            out.append("max_temp_c cannot be unset (that removes the thermal cutoff)")
+        else:
+            try:
+                v = int(mt)
+            except (TypeError, ValueError):
+                v = None
+            if v is None or v < TEMP_MIN or v > TEMP_MAX:
+                out.append("max_temp_c must stay within %d-%d degC" % (TEMP_MIN, TEMP_MAX))
+    return out
+
 MAX_BODY = 65536  # a config change is small; cap the body so a large POST can't exhaust memory
 
 
@@ -137,6 +164,11 @@ class Handler(BaseHTTPRequestHandler):
         if bad:
             return self._send(400, "Bad Request", {"error": "keys not writable via the control path: %s" % ", ".join(bad),
                                                     "writable": sorted(WRITABLE)})
+        # #257: refuse a change that would strip thermal protection via the remote path, before it is
+        # ever staged. Local `rigforge.sh apply` is unaffected — it never reaches this receiver.
+        unsafe = unsafe_reasons(change)
+        if unsafe:
+            return self._send(400, "Bad Request", {"error": "safety-critical change refused via the remote control path: %s; change it locally on the rig with rigforge.sh if intended" % "; ".join(unsafe)})
         # Re-serialize exactly the accepted keys (defence-in-depth: never stage a raw body) and hand off.
         staged = json.dumps({k: change[k] for k in change}).encode()
         try:
