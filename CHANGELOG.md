@@ -9,6 +9,14 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **Effective writable config in the enriched feed (#253).** `GET :api_port/1/summary` (= `/2/summary`)
+  now carries `rigforge.config` — the rig's current writable config (`pools`, `DONATION`, `autotune`,
+  `watchdog`, `watchdog_interval_min`, `max_temp_c`), exactly the keys the control path accepts, read
+  the same way `parse_config` does (canonical strings). Lets Pithead's Worker Inspect prefill from a
+  live rig read and round-trip read→edit→`POST /apply`. Served even when the miner is down (read from
+  `config.json`). Pool secrets are masked: `pools[].pass` and any `tls-fingerprint` are omitted, so a
+  round-trip that re-sends `pools` must re-supply the pool password. Additive — no existing key changes.
+
 - **IPv6 `api_allow_from` (#243).** The API firewall scoping now accepts an IPv6 address/CIDR
   (rendering an `ip6 saddr` rule in the `inet rigforge` table) as well as IPv4, and the sister/control
   servers bind dual-stack when `api_bind`/`control_bind` is set to `::`. On an IPv6-primary LAN you
@@ -53,6 +61,24 @@ All notable changes to RigForge are documented here. The format is based on
   aborting the release perf gate until someone `rm`ed the file. A read-open is never guarded and
   `flock` works fine on a read fd, so this sidesteps it without ever removing a possibly-held lock.
   The `~/README.md` box contracts also now say to reserve as root. Test-infra only.
+
+### Security
+
+- **The remote control path can no longer strip thermal protection (#257).** A `POST :control_port/apply`
+  that would disable the `watchdog`, or unset / set an out-of-band `max_temp_c` (a rig's thermal
+  cutoff), is now refused with `400` at the receiver (`util/control-server.py`), with a mirrored
+  applier-side backstop in `_control_commit`. Before this, such a change passed the liveness rollback
+  gate (the miner keeps hashing) and was recorded as a normal successful `applied` — so Pithead's
+  one-click Worker Inspect edit could silently remove a rig's thermal cutoff. A **local** `rigforge.sh
+  apply` on the box is unaffected (operator physically present). Defense-in-depth: any *allowed* change
+  touching `watchdog`/`max_temp_c` adds a `warnings[]` entry to the `/status` outcome (additive to the
+  `/status` shape) so the dashboard can force an extra confirmation.
+
+- **Documented the write-capable control-token posture (#256).** With the control path enabled, the
+  `ACCESS_TOKEN` bearer is write-capable and travels in cleartext HTTP (no TLS); `api_allow_from` scopes
+  the source but not the token in flight. `SECURITY.md`, `docs/pithead-integration.md`, and ADR 0001
+  now state this explicitly and prescribe LAN isolation; on-LAN TLS is deliberately deferred (reverse
+  proxy is the escape hatch). No code change — a conscious, documented decision.
 
 ## [1.7.0] - 2026-07-11
 
