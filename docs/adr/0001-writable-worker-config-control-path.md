@@ -78,6 +78,16 @@ Before a control-applied change lands, the current `config.json` is snapshotted 
 
 Stamp each applied change with `source: "control"` and a timestamp, surfaced on the read API (a field on `/health` or the `rigforge` block) so pithead #185 can distinguish "dashboard edit" from "changed on the rig" and diff old to new.
 
+### D8. The control path may tune safety knobs, but not REMOVE thermal protection (#257)
+
+The allowlist (D3) includes the rig's thermal protection — `watchdog` and `max_temp_c`. The rollback gate (D6) checks *hashrate liveness*, which a change that removes thermal protection passes (the miner keeps hashing), so disabling the cutoff would otherwise be recorded as a normal successful `applied`. Since pithead #185 makes these one-click dashboard edits, that turns "disable a rig's thermal cutoff" into a silent, successful remote action.
+
+Decision: the **remote** control path is a *tuning* channel, not a *safety-removal* one. A staged change that sets `watchdog` to a disabled value, or sets `max_temp_c` empty/absent or outside the 40–110 °C band, is **refused** — `400` at the unprivileged receiver (`util/control-server.py` `unsafe_reasons()`), with a mirrored applier-side backstop in `_control_commit` for anything staged out-of-band (a behavioural drift test pins the two). A **local** `rigforge.sh apply` on the box is unaffected: the operator is physically present and deliberate, and never routes through the receiver. As defense-in-depth and an audit signal, any *allowed* change that touches `watchdog`/`max_temp_c` adds a `warnings[]` entry to the `/status` outcome so the consumer can require an extra confirmation. This keeps the channel useful (tighten a ceiling, re-arm a watchdog) while making "cook this rig" something you can only do with your hands on it.
+
+### D9. LAN-isolation posture for the write-capable cleartext token; TLS deferred (#256)
+
+The bearer travels in cleartext over the LAN (stdlib `HTTPServer`, no TLS), and with #236 it is now write-capable and safety-relevant. `api_allow_from` scopes the *source*, not the token in flight, so a same-subnet sniffer/MITM could replay it. Decision: **document the posture** — the mining LAN is the trust boundary; isolate it, treat `ACCESS_TOKEN` as a secret (SECURITY.md, pithead docs/workers.md carry the equivalent). TLS on the LAN API is **deliberately deferred** (cert-management burden for a LAN appliance whose model is already "trusted subnet"; a reverse proxy is the escape hatch if needed). Revisit if the control path ever needs to cross an untrusted segment.
+
 ## Alternatives considered
 
 - **Write verbs on the sister API.** Rejected: violates the read-only invariant, and the `DynamicUser` read process cannot persist or apply.

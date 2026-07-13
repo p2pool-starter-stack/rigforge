@@ -3610,6 +3610,25 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "rejected non-writable-keys:$badkeys"
         return 1
     fi
+    # #257: safety — the control path is for TUNING, not removing thermal protection. Refuse a staged
+    # change that disables the watchdog or unsets/out-of-bands max_temp_c. A local `rigforge.sh apply`
+    # still can (the operator is physically present); only the remote/spool path is constrained. The
+    # remote entry (util/control-server.py unsafe_reasons()) already rejects these with a 400 before
+    # staging — this is the applier-side backstop for anything staged out-of-band (drift-tested).
+    local wd_new mt_new
+    wd_new=$(printf '%s' "$change" | jq -r 'if has("watchdog") then (.watchdog | tostring | ascii_downcase) else "-" end')
+    case "$wd_new" in disabled | false | off | none | "" | null)
+        echo "rejected safety-watchdog-cannot-be-disabled"
+        return 1
+        ;;
+    esac
+    if printf '%s' "$change" | jq -e 'has("max_temp_c")' >/dev/null 2>&1; then
+        mt_new=$(printf '%s' "$change" | jq -r '.max_temp_c // ""')
+        if [ -z "$mt_new" ] || ! [[ "$mt_new" =~ ^[0-9]+$ ]] || [ "$mt_new" -lt 40 ] || [ "$mt_new" -gt 110 ]; then
+            echo "rejected safety-max_temp_c-out-of-band"
+            return 1
+        fi
+    fi
     # Build the candidate: current config with ONLY the allowlisted staged keys overlaid (pools and
     # other arrays replace, scalars replace). Filter again so a stray key can never ride in.
     cand="$CONFIG_JSON.control.$$"
@@ -3671,7 +3690,10 @@ _control_do_apply() {
 _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
     local f="$1"
     mkdir -p "$(dirname "$f")"
-    jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end)}' >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
+    # #257: warnings[] flags a safety-relevant change (watchdog / max_temp_c = thermal protection) even
+    # when it was allowed, so the operator and the dashboard see it and can require an extra confirm.
+    # Additive to the /status shape (a new warnings[] is a backward-compatible extension of the contract).
+    jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end), warnings: ($k | split(",") | map(select(. == "watchdog" or . == "max_temp_c")) | map("thermal protection changed: " + .))}' >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
 }
 
 # control-apply (#236): the privileged half of the writable control path, run by the
@@ -4096,8 +4118,20 @@ _watchdog_json() {
 
 # Provenance + tune + power + health, namespaced under one `rigforge` key. Runs in the refresh
 # timer, never on a request path, so it can afford the full probe pass every time.
+# #253: the effective WRITABLE config, exactly the keys the control path accepts, so a consumer can
+# round-trip: read this -> edit -> POST the same keys to :control_port/apply. Read the same way
+# parse_config does (canonical strings: perf->performance, on/true->enabled), served from config.json
+# so it's present even when the miner is down. Secrets masked: pools[].pass and any tls-fingerprint
+# are dropped — the enriched read is open by default, so it must never leak a pool credential.
+_api_config_json() {
+    local pools
+    pools=$(jq -c '[.pools[]? | del(.pass, ."tls-fingerprint")]' "$CONFIG_JSON" 2>/dev/null || echo '[]')
+    [ -n "$pools" ] || pools='[]'
+    jq -n --argjson pools "$pools" --argjson don "${DONATION:-1}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
+}
+
 _api_rigforge_block() { # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog}'
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config}'
 }
 
 # Produce the sister API's response bodies: compute once, write atomically (tmp + rename, the

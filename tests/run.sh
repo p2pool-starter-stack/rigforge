@@ -5146,6 +5146,64 @@ assert_eq "commit: invalid value rejected (parse gate), nothing written" "$(comm
 assert_eq "commit: non-object rejected" "$(commit_case "$CFG_236" '[1,2]')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 assert_eq "commit: empty object rejected" "$(commit_case "$CFG_236" '{}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 assert_eq "commit: writable+non-writable mix rejected atomically" "$(commit_case "$CFG_236" '{"DONATION":3,"HOME_DIR":"/x"}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+# #257: the control path is a TUNING channel — the applier backstop refuses a staged change that strips
+# thermal protection (watchdog disable / out-of-band or unset max_temp_c), while tuning within the band
+# still commits. Mirrors util/control-server.py's unsafe_reasons() (the receiver rejects these with 400).
+assert_eq "commit: watchdog disable refused (safety #257)" "$(commit_case "$CFG_236" '{"watchdog":"disabled"}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: watchdog false refused (safety #257)" "$(commit_case "$CFG_236" '{"watchdog":false}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: max_temp_c out-of-band refused (safety #257)" "$(commit_case "$CFG_236" '{"max_temp_c":999}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: max_temp_c unset refused (safety #257)" "$(commit_case "$CFG_236" '{"max_temp_c":null}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: watchdog enable still commits (tuning #257)" "$(commit_case "$CFG_236" '{"watchdog":"enabled"}')" "committed|don=1|pool=h:3333|bk=1|tmp=0"
+assert_eq "commit: max_temp_c within band still commits (tuning #257)" "$(commit_case "$CFG_236" '{"max_temp_c":80}')" "committed|don=1|pool=h:3333|bk=1|tmp=0"
+
+# #257: /status carries a warnings[] whenever a change touches thermal protection (even an allowed one),
+# so the operator/dashboard can require an extra confirm — additive to the /status shape.
+wst="$(mktemp -d "$SANDBOX/wst.XXXXXX")"
+(
+    source "$SCRIPT"
+    _control_status "$wst/s.json" applied cidW "watchdog,DONATION" "" ""
+) 2>/dev/null
+assert_eq "status: warnings[] flags a watchdog change (#257)" "$(jq -r '.warnings[0]' "$wst/s.json")" "thermal protection changed: watchdog"
+(
+    source "$SCRIPT"
+    _control_status "$wst/s2.json" applied cidT "max_temp_c" "" ""
+) 2>/dev/null
+assert_eq "status: warnings[] flags a max_temp_c change (#257)" "$(jq -r '.warnings[0]' "$wst/s2.json")" "thermal protection changed: max_temp_c"
+(
+    source "$SCRIPT"
+    _control_status "$wst/s3.json" applied cidP "pools,DONATION" "" ""
+) 2>/dev/null
+assert_eq "status: no warnings for a non-thermal change (#257)" "$(jq -c '.warnings' "$wst/s3.json")" "[]"
+
+# #253: the enriched feed exposes the effective WRITABLE config so the dashboard can prefill/round-trip.
+echo "== unit: _api_config_json — effective writable config, secrets masked (#253) =="
+cfgblk() { # <config-json> -> the rigforge.config JSON
+    local d
+    d=$(mktemp -d "$SANDBOX/cfgblk.XXXXXX")
+    printf '%s\n' "$1" >"$d/config.json"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$d/config.json"
+        SCRIPT_DIR="$d"
+        set +e
+        PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
+        _api_config_json
+    ) 2>/dev/null
+}
+C253='{ "pools":[{"url":"gouda:3333","user":"wallet.rig","pass":"SECRET","keepalive":true,"tls":true,"tls-fingerprint":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}], "DONATION":2, "autotune":"perf", "watchdog":"on", "watchdog_interval_min":10, "max_temp_c":85 }'
+blk="$(cfgblk "$C253")"
+assert_eq "config: pool pass masked — no secret on the open read (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].pass // "ABSENT"')" "ABSENT"
+assert_eq "config: pool tls-fingerprint masked (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0]."tls-fingerprint" // "ABSENT"')" "ABSENT"
+assert_eq "config: pool url + user preserved (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].url + " " + .pools[0].user')" "gouda:3333 wallet.rig"
+assert_eq "config: autotune canonical perf->performance (#253)" "$(printf '%s' "$blk" | jq -r '.autotune')" "performance"
+assert_eq "config: watchdog canonical on->enabled (#253)" "$(printf '%s' "$blk" | jq -r '.watchdog')" "enabled"
+assert_eq "config: max_temp_c is a plain int (#253)" "$(printf '%s' "$blk" | jq -r '.max_temp_c')" "85"
+assert_eq "config: DONATION + interval carried (#253)" "$(printf '%s' "$blk" | jq -r '"\(.DONATION) \(.watchdog_interval_min)"')" "2 10"
+blk2="$(cfgblk '{ "pools":[{"url":"h:3333"}] }')"
+assert_eq "config: max_temp_c null when unset (#253)" "$(printf '%s' "$blk2" | jq -r '.max_temp_c')" "null"
+assert_eq "config: autotune/watchdog default to disabled (#253)" "$(printf '%s' "$blk2" | jq -r '"\(.autotune) \(.watchdog)"')" "disabled disabled"
+# round-trip contract: the config block's keys are EXACTLY the control writable allowlist.
+assert_eq "config: keys == the control writable allowlist, round-trippable (#253)" "$(printf '%s' "$blk2" | jq -r 'keys_unsorted | sort | join(",")')" "DONATION,autotune,max_temp_c,pools,watchdog,watchdog_interval_min"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
@@ -5341,6 +5399,15 @@ else
     body="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"ACCESS_TOKEN":"x"}' 2>/dev/null)"
     assert_contains "POST non-writable key -> 400 naming it" "$body" "ACCESS_TOKEN"
     assert_eq "POST non-writable key -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"HOME_DIR":"/x"}')" "400"
+    # #257: the remote path refuses to strip thermal protection — 400 before anything is staged.
+    assert_eq "POST watchdog:disabled -> 400 (safety #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"watchdog":"disabled"}')" "400"
+    assert_eq "POST watchdog:false -> 400 (safety #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"watchdog":false}')" "400"
+    assert_eq "POST max_temp_c:null -> 400 (safety #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":null}')" "400"
+    assert_eq "POST max_temp_c:999 -> 400 (safety #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":999}')" "400"
+    safebody="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"watchdog":"disabled"}' 2>/dev/null)"
+    assert_contains "safety 400 explains the refusal + points at local rigforge.sh (#257)" "$safebody" "change it locally on the rig with rigforge.sh"
+    assert_eq "POST watchdog:enabled -> 202 (tuning still works #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"watchdog":"enabled"}')" "202"
+    assert_eq "POST max_temp_c:80 -> 202 (within band #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":80}')" "202"
     assert_eq "POST not JSON -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d 'nope')" "400"
     assert_eq "POST empty object -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{}')" "400"
     assert_eq "POST wrong content-type -> 415" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: text/plain' -d '{"DONATION":2}')" "415"
