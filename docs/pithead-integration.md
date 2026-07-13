@@ -76,8 +76,10 @@ pithead#235):
   superset: everything the `:8080` probe returns is here unchanged), plus one namespaced
   `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance), `tune` (applied
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
-  hashrate-per-watt over a 1s window; `null` when unmeasurable), and `health` (the doctor probes
-  as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling).
+  hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
+  as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
+  `watchdog` (armed state, thermal-hold, `max_temp_c`), and `config` (the effective **writable**
+  config — exactly the control-path allowlist, pool secrets masked; see the prefill note in §3).
 - `GET /health` and `GET /tune` — the `rigforge.health` / `rigforge.tune` objects bare.
 - When XMRig's own API is unreachable the response is still `200` with
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
