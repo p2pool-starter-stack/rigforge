@@ -5155,6 +5155,11 @@ assert_eq "commit: max_temp_c out-of-band refused (safety #257)" "$(commit_case 
 assert_eq "commit: max_temp_c unset refused (safety #257)" "$(commit_case "$CFG_236" '{"max_temp_c":null}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 assert_eq "commit: watchdog enable still commits (tuning #257)" "$(commit_case "$CFG_236" '{"watchdog":"enabled"}')" "committed|don=1|pool=h:3333|bk=1|tmp=0"
 assert_eq "commit: max_temp_c within band still commits (tuning #257)" "$(commit_case "$CFG_236" '{"max_temp_c":80}')" "committed|don=1|pool=h:3333|bk=1|tmp=0"
+assert_eq "commit: max_temp_c band floor 40 commits (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":40}')" "committed|don=1|pool=h:3333|bk=1|tmp=0"
+assert_eq "commit: max_temp_c band ceiling 110 commits (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":110}')" "committed|don=1|pool=h:3333|bk=1|tmp=0"
+assert_eq "commit: max_temp_c 111 just-over refused (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":111}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: max_temp_c non-integer 40.5 refused (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":40.5}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+assert_eq "commit: watchdog invalid 0 rejected — not a silent disable (#257)" "$(commit_case "$CFG_236" '{"watchdog":0}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 
 # #257: /status carries a warnings[] whenever a change touches thermal protection (even an allowed one),
 # so the operator/dashboard can require an extra confirm — additive to the /status shape.
@@ -5408,6 +5413,10 @@ else
     assert_contains "safety 400 explains the refusal + points at local rigforge.sh (#257)" "$safebody" "change it locally on the rig with rigforge.sh"
     assert_eq "POST watchdog:enabled -> 202 (tuning still works #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"watchdog":"enabled"}')" "202"
     assert_eq "POST max_temp_c:80 -> 202 (within band #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":80}')" "202"
+    assert_eq "POST max_temp_c:40 -> 202 (band floor #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":40}')" "202"
+    assert_eq "POST max_temp_c:110 -> 202 (band ceiling #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":110}')" "202"
+    assert_eq "POST max_temp_c:111 -> 400 (just over band #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":111}')" "400"
+    assert_eq "POST max_temp_c:40.5 non-integer -> 400 (receiver matches applier #257)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"max_temp_c":40.5}')" "400"
     assert_eq "POST not JSON -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d 'nope')" "400"
     assert_eq "POST empty object -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{}')" "400"
     assert_eq "POST wrong content-type -> 415" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: text/plain' -d '{"DONATION":2}')" "415"
