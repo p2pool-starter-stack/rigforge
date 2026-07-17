@@ -1361,6 +1361,11 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" RIGFORGE_HOME
 rc=$?
 assert_rc "apply exits 0" "$rc" "0"
 assert_eq "apply regenerated config" "$(J "$U/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
+# #276 (item 3): `apply` wires _stamp_config_meta local (rigforge.sh:3599) — every #254 test above drives
+# _stamp_config_meta directly, so this black-box apply run is the only thing that would catch that call
+# site going missing. Assert the sidecar it writes, not just the helper's own unit behavior.
+assert_eq "apply stamps the config-meta sidecar with source=local (#276)" "$([ -f "$U/.rigforge-config-meta.json" ] && echo y || echo n)" "y"
+assert_eq "apply's config-meta sidecar source is 'local' (#276)" "$(J "$U/.rigforge-config-meta.json" '.source')" "local"
 # The logrotate policy is actually written on a Linux apply, with the directives XMRig needs (it holds
 # the log open, so copytruncate; minsize avoids rotating tiny logs). Asserting the content also guards
 # the create-owner line (see the dedicated owner test below).
@@ -1449,6 +1454,45 @@ assert_eq "apply with api enabled installs the refresh timer (#99/#164)" "$([ -f
 arc_api disabled >/dev/null
 assert_eq "apply with api disabled removes the server (#99)" "$([ -f "$ARC/systemd/rigforge-api.service" ] && echo y || echo n)" "n"
 assert_eq "apply with api disabled removes the refresh timer (#99)" "$([ -f "$ARC/systemd/rigforge-api-refresh.timer" ] && echo y || echo n)" "n"
+
+# #236/#273: apply is the config-change path for the writable control server too — toggling `control`
+# on/off via apply must install/remove its units without a full setup, the same as the sister API above.
+# install_control's disabled branch only tears down units that already exist (confirmed by reading
+# install_control, rigforge.sh:1194-1220 — same idempotent shape as install_api's disabled branch).
+echo "== black-box: apply reconciles the writable control path to config (#236) =="
+cp "$ROOT/systemd/rigforge-control.service.template" "$ROOT/systemd/rigforge-control-apply.service.template" "$ROOT/systemd/rigforge-control-apply.path.template" "$ARC/systemd/"
+arc_control() { # <enabled|disabled>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ARC"
+        SYSTEMD_DIR="$ARC/systemd"
+        SERVICE_NAME=xmrig
+        REAL_USER=rfop
+        AUTOTUNE_MODE=disabled
+        API_MODE=disabled
+        CONTROL_MODE="$1"
+        CONTROL_BIND=0.0.0.0
+        CONTROL_PORT=8082
+        API_PORT=8081
+        # parse_config (always run by the real _apply_runtime, stubbed out below to skip the heavy
+        # config regen) is what normally assigns API_ALLOW_FROM before install_control reads it —
+        # mirror that here rather than leaving it unbound.
+        API_ALLOW_FROM=10.0.0.5
+        _apply_runtime() { :; }
+        sudo() { "$@"; }
+        set +e
+        PATH="$STUBS:$PATH" apply 2>&1
+    )
+}
+arc_control enabled >/dev/null
+assert_eq "apply with control enabled installs the server unit (#236)" "$([ -f "$ARC/systemd/rigforge-control.service" ] && echo y || echo n)" "y"
+assert_eq "apply with control enabled installs the applier unit (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "y"
+assert_eq "apply with control enabled installs the path watcher (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
+arc_control disabled >/dev/null
+assert_eq "apply with control disabled removes the server unit (#236)" "$([ -f "$ARC/systemd/rigforge-control.service" ] && echo y || echo n)" "n"
+assert_eq "apply with control disabled removes the applier unit (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "n"
+assert_eq "apply with control disabled removes the path watcher (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "n"
 
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
@@ -3651,6 +3695,17 @@ mkdir -p "$UN/etc/systemd/system" "$UN/etc/logrotate.d" "$UN/etc/security" "$UN/
 : >"$UN/etc/logrotate.d/xmrig"
 : >"$UN/etc/modules-load.d/msr.conf"
 : >"$UN/home/worker/xmrig/build/xmrig"
+# #273: pre-seed every optional unit uninstall's removal branches (rigforge.sh:1750-1759 area) are
+# responsible for — the full set the sandbox has never installed before, so those branches never ran in
+# any test. Cross-checked 1:1 against systemd/*.template (minus xmrig.service.template, already seeded
+# above) so this list can't silently drift from what setup/install_* actually ship. One list, reused
+# below for the post-uninstall removal assertions, so the two can't drift from EACH OTHER either.
+UN_OPT_UNITS="rigforge-api.service rigforge-api-refresh.service rigforge-api-refresh.timer
+rigforge-control.service rigforge-control-apply.service rigforge-control-apply.path
+rigforge-autotune.service rigforge-autotune.timer rigforge-watchdog.service rigforge-watchdog.timer"
+for _u in $UN_OPT_UNITS; do
+    : >"$UN/etc/systemd/system/$_u"
+done
 printf 'proc /proc proc defaults 0 0\nhugetlbfs /dev/hugepages hugetlbfs defaults 0 0\nhugetlbfs_1g %s/dev/hp1g hugetlbfs pagesize=1G 0 0\n' "$UN" >"$UN/etc/fstab"
 printf 'root hard nofile 1024\n%s soft memlock unlimited\n%s hard memlock unlimited\n* soft memlock unlimited\n' "$ME" "$ME" >"$UN/etc/security/limits.conf"
 printf 'loop\nmsr\n' >"$UN/etc/modules"
@@ -3663,7 +3718,7 @@ un_run() {
         FSTAB="$UN/etc/fstab" LIMITS_CONF="$UN/etc/security/limits.conf" \
         MODULES_LOAD_DIR="$UN/etc/modules-load.d" MODULES_FILE="$UN/etc/modules" \
         HUGEPAGES_1G_DIR="$UN/dev/hp1g" GRUB_DEFAULT="$UN/nonexistent-grub" \
-        BIN_DIR="$UN/usr-local-bin" \
+        BIN_DIR="$UN/usr-local-bin" CALL_LOG="$UN/calls.log" \
         RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)
 }
 # setup would have linked $BIN_DIR/rigforge -> $UN/rigforge.sh (SCRIPT_DIR=$UN); uninstall must remove
@@ -3678,6 +3733,15 @@ assert_eq "service unit removed" "$([ -f "$UN/etc/systemd/system/xmrig.service" 
 assert_eq "logrotate policy removed" "$([ -f "$UN/etc/logrotate.d/xmrig" ] && echo y || echo n)" "n"
 assert_eq "msr.conf removed" "$([ -f "$UN/etc/modules-load.d/msr.conf" ] && echo y || echo n)" "n"
 assert_eq "worker build/logs removed" "$([ -d "$UN/home/worker" ] && echo y || echo n)" "n"
+# #273: every optional unit uninstall is responsible for must actually be gone, not just the always-on
+# xmrig.service above.
+for _u in $UN_OPT_UNITS; do
+    assert_eq "$_u removed" "$([ -f "$UN/etc/systemd/system/$_u" ] && echo y || echo n)" "n"
+done
+# The worse regression the issue calls out: a broken control removal branch would leave the
+# token-authed writable server running after "uninstall". Assert uninstall actually reached systemctl
+# for the control units, not just that the unit files are gone.
+assert_contains "uninstall disables+stops the control server unit (#273)" "$(cat "$UN/calls.log" 2>/dev/null)" "[systemctl] disable --now rigforge-control.service rigforge-control-apply.path"
 assert_eq "fstab hugepage lines gone" "$(grep -c 'hugetlbfs' "$UN/etc/fstab")" "0"
 assert_contains "fstab unrelated line kept" "$(cat "$UN/etc/fstab")" "proc /proc proc"
 assert_eq "limits memlock lines gone" "$(grep -c 'memlock unlimited' "$UN/etc/security/limits.conf")" "0"
@@ -3806,6 +3870,47 @@ assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
+
+# #276 (item 2): a bench candidate that crashes (xmrig-style nonzero exit, no hashrate line) must still
+# leave the miner service restarted — _tune_bench_cleanup is wired as an EXIT trap (rigforge.sh:2713)
+# precisely so a mid-run failure can't strand a rig at 0 H/s after a failed nightly tune. Single-knob
+# sweep (prefetch only, one seed) makes "candidate 2" deterministic: the fake xmrig exits nonzero without
+# emitting a hashrate line on its 2nd invocation.
+echo "== black-box: tune restarts the service after a mid-run bench crash (#276) =="
+TC="$(mktemp -d "$SANDBOX/tunecrash.XXXXXX")"
+cp "$ROOT/VERSION" "$TC/"
+mkdir -p "$TC/util" "$TC/cpuok/cpu0/cpufreq"
+cp "$ROOT/util/proposed-grub.sh" "$TC/util/" && chmod +x "$TC/util/proposed-grub.sh"
+TCBD="$TC/home/worker/xmrig/build"
+mkdir -p "$TCBD"
+printf '5000000\n' >"$TC/cpu_max"
+printf '4800000\n' >"$TC/cpuok/cpu0/cpufreq/scaling_cur_freq"
+cat >"$TCBD/config.json" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "yield": false } }
+EOF
+cat >"$TCBD/xmrig" <<'EOF'
+#!/usr/bin/env bash
+[ -n "${BENCH_LOG:-}" ] && echo call >>"$BENCH_LOG"
+n=$(wc -l <"${BENCH_LOG:-/dev/null}" 2>/dev/null | tr -d ' ')
+if [ "$n" = "2" ]; then
+    echo "fatal error" >&2
+    exit 1
+fi
+echo "miner speed 10s/60s/15m 1000.0 n/a n/a H/s max 1000.0 H/s"
+EOF
+chmod +x "$TCBD/xmrig"
+cat >"$TC/config.json" <<EOF
+{ "HOME_DIR": "$TC/home", "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+TCBENCHLOG="$TC/bench.log"
+: >"$TCBENCHLOG"
+TCCALLLOG="$TC/call.log"
+: >"$TCCALLLOG"
+tc_out="$(cd "$TC" && PATH="$STUBS:$PATH" CPUFREQ_MAX="$TC/cpu_max" CPU_SYSFS="$TC/cpuok" \
+    TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES="1 2 3" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+    BENCH_LOG="$TCBENCHLOG" CALL_LOG="$TCCALLLOG" RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+assert_contains "tune still restarts the service after a mid-run bench crash (#276)" "$tc_out" "Restarting the 'xmrig' service"
+assert_contains "systemctl start is actually invoked after the crash (#276)" "$(cat "$TCCALLLOG")" "[systemctl] start xmrig"
 
 # #tunefix: the optimization target defaults to the `autotune` config value (overridable with
 # --perf/--efficiency) and is announced at the start of the run. Isolated sandbox so it doesn't disturb the
@@ -5057,6 +5162,19 @@ printf '{broken' >"$APIQ/home/worker/tune-overrides.json"
 run_refresh
 assert_eq "corrupt tune-overrides -> applied null, not a crash" "$(jq -r '.applied' "$APIQ/data/tune.json")" "null"
 rm -f "$APIQ/home/worker/tune-overrides.json"
+# #276 (item 5): each `printf | jq ... && mv` (rigforge.sh:4233-4235) is independently atomic — a jq
+# failure on ONE file must not corrupt or block the others. Break _api_rigforge_block so specifically
+# health.json's own extraction (`.health + {watchdog: .watchdog}`) fails (health is a string, not an
+# object -> jq type error), while the rest of the block stays valid JSON.
+_rf_broken_health_block() {
+    jq -n --arg v "x" --arg xv "x" --arg xc "x" \
+        '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: {applied: true}, power: null, health: "BROKEN", watchdog: {mode: "disabled"}, config: {}, config_meta: {}}'
+}
+oldhealth="$(cat "$APIQ/data/health.json")"
+run_refresh '_api_rigforge_block() { _rf_broken_health_block; }'
+assert_eq "api-refresh: a broken health block leaves health.json serving the previous content (#276)" "$(cat "$APIQ/data/health.json")" "$oldhealth"
+assert_eq "api-refresh: tune.json still updates despite the health failure (#276)" "$(jq -r '.applied' "$APIQ/data/tune.json")" "true"
+assert_eq "api-refresh: summary.json still updates despite the health failure (#276)" "$(jq -r '.rigforge.xmrig_version' "$APIQ/data/summary.json")" "x"
 # The dispatch entry is wired (any OS: rc + message prove the verb was reached).
 out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
@@ -5350,6 +5468,27 @@ csidx="$(mktemp -d "$SANDBOX/csidx.XXXXXX")"
 ) 2>/dev/null
 assert_eq "status: most-recent status.json still written (#255 compat)" "$(jq -r .change_id "$csidx/status.json")" "0123456789abcdef"
 assert_eq "status: outcome indexed under changes/<cid>.json (#255)" "$(jq -r .status "$csidx/changes/0123456789abcdef.json" 2>/dev/null)" "applied"
+# #276 (item 4): changes/ keeps only the last ~20 outcomes (rigforge.sh:3721's `ls -t ... | tail -n +21`).
+# Write 22 distinct outcomes; the first two are separated by real time (sleep) so they're unambiguously
+# the oldest by mtime regardless of the remaining 20's write order — exactly enough survivors (20) that
+# their mutual ordering doesn't matter.
+prd="$(mktemp -d "$SANDBOX/prune.XXXXXX")"
+(
+    source "$SCRIPT"
+    _control_status "$prd/status.json" applied 0000000000000001 "DONATION" "" ""
+    sleep 1
+    _control_status "$prd/status.json" applied 0000000000000002 "DONATION" "" ""
+    sleep 1
+    for i in $(seq 3 22); do
+        cid=$(printf '%016x' "$i")
+        _control_status "$prd/status.json" applied "$cid" "DONATION" "" ""
+    done
+) 2>/dev/null
+assert_eq "changes/ index pruned to exactly 20 outcomes (#276)" "$(ls "$prd/changes"/*.json 2>/dev/null | wc -l | tr -d ' ')" "20"
+assert_eq "the oldest outcome is pruned (#276)" "$([ -f "$prd/changes/0000000000000001.json" ] && echo present || echo gone)" "gone"
+assert_eq "the 2nd-oldest outcome is pruned (#276)" "$([ -f "$prd/changes/0000000000000002.json" ] && echo present || echo gone)" "gone"
+assert_eq "the 1st surviving outcome remains (#276)" "$([ -f "$prd/changes/0000000000000003.json" ] && echo present || echo gone)" "present"
+assert_eq "the newest outcome remains (#276)" "$([ -f "$prd/changes/0000000000000016.json" ] && echo present || echo gone)" "present"
 
 # #253: the enriched feed exposes the effective WRITABLE config so the dashboard can prefill/round-trip.
 echo "== unit: _api_config_json — effective writable config, secrets masked (#253) =="
@@ -5551,7 +5690,25 @@ ca_exec() {
         # Stub apply + liveness (not _control_do_apply itself) so its real body runs: apply is a
         # no-op, CA_APPLY_OK drives whether the miner "comes back" (0 -> the rollback path).
         apply() { return 0; }
-        _wait_miner_live() { [ "${CA_APPLY_OK:-1}" = 1 ]; }
+        # _wait_miner_live is called once for the initial apply and (on the rollback path) again for the
+        # rollback re-apply. CA_APPLY_OK drives the 1st call; CA_ROLLBACK_OK drives the 2nd, defaulting to
+        # CA_APPLY_OK so every pre-#276 test (which only ever sets CA_APPLY_OK) is unaffected — #276 pins
+        # the double-failure contract by setting them differently (0 then 1, or 0 then 0).
+        _ca_calln=0
+        _wait_miner_live() {
+            _ca_calln=$((_ca_calln + 1))
+            if [ "$_ca_calln" -eq 1 ]; then [ "${CA_APPLY_OK:-1}" = 1 ]; else [ "${CA_ROLLBACK_OK:-${CA_APPLY_OK:-1}}" = 1 ]; fi
+        }
+        # #276: simulate an unreadable rollback backup — hook the one place control_apply already calls
+        # between a successful commit and the rollback's `cp "$backup" ...` (rigforge.sh:3759). Swap the
+        # backup FILE for a directory of the same name: a plain `cp` (no -r) always refuses to read a
+        # directory, unlike chmod 000 which root (e.g. the kcov coverage container) simply ignores.
+        if [ "${CA_BACKUP_UNREADABLE:-0}" = 1 ]; then
+            _reown_config_backups() {
+                local f
+                for f in "$1"/config-*.json; do rm -f "$f" && mkdir -p "$f"; done
+            }
+        fi
         OS_TYPE=Linux
         SCRIPT_DIR="$CA"
         CONFIG_JSON="$CA/config.json"
@@ -5585,6 +5742,23 @@ assert_eq "apply: rejected drains the spool" "$(ls "$CA"/state/spool/pending-*.j
 ca_run "$CFG_236" '{"DONATION":42}' 0
 assert_eq "apply: failed liveness -> status rolled_back" "$(cst status)" "rolled_back"
 assert_eq "apply: rollback restores the old config (donation 1)" "$(jq -r .DONATION "$CA/config.json")" "1"
+# #276 (item 1a): CA_APPLY_OK=0 fails BOTH the initial apply and the rollback's own re-apply (same stub,
+# same value) — the double-failure path. Pin a distinguishable reason so the receiver can tell "rolled
+# back and live" from "rolled back, rig still down" instead of reading identical text for both.
+assert_contains "rollback double-failure gets a distinguishable reason (#276)" "$(cst reason)" "rollback re-apply also failed to restore liveness"
+# Contrast: initial apply fails but the rollback's re-apply succeeds -> a DIFFERENT reason string.
+CA_APPLY_OK=0 CA_ROLLBACK_OK=1 ca_run "$CFG_236" '{"DONATION":42}' 0
+assert_eq "single-failure rollback still reports rolled_back" "$(cst status)" "rolled_back"
+assert_contains "single-failure rollback (live again) gets its own reason (#276)" "$(cst reason)" "rolled back and live"
+assert_absent "single-failure reason is NOT the double-failure text (#276)" "$(cst reason)" "also failed"
+# #276 (item 1b) — the real bug: the backup snapshot itself unreadable at rollback time. Before the fix,
+# `cp "$backup" ...` fails under set -Eeuo pipefail and the oneshot exits with NO status written at all,
+# so the receiver serves the stale previous outcome forever. The applier must write a terminal status
+# (failed + reason) on this exit path.
+CA_APPLY_OK=0 CA_BACKUP_UNREADABLE=1 ca_run "$CFG_236" '{"DONATION":42}' 0
+assert_eq "unreadable rollback backup still writes a terminal status (#276)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
+assert_eq "unreadable rollback backup -> status failed (#276)" "$(cst status)" "failed"
+assert_contains "unreadable rollback backup reason names the cause (#276)" "$(cst reason)" "rollback backup unreadable"
 # supersede: two staged -> only the newest applies, older dropped, no double restart
 rm -rf "$CA"
 mkdir -p "$CA/state/spool"
@@ -5803,6 +5977,12 @@ echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
     "$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")" "$RL_SRC"
+# #269: the byte-compare above only sees rig_lock() itself, not _cleanup's own fallback drifting
+# back to the pre-#244 path. Match the ":-" fallback shape, not bare text — e2e-real.sh/e2e-pithead.sh
+# both legitimately mention the old path in an (#244) migration comment. Split so this needle can't self-match.
+_stale_holder_pat=':-/run/rig-e2e.hold''er'
+assert_eq "no code under tests/ still falls back to the pre-#244 holder path (#269)" \
+    "$(grep -rl -- "$_stale_holder_pat" "$ROOT/tests" 2>/dev/null | wc -l | tr -d ' ')" "0"
 if ! command -v flock >/dev/null 2>&1; then
     echo "  SKIP: no flock(1) on this host (macOS) — the lock-behaviour tests run in the Linux CI jobs"
 else
