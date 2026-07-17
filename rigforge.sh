@@ -292,8 +292,8 @@ ensure_config_exists() {
             # Minimal config: just the native pools array. jq writes it so the URL (and pass, when
             # given) are safely quoted; an empty pass writes no key at all, keeping the no-auth
             # minimal config byte-identical to before.
-            jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" \
-                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end))]}' >"$CONFIG_JSON"
+            (umask 077 && jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" \
+                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end))]}' >"$CONFIG_JSON")
             # The operator is told (below) to hand-edit this file to add a wallet / ACCESS_TOKEN, and the
             # first `apply` may be a long way off — chmod now so those secrets are never world-readable
             # in the interim (generate_xmrig_config's chmod 600 only runs on setup/apply). (#131)
