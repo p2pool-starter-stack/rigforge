@@ -4506,10 +4506,8 @@ freqwrite() { ( # <freq sample kHz>... -> BENCH_FREQ_FILE content, via the real 
 ); }
 assert_eq "bench freq median floors a sci-notation kHz average to whole kHz, not a stray digit (#266)" \
     "$(freqwrite 4627000 4628001)" "4627500"
-# No clock samples at all (VM/container without cpufreq): the freq file must stay EMPTY — "no reading"
-# keeps the #62 throttle check disabled for the candidate. `_median` with zero args emits one empty
-# line, which the writer's awk must not coerce into a literal 0 kHz (0 would read as "throttled to
-# 0 MHz" and permanently reject every candidate under an explicit TUNE_MIN_FREQ_MHZ).
+# No clock samples (VM/container without cpufreq): the file must stay EMPTY — "no reading" disables the
+# #62 check. A coerced literal 0 would read as "throttled to 0 MHz" and reject every candidate.
 assert_eq "bench freq writer leaves the file empty when no clock was readable (#266 follow-up)" \
     "$(freqwrite)" ""
 
