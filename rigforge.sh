@@ -563,6 +563,21 @@ parse_config() {
         [ -n "${ACCESS_TOKEN:-}" ] || error "control: \"enabled\" requires ACCESS_TOKEN — a writable API with no token is an open remote config write. Set ACCESS_TOKEN in config.json."
         [ -n "${API_ALLOW_FROM:-}" ] || error "control: \"enabled\" requires api_allow_from — the writable path must be pinned to the stack host. Set api_allow_from in config.json."
     fi
+
+    # Opt-in REMOTE UPGRADE (#308, ADR 0002): a SECOND switch, layered on control:"enabled", that lets
+    # the stack trigger a rig to upgrade its own RigForge to the latest release — i.e. fetch and run new
+    # root code on a remote trigger. Default off, and it does NOT come up just because `control` is on:
+    # enabling remote tuning must never silently grant a remote code-update surface. It rides the control
+    # channel's existing Bearer token + api_allow_from pin, so it needs no auth of its own.
+    _cu=$(jq -r '.control_upgrade // "disabled"' "$CONFIG_JSON")
+    case "$_cu" in
+    disabled | false | off | none | null | "") CONTROL_UPGRADE=disabled ;;
+    enabled | true | on) CONTROL_UPGRADE=enabled ;;
+    *) error "Invalid \"control_upgrade\" value '$_cu' in config.json — use \"disabled\" or \"enabled\"." ;;
+    esac
+    if [ "$CONTROL_UPGRADE" = enabled ] && [ "${CONTROL_MODE:-disabled}" != enabled ]; then
+        error "control_upgrade requires control: \"enabled\" first — the remote-upgrade path rides the control channel's Bearer token and api_allow_from source pin (ADR 0002)."
+    fi
     # #243/scan: an IPv6 api_allow_from only scopes traffic the APIs actually receive over IPv6, but
     # api_bind/control_bind default to IPv4 (0.0.0.0). Warn on the silent no-op — it fails safe (no
     # reachable v6 to scope), but the operator's intent isn't met until they bind "::".
@@ -591,7 +606,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind hugepages_reserve_extra_mb threads"
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb threads"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -1226,10 +1241,12 @@ install_api() {
 install_control() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
+    local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service" upath="$SYSTEMD_DIR/rigforge-control-upgrade.path"
     if [ "${CONTROL_MODE:-disabled}" = "disabled" ]; then
-        if [ -f "$svc" ] || [ -f "$apath" ]; then
-            sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path 2>/dev/null || true
-            sudo rm -f "$svc" "$asvc" "$apath"
+        if [ -f "$svc" ] || [ -f "$apath" ] || [ -f "$upath" ]; then
+            # #308: tear down the remote-upgrade units alongside the control path — they never outlive it.
+            sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
+            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath"
             sudo systemctl daemon-reload 2>/dev/null || true
             log "Writable control path disabled."
         fi
@@ -1244,10 +1261,26 @@ install_control() {
         envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' \
         <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null
     sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null
+    # #308: the remote-upgrade units ride ON TOP of the control path — installed only when
+    # control_upgrade is ALSO enabled, removed otherwise, so `control` alone never carries a
+    # code-update surface. Same envsubst/operator handback as the apply oneshot.
+    if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
+        RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
+            envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' \
+            <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null
+        sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null
+        log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
+    elif [ -f "$upath" ] || [ -f "$usvc" ]; then
+        sudo systemctl disable --now rigforge-control-upgrade.path 2>/dev/null || true
+        sudo rm -f "$usvc" "$upath"
+    fi
     sudo systemctl daemon-reload
     sudo systemctl enable --now rigforge-control-apply.path 2>/dev/null || true
+    if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
+        sudo systemctl enable --now rigforge-control-upgrade.path 2>/dev/null || true
+    fi
     sudo systemctl enable rigforge-control.service 2>/dev/null || true
-    # restart, not just enable --now: a bind/port/token change must be re-read (restart also starts).
+    # restart, not just enable --now: a bind/port/token/upgrade-flag change must be re-read (restart also starts).
     sudo systemctl restart rigforge-control.service 2>/dev/null || true
 }
 
@@ -1820,9 +1853,11 @@ uninstall() {
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service" \
             "$SYSTEMD_DIR/rigforge-api.service" "$SYSTEMD_DIR/rigforge-api-refresh.service" "$SYSTEMD_DIR/rigforge-api-refresh.timer"
     fi
-    if [ -f "$SYSTEMD_DIR/rigforge-control.service" ] || [ -f "$SYSTEMD_DIR/rigforge-control-apply.path" ]; then
-        sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path 2>/dev/null || true
-        sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path"
+    if [ -f "$SYSTEMD_DIR/rigforge-control.service" ] || [ -f "$SYSTEMD_DIR/rigforge-control-apply.path" ] || [ -f "$SYSTEMD_DIR/rigforge-control-upgrade.path" ]; then
+        # #308: tear down the remote-upgrade units too, or uninstall leaves a live code-update surface.
+        sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path" \
+            "$SYSTEMD_DIR/rigforge-control-upgrade.service" "$SYSTEMD_DIR/rigforge-control-upgrade.path"
     fi
     command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
@@ -3542,7 +3577,7 @@ svc_disable() {
 # `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
 # (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
 # dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
-# verbs (api-refresh, msr-apply, control-apply) and the -v/-h flag spellings are deliberately not completed.
+# verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
 _rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
@@ -3856,6 +3891,140 @@ control_apply() {
         else
             _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate; rollback re-apply also failed to restore liveness" "$backup"
         fi
+    fi
+    return 0
+}
+
+# Pre-dial throttle for the remote-upgrade path (#308, ADR 0002 D6): a persisted stamp under a flock
+# bounds how often a rig will fetch from GitHub / rebuild, so a looping or hostile trigger can't turn
+# the fleet into a beacon or thrash the miner with rebuilds. Returns 0 if allowed (and stamps the
+# attempt), 1 if still inside the window. Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
+_control_upgrade_throttle_ok() { # <state-dir>
+    local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
+    now=$(date +%s)
+    mkdir -p "$dir" 2>/dev/null || true
+    exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || return 0 # can't lock -> don't block a real upgrade
+    flock 9 2>/dev/null || true
+    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+    if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
+        exec 9>&-
+        return 1
+    fi
+    printf '%s\n' "$now" >"$stamp" 2>/dev/null || true
+    exec 9>&-
+    return 0
+}
+
+# The fetch + reachability + checkout + rebuild half of control-upgrade, split out so the orchestration
+# is unit-testable with this stubbed (like control-apply's _control_do_apply). Returns 0 on a successful
+# checkout+build of <ref>, nonzero otherwise. <ref> is a validated vX.Y.Z tag (forward) or a prior
+# tag/commit (rollback). D5: the git checkout IS the fetch and the commit hash pins the whole tree; no
+# signing, GitHub over TLS is the trust root. D10: a forward tag's commit must be reachable from the
+# remote default branch (kills a tag pointing at a dangling/side commit); immutable releases lock the
+# tag→commit binding at the platform layer. VALIDATED ON REAL HARDWARE (miner-0) before release — the
+# git/compile/systemctl path can't be exercised in the stubbed unit suite.
+_control_upgrade_do() { # <ref>
+    local ref="$1" cobj default
+    git -C "$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        cobj=$(git -C "$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
+        default=$(git -C "$SCRIPT_DIR" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+        git -C "$SCRIPT_DIR" merge-base --is-ancestor "$cobj" "$default" 2>/dev/null || return 1
+    fi
+    git -C "$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
+    # Run the NEW code's upgrade: rebuild XMRig if the pin changed, regenerate config, reinstall units.
+    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
+}
+
+# control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
+# rigforge-control-upgrade.path unit when the receiver stages an upgrade intent. Fetches the target
+# RigForge release and applies it, health-gated with rollback to the prior version. Every failure path
+# returns 0 with a recorded status (served by the receiver's GET /status) — a bad request must not
+# wedge the oneshot. The staged version is a CONFIRMATION guard, not a target selector: this verb
+# bounds what it will act on (D4/D10) so a compromised trigger can only ever land a real, reachable,
+# NEWER release — never an arbitrary tag, a downgrade, or a dangling commit.
+control_upgrade() {
+    [ "$OS_TYPE" != "Linux" ] && error "control-upgrade is driven by the rigforge-control-upgrade.path unit and is Linux-only."
+    parse_config # need API_PORT etc. so the post-build liveness check can read the miner
+    local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status proc
+    spool="$state/spool"
+    status="$state/status.json"
+    proc="$state/processing"
+    local newest older cid target installed old_tag
+    newest=$(ls -t "$spool"/upgrade-*.json 2>/dev/null | head -1) || true
+    if [ -z "$newest" ]; then
+        log "control-upgrade: nothing staged."
+        return 0
+    fi
+    older=$(ls -t "$spool"/upgrade-*.json 2>/dev/null | tail -n +2) || true
+    [ -n "$older" ] && printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
+    cid=$(basename "$newest" .json)
+    cid="${cid#upgrade-}"
+    # D8 spool handoff: refuse a symlink, then MOVE the intent into a root-owned 0700 dir the receiver's
+    # DynamicUser cannot write — atomically closing any swap/TOCTOU window — and read it only from there.
+    if [ -L "$newest" ]; then
+        rm -f "$newest"
+        _control_status "$status" failed "$cid" version "staged upgrade was a symlink — refused" ""
+        warn "control-upgrade: $cid was a symlink — refused."
+        return 0
+    fi
+    mkdir -p "$proc" && chmod 700 "$proc"
+    local staged="$proc/$cid.json"
+    if ! mv -f "$newest" "$staged" 2>/dev/null; then
+        _control_status "$status" failed "$cid" version "could not secure the staged upgrade" ""
+        return 0
+    fi
+    # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
+    target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)
+    rm -f "$staged"
+    if ! [[ "$target" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        _control_status "$status" failed "$cid" version "staged upgrade target malformed (want vX.Y.Z)" ""
+        warn "control-upgrade: malformed target for $cid — refused."
+        return 0
+    fi
+    installed=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
+    # D10 monotonic anti-rollback: never install a version <= the one running. A compromised trigger
+    # can't pin a rig to an older, known-vulnerable release (reachability + immutable releases cover
+    # tag-moving / dangling commits; this covers downgrade and no-op).
+    if [ -n "$installed" ]; then
+        local want="${target#v}" highest
+        if [ "$want" = "$installed" ]; then
+            _control_status "$status" failed "$cid" version "already on $target — nothing to upgrade" ""
+            log "control-upgrade: already on $target."
+            return 0
+        fi
+        highest=$(printf '%s\n%s\n' "$installed" "$want" | sort -V | tail -n1)
+        if [ "$highest" != "$want" ]; then
+            _control_status "$status" failed "$cid" version "refused a downgrade: $target is not newer than v$installed" ""
+            warn "control-upgrade: $target <= installed v$installed — refused (anti-rollback)."
+            return 0
+        fi
+    fi
+    # D6 throttle: bound how often a rig fetches/rebuilds.
+    if ! _control_upgrade_throttle_ok "$state"; then
+        _control_status "$status" failed "$cid" version "throttled — too soon since the last upgrade attempt" ""
+        warn "control-upgrade: throttled."
+        return 0
+    fi
+    old_tag=$(git -C "$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
+    log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
+    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
+    if _control_upgrade_do "$target"; then
+        if _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
+            _control_status "$status" applied "$cid" version "" ""
+            log "control-upgrade: $cid applied — now on $target."
+        else
+            warn "control-upgrade: $target built but the miner didn't come back live — rolling back to ${old_tag:-previous}."
+            if [ -n "$old_tag" ] && _control_upgrade_do "$old_tag" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
+                _control_status "$status" rolled_back "$cid" version "miner did not return to a live hashrate; rolled back to $old_tag and live" ""
+            else
+                _control_status "$status" failed "$cid" version "miner did not return to a live hashrate and the rollback did not restore liveness" ""
+            fi
+        fi
+    else
+        _control_status "$status" failed "$cid" version "fetch/reachability/build failed for $target — no change applied" ""
+        warn "control-upgrade: $cid failed to fetch/build $target."
     fi
     return 0
 }
@@ -5000,6 +5169,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     api-refresh) api_refresh ;;
     msr-apply) msr_apply ;;
     control-apply) control_apply ;;
+    control-upgrade) control_upgrade ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;

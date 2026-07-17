@@ -2362,7 +2362,7 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
 # sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
@@ -5600,10 +5600,32 @@ ctl_warns="$( (
 ))"
 assert_absent "control* keys are known (no unknown-key warning) (#138/#236)" "$ctl_warns" "unknown key"
 
+# #308: control_upgrade — a SECOND opt-in layered on control, default off, only valid when control is on.
+cu308() { parse_and_print "$1" "$ROOT" CONTROL_UPGRADE; }
+c="$(mkconf cu_def "{ $POOL }")"
+assert_eq "control_upgrade absent -> disabled" "$(cu308 "$c")" "disabled"
+c="$(mkconf cu_noctl "{ $POOL, \"control_upgrade\": \"enabled\" }")"
+assert_contains "control_upgrade without control hard-errors" "$(parse_fails "$c")" "control_upgrade requires control"
+c="$(mkconf cu_ok "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"control_upgrade\": \"enabled\" }")"
+assert_eq "control_upgrade enabled (atop control) -> enabled" "$(cu308 "$c")" "enabled"
+c="$(mkconf cu_default_off "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\" }")"
+assert_eq "control on but control_upgrade absent -> disabled (no silent RCE surface)" "$(cu308 "$c")" "disabled"
+c="$(mkconf cu_badval "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"t\", \"api_allow_from\": \"10.0.0.5\", \"control_upgrade\": \"maybe\" }")"
+assert_contains "control_upgrade typo hard-errors" "$(parse_fails "$c")" 'Invalid "control_upgrade" value'
+c="$(mkconf cu_known "{ $POOL, \"control_upgrade\": \"disabled\" }")"
+cu_warns="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
+))"
+assert_absent "control_upgrade is a known key (no unknown-key warning) (#308)" "$cu_warns" "unknown key"
+
 echo "== black-box: install_control units enable/disable (#236) =="
 CPS="$(mktemp -d "$SANDBOX/cps.XXXXXX")"
 mkdir -p "$CPS/systemd"
-cp "$ROOT/systemd/rigforge-control.service.template" "$ROOT/systemd/rigforge-control-apply.service.template" "$ROOT/systemd/rigforge-control-apply.path.template" "$CPS/systemd/"
+cp "$ROOT/systemd/rigforge-control.service.template" "$ROOT/systemd/rigforge-control-apply.service.template" "$ROOT/systemd/rigforge-control-apply.path.template" "$ROOT/systemd/rigforge-control-upgrade.service.template" "$ROOT/systemd/rigforge-control-upgrade.path.template" "$CPS/systemd/"
 cp -R "$ROOT/util" "$CPS/" 2>/dev/null || true
 run_control_install() { # <disabled|enabled> [port]
     (
@@ -5615,6 +5637,7 @@ run_control_install() { # <disabled|enabled> [port]
         CONTROL_MODE="$1"
         CONTROL_BIND=0.0.0.0
         CONTROL_PORT="${2:-8082}"
+        CONTROL_UPGRADE="${CU:-disabled}" # #308: default off so existing #236 assertions are unchanged
         API_ALLOW_FROM=10.0.0.5
         API_PORT=8081
         ACCESS_TOKEN=tok-secret
@@ -5638,6 +5661,23 @@ out="$(run_control_install disabled)"
 assert_eq "control disable removes the server unit" "$([ -f "$CPS/systemd/rigforge-control.service" ] && echo y || echo n)" "n"
 assert_eq "control disable removes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "n"
 assert_eq "control disable removes the path watcher" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "n"
+
+# #308: the remote-upgrade units ride ON TOP of control — written only when control_upgrade is also on,
+# removed when it's off, and torn down with the control path. The upgrade glob must be DISTINCT from
+# the apply glob so an upgrade intent never wakes the config-applier.
+out="$(CU=enabled run_control_install enabled)"
+assert_eq "control_upgrade on writes the upgrade oneshot" "$([ -f "$CPS/systemd/rigforge-control-upgrade.service" ] && echo y || echo n)" "y"
+assert_eq "control_upgrade on writes the upgrade path watcher" "$([ -f "$CPS/systemd/rigforge-control-upgrade.path" ] && echo y || echo n)" "y"
+assert_contains "upgrade path globs upgrade-*.json" "$(cat "$CPS/systemd/rigforge-control-upgrade.path")" "PathExistsGlob=/var/lib/rigforge-control/spool/upgrade-*.json"
+assert_absent "upgrade path does NOT reuse the apply pending-*.json glob (#308)" "$(cat "$CPS/systemd/rigforge-control-upgrade.path")" "pending-*.json"
+assert_contains "upgrade oneshot runs control-upgrade" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "rigforge.sh control-upgrade"
+assert_contains "upgrade oneshot baked with the operator handback" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "RIGFORGE_OPERATOR=rfop"
+out="$(CU=disabled run_control_install enabled)"
+assert_eq "control_upgrade off removes the upgrade oneshot" "$([ -f "$CPS/systemd/rigforge-control-upgrade.service" ] && echo y || echo n)" "n"
+assert_eq "control_upgrade off keeps the apply path (control still on)" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
+out="$(CU=enabled run_control_install enabled)"
+out="$(run_control_install disabled)"
+assert_eq "control disable tears down the upgrade path too (#308)" "$([ -f "$CPS/systemd/rigforge-control-upgrade.path" ] && echo y || echo n)" "n"
 run_ctl_fw() { # <api_mode> <control_mode> -> the rendered nft rule
     (
         source "$SCRIPT"
@@ -6063,6 +6103,108 @@ fi
 cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply --extra </dev/null) 2>&1 || true)"
 assert_contains "control-apply rejects extra args" "$cb_out" "Unexpected argument for control-apply"
 
+echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
+# The git fetch/checkout/reachability/build half (_control_upgrade_do) and the miner liveness check are
+# stubbed here — they need a real git remote + compiler + systemd, and are validated on miner-0. This
+# exercises the security-critical ORCHESTRATION: strict version whitelist, monotonic anti-rollback,
+# spool handoff, throttle, and the applied/rolled_back/failed status the receiver serves back.
+cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.json contents
+    local d
+    d=$(mktemp -d "$SANDBOX/cu.XXXXXX")
+    mkdir -p "$d/state/spool"
+    printf '%s' "$2" >"$d/VERSION"
+    printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
+    [ -n "$1" ] && printf '%s\n' "$1" >"$d/state/spool/upgrade-abc123def4567890.json"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$d"
+        CONFIG_JSON="$d/config.json"
+        RIGFORGE_CONTROL_STATE="$d/state"
+        CONTROL_UPGRADE_MIN_INTERVAL=0
+        DO="$3"
+        WML=0
+        _control_upgrade_do() {
+            [ "$DO" = fail ] && return 1
+            return 0
+        }
+        # 'down' = miner dead after the forward build but the rollback restores liveness (-> rolled_back);
+        # 'downhard' = never live even after rollback (-> failed). The counter distinguishes the two calls.
+        _wait_miner_live() {
+            WML=$((WML + 1))
+            { [ "$DO" = down ] && [ "$WML" -eq 1 ]; } && return 1
+            [ "$DO" = downhard ] && return 1
+            return 0
+        }
+        git() { case "$3" in describe) echo v0.0.1 ;; rev-parse) echo deadbeefcafe ;; *) return 0 ;; esac }
+        set +e
+        PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    )
+    cat "$d/state/status.json" 2>/dev/null
+}
+st() { printf '%s' "$1" | jq -r .status 2>/dev/null; }
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" ok)"
+assert_eq "upgrade applied on a newer, buildable release" "$(st "$s")" "applied"
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" down)"
+assert_eq "built but miner stays down -> rolled_back" "$(st "$s")" "rolled_back"
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" fail)"
+assert_eq "fetch/build failure -> failed" "$(st "$s")" "failed"
+assert_contains "build-failure reason names fetch/reachability/build" "$s" "fetch/reachability/build failed"
+s="$(cu_run '{"version":"v1.0.0"}' "2.0.0" ok)"
+assert_eq "downgrade refused -> failed (never built)" "$(st "$s")" "failed"
+assert_contains "downgrade reason names anti-rollback" "$s" "not newer"
+s="$(cu_run '{"version":"v1.0.0"}' "1.0.0" ok)"
+assert_contains "same version refused (already on)" "$s" "already on v1.0.0"
+s="$(cu_run '{"version":"garbage"}' "1.0.0" ok)"
+assert_contains "malformed target refused, never run" "$s" "malformed"
+s="$(cu_run '{"version":"v9.9.9","evil":"x"}' "1.0.0" ok)"
+assert_contains "extra key beyond version refused (strict whitelist)" "$s" "malformed"
+s="$(cu_run "" "1.0.0" ok)"
+assert_eq "nothing staged -> no status file" "$s" ""
+# D8 spool handoff: a staged SYMLINK is refused before it's read.
+dsl=$(mktemp -d "$SANDBOX/cusl.XXXXXX")
+mkdir -p "$dsl/state/spool"
+printf '1.0.0' >"$dsl/VERSION"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$dsl/config.json"
+printf '{"version":"v9.9.9"}\n' >"$dsl/evil.json"
+ln -s "$dsl/evil.json" "$dsl/state/spool/upgrade-abc123def4567890.json"
+sl="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$dsl"
+    CONFIG_JSON="$dsl/config.json"
+    RIGFORGE_CONTROL_STATE="$dsl/state"
+    CONTROL_UPGRADE_MIN_INTERVAL=0
+    _control_upgrade_do() { return 0; }
+    _wait_miner_live() { return 0; }
+    git() { echo v0.0.1; }
+    set +e
+    PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    cat "$dsl/state/status.json" 2>/dev/null
+)"
+assert_contains "staged symlink refused (D8 spool handoff)" "$sl" "symlink"
+
+echo "== unit: _control_upgrade_throttle_ok (#308) =="
+td=$(mktemp -d "$SANDBOX/thr.XXXXXX")
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$td"
+)
+assert_eq "throttle: first attempt allowed (and stamps)" "$?" "0"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$td"
+)
+assert_eq "throttle: second attempt within the window blocked" "$?" "1"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=0
+    _control_upgrade_throttle_ok "$td"
+)
+assert_eq "throttle: zero interval always allowed" "$?" "0"
+
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
@@ -6138,8 +6280,38 @@ else
     assert_eq "?change_id still requires the bearer (#255)" "$(hc "$U/status?change_id=1111222233334444")" "401"
     bigbody="$(head -c 70000 /dev/zero | tr '\0' 'a')"
     assert_eq "POST oversized body -> 413" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' --data-binary "$bigbody")" "413"
+    # #308: /upgrade is gated by control_upgrade — THIS server has it off, so the endpoint is refused.
+    assert_eq "POST /upgrade with control_upgrade off -> 403 (#308)" "$(hc -X POST "$U/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v9.9.9"}')" "403"
+    assert_eq "POST /upgrade still requires the bearer (#308)" "$(hc -X POST "$U/upgrade" -H 'Content-Type: application/json' -d '{"version":"v9.9.9"}')" "401"
     kill "$CSRV_PID" 2>/dev/null || true
     wait "$CSRV_PID" 2>/dev/null || true
+    # #308: a dedicated server WITH control_upgrade enabled — /upgrade now accepts a well-formed version
+    # and stages it as upgrade-*.json (distinct from the apply path's pending-*.json).
+    CSRV2="$(mktemp -d "$SANDBOX/csrv2.XXXXXX")"
+    mkdir -p "$CSRV2/state"
+    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s", "control_upgrade":"enabled" }\n' "$CTOK" >"$CSRV2/config.json"
+    CPORT2=$((20000 + RANDOM % 20000))
+    python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT2" "$CSRV2/state" "$CSRV2/config.json" &
+    CSRV2_PID=$!
+    U2="http://127.0.0.1:$CPORT2"
+    cup2=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -s -o /dev/null --max-time 2 -H "Authorization: Bearer $CTOK" "$U2/status" 2>/dev/null; then
+            cup2=1
+            break
+        fi
+        sleep 0.3
+    done
+    assert_eq "upgrade-enabled control server comes up" "$cup2" "1"
+    ubody="$(curl -sS --max-time 5 -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.3"}' 2>/dev/null)"
+    assert_contains "POST /upgrade well-formed -> accepted (#308)" "$ubody" '"status": "accepted"'
+    assert_eq "upgrade staged as upgrade-*.json (#308)" "$(ls "$CSRV2/state/spool"/upgrade-*.json 2>/dev/null | wc -l | tr -d ' ')" "1"
+    assert_eq "upgrade did NOT stage a pending-*.json (distinct from apply #308)" "$(ls "$CSRV2/state/spool"/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+    assert_eq "POST /upgrade malformed version -> 400 (#308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"garbage"}')" "400"
+    assert_eq "POST /upgrade extra key -> 400 (strict whitelist #308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.3","x":1}')" "400"
+    assert_eq "POST /upgrade missing version -> 400 (#308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "400"
+    kill "$CSRV2_PID" 2>/dev/null || true
+    wait "$CSRV2_PID" 2>/dev/null || true
     # Fail closed: a config with no ACCESS_TOKEN must make the WRITABLE path refuse everyone.
     printf '{ "pools":[{"url":"h:3333"}] }\n' >"$CSRV/config.json"
     python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT" "$CSRV/state" "$CSRV/config.json" &

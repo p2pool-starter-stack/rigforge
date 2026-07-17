@@ -79,17 +79,30 @@ def load_token(cfg_path):
         sys.exit("control-server: %s is unreadable — refusing to start without a known token posture" % cfg_path)
 
 
-def stage_change(spool, body_bytes):
-    """Write the accepted change to spool/pending-<id>.json atomically; return the change id.
+def load_upgrade_enabled(cfg_path):
+    """#308: is the remote-upgrade endpoint on? A SECOND opt-in (control_upgrade) layered on control.
+    Fail CLOSED — any doubt (missing/unreadable/unset) means /upgrade stays 403."""
+    try:
+        with open(cfg_path) as f:
+            v = json.load(f).get("control_upgrade")
+    except Exception:
+        return False
+    return str(v).strip().lower() in ("enabled", "true", "on")
 
-    The temp name is dot-prefixed so the path unit's pending-*.json glob never matches a
-    half-written file; os.replace is atomic within the dir, and both file and dir are fsynced so
-    the change survives a crash the instant it is acknowledged.
+
+def stage_change(spool, body_bytes, prefix="pending"):
+    """Write the accepted change to spool/<prefix>-<id>.json atomically; return the change id.
+
+    The temp name is dot-prefixed so no path-unit glob matches a half-written file; os.replace is
+    atomic within the dir, and both file and dir are fsynced so the change survives a crash the
+    instant it is acknowledged. #308: config changes stage as pending-*.json (watched by the apply
+    path unit); upgrade requests stage as upgrade-*.json (a DISTINCT glob) so the apply unit never
+    fires on an upgrade intent and vice-versa.
     """
     cid = os.urandom(8).hex()
     os.makedirs(spool, exist_ok=True)
     tmp = os.path.join(spool, ".tmp-" + cid)
-    final = os.path.join(spool, "pending-" + cid + ".json")
+    final = os.path.join(spool, prefix + "-" + cid + ".json")
     with open(tmp, "wb") as f:
         f.write(body_bytes)
         f.flush()
@@ -162,25 +175,64 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.close_connection = True
 
-    def do_POST(self):
-        if not self._authed():
-            return
-        if self.path.split("?", 1)[0] != "/apply":
-            return self._send(404, "Not Found", {"error": "not found"})
+    def _read_json_body(self):
+        """Shared body reader for /apply and /upgrade: enforce content-type, length cap, and JSON.
+        Returns the parsed object, or None after having already sent the error response."""
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip()
         if ctype != "application/json":
-            return self._send(415, "Unsupported Media Type", {"error": "send application/json"})
+            self._send(415, "Unsupported Media Type", {"error": "send application/json"})
+            return None
         try:
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
-            return self._send(411, "Length Required", {"error": "Content-Length required"})
+            self._send(411, "Length Required", {"error": "Content-Length required"})
+            return None
         if length <= 0 or length > MAX_BODY:
-            return self._send(413, "Payload Too Large", {"error": "body must be 1..%d bytes" % MAX_BODY})
-        raw = self.rfile.read(length)
+            self._send(413, "Payload Too Large", {"error": "body must be 1..%d bytes" % MAX_BODY})
+            return None
         try:
-            change = json.loads(raw)
+            obj = json.loads(self.rfile.read(length))
         except ValueError:
-            return self._send(400, "Bad Request", {"error": "body is not valid JSON"})
+            self._send(400, "Bad Request", {"error": "body is not valid JSON"})
+            return None
+        return obj
+
+    def do_POST(self):
+        if not self._authed():
+            return
+        path = self.path.split("?", 1)[0]
+        if path == "/apply":
+            return self._handle_apply()
+        if path == "/upgrade":
+            return self._handle_upgrade()
+        return self._send(404, "Not Found", {"error": "not found"})
+
+    def _handle_upgrade(self):
+        # #308 (ADR 0002): the remote code-update surface. Gated by control_upgrade — a SECOND opt-in on
+        # top of `control`, so enabling remote tuning does not silently grant remote RCE. The version in
+        # the body is a CONFIRMATION guard, not a target selector: the applier re-derives the real latest
+        # release and refuses anything that is not a real, reachable, newer release (D4/D10). We only
+        # stage the intent here; the unprivileged receiver never fetches or runs anything.
+        if not UPGRADE_ENABLED:
+            return self._send(403, "Forbidden", {"error": "remote upgrade is disabled on this rig; set control_upgrade: \"enabled\" locally to allow it"})
+        body = self._read_json_body()
+        if body is None:
+            return
+        if (not isinstance(body, dict) or set(body) != {"version"} or not isinstance(body["version"], str)
+                or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", body["version"])):
+            return self._send(400, "Bad Request", {"error": 'body must be exactly {"version": "vX.Y.Z"}'})
+        staged = json.dumps({"version": body["version"]}).encode()
+        try:
+            cid = stage_change(os.path.join(STATE_DIR, "spool"), staged, prefix="upgrade")
+        except OSError as e:
+            return self._send(500, "Internal Server Error", {"error": "could not stage upgrade: %s" % e})
+        self._send(202, "Accepted", {"status": "accepted", "change_id": cid,
+                                     "note": "queued; the rig re-derives the real latest and refuses a non-latest/unreachable target. poll GET /status"})
+
+    def _handle_apply(self):
+        change = self._read_json_body()
+        if change is None:
+            return
         if not isinstance(change, dict) or not change:
             return self._send(400, "Bad Request", {"error": "body must be a non-empty JSON object of config keys"})
         bad = sorted(k for k in change if k not in WRITABLE)
@@ -212,6 +264,7 @@ if __name__ == "__main__":
         sys.exit("usage: control-server.py <bind> <port> <state-dir> <config.json>")
     bind, port, STATE_DIR, cfg = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
     TOKEN = load_token(cfg)
+    UPGRADE_ENABLED = load_upgrade_enabled(cfg)  # #308: /upgrade stays 403 unless control_upgrade is on
     os.makedirs(os.path.join(STATE_DIR, "spool"), exist_ok=True)
     # Single-threaded like the read server: staging is microseconds, concurrency would only add ways
     # to race the spool. Cap request-arrival time so one held-open connection can't wedge it.
