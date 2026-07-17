@@ -515,7 +515,11 @@ verify() {
     # #reown: the nightly autotune runs as root via systemd (no SUDO_USER), so its unit must bake in
     # RIGFORGE_OPERATOR for the re-own to hand files back to the operator (not root). Assert the unit
     # carries it, then exercise the re-own exactly the way the root timer does (no SUDO_USER + that operator).
-    local wr="$HERE/data/worker" op=""
+    local wr op="" raw_home
+    # Derive the worker root from the EFFECTIVE config (the "existing config.json" arm above, ~line
+    # 149, may set its own HOME_DIR) via rigforge.sh's own resolver, not a hardcoded default path.
+    raw_home="$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$HERE/config.json" 2>/dev/null)"
+    wr="$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_for_home "$2"' _ "$RIGFORGE" "$raw_home" 2>/dev/null || true)"
     # SKIP only when the unit itself is absent (autotune genuinely disabled). A unit that EXISTS but
     # bakes in no RIGFORGE_OPERATOR is exactly the #reown regression this phase guards — it must fail,
     # not skip (previously the two states were indistinguishable and the regression slid through).
@@ -528,12 +532,14 @@ verify() {
     op=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=RIGFORGE_OPERATOR=//p' | head -1 || true)
     if [ -n "$op" ]; then
         ok "autotune unit bakes in RIGFORGE_OPERATOR=$op (#reown)"
-        if [ -d "$wr" ]; then
+        if [ -n "$wr" ] && [ -d "$wr" ]; then
             chown -R root:root "$wr" 2>/dev/null
             env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin RIGFORGE_OPERATOR="$op" RIGFORGE_HOME="$HERE" bash "$RIGFORGE" apply >/dev/null 2>&1 || true
             [ "$(stat -c %U "$wr")" = "$op" ] &&
                 ok "a root-context run (no SUDO_USER) re-owned the worker to '$op', not root (#reown)" ||
                 bad "a root-context run left the worker owned by '$(stat -c %U "$wr")' (expected '$op')"
+        else
+            ok "SKIP reown worker-ownership check (worker root not found at '${wr:-<unresolved>}')"
         fi
     else
         bad "autotune unit exists but bakes in no RIGFORGE_OPERATOR — the #reown regression (nightly tune would hand files to root)"
