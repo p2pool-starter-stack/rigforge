@@ -347,9 +347,9 @@ parse_config() {
             url: (.url // ""),
             user: (.user // ""),
             pass: (.pass // "x"),
-            keepalive: (if has("keepalive") then .keepalive else true end),
+            keepalive: (.keepalive // true),
             tls: (.tls // false),
-            enabled: (if has("enabled") then .enabled else true end)
+            enabled: (.enabled // true)
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
@@ -358,6 +358,12 @@ parse_config() {
     # its next apply. A second single-line pass rather than lines inside the map above: kcov can't
     # attribute in-string program lines, and the patch-coverage gate needs every new line hittable.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+
+    # #265: jq's `//` treats an explicit false like null/missing, so the map above rewrites an
+    # operator's "keepalive": false / "enabled": false to the true default. Restore explicit falses
+    # from the raw config in another single-line pass (same kcov rationale as #115 above). Only a
+    # boolean false matches `== false`; non-boolean junk flows through `//` untouched to validation.
+    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
     # Validate every pool field — fail fast with a clear message rather than writing a config XMRig
     # would choke on. url must be host:port: a valid hostname / IPv4 / bracketed-IPv6 host and a port
