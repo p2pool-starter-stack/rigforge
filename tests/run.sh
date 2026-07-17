@@ -1044,6 +1044,13 @@ assert_eq "sub-2GB host floors to 1 job (never 0)" "$(
     source "$SCRIPT"
     MEMINFO="$(mk_meminfo 1572864 mi1_5)" compute_build_jobs 8
 )" "1"
+# #277: a sub-1GB host truncates mem_gb to 0 too, which used to be mistaken for "unreadable meminfo" and
+# skip the cap entirely (all cores, the exact OOM scenario the cap exists for). mem_kb is still readable
+# and nonzero here, so it must hit the same max<1 floor and cap at 1 job even with many cores available.
+assert_eq "sub-1GB host caps to 1 job even with many cores (#277)" "$(
+    source "$SCRIPT"
+    MEMINFO="$(mk_meminfo 900000 mi900)" compute_build_jobs 32
+)" "1"
 
 echo "== unit: on_err reports the failing step (#9) =="
 out="$(
@@ -3871,6 +3878,52 @@ assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
 
+# #277: a bench candidate whose xmrig stub emits no H/s line must not spam the ERR trap. _bench_once's
+# hashrate grep is allowed to find nothing under pipefail — the run records that candidate as 0 H/s and
+# carries on; only the run's own failures should ever look like an abort. Discriminates on the swept
+# prefetch value (same config-reading idiom as the stub in the #54 block above) so the seed reads 0 H/s
+# but the swept prefetch=2 candidate hashes for real, letting the search finish with a winner (rc 0) — a
+# run that legitimately never hashes is a separate, correctly-reported failure, not what this test is
+# after. TUNE_POWER_CMD bypasses RAPL entirely so the (unrelated, pre-existing) no-RAPL-hardware path
+# never fires the ERR trap and confounds this test — same idiom the #tunefix block below uses.
+# Linux-gated (#292): the cpufreq/bench-window plumbing this drives is Linux sysfs — on a real Mac the
+# path never runs, and the simulated fixture proved timing-flaky on the slow bash-3.2 macOS CI runner.
+# The Linux CI job + the kcov container still run it on every push.
+if [ "$(uname -s)" != Linux ]; then
+    echo "  SKIP: tune bench black-box timing tests run in the Linux CI jobs (#292)"
+else
+    echo "== black-box: zero-hashrate bench iteration stays quiet (#277) =="
+    ZH="$(mktemp -d "$SANDBOX/tunezero.XXXXXX")"
+    cp "$ROOT/VERSION" "$ZH/"
+    mkdir -p "$ZH/util" "$ZH/home/worker/xmrig/build" "$ZH/cpuok/cpu0/cpufreq"
+    cp "$ROOT/util/proposed-grub.sh" "$ZH/util/" && chmod +x "$ZH/util/proposed-grub.sh"
+    printf '5000000\n' >"$ZH/cpu_max"
+    printf '4800000\n' >"$ZH/cpuok/cpu0/cpufreq/scaling_cur_freq"
+    printf '{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": false }, "cpu": { "yield": false, "priority": 2 } }\n' >"$ZH/home/worker/xmrig/build/config.json"
+    cat >"$ZH/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+if [ "$m" = "1" ]; then
+    echo "miner speed 10s/60s/15m n/a n/a n/a"
+else
+    echo "miner speed 10s/60s/15m 1000.0 n/a n/a H/s max 1000.0 H/s"
+fi
+EOF
+    chmod +x "$ZH/home/worker/xmrig/build/xmrig"
+    printf '{ "HOME_DIR": "%s/home", "pools": [{"url":"h:3333"}] }\n' "$ZH" >"$ZH/config.json"
+    ZTLOG="$ZH/home/worker/rigforge-tune.json"
+    out="$(cd "$ZH" && PATH="$STUBS:$PATH" CPUFREQ_MAX="$ZH/cpu_max" CPU_SYSFS="$ZH/cpuok" \
+        TUNE_POWER_CMD='echo 90' TUNE_ITERS=1 TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
+        TUNE_MAX_ROUNDS=1 RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+    assert_rc "zero-hashrate iteration doesn't stop the run (#277)" "$?" "0"
+    assert_eq "zero-hashrate iteration recorded 0 H/s in the log (#277)" \
+        "$(J "$ZTLOG" '[.results[].samples[]] | any(. == 0)')" "true"
+    assert_absent "zero-hashrate iteration logs no [ERROR] (#277)" "$out" "[ERROR]"
+    assert_absent "zero-hashrate iteration logs no abort (#277)" "$out" "aborted"
+fi
+
 # #276 (item 2): a bench candidate that crashes (xmrig-style nonzero exit, no hashrate line) must still
 # leave the miner service restarted — _tune_bench_cleanup is wired as an EXIT trap (rigforge.sh:2713)
 # precisely so a mid-run failure can't strand a rig at 0 H/s after a failed nightly tune. Single-knob
@@ -4492,33 +4545,39 @@ assert_eq "TUNE_MIN_FREQ_MHZ=0 disables the throttle skip (#62 control)" "$(J "$
 # into "4" -> 0 MHz -> the #62 guard falsely flagged the candidate as throttled and refused to adopt it.
 # scaling_cur_freq is a FIFO fed exactly one odd-sum pair per bench window (reads block until fed), so the
 # window always sees an even sample count with a fractional median — no reliance on poll-loop timing.
-echo "== black-box: tune bench freq median doesn't false-trip the #62 throttle guard (#266) =="
-mkdir -p "$TN/cpu266/cpu0/cpufreq"
-FF266="$TN/cpu266/cpu0/cpufreq/scaling_cur_freq"
-DONE266="$TN/done266"
-rm -f "$FF266" "$DONE266"
-mkfifo "$FF266"
-# Feeder: serve the pair, then release the fake xmrig so the bench window closes after exactly 2 samples.
-(while :; do printf '4627000\n' >"$FF266" && printf '4628001\n' >"$FF266" && touch "$DONE266" || exit; done) &
-FEED266=$!
-cat >"$BD/xmrig" <<EOF
+# Linux-gated (#292): same rationale as the #277 block above — Linux-sysfs plumbing, flaked on the slow
+# macOS CI runner; the deterministic freq-writer unit test above still runs everywhere.
+if [ "$(uname -s)" != Linux ]; then
+    echo "  SKIP: tune bench freq-median black-box runs in the Linux CI jobs (#292)"
+else
+    echo "== black-box: tune bench freq median doesn't false-trip the #62 throttle guard (#266) =="
+    mkdir -p "$TN/cpu266/cpu0/cpufreq"
+    FF266="$TN/cpu266/cpu0/cpufreq/scaling_cur_freq"
+    DONE266="$TN/done266"
+    rm -f "$FF266" "$DONE266"
+    mkfifo "$FF266"
+    # Feeder: serve the pair, then release the fake xmrig so the bench window closes after exactly 2 samples.
+    (while :; do printf '4627000\n' >"$FF266" && printf '4628001\n' >"$FF266" && touch "$DONE266" || exit; done) &
+    FEED266=$!
+    cat >"$BD/xmrig" <<EOF
 #!/usr/bin/env bash
 echo "speed 1000.0 H/s max 1000.0 H/s"
 for _ in \$(seq 1 500); do [ -f "$DONE266" ] && break; sleep 0.02; done # bounded wait
 rm -f "$DONE266"
 echo "benchmark finished" # breaks the bench poll loop BEFORE a zombie-pid extra iteration samples a 3rd clock
 EOF
-chmod +x "$BD/xmrig"
-out="$(cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpu266" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ=4000 \
-    TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
-    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
-rc=$?
-kill "$FEED266" 2>/dev/null
-wait "$FEED266" 2>/dev/null
-rm -f "$FF266" "$DONE266"
-assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
-assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
-assert_eq "healthy candidate recorded as not throttled, eligible for adoption (#266)" "$(J "$TLOG" '.results[0].throttled')" "false"
+    chmod +x "$BD/xmrig"
+    out="$(cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpu266" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ=4000 \
+        TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
+        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+    rc=$?
+    kill "$FEED266" 2>/dev/null
+    wait "$FEED266" 2>/dev/null
+    rm -f "$FF266" "$DONE266"
+    assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
+    assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
+    assert_eq "healthy candidate recorded as not throttled, eligible for adoption (#266)" "$(J "$TLOG" '.results[0].throttled')" "false"
+fi
 
 # #265: _seed_wr / _seed_g must keep an explicit base-config false instead of jq `//` flipping it to
 # the true default; with the key absent, the true default still applies.

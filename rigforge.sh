@@ -156,7 +156,10 @@ compute_build_jobs() { # <ncpu>
     local mem_kb mem_gb jobs="$1" max
     mem_kb=$(awk '/^MemTotal:/ {print $2}' "${MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)
     mem_gb=$((mem_kb / 1024 / 1024))
-    if [ "$mem_gb" -gt 0 ]; then
+    # Guard on mem_kb (readable at all), not mem_gb (truncates to 0 for BOTH a real sub-1GB host and an
+    # unreadable meminfo) — a sub-1GB host must still hit the cap below (falls to the max<1 floor -> 1
+    # job); only a genuinely unreadable meminfo should skip the cap and use all cores (#277).
+    if [ "$mem_kb" -gt 0 ]; then
         max=$((mem_gb / 2))
         [ "$max" -lt 1 ] && max=1
         [ "$jobs" -gt "$max" ] && jobs="$max"
@@ -2132,7 +2135,11 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
 _bench_once() {
     local out
     out=$(_xmrig_bench "$TUNE_BIN" "${TUNE_BENCH:-10M}" "$1")
-    printf '%s' "$out" | _parse_hashrate
+    # `|| true` (same idiom as the watchdog's `_read_api_hashrate || true` guard): a candidate with no H/s
+    # line is expected (a zero-hashrate iteration, not a crash) — under pipefail this grep's failure would
+    # otherwise ride out as _bench_once's own exit status and fire the ERR trap ("aborted while ...") at
+    # every call site (#277).
+    printf '%s' "$out" | _parse_hashrate || true
 }
 
 # Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
