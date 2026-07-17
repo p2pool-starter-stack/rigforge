@@ -6215,6 +6215,74 @@ assert_eq "throttle: second attempt within the window blocked" "$?" "1"
     _control_upgrade_throttle_ok "$td"
 )
 assert_eq "throttle: zero interval always allowed" "$?" "0"
+# Fail OPEN when the state dir is unwritable (can't take the lock) — availability over strictness.
+roThr="$SANDBOX/thr-ro"
+mkdir -p "$roThr"
+chmod 500 "$roThr"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$roThr/cant-mkdir"
+) >/dev/null 2>&1
+assert_eq "throttle: unwritable state dir fails open (allowed)" "$?" "0"
+chmod 700 "$roThr"
+
+# _control_upgrade_do against a STUB git (+ stub rigforge.sh) so the real fetch/reachability/checkout
+# lines run under coverage — and, more importantly, the D10 reachability guard is exercised for real.
+echo "== unit: _control_upgrade_do fetch + reachability + checkout (#308, stub git) =="
+udoDir=$(mktemp -d "$SANDBOX/udo.XXXXXX")
+mkdir -p "$udoDir/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$udoDir/rigforge.sh"
+chmod +x "$udoDir/rigforge.sh"
+_mk_git_stub() { # <merge-base-rc> <fetch-rc>
+    cat >"$udoDir/bin/git" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+*"fetch"*) exit ${2:-0} ;;
+*"merge-base --is-ancestor"*) exit ${1:-0} ;;
+*"rev-parse"*) echo deadbeefcafe; exit 0 ;;
+*"symbolic-ref"*) echo origin/main; exit 0 ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$udoDir/bin/git"
+}
+_run_udo() { (
+    source "$SCRIPT"
+    set +e # sourcing enables -e; a non-zero _control_upgrade_do must not abort before we echo $?
+    SCRIPT_DIR="$udoDir"
+    PATH="$udoDir/bin:$PATH" _control_upgrade_do "v9.9.9" >/dev/null 2>&1
+    echo $?
+); }
+_mk_git_stub 0 0
+assert_eq "_control_upgrade_do: reachable tag, all steps ok -> 0" "$(_run_udo)" "0"
+_mk_git_stub 1 0
+assert_eq "_control_upgrade_do: unreachable tag (merge-base fails) -> 1 (D10)" "$(_run_udo)" "1"
+_mk_git_stub 0 1
+assert_eq "_control_upgrade_do: git fetch failure -> 1" "$(_run_udo)" "1"
+
+# control_upgrade's throttle-blocked path: a fresh stamp inside the window -> failed(throttled).
+cuThr=$(mktemp -d "$SANDBOX/cuthr.XXXXXX")
+mkdir -p "$cuThr/state/spool"
+printf '1.0.0' >"$cuThr/VERSION"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuThr/config.json"
+printf '{"version":"v9.9.9"}\n' >"$cuThr/state/spool/upgrade-abc123def4567890.json"
+date +%s >"$cuThr/state/upgrade-last"
+sThr="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$cuThr"
+    CONFIG_JSON="$cuThr/config.json"
+    RIGFORGE_CONTROL_STATE="$cuThr/state"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_do() { return 0; }
+    _wait_miner_live() { return 0; }
+    git() { echo v0.0.1; }
+    set +e
+    PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    cat "$cuThr/state/status.json" 2>/dev/null
+)"
+assert_contains "control_upgrade within the throttle window -> failed(throttled) (#308)" "$sThr" "throttled"
 
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
