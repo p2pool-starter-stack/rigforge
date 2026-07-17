@@ -4258,6 +4258,48 @@ out="$(confirm_run 'c=$(cat "$ACTR" 2>/dev/null||echo 0);c=$((c+1));echo $c>"$AC
 assert_contains "confirm reverts a live regression (#64)" "$out" "Reverted:"
 assert_eq "reverted -> previous (none) restored (#64)" "$([ -f "$OVR" ] && echo present || echo gone)" "gone"
 
+# #266: unit-style — an even sample count whose middle pair sums to an ODD kHz total makes awk print the
+# median in scientific notation (e.g. 4.6275e+06 for 4627000/4628001 kHz, real DVFS jitter between reads).
+# The freq writer at rigforge.sh:2120 must floor that back to whole kHz, not leave it for the consumer's
+# `.`-floor to truncate into a stray "4" that reads as 0 MHz and false-trips the #62 throttle guard.
+echo "== unit: tune bench freq writer floors a sci-notation median to whole kHz (#266) =="
+FQDONE="$SANDBOX/freq266.done"
+export FQDONE
+FQBIN="$SANDBOX/freq266-xmrig"
+# The fake prints 'benchmark finished' once released: the bench poll loop greps for that line and breaks,
+# so no extra clock sample sneaks in after the replayed ones (a just-exited fake can linger as a zombie
+# that `kill -0` still sees, which would otherwise buy the loop one more iteration).
+cat >"$FQBIN" <<'EOF'
+#!/usr/bin/env bash
+echo "speed 1000.0 H/s max 1000.0 H/s"
+for _ in $(seq 1 500); do [ -f "$FQDONE" ] && break; sleep 0.02; done # bounded: never outlive the test
+echo "benchmark finished"
+EOF
+chmod +x "$FQBIN"
+freqwrite() { ( # <freq sample kHz>... -> BENCH_FREQ_FILE content, via the real _xmrig_bench freq-write path
+    source "$SCRIPT"
+    local vals=("$@") n=$# fqout="$SANDBOX/freq266.out" ctr="$SANDBOX/freq266.ctr"
+    rm -f "$FQDONE" "$fqout"
+    printf 0 >"$ctr"
+    # Deterministic clock reader: replay exactly the given samples, one per call, then signal the fake
+    # xmrig to finish and go silent — no reliance on real hardware jitter or wall-clock timing.
+    # The call counter lives in a FILE: each sample is read via $(...), a subshell where a plain shell
+    # variable increment would not persist. `return 0` keeps set -e happy on the non-final sample.
+    _cpu_eff_khz() {
+        local i
+        i=$(cat "$ctr")
+        if [ "$i" -ge "$n" ]; then return 0; fi # exhausted -> empty reading, which the sampler skips
+        printf '%s' "${vals[$i]}"
+        printf '%s' "$((i + 1))" >"$ctr"
+        if [ "$((i + 1))" -ge "$n" ]; then touch "$FQDONE"; fi
+        return 0
+    }
+    BENCH_FREQ_FILE="$fqout" _xmrig_bench "$FQBIN" 1M "" >/dev/null
+    cat "$fqout"
+); }
+assert_eq "bench freq median floors a sci-notation kHz average to whole kHz, not a stray digit (#266)" \
+    "$(freqwrite 4627000 4628001)" "4627500"
+
 # #62: thermal-throttle rejection. A LOW clock source makes every candidate's window "throttled" — a
 # faster-but-throttled candidate must NOT be adopted (its number reflects the throttle, not the config),
 # and the throttle must be recorded in the log. With TUNE_MIN_FREQ_MHZ=0 the skip is disabled.
@@ -4291,6 +4333,39 @@ assert_eq "throttled faster candidate not adopted (#62)" "$(J "$OVR" '.randomx.s
 # Throttle OFF: the same faster candidate IS adopted.
 out="$(throttle_run 0)"
 assert_eq "TUNE_MIN_FREQ_MHZ=0 disables the throttle skip (#62 control)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
+
+# #266: regression — a HEALTHY (~4.6 GHz) candidate whose clock jitters by 1 kHz between two reads gets a
+# fractional kHz median (4627500.5) that awk printed as 4.6275e+06; the consumer's `.`-floor mangled that
+# into "4" -> 0 MHz -> the #62 guard falsely flagged the candidate as throttled and refused to adopt it.
+# scaling_cur_freq is a FIFO fed exactly one odd-sum pair per bench window (reads block until fed), so the
+# window always sees an even sample count with a fractional median — no reliance on poll-loop timing.
+echo "== black-box: tune bench freq median doesn't false-trip the #62 throttle guard (#266) =="
+mkdir -p "$TN/cpu266/cpu0/cpufreq"
+FF266="$TN/cpu266/cpu0/cpufreq/scaling_cur_freq"
+DONE266="$TN/done266"
+rm -f "$FF266" "$DONE266"
+mkfifo "$FF266"
+# Feeder: serve the pair, then release the fake xmrig so the bench window closes after exactly 2 samples.
+(while :; do printf '4627000\n' >"$FF266" && printf '4628001\n' >"$FF266" && touch "$DONE266" || exit; done) &
+FEED266=$!
+cat >"$BD/xmrig" <<EOF
+#!/usr/bin/env bash
+echo "speed 1000.0 H/s max 1000.0 H/s"
+for _ in \$(seq 1 500); do [ -f "$DONE266" ] && break; sleep 0.02; done # bounded wait
+rm -f "$DONE266"
+echo "benchmark finished" # breaks the bench poll loop BEFORE a zombie-pid extra iteration samples a 3rd clock
+EOF
+chmod +x "$BD/xmrig"
+out="$(cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpu266" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ=4000 \
+    TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+rc=$?
+kill "$FEED266" 2>/dev/null
+wait "$FEED266" 2>/dev/null
+rm -f "$FF266" "$DONE266"
+assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
+assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
+assert_eq "healthy candidate recorded as not throttled, eligible for adoption (#266)" "$(J "$TLOG" '.results[0].throttled')" "false"
 
 # #66: the opt-in wrmsr knob sweeps MSR presets. A fake whose hashrate depends on randomx.wrmsr proves the
 # knob is swept and the winner pinned; a single value leaves it off (not pinned, but still recorded).

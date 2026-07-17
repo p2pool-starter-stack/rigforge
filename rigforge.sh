@@ -2117,7 +2117,7 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
     # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
     # min would mistake for thermal throttling (#62).
     # shellcheck disable=SC2086 # $freqs is an intentional word-split list of samples
-    if [ -n "${BENCH_FREQ_FILE:-}" ]; then printf '%s' "$(_median $freqs)" >"$BENCH_FREQ_FILE"; fi
+    if [ -n "${BENCH_FREQ_FILE:-}" ]; then _median $freqs | awk '{printf "%d", $0+0}' >"$BENCH_FREQ_FILE"; fi
     cat "$logf" "$out" 2>/dev/null
     rm -f "$out" "$logf" "$tmpcfg" 2>/dev/null || true
 }
@@ -2201,9 +2201,9 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
-            # _median emits a fractional kHz for an even sample count (e.g. 4627500.5); floor it to whole kHz
-            # so the integer guard below keeps the reading instead of dropping it — a dropped reading would
-            # leave min_freq_mhz null, silently disabling this candidate's #62 throttle check.
+            # The freq writer above already floors to whole kHz (awk's OFMT prints large medians in
+            # scientific notation, e.g. 4.6275e+06, which this floor would otherwise mangle into "4").
+            # This is now just a belt-and-suspenders trim of a stray fractional part.
             bf=${bf%.*}
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
             wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
