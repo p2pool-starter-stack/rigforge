@@ -499,6 +499,25 @@ parse_config() {
         fi
     fi
 
+    # Co-resident reservation headroom (#305): MB of HugePages to leave for another workload on the box
+    # (a co-located pithead stack), ADDED to RigForge's computed mining need when it sizes the GRUB
+    # reservation and the runtime pool. RigForge stays the sole writer of the reservation; the caller
+    # just declares "leave this much for the rest of the box." Default 0 (miner-only sizing). The upper
+    # bound is generous (64 GB of 2MB pages) — this is a deliberate reservation, not a typo guard.
+    HUGEPAGES_RESERVE_EXTRA_MB=$(jq -r '.hugepages_reserve_extra_mb // 0' "$CONFIG_JSON")
+    if ! [[ "$HUGEPAGES_RESERVE_EXTRA_MB" =~ ^[0-9]+$ ]] || [ "$HUGEPAGES_RESERVE_EXTRA_MB" -gt 65536 ]; then
+        error "hugepages_reserve_extra_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_RESERVE_EXTRA_MB)."
+    fi
+    # First-class thread cap (#305): a CEILING on the RandomX thread count — min(auto-detected, threads).
+    # Empty (default) = let XMRig/L3 sizing pick. A co-located miner sets this (e.g. nproc-2) to leave
+    # the stack cores free. Sizing and the generated cpu.rx both honour it; it never raises the count.
+    THREADS_CAP=$(jq -r '.threads // empty' "$CONFIG_JSON")
+    if [ -n "$THREADS_CAP" ]; then
+        if ! [[ "$THREADS_CAP" =~ ^[0-9]+$ ]] || [ "$THREADS_CAP" -lt 1 ] || [ "$THREADS_CAP" -gt 1024 ]; then
+            error "threads must be empty (auto) or a whole number 1-1024 (got: $THREADS_CAP)."
+        fi
+    fi
+
     # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
     # no system-wide convenience change you didn't ask for.
     ADD_TO_PATH=$(jq -r '.add_to_path // false' "$CONFIG_JSON")
@@ -572,7 +591,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind"
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind hugepages_reserve_extra_mb threads"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -969,6 +988,15 @@ generate_xmrig_config() {
         fi
     fi
 
+    # First-class thread cap (#305): clamp cpu.rx to the ceiling AFTER any tune overlay, so a stale
+    # tuned thread count can't exceed the operator's headroom guarantee (e.g. a co-located miner told to
+    # stay at nproc-2). Auto (-1) or any value above the cap becomes the cap; a valid count at or under
+    # the cap is left untouched — a true ceiling, never a raise.
+    if [ -n "${THREADS_CAP:-}" ]; then
+        local _capped
+        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json 2>/dev/null) && printf '%s\n' "$_capped" >config.json
+    fi
+
     # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
     # redirect would otherwise leave it world-readable). _reown_worker hands ownership to the operator
     # later; chmod here is preserved across that chown, and root (the service) reads it regardless.
@@ -1240,10 +1268,35 @@ _rx_setup_threads() {
 # (#146): sets MANAGED (params we manage), CURRENT (the live cmdline), MERGED (#19 merge — never
 # clobbers params the user/distro set). Callers guard on proposed-grub.sh + $GRUB_DEFAULT existing.
 _grub_proposed() {
-    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
+    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
+
+    # Co-resident keep-existing guard (#305): when headroom is requested and the LIVE reservation already
+    # backs miner + headroom, leave GRUB untouched (MERGED := CURRENT) rather than shrinking it or
+    # switching page schemes — no reboot. The co-location contract (pithead#593): on a box whose ambient
+    # reservation already covers stack + miner, RigForge changes nothing; the MSR boost, which does need
+    # a reboot, stays a separate opt-in. Done here (not in tune_kernel) so `setup --dry-run` previews the
+    # same no-reboot outcome. Scoped to co-resident mode (headroom > 0) so a normal host's sizing, MSR
+    # enablement, and reboot behaviour are unchanged.
+    if [ "${HUGEPAGES_RESERVE_EXTRA_MB:-0}" -gt 0 ] 2>/dev/null; then
+        local _need _have
+        _need=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
+        _have=$(_cmdline_reserved_2mb "$CURRENT")
+        if [ -n "$_need" ] && [ "$_have" -gt 0 ] 2>/dev/null && [ "$_have" -ge "$_need" ] 2>/dev/null; then
+            MERGED="$CURRENT"
+        fi
+    fi
+}
+
+# Total HugePages a kernel cmdline reserves, in 2MB-equivalent pages (a 1G page = 512 × 2MB). Each
+# `hugepages=N` pairs with the preceding `hugepagesz=`, or `default_hugepagesz=` if none precedes it —
+# the kernel's own rule. Used by the #305 co-resident keep-existing guard to tell whether the LIVE
+# reservation already backs miner + headroom.
+_cmdline_reserved_2mb() { # <cmdline> -> reserved 2MB-equivalent pages
+    # One awk statement (not a multi-line string): kcov credits it when a test exercises it.
+    awk '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") t+=n*512; else t+=n } } print t+0 }' <<<"$1"
 }
 
 tune_kernel() {
@@ -1268,7 +1321,7 @@ tune_kernel() {
     log "Applying runtime memory tuning..."
     if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
         # Calculate exact requirement based on hardware, the tuned thread count, and 1GB page status
-        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
+        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
         log "Hardware-optimized HugePages: $REQUIRED_PAGES (2MB pages) calculated."
         sudo sysctl -w vm.nr_hugepages="$REQUIRED_PAGES"
     else
@@ -1287,7 +1340,10 @@ tune_kernel() {
         _grub_proposed
 
         if [ "$CURRENT" = "$MERGED" ]; then
-            log "GRUB is already configured with optimal HugePages settings."
+            # Either already optimal, or _grub_proposed's co-resident keep-existing guard (#305) set
+            # MERGED := CURRENT because the ambient reservation already covers miner + headroom — either
+            # way there's nothing to write and no reboot.
+            log "GRUB is already configured for the required HugePages reservation (no reboot)."
         else
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
             sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$MERGED")\"|" "$GRUB_DEFAULT"
@@ -1475,7 +1531,7 @@ _setup_plan() {
         [ -e "$MODULES_LOAD_DIR/msr.conf" ] && _msr="msr module already configured"
         if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
             _rx_setup_threads
-            _pages=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
+            _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
             if [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
                 if [ "$CURRENT" = "$MERGED" ]; then
