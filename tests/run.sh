@@ -3377,6 +3377,23 @@ assert_contains "bios verify: NPS fixed counts as applied (#268)" "$out" "NUMA p
 assert_contains "bios verify: NPS fixed -> all applied (#268)" "$out" "All BIOS items applied"
 assert_eq "bios verify: NPS fixed removes the state file (#268)" "$([ -f "$BIO/rigforge-bios.json" ] && echo y || echo n)" "n"
 
+# #296: an item whose fresh probe comes back 'unknown' at verify time (unverifiable, not merely still
+# wrong) vanished from the resumable state — _bios_state_write only persists 'pending' items and there
+# was no unknown->pending resurrection for numa_nps/smt (mem/boost already had one). The fallback hint
+# was also dmidecode-only, wrong for NPS (lscpu/sysfs) and SMT (sysfs).
+# 14. NPS unreadable at verify (lscpu doesn't report an EPYC model): item survives as pending, lscpu hint.
+printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"numa_nps","status":"pending","before":"1 NUMA node (NPS1)","menu":"AMD CBS"}]}' >"$BIO/rigforge-bios.json"
+out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: NPS unreadable keeps the item with the lscpu hint (#296)" "$out" "can't verify (lscpu didn't report an EPYC"
+assert_eq "bios verify: unverifiable NPS item stays pending (#296)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["numa_nps"]'
+rm -f "$BIO/rigforge-bios.json"
+# 15. SMT unreadable at verify (no SMT control in sysfs): item survives as pending, SMT-specific hint.
+printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"smt","status":"pending","before":"off","menu":"SMT"}]}' >"$BIO/rigforge-bios.json"
+out="$(run_bios 'SMT_CONTROL=$NOHW/smt DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: SMT unreadable keeps the item with the SMT-specific hint (#296)" "$out" "can't verify (no SMT control exposed"
+assert_eq "bios verify: unverifiable SMT item stays pending (#296)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["smt"]'
+rm -f "$BIO/rigforge-bios.json"
+
 # #audit A3: doctor's "service is not active" WARN + issue branch, and the gating of the clock-under-load
 # check on a RUNNING service. Every other doctor test uses the shared systemctl stub, which is always
 # "active", so these paths were never exercised. A stub variant reports inactive (is-active -> exit 3).
