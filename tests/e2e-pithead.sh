@@ -188,7 +188,9 @@ phase_connect() {
     # Discovery contract: the dashboard identifies workers by the stratum `user` label.
     local user
     user=$(jq -r '.pools[0].user' "$GEN_CFG" 2>/dev/null || true)
-    if [ "$user" = "$(hostname)" ] || [ -n "$user" ]; then
+    # jq -r prints the literal string "null" for a missing key — that's non-empty, so a bare
+    # `-n` check can't catch a dropped stratum user label. Reject it explicitly.
+    if [ -n "$user" ] && [ "$user" != null ]; then
         ok "stratum user label set ('$user') — what the dashboard discovers by"
     else
         bad "generated config has no pools[0].user"
