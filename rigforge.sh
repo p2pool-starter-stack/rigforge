@@ -2085,9 +2085,11 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
             w=$(_read_watts_now)
             case "$w" in '') ;; *) wsamples="$w" ;; esac
         else
-            pe0=$(_rapl_sum energy_uj)
+            # `|| true` (same idiom as _autotune_sample's RAPL guard, #81/#290): no powercap sysfs is an
+            # expected "no RAPL" outcome, not a failure — an unguarded _rapl_sum here fires the ERR trap.
+            pe0=$(_rapl_sum energy_uj || true)
             pt0=$(_now_s)
-            pmax=$(_rapl_sum max_energy_range_uj)
+            pmax=$(_rapl_sum max_energy_range_uj || true)
         fi
     fi
     deadline=$(($(date +%s) + ${BENCH_TIMEOUT:-1800}))
@@ -2111,7 +2113,7 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
             # shellcheck disable=SC2086 # intentional word-split of the sample list
             wout=$(_mean $wsamples)
         elif [ -n "$pe0" ]; then
-            pe1=$(_rapl_sum energy_uj)
+            pe1=$(_rapl_sum energy_uj || true) # guard (#290): a mid-window sysfs read can still miss
             pt1=$(_now_s)
             secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
             wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
