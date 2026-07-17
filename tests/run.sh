@@ -5604,11 +5604,7 @@ fi
 # tests do it below) rather than reimplement it — only phase and the bench are stubbed.
 echo "== unit: e2e-real perf record gate (#214/#267) =="
 PJ="$(mktemp -d "$SANDBOX/pj.XXXXXX")"
-sed -n '/^ok() {$/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
-sed -n '/^bad() {$/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
-sed -n '/^summary() {$/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
-sed -n '/^_perf_judge()/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
-sed -n '/^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
+sed -n '/^ok() {$/,/^}/p; /^bad() {$/,/^}/p; /^summary() {$/,/^}/p; /^_perf_judge()/,/^}/p; /^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
 cat >"$PJ/rigforge-stub" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = bench ] && echo "${STUB_BENCH_HS:-10000.0} H/s"
