@@ -70,17 +70,35 @@ else
     THREADS=$((L3_MB / 2))
 fi
 
+# First-class thread cap (#305): a config `threads` ceiling, passed as THREADS_CAP, clamps the count the
+# reservation is sized for — min(computed, cap). Lets a co-located miner (pithead#593) leave the stack
+# cores free without RigForge over-reserving. A cap ABOVE the computed count is a no-op (it's a ceiling).
+if [ -n "${THREADS_CAP:-}" ] && [ "$THREADS_CAP" -gt 0 ] 2>/dev/null && [ "$THREADS" -gt "$THREADS_CAP" ]; then
+    THREADS="$THREADS_CAP"
+fi
+
+# Reservation headroom for a co-resident workload (#305): RESERVE_EXTRA_MB (from the hugepages_reserve_extra_mb
+# config key) is MB the caller wants left for the rest of the box (e.g. a pithead stack's ~2874MB of 2MB pages).
+# RigForge stays the sole writer of the reservation; it just sizes the pool for stack + miner. Converted
+# to 2MB pages (round up) and added to every 2MB total so both the GRUB reservation and the runtime pool
+# (the kernel's shared hugepage pool, which both workloads draw from) grow by the same amount.
+EXTRA_2MB_PAGES=0
+if [ -n "${RESERVE_EXTRA_MB:-}" ] && [ "$RESERVE_EXTRA_MB" -gt 0 ] 2>/dev/null; then
+    EXTRA_2MB_PAGES=$(((RESERVE_EXTRA_MB + 1) / 2))
+fi
+
 # 1GB HugePages: 3 per NUMA node — each node holds its own ~2080MB RandomX dataset copy (rounds up to 3GB).
 TOTAL_GB_PAGES=$((3 * NUMA_NODES))
 
-# 2MB HugePages: Reserve for JIT compiler and scratchpads (128 base + 1 per thread + buffer)
-TOTAL_2MB_PAGES=$((128 + THREADS + 10))
+# 2MB HugePages: Reserve for JIT compiler and scratchpads (128 base + 1 per thread + buffer), plus any
+# co-resident headroom.
+TOTAL_2MB_PAGES=$((128 + THREADS + 10 + EXTRA_2MB_PAGES))
 
-# Fallback Strategy (Pure 2MB): Covers Dataset (2080MB) + Overhead + JIT
+# Fallback Strategy (Pure 2MB): Covers Dataset (2080MB) + Overhead + JIT + co-resident headroom.
 # 1168 pages * 2MB = ~2336MB per NUMA node (Provides ~250MB buffer for fragmentation). Scales per node
 # because, like the 1GB path, each NUMA node holds its own dataset copy.
 BASE_2MB_PAGES=1168
-TOTAL_2MB_FALLBACK=$(((BASE_2MB_PAGES * NUMA_NODES) + THREADS + 50))
+TOTAL_2MB_FALLBACK=$(((BASE_2MB_PAGES * NUMA_NODES) + THREADS + 50 + EXTRA_2MB_PAGES))
 
 if [ "$RUNTIME" -eq 1 ]; then
     # Check if 1GB pages are already allocated

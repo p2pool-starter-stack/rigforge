@@ -907,6 +907,147 @@ out="$(PATH="$SANDBOX/nonuma:$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=2 NODE
 assert_contains "grub: NUMA falls back to sockets when undetectable (2 -> 6)" "$out" "hugepagesz=1G hugepages=6"
 
 # ---------------------------------------------------------------------------
+# #305: co-resident reservation headroom + first-class thread cap.
+echo "== unit: proposed-grub.sh co-resident headroom + thread cap (#305) =="
+# RESERVE_EXTRA_MB adds ceil(MB/2) 2MB pages to BOTH the reservation and the runtime pool so the kernel's
+# shared pool covers stack + miner. 2874 MB -> 1437 pages. 1G box base 2M = 154 -> 1591; fallback 1234 -> 2671.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=2874 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: headroom adds 2M pages (1G box, 154+1437)" "$out" "hugepagesz=2M hugepages=1591"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=2874 CPUINFO="$SANDBOX/cpuinfo_no1g" bash "$PG" -q)"
+assert_contains "grub: headroom adds 2M pages (fallback, 1234+1437)" "$out" "hugepages=2671"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=2874 HUGEPAGES_1G_NR="$SANDBOX/nr_none" bash "$PG" --runtime)"
+assert_eq "grub --runtime: headroom grows the shared pool too (1234+1437)" "$out" "2671"
+# Odd MB rounds UP to whole 2MB pages (1 MB -> 1 page); zero (default) leaves sizing untouched.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=1 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: odd headroom MB rounds up (154+1)" "$out" "hugepagesz=2M hugepages=155"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=0 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: zero headroom = miner-only sizing (154)" "$out" "hugepagesz=2M hugepages=154"
+# THREADS_CAP is a CEILING: 32 MiB L3 -> 16 threads; cap 8 -> 2M = 128+8+10 = 146. A cap ABOVE the
+# computed count is a no-op (never a raise). It also clamps a tuned RX_THREADS: min(24,8) -> 8.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 THREADS_CAP=8 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: thread cap clamps sizing (16->8 -> 146)" "$out" "hugepagesz=2M hugepages=146"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 THREADS_CAP=100 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: cap above computed is a no-op (stays 154)" "$out" "hugepagesz=2M hugepages=154"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RX_THREADS=24 THREADS_CAP=8 HUGEPAGES_1G_NR="$SANDBOX/nr_none" bash "$PG" --runtime)"
+assert_eq "grub --runtime: cap clamps a tuned RX_THREADS (min(24,8) -> 1226)" "$out" "1226"
+
+# _cmdline_reserved_2mb: total HugePages a cmdline reserves, in 2MB-equivalents (1G page = 512 × 2M).
+echo "== unit: _cmdline_reserved_2mb (#305) =="
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "quiet splash hugepagesz=2M hugepages=3072 transparent_hugepage=never"
+)"
+assert_eq "reserved: pure-2M pool" "$r" "3072"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "hugepagesz=1G hugepages=6 hugepagesz=2M hugepages=200"
+)"
+assert_eq "reserved: 1G counts as 512x2M (6*512+200)" "$r" "3272"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "quiet default_hugepagesz=2M hugepages=1234"
+)"
+assert_eq "reserved: default_hugepagesz used when no explicit hugepagesz" "$r" "1234"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "default_hugepagesz=1G hugepages=4"
+)"
+assert_eq "reserved: default_hugepagesz=1G -> 4*512" "$r" "2048"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "quiet splash nomodeset"
+)"
+assert_eq "reserved: nothing reserved -> 0" "$r" "0"
+
+# parse_config: the two new keys parse, default, and reject bad values.
+echo "== unit: parse_config hugepages_reserve_extra_mb + threads (#305) =="
+c305="$SANDBOX/c305.json"
+printf '{"pools":[{"url":"h:3333"}],"hugepages_reserve_extra_mb":2874,"threads":6}\n' >"$c305"
+assert_eq "hugepages_reserve_extra_mb parsed" "$(parse_and_print "$c305" "$ROOT" HUGEPAGES_RESERVE_EXTRA_MB)" "2874"
+assert_eq "threads parsed" "$(parse_and_print "$c305" "$ROOT" THREADS_CAP)" "6"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$c305"
+assert_eq "hugepages_reserve_extra_mb defaults to 0" "$(parse_and_print "$c305" "$ROOT" HUGEPAGES_RESERVE_EXTRA_MB)" "0"
+assert_eq "threads defaults to empty (auto)" "$(parse_and_print "$c305" "$ROOT" THREADS_CAP)" ""
+printf '{"pools":[{"url":"h:3333"}],"hugepages_reserve_extra_mb":-5}\n' >"$c305"
+out="$(
+    source "$SCRIPT"
+    CONFIG_JSON="$c305"
+    SCRIPT_DIR="$ROOT"
+    PATH="$STUBS:$PATH" parse_config 2>&1
+)"
+assert_contains "negative headroom rejected" "$out" "hugepages_reserve_extra_mb must be"
+printf '{"pools":[{"url":"h:3333"}],"threads":0}\n' >"$c305"
+out="$(
+    source "$SCRIPT"
+    CONFIG_JSON="$c305"
+    SCRIPT_DIR="$ROOT"
+    PATH="$STUBS:$PATH" parse_config 2>&1
+)"
+assert_contains "threads 0 rejected (min 1)" "$out" "threads must be"
+
+# generate_xmrig_config: the thread cap clamps cpu.rx AFTER any tune overlay (a stale tuned count can't
+# exceed the operator's headroom); a valid count at/under the cap is left alone.
+echo "== config-gen: threads cap clamps cpu.rx (#305) =="
+gen_capped() { # <cap> <tuned-rx-or-empty> -> echoes config dir
+    local d
+    d="$(mktemp -d "$SANDBOX/cap.XXXXXX")"
+    [ -n "$2" ] && printf '{"cpu":{"rx":%s}}\n' "$2" >"$d/tune-overrides.json"
+    (
+        # Scope the CPU stubs to THIS subshell — a top-level `export` would leak into later tests (e.g.
+        # the #296 bios-verify cases that rely on lscpu NOT reporting an EPYC).
+        export STUB_CPU_MODEL="AMD EPYC 7642 48-Core Processor" STUB_NPROC=48 STUB_HOSTNAME=rigbox
+        cd "$d" || exit 1
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$d"
+        LOGROTATE_DIR="$d"
+        POOLS_JSON='[{"url":"h:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
+        ACCESS_TOKEN=""
+        DONATION=1
+        THREADS_CAP="$1"
+        set +e
+        PATH="$STUBS:$PATH" generate_xmrig_config >/dev/null 2>&1
+    )
+    echo "$d"
+}
+assert_eq "cap pins cpu.rx from auto (-1 -> 6)" "$(J "$(gen_capped 6 "")/config.json" '.cpu.rx')" "6"
+assert_eq "cap clamps a tuned rx above it (16 -> 6)" "$(J "$(gen_capped 6 16)/config.json" '.cpu.rx')" "6"
+assert_eq "cap leaves a tuned rx at/under it alone (4 stays 4)" "$(J "$(gen_capped 6 4)/config.json" '.cpu.rx')" "4"
+
+# _grub_proposed's keep-existing guard: in co-resident mode, an ambient reservation that already covers
+# miner + headroom is left untouched (MERGED := CURRENT -> no reboot); an insufficient one still gets the
+# new sizing merged in. This is the load-bearing pithead#593 "no reboot on a box that already fits" case.
+echo "== unit: _grub_proposed co-resident keep-existing guard (#305) =="
+gd="$SANDBOX/grub_default_305"
+run_grub_proposed() { # <current-cmdline> <headroom-mb> -> echoes resulting MERGED
+    printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$1" >"$gd"
+    (
+        export PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 CPUINFO="$SANDBOX/cpuinfo_no1g" HUGEPAGES_1G_NR="$SANDBOX/nr_none"
+        source "$SCRIPT"
+        SCRIPT_DIR="$ROOT"
+        GRUB_DEFAULT="$gd"
+        RX_SETUP_THREADS=""
+        HUGEPAGES_RESERVE_EXTRA_MB="$2"
+        THREADS_CAP=""
+        _grub_proposed
+        printf '%s\n' "$MERGED"
+    )
+}
+# 32 MiB L3 -> 16 threads; no-1G fallback + 2874MB headroom (1437 pages) -> need 1168+16+50+1437 = 2671.
+# Ambient 3072 >= 2671: guard keeps the cmdline verbatim (no reboot).
+assert_eq "guard: sufficient ambient reservation left unchanged" \
+    "$(run_grub_proposed "quiet splash hugepagesz=2M hugepages=3072 transparent_hugepage=never" 2874)" \
+    "quiet splash hugepagesz=2M hugepages=3072 transparent_hugepage=never"
+# Ambient 100 < 2671: guard does NOT fire; the new sizing is merged in (quiet/splash preserved).
+m305="$(run_grub_proposed "quiet splash hugepagesz=2M hugepages=100" 2874)"
+assert_contains "guard: insufficient reservation gets the new sizing (2671)" "$m305" "hugepages=2671"
+assert_contains "guard: insufficient case still preserves non-managed params" "$m305" "quiet splash"
+# Headroom 0 (normal host): guard is inert even when the ambient reservation would have sufficed —
+# a normal host keeps its existing sizing/MSR/reboot behaviour, so the proposal is merged as before.
+assert_contains "guard: inert when headroom is 0 (normal host merges proposal)" \
+    "$(run_grub_proposed "quiet splash hugepagesz=2M hugepages=3072" 0)" "msr.allow_writes=on"
+
+# ---------------------------------------------------------------------------
 # tune_kernel must MERGE its HugePage/MSR params into the existing GRUB cmdline, not overwrite it
 # wholesale (#19 — overwriting drops other kernel params; a boot-safety risk).
 echo "== unit: grub_merge_cmdline preserves other kernel params (#19) =="
