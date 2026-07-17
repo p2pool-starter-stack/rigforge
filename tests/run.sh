@@ -5599,11 +5599,15 @@ fi
 # paths — no root, no /var/lock — with background subshells as the competing "suites".
 # #214: perf recording judges BEFORE it writes — the recording run is the only perf gate most
 # rigs ever get, so a regressed measurement must fail the phase and leave the baseline untouched
-# (E2E_PERF_FORCE=1 is the conscious override). Helpers extracted from e2e-real.sh the same way
-# the rig_lock tests do it; ok/bad/phase and the bench are stubbed.
-echo "== unit: e2e-real perf record gate (#214) =="
+# (E2E_PERF_FORCE=1 is the conscious override). #267: the harness must exercise the REAL
+# summary/exit plumbing (ok/bad/summary extracted verbatim from e2e-real.sh, same as the rig_lock
+# tests do it below) rather than reimplement it — only phase and the bench are stubbed.
+echo "== unit: e2e-real perf record gate (#214/#267) =="
 PJ="$(mktemp -d "$SANDBOX/pj.XXXXXX")"
-sed -n '/^_perf_judge()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
+sed -n '/^ok() {$/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
+sed -n '/^bad() {$/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
+sed -n '/^summary() {$/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
+sed -n '/^_perf_judge()/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
 sed -n '/^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >>"$PJ/fns.sh"
 cat >"$PJ/rigforge-stub" <<'EOF'
 #!/usr/bin/env bash
@@ -5611,22 +5615,16 @@ cat >"$PJ/rigforge-stub" <<'EOF'
 exit 0
 EOF
 chmod +x "$PJ/rigforge-stub"
-run_perf() { # env: STUB_BENCH_HS E2E_PERF_RECORD E2E_PERF_FORCE; prints output; rc = #bad calls
+run_perf() { # env: STUB_BENCH_HS E2E_PERF_RECORD E2E_PERF_FORCE; prints output; rc = perf()'s real summary/exit
     (
         cd "$PJ" || exit 9
         HERE="$PJ"
         RIGFORGE="$PJ/rigforge-stub"
-        BADS=0
-        ok() { echo "OK: $1"; }
-        bad() {
-            echo "BAD: $1"
-            BADS=$((BADS + 1))
-        }
+        PASS=0
+        FAIL=0
         phase() { :; }
         source "$PJ/fns.sh"
-        set +e
-        perf
-        exit "$BADS"
+        perf 2>&1
     )
 }
 host="$(hostname)"
