@@ -2160,9 +2160,11 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     # instantaneous TUNE_POWER_CMD samples taken alongside the hashrate samples. Written to BENCH_WATTS_FILE.
     local wsamples="" pe0="" pt0="" pmax="" w
     if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -z "${TUNE_POWER_CMD:-}" ]; then
-        pe0=$(_rapl_sum energy_uj)
+        # `|| true` (#290/#301, same idiom as _autotune_sample's #81 guard): no powercap sysfs is an
+        # expected "no RAPL" outcome, not a failure — an unguarded _rapl_sum here fires the ERR trap.
+        pe0=$(_rapl_sum energy_uj || true)
         pt0=$(_now_s)
-        pmax=$(_rapl_sum max_energy_range_uj)
+        pmax=$(_rapl_sum max_energy_range_uj || true)
     fi
     for i in $(seq 1 "$n"); do
         s=$(_read_api_hashrate)
@@ -2180,7 +2182,7 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
             # shellcheck disable=SC2086 # intentional word-split of the sample list
             wout=$(_mean $wsamples)
         elif [ -n "$pe0" ]; then
-            pe1=$(_rapl_sum energy_uj)
+            pe1=$(_rapl_sum energy_uj || true) # guard (#301): a mid-window sysfs read can still miss
             pt1=$(_now_s)
             secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
             wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
