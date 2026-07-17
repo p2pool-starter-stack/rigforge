@@ -347,9 +347,9 @@ parse_config() {
             url: (.url // ""),
             user: (.user // ""),
             pass: (.pass // "x"),
-            keepalive: (.keepalive // true),
+            keepalive: (if has("keepalive") then .keepalive else true end),
             tls: (.tls // false),
-            enabled: (.enabled // true)
+            enabled: (if has("enabled") then .enabled else true end)
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
@@ -2436,10 +2436,10 @@ _gridsearch() {
 # from what the generated config actually uses (both default false). Shared by the seeds.
 _seed_hj() { jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE"; }
 _seed_cq() { jq -r '.randomx.cache_qos // false' "$TUNE_BASE"; }
-_seed_g() { jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE"; } # base 1gb-pages value (default true)
+_seed_g() { jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; } # base 1gb-pages value (default true)
 # wrmsr seed: the base config's value as a single token (true/false/number). An array (advanced custom
 # MSRs) isn't a sweepable scalar, so seed from the safe default 'true' and let the operator set TUNE_WRMSR.
-_seed_wr() { jq -r '(.randomx.wrmsr // true) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
+_seed_wr() { jq -r '(.randomx | if has("wrmsr") then .wrmsr else true end) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
 
 # Seed the state with XMRig's auto baseline (the generated config's own values; threads left to auto).
 _seed_auto() {
