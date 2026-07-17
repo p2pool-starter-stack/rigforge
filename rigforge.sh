@@ -4373,6 +4373,39 @@ doctor() {
         fi
     fi
 
+    # Control receiver health (#278): the writable control path (#236) has its own service and its own
+    # port — an operator (or Pithead) could believe it's live while rigforge-control is dead,
+    # crash-looping, or firewalled, and nothing would say so. Same treatment as the read API's posture
+    # above: quiet when control is disabled/absent, per parse_config's enabled-value synonyms.
+    if [ -f "$CONFIG_JSON" ]; then
+        local cfg_control
+        cfg_control=$(jq -r '.control // "disabled"' "$CONFIG_JSON" 2>/dev/null || true)
+        case "$cfg_control" in
+        enabled | true | on)
+            if systemctl is-active --quiet rigforge-control 2>/dev/null; then
+                local ctl_port ctl_tok ctl_code
+                ctl_port=$(jq -r '.control_port // 8082' "$CONFIG_JSON" 2>/dev/null || true)
+                ctl_tok=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)
+                # Probe like a client would: authed GET /status. 200 and 503 both mean "up and
+                # answering" — 503 just means no change has been applied yet (util/control-server.py).
+                # Never echo the token (mirrors the read API's Bearer discipline).
+                ctl_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+                    -H "Authorization: Bearer $ctl_tok" "http://127.0.0.1:${ctl_port:-8082}/status" 2>/dev/null || true)
+                case "$ctl_code" in
+                200 | 503) _ck_ok "control receiver is active and responding (rigforge-control, :${ctl_port:-8082})" ;;
+                *)
+                    _ck_warn "control: enabled and rigforge-control is active, but :${ctl_port:-8082}/status isn't responding — check journalctl -u rigforge-control"
+                    issues=$((issues + 1))
+                    ;;
+                esac
+            else
+                _ck_warn "control: enabled but rigforge-control is inactive — run 'sudo $0 apply' or check journalctl -u rigforge-control"
+                issues=$((issues + 1))
+            fi
+            ;;
+        esac
+    fi
+
     # MSR mod applied? (#66) The ~10-15% RandomX gain needs three things, checked in order: the msr
     # module loadable, XMRig's own log line confirming it WROTE the prefetcher preset, and — when rdmsr
     # (msr-tools) is present — a register read-back that catches a write a hypervisor/lockdown dropped.
