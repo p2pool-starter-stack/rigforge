@@ -43,8 +43,8 @@ Not every verb needs root — the design, in four lines:
 - `setup` / `upgrade` / `apply` / `uninstall` and the service verbs (`start` / `stop` / `restart` /
   `enable` / `disable`) call `sudo` inline for each privileged step — run them with `sudo` (or be
   ready for the inline password prompts).
-- `tune` / `autotune` re-run themselves under `sudo` automatically (interactive terminals only, so a
-  script never hangs on a password prompt).
+- `tune` and `bios` re-run themselves under `sudo` automatically (interactive terminals only, so a
+  script never hangs on a password prompt). `autotune` uses inline `sudo systemctl` calls instead.
 - `status`, `logs`, `backup`, and `restore` never need root — you shouldn't type a password just to
   look at your own rig.
 - `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
@@ -339,7 +339,7 @@ Edit `config.json`, regenerate the live config, then restart:
 
 ### What's Linux-only
 
-`doctor`, `uninstall`, `tune --live`, and `autotune` need systemd / Linux and aren't available on macOS.
+`doctor`, `uninstall`, `tune --live`, `autotune`, `watchdog`, `bios`, and `tune --now` need systemd / Linux and aren't available on macOS.
 Everything else works anywhere: `setup`, `apply`, `bench`, the offline `tune`, `backup` / `restore`,
 `version`, and the full service surface `start` / `stop` / `restart` / `status` / `logs` / `enable` /
 `disable` (which uses systemd on Linux and a launchd login agent on macOS).
