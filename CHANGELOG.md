@@ -7,6 +7,39 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-07-18
+
+Follow-ups from the post-v1.9.0 re-validation of the 2026-07 repo scan: one operator-facing check
+added, three ERR-trap / state-durability edges closed. All four issues (#278, #290, #296, #301) were
+filed during the scan and its regression hunt.
+
+### Added
+
+- **`doctor` reports control-receiver health when the control path is enabled (#278).** With
+  `control: enabled`, `doctor` now checks that `rigforge-control` is active and that its `/status`
+  endpoint answers (an authed probe over loopback; `200`/`503` both count as up — `503` just means no
+  change applied yet), so an operator (or Pithead) can't believe the writable path is live while the
+  service is dead, crash-looping, or firewalled. Enabled-but-down is a counted issue with a
+  `journalctl -u rigforge-control` hint; the token is never echoed; `doctor` stays silent when control
+  is disabled.
+
+### Fixed
+
+- **An unverifiable `numa_nps`/`smt` BIOS item no longer vanishes from the resumable state (#296).**
+  If a fresh probe comes back `unknown` at verify time (e.g. `lscpu` can't read the CPU model, or SMT
+  isn't exposed in sysfs) the item is now kept `pending` — `memory_profile`/`power_boost` already
+  resurrected, `numa_nps`/`smt` didn't — instead of silently dropping from `rigforge-bios.json`. The
+  "can't verify" hint is also per-item now (the old text named `dmidecode`, wrong for NPS's
+  `lscpu`/sysfs probe and SMT's sysfs probe).
+
+- **A host with no RAPL power sensors no longer spams the ERR trap during tuning (#290, #301).** When
+  RAPL watts sampling is on but the `powercap` sysfs is absent, `_rapl_sum` legitimately returns
+  non-zero; under `set -Eeuo pipefail` that fired the misleading "[ERROR] rigforge aborted while
+  starting up" line at every sample — the same class fixed for the hashrate grep in #277. Both the
+  offline bench path (`_xmrig_bench`, #290) and the live-tune path (`_measure_live`, #301) now guard
+  the sampling the way `_autotune_sample` already did. Cosmetic on the fleet (all rigs have RAPL);
+  it only bit generic/older hardware.
+
 ## [1.9.0] - 2026-07-17
 
 Fixes and hardening from the 2026-07 full-repo scan (five independent review passes over the whole
