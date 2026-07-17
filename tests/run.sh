@@ -5959,6 +5959,12 @@ echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
     "$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")" "$RL_SRC"
+# #269: the byte-compare above only sees rig_lock() itself, not _cleanup's own fallback drifting
+# back to the pre-#244 path. Match the ":-" fallback shape, not bare text — e2e-real.sh/e2e-pithead.sh
+# both legitimately mention the old path in an (#244) migration comment. Split so this needle can't self-match.
+_stale_holder_pat=':-/run/rig-e2e.hold''er'
+assert_eq "no code under tests/ still falls back to the pre-#244 holder path (#269)" \
+    "$(grep -rl -- "$_stale_holder_pat" "$ROOT/tests" 2>/dev/null | wc -l | tr -d ' ')" "0"
 if ! command -v flock >/dev/null 2>&1; then
     echo "  SKIP: no flock(1) on this host (macOS) — the lock-behaviour tests run in the Linux CI jobs"
 else

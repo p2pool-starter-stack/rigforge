@@ -112,7 +112,7 @@ _cleanup() {
         cp "$SAVED_CFG" "$CFG"
         "$RIGFORGE" apply >/dev/null 2>&1 || true
     fi
-    rm -f "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" # #183: the rig lock's display-only sidecar
+    rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" # #183: the rig lock's display-only sidecar
 }
 snapshot_config() {
     SAVED_CFG="$(mktemp)"
