@@ -142,9 +142,12 @@ esac
 exit 0
 EOF
     # envsubst stub: substitute exactly the vars the systemd templates use (gettext may be absent on macOS).
+    # Keep this var list in lockstep with rigforge.sh:1009's real envsubst allowlist — a var dropped
+    # from ONE and not the other lets a stub-rendered unit keep a literal, undetected $VAR (#275).
     cat >"$bin/envsubst" <<'EOF'
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
+    -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
@@ -2091,6 +2094,10 @@ done
 assert_absent "dry-run never enables units (#146)" "$(cat "$DR/calls.log" 2>/dev/null)" "enable"
 # Drift guard: every CURRENT_STEP phrase in main() appears in the plan.
 main_steps="$(sed -n '/^main()/,/^}/p' "$SCRIPT" | grep -o 'CURRENT_STEP="[^"]*"' | cut -d'"' -f2)"
+# If extraction ever comes back empty (main() renamed/reformatted), the loop below would run once
+# with an empty $step and assert_contains with an empty needle always passes — silently defanging
+# the guard. Fail loudly instead.
+[ -n "$main_steps" ] || bad "could not extract CURRENT_STEP list from main()" "sed/grep extraction was empty"
 while IFS= read -r step; do
     assert_contains "plan covers main() step '$step' (#146)" "$dr_out" "$step"
 done <<<"$main_steps"
@@ -2709,6 +2716,10 @@ EOF
 apr_unit="$(cat "$APR/sysd/xmrig.service")"
 assert_contains "apply: unit re-rendered to the configured user (#140)" "$apr_unit" "User=rf-appuser"
 assert_contains "apply: re-rendered unit carries the msr-apply pre-step (#140)" "$apr_unit" "rigforge.sh msr-apply"
+# No leftover unexpanded $VAR placeholders (#275): catches a var dropped from the envsubst stub
+# above without being dropped from rigforge.sh's real allowlist (rigforge.sh:1009), or vice versa.
+assert_eq "apply: re-rendered unit has no unexpanded \$VAR placeholders (#275)" \
+    "$(grep -oE '\$[A-Za-z_][A-Za-z0-9_]*' <<<"$apr_unit" | sort -u | tr '\n' ' ')" ""
 # Regression (caught live on miner-0, v1.4.0 gate): apply is the documented path for TOGGLING
 # miner_user, so it must also CREATE the user — a unit saying User=<absent user> crash-loops with
 # status=217/USER. The real `id` reports rf-appuser absent, so apply must call useradd.
@@ -4736,11 +4747,18 @@ if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVe
 echo "== unit: config.reference.json (#23) =="
 ADV="$ROOT/config.reference.json"
 if jq -e . "$ADV" >/dev/null 2>&1; then ok "advanced example is valid JSON"; else bad "advanced example is valid JSON" "jq parse failed"; fi
-# The advanced example documents exactly the user-facing keys. The rig label lives in pools[].user and
-# the template is internal, so WORKER_NAME / WORKER_CONFIG_FILE / POOL_HOST must NOT appear.
-for k in pools ACCESS_TOKEN DONATION HOME_DIR; do
-    if jq -e --arg k "$k" 'has($k)' "$ADV" >/dev/null 2>&1; then ok "advanced example documents $k"; else bad "advanced example documents $k" "key missing"; fi
-done
+# The advanced example must document the FULL key set both directions — derived from rigforge.sh's own
+# "known" list (_warn_unknown_config_keys' typo lint, rigforge.sh:571) rather than hardcoded here twice,
+# so either side drifting from the code fails this test. RIG_NAME is documented there as reserved for
+# the #1 image seed, not a config.reference.json default — excluded.
+known_keys="$(sed -nE 's/^[[:space:]]*local known="([^"]*)".*/\1/p' "$SCRIPT" | head -1)"
+[ -n "$known_keys" ] || bad "could not extract the known-keys list from rigforge.sh" "sed found nothing"
+known_sorted="$(tr ' ' '\n' <<<"$known_keys" | grep -v '^RIG_NAME$' | sort)"
+ref_sorted="$(jq -r 'keys[] | select(. != "_docs")' "$ADV" | sort)"
+assert_eq "advanced example documents exactly the keys parse_config knows (#275)" \
+    "$(diff <(echo "$known_sorted") <(echo "$ref_sorted") || true)" ""
+# The rig label lives in pools[].user and the template is internal, so WORKER_NAME / WORKER_CONFIG_FILE
+# / POOL_HOST must NOT appear.
 for k in POOL_HOST WORKER_NAME WORKER_CONFIG_FILE; do
     assert_absent "advanced example has no $k key" "$(cat "$ADV")" "\"$k\""
 done
