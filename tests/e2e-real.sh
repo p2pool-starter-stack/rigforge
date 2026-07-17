@@ -581,11 +581,13 @@ control() {
     # Snapshot BEFORE any mutation and install the EXIT trap immediately: every step below can fail
     # under `set -Eeuo pipefail`, and the rig must come back with control OFF regardless. Same shape
     # as e2e-pithead.sh's snapshot_config/_cleanup (see there for why: traps replace, not stack, so
-    # this REPLACES rig_lock's holder-only EXIT trap set at the bottom of this file — _control_cleanup
-    # re-does that one-line holder-file removal itself, same as e2e-pithead.sh's _cleanup does).
+    # this REPLACES rig_lock's holder-only EXIT trap set at the bottom of this file — the trap below
+    # re-does that holder-file removal at process exit. The holder rm lives HERE, not inside
+    # _control_cleanup: the explicit mid-phase cleanup call must not delete the breadcrumb while
+    # perf/teardown still run holding the flock (a blocked arrival would then read "busy: unknown").
     CTL_SAVED_CFG="$(mktemp)"
     cp "$HERE/config.json" "$CTL_SAVED_CFG"
-    trap '_control_cleanup' EXIT
+    trap '_control_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
 
     # Ephemeral bearer token for this run only: generated, used over loopback, and discarded. Never
     # echoed, never written anywhere but config.json itself (which the snapshot above restores).
@@ -748,7 +750,6 @@ _control_cleanup() {
     else
         echo "  WARNING: miner did not report a live hashrate post-revert within 30s — check the rig by hand" >&2
     fi
-    rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" # #183: the rig lock's display-only sidecar (this trap replaced rig_lock's own — same expression as e2e-pithead.sh's _cleanup)
 }
 
 teardown() {

@@ -155,6 +155,7 @@ remove_line() { # <file> <line>
 compute_build_jobs() { # <ncpu>
     local mem_kb mem_gb jobs="$1" max
     mem_kb=$(awk '/^MemTotal:/ {print $2}' "${MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)
+    mem_kb="${mem_kb:-0}" # a meminfo with no MemTotal line yields empty (awk exits 0), not the || fallback
     mem_gb=$((mem_kb / 1024 / 1024))
     # Guard on mem_kb (readable at all), not mem_gb (truncates to 0 for BOTH a real sub-1GB host and an
     # unreadable meminfo) — a sub-1GB host must still hit the cap below (falls to the max<1 floor -> 1
@@ -2126,7 +2127,7 @@ _xmrig_bench() { # <bin> <bench-size> <config|"">
     # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
     # min would mistake for thermal throttling (#62).
     # shellcheck disable=SC2086 # $freqs is an intentional word-split list of samples
-    if [ -n "${BENCH_FREQ_FILE:-}" ]; then _median $freqs | awk '{printf "%d", $0+0}' >"$BENCH_FREQ_FILE"; fi
+    if [ -n "${BENCH_FREQ_FILE:-}" ]; then _median $freqs | awk 'NF{printf "%d", $0+0}' >"$BENCH_FREQ_FILE"; fi
     cat "$logf" "$out" 2>/dev/null
     rm -f "$out" "$logf" "$tmpcfg" 2>/dev/null || true
 }
