@@ -3903,7 +3903,12 @@ _control_upgrade_throttle_ok() { # <state-dir>
     local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
     now=$(date +%s)
     mkdir -p "$dir" 2>/dev/null || true
-    exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || return 0 # can't lock -> don't block a real upgrade
+    # Can't open the lock (unwritable/full state dir)? Fail OPEN — availability over strictness — but say
+    # so, or a broken state dir would silently disable the anti-beacon/anti-thrash throttle unnoticed.
+    exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
+        warn "control-upgrade: couldn't take the throttle lock under $dir — proceeding UNthrottled (check the state dir)."
+        return 0
+    }
     flock 9 2>/dev/null || true
     [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
     case "$last" in '' | *[!0-9]*) last=0 ;; esac
@@ -3961,18 +3966,22 @@ control_upgrade() {
     [ -n "$older" ] && printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
     cid=$(basename "$newest" .json)
     cid="${cid#upgrade-}"
-    # D8 spool handoff: refuse a symlink, then MOVE the intent into a root-owned 0700 dir the receiver's
-    # DynamicUser cannot write — atomically closing any swap/TOCTOU window — and read it only from there.
-    if [ -L "$newest" ]; then
-        rm -f "$newest"
-        _control_status "$status" failed "$cid" version "staged upgrade was a symlink — refused" ""
-        warn "control-upgrade: $cid was a symlink — refused."
-        return 0
-    fi
+    # D8 spool handoff: MOVE the intent into a root-owned 0700 dir the receiver's DynamicUser cannot
+    # write — freezing it against any swap — and ONLY THEN refuse a symlink and read it. Checking BEFORE
+    # the move would be a TOCTOU: the DynamicUser owns the spool and could swap the file for a symlink in
+    # the window between check and move. `mv` renames the link itself, so a symlink survives the move as
+    # a symlink and is caught here, in the root-only dir where it can no longer be swapped.
     mkdir -p "$proc" && chmod 700 "$proc"
     local staged="$proc/$cid.json"
     if ! mv -f "$newest" "$staged" 2>/dev/null; then
+        rm -f "$newest"
         _control_status "$status" failed "$cid" version "could not secure the staged upgrade" ""
+        return 0
+    fi
+    if [ -L "$staged" ]; then
+        rm -f "$staged"
+        _control_status "$status" failed "$cid" version "staged upgrade was a symlink — refused" ""
+        warn "control-upgrade: $cid was a symlink — refused."
         return 0
     fi
     # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
@@ -4010,21 +4019,24 @@ control_upgrade() {
     old_tag=$(git -C "$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
-    if _control_upgrade_do "$target"; then
-        if _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-            _control_status "$status" applied "$cid" version "" ""
-            log "control-upgrade: $cid applied — now on $target."
-        else
-            warn "control-upgrade: $target built but the miner didn't come back live — rolling back to ${old_tag:-previous}."
-            if [ -n "$old_tag" ] && _control_upgrade_do "$old_tag" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-                _control_status "$status" rolled_back "$cid" version "miner did not return to a live hashrate; rolled back to $old_tag and live" ""
-            else
-                _control_status "$status" failed "$cid" version "miner did not return to a live hashrate and the rollback did not restore liveness" ""
-            fi
-        fi
+    if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
+        _control_status "$status" applied "$cid" version "" ""
+        log "control-upgrade: $cid applied — now on $target."
     else
-        _control_status "$status" failed "$cid" version "fetch/reachability/build failed for $target — no change applied" ""
-        warn "control-upgrade: $cid failed to fetch/build $target."
+        # ANY forward failure rolls back — a reachability/build error OR the miner not returning to a live
+        # hashrate. Rollback re-runs _control_upgrade_do, which checks out AND rebuilds the old ref, so a
+        # failed forward attempt never leaves the tree pinned to an unbuilt $target: that would make
+        # VERSION read $target, short-circuit every future retry ("already on"), and run unverified code
+        # on every later invocation. A build failure after checkout is a real on-disk change, not "no
+        # change applied" — this reverts it (#308 security review, the build-failed branch was the gap).
+        warn "control-upgrade: $target did not come up cleanly — rolling back to ${old_tag:-previous}."
+        if [ -n "$old_tag" ] && _control_upgrade_do "$old_tag" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
+            _control_status "$status" rolled_back "$cid" version "upgrade to $target failed; rolled back to $old_tag and live" ""
+            warn "control-upgrade: $cid rolled back to $old_tag."
+        else
+            _control_status "$status" failed "$cid" version "upgrade to $target failed and rollback to ${old_tag:-previous} did not restore a live miner — manual intervention needed" ""
+            warn "control-upgrade: $cid FAILED and rollback did not restore liveness — manual intervention needed on this rig."
+        fi
     fi
     return 0
 }

@@ -6124,16 +6124,22 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.js
         CONTROL_UPGRADE_MIN_INTERVAL=0
         DO="$3"
         WML=0
+        UDO=0
+        # forward checkout+build is call #1, the rollback checkout+build is call #2.
+        # 'buildfail' = the forward build fails but the rollback rebuild succeeds (-> rolled_back);
+        # 'fail' = both fail (-> terminal failed).
         _control_upgrade_do() {
-            [ "$DO" = fail ] && return 1
+            UDO=$((UDO + 1))
+            case "$DO" in
+            buildfail) [ "$UDO" -eq 1 ] && return 1 ;;
+            fail) return 1 ;;
+            esac
             return 0
         }
-        # 'down' = miner dead after the forward build but the rollback restores liveness (-> rolled_back);
-        # 'downhard' = never live even after rollback (-> failed). The counter distinguishes the two calls.
+        # 'down' = miner dead after the forward build but the rollback restores liveness (-> rolled_back).
         _wait_miner_live() {
             WML=$((WML + 1))
             { [ "$DO" = down ] && [ "$WML" -eq 1 ]; } && return 1
-            [ "$DO" = downhard ] && return 1
             return 0
         }
         git() { case "$3" in describe) echo v0.0.1 ;; rev-parse) echo deadbeefcafe ;; *) return 0 ;; esac }
@@ -6147,9 +6153,14 @@ s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" ok)"
 assert_eq "upgrade applied on a newer, buildable release" "$(st "$s")" "applied"
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" down)"
 assert_eq "built but miner stays down -> rolled_back" "$(st "$s")" "rolled_back"
+# #308 security review (HIGH): a build failure AFTER checkout must roll the tree back to the prior
+# version, not leave it pinned to the unbuilt target (which would short-circuit all future retries and
+# run unverified code). A clean rollback reports rolled_back, never a false "no change applied".
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" buildfail)"
+assert_eq "build failure after checkout rolls back cleanly -> rolled_back" "$(st "$s")" "rolled_back"
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" fail)"
-assert_eq "fetch/build failure -> failed" "$(st "$s")" "failed"
-assert_contains "build-failure reason names fetch/reachability/build" "$s" "fetch/reachability/build failed"
+assert_eq "forward AND rollback both fail -> terminal failed" "$(st "$s")" "failed"
+assert_contains "hard-failure reason flags manual intervention" "$s" "manual intervention"
 s="$(cu_run '{"version":"v1.0.0"}' "2.0.0" ok)"
 assert_eq "downgrade refused -> failed (never built)" "$(st "$s")" "failed"
 assert_contains "downgrade reason names anti-rollback" "$s" "not newer"

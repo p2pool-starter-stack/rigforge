@@ -227,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return self._send(500, "Internal Server Error", {"error": "could not stage upgrade: %s" % e})
         self._send(202, "Accepted", {"status": "accepted", "change_id": cid,
-                                     "note": "queued; the rig re-derives the real latest and refuses a non-latest/unreachable target. poll GET /status"})
+                                     "note": "queued; the rig refuses anything that isn't a real, reachable release newer than the one installed (it does not independently verify the target is the newest). poll GET /status"})
 
     def _handle_apply(self):
         change = self._read_json_body()
