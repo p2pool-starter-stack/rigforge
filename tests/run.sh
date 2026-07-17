@@ -3185,6 +3185,46 @@ out="$(DMI_DIR="/nonexistent-dmi" SMT_CONTROL="/nonexistent-smt" DMIDECODE="$DOC
     run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_absent "doctor: no firmware context when DMI unreadable (#78)" "$out" "Firmware:"
 
+# #278: doctor reports control receiver health when `control` is enabled. Active + responding (200 or
+# 503, per util/control-server.py) is ok; enabled-but-down (service inactive, or active but not
+# answering) warns with a hint and counts as an issue; disabled prints no control-receiver lines at all.
+echo "== unit: doctor control receiver health (#278) =="
+cat >"$DOC/config_ctl_on.json" <<EOF
+{ "HOME_DIR": "$DOC/home", "pools": [{"url": "h:3333"}], "control": "enabled", "control_port": 8082, "ACCESS_TOKEN": "ctl-test-token", "api_allow_from": "10.0.0.5" }
+EOF
+run_ctl_doctor() { # <config_file> <rigforge-control active:y|n> <curl /status http code>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$1"
+        MEMINFO="$DOC/meminfo_ok"
+        MSR_MODULE_DIR="$DOC/msrmod"
+        GOVERNOR_FILE="$DOC/gov_perf"
+        HUGEPAGES_1G_NR="$DOC/nr1g"
+        DMIDECODE="/nonexistent"
+        CPUFREQ_MAX="/nonexistent"
+        CPU_SYSFS="/nonexistent"
+        _ACT="$2"
+        _CODE="$3"
+        systemctl() { case "$*" in *"is-active --quiet rigforge-control"*) [ "$_ACT" = y ] ;; *) return 0 ;; esac }
+        curl() { printf '%s' "$_CODE"; }
+        set +e
+        PATH="$STUBS:$PATH" doctor 2>&1
+    )
+}
+out="$(run_ctl_doctor "$DOC/config_ctl_on.json" y 200)"
+assert_contains "control: enabled+active+200 -> ok (#278)" "$out" "control receiver is active and responding"
+assert_absent "control: token never appears in doctor output (#278)" "$out" "ctl-test-token"
+out="$(run_ctl_doctor "$DOC/config_ctl_on.json" n 000)"
+assert_contains "control: enabled+inactive -> warn (#278)" "$out" "control: enabled but rigforge-control is inactive"
+assert_contains "control: enabled+inactive counts as an issue (#278)" "$out" "issue(s) found"
+out="$(run_ctl_doctor "$DOC/config_ctl_on.json" y 401)"
+assert_contains "control: enabled+active but not responding -> warn (#278)" "$out" "isn't responding"
+out="$(run_ctl_doctor "$DOC/config.json" y 200)"
+assert_absent "control: disabled prints no control-receiver ok line (#278)" "$out" "control receiver"
+assert_absent "control: disabled prints no control-receiver warn line either (#278)" "$out" "rigforge-control is inactive"
+
 # #201: NPS regression detection — an EPYC reporting ONE NUMA node is NPS1 (a BIOS reset ate the
 # NPS4 setting); desktop parts correctly report one node and must never be flagged; a missing
 # node sysfs is unverifiable, not suspect. Advisory only, shared by doctor and `bios`.
