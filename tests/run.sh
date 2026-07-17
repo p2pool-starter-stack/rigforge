@@ -1447,6 +1447,45 @@ arc_api disabled >/dev/null
 assert_eq "apply with api disabled removes the server (#99)" "$([ -f "$ARC/systemd/rigforge-api.service" ] && echo y || echo n)" "n"
 assert_eq "apply with api disabled removes the refresh timer (#99)" "$([ -f "$ARC/systemd/rigforge-api-refresh.timer" ] && echo y || echo n)" "n"
 
+# #236/#273: apply is the config-change path for the writable control server too — toggling `control`
+# on/off via apply must install/remove its units without a full setup, the same as the sister API above.
+# install_control's disabled branch only tears down units that already exist (confirmed by reading
+# install_control, rigforge.sh:1194-1220 — same idempotent shape as install_api's disabled branch).
+echo "== black-box: apply reconciles the writable control path to config (#236) =="
+cp "$ROOT/systemd/rigforge-control.service.template" "$ROOT/systemd/rigforge-control-apply.service.template" "$ROOT/systemd/rigforge-control-apply.path.template" "$ARC/systemd/"
+arc_control() { # <enabled|disabled>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ARC"
+        SYSTEMD_DIR="$ARC/systemd"
+        SERVICE_NAME=xmrig
+        REAL_USER=rfop
+        AUTOTUNE_MODE=disabled
+        API_MODE=disabled
+        CONTROL_MODE="$1"
+        CONTROL_BIND=0.0.0.0
+        CONTROL_PORT=8082
+        API_PORT=8081
+        # parse_config (always run by the real _apply_runtime, stubbed out below to skip the heavy
+        # config regen) is what normally assigns API_ALLOW_FROM before install_control reads it —
+        # mirror that here rather than leaving it unbound.
+        API_ALLOW_FROM=10.0.0.5
+        _apply_runtime() { :; }
+        sudo() { "$@"; }
+        set +e
+        PATH="$STUBS:$PATH" apply 2>&1
+    )
+}
+arc_control enabled >/dev/null
+assert_eq "apply with control enabled installs the server unit (#236)" "$([ -f "$ARC/systemd/rigforge-control.service" ] && echo y || echo n)" "y"
+assert_eq "apply with control enabled installs the applier unit (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "y"
+assert_eq "apply with control enabled installs the path watcher (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
+arc_control disabled >/dev/null
+assert_eq "apply with control disabled removes the server unit (#236)" "$([ -f "$ARC/systemd/rigforge-control.service" ] && echo y || echo n)" "n"
+assert_eq "apply with control disabled removes the applier unit (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "n"
+assert_eq "apply with control disabled removes the path watcher (#236)" "$([ -f "$ARC/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "n"
+
 # `bench` runs xmrig --bench; install a fake bench binary that prints a hashrate.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
@@ -3640,6 +3679,17 @@ mkdir -p "$UN/etc/systemd/system" "$UN/etc/logrotate.d" "$UN/etc/security" "$UN/
 : >"$UN/etc/logrotate.d/xmrig"
 : >"$UN/etc/modules-load.d/msr.conf"
 : >"$UN/home/worker/xmrig/build/xmrig"
+# #273: pre-seed every optional unit uninstall's removal branches (rigforge.sh:1750-1759 area) are
+# responsible for — the full set the sandbox has never installed before, so those branches never ran in
+# any test. Cross-checked 1:1 against systemd/*.template (minus xmrig.service.template, already seeded
+# above) so this list can't silently drift from what setup/install_* actually ship. One list, reused
+# below for the post-uninstall removal assertions, so the two can't drift from EACH OTHER either.
+UN_OPT_UNITS="rigforge-api.service rigforge-api-refresh.service rigforge-api-refresh.timer
+rigforge-control.service rigforge-control-apply.service rigforge-control-apply.path
+rigforge-autotune.service rigforge-autotune.timer rigforge-watchdog.service rigforge-watchdog.timer"
+for _u in $UN_OPT_UNITS; do
+    : >"$UN/etc/systemd/system/$_u"
+done
 printf 'proc /proc proc defaults 0 0\nhugetlbfs /dev/hugepages hugetlbfs defaults 0 0\nhugetlbfs_1g %s/dev/hp1g hugetlbfs pagesize=1G 0 0\n' "$UN" >"$UN/etc/fstab"
 printf 'root hard nofile 1024\n%s soft memlock unlimited\n%s hard memlock unlimited\n* soft memlock unlimited\n' "$ME" "$ME" >"$UN/etc/security/limits.conf"
 printf 'loop\nmsr\n' >"$UN/etc/modules"
@@ -3652,7 +3702,7 @@ un_run() {
         FSTAB="$UN/etc/fstab" LIMITS_CONF="$UN/etc/security/limits.conf" \
         MODULES_LOAD_DIR="$UN/etc/modules-load.d" MODULES_FILE="$UN/etc/modules" \
         HUGEPAGES_1G_DIR="$UN/dev/hp1g" GRUB_DEFAULT="$UN/nonexistent-grub" \
-        BIN_DIR="$UN/usr-local-bin" \
+        BIN_DIR="$UN/usr-local-bin" CALL_LOG="$UN/calls.log" \
         RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)
 }
 # setup would have linked $BIN_DIR/rigforge -> $UN/rigforge.sh (SCRIPT_DIR=$UN); uninstall must remove
@@ -3667,6 +3717,15 @@ assert_eq "service unit removed" "$([ -f "$UN/etc/systemd/system/xmrig.service" 
 assert_eq "logrotate policy removed" "$([ -f "$UN/etc/logrotate.d/xmrig" ] && echo y || echo n)" "n"
 assert_eq "msr.conf removed" "$([ -f "$UN/etc/modules-load.d/msr.conf" ] && echo y || echo n)" "n"
 assert_eq "worker build/logs removed" "$([ -d "$UN/home/worker" ] && echo y || echo n)" "n"
+# #273: every optional unit uninstall is responsible for must actually be gone, not just the always-on
+# xmrig.service above.
+for _u in $UN_OPT_UNITS; do
+    assert_eq "$_u removed" "$([ -f "$UN/etc/systemd/system/$_u" ] && echo y || echo n)" "n"
+done
+# The worse regression the issue calls out: a broken control removal branch would leave the
+# token-authed writable server running after "uninstall". Assert uninstall actually reached systemctl
+# for the control units, not just that the unit files are gone.
+assert_contains "uninstall disables+stops the control server unit (#273)" "$(cat "$UN/calls.log" 2>/dev/null)" "[systemctl] disable --now rigforge-control.service rigforge-control-apply.path"
 assert_eq "fstab hugepage lines gone" "$(grep -c 'hugetlbfs' "$UN/etc/fstab")" "0"
 assert_contains "fstab unrelated line kept" "$(cat "$UN/etc/fstab")" "proc /proc proc"
 assert_eq "limits memlock lines gone" "$(grep -c 'memlock unlimited' "$UN/etc/security/limits.conf")" "0"
