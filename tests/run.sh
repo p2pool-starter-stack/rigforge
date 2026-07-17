@@ -3884,8 +3884,9 @@ assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')
 # prefetch value (same config-reading idiom as the stub in the #54 block above) so the seed reads 0 H/s
 # but the swept prefetch=2 candidate hashes for real, letting the search finish with a winner (rc 0) — a
 # run that legitimately never hashes is a separate, correctly-reported failure, not what this test is
-# after. TUNE_POWER_CMD bypasses RAPL entirely so the (unrelated, pre-existing) no-RAPL-hardware path
-# never fires the ERR trap and confounds this test — same idiom the #tunefix block below uses.
+# after. No TUNE_POWER_CMD override here: RAPL_DIR is the suite-wide no-hardware fake (line 65), so this
+# run also exercises _xmrig_bench's RAPL sampling with no powercap sysfs present — the same ERR-trap class
+# #277 fixed for the hashrate grep, fixed for RAPL sampling by #290.
 # Linux-gated (#292): the cpufreq/bench-window plumbing this drives is Linux sysfs — on a real Mac the
 # path never runs, and the simulated fixture proved timing-flaky on the slow bash-3.2 macOS CI runner.
 # The Linux CI job + the kcov container still run it on every push.
@@ -3915,7 +3916,7 @@ EOF
     printf '{ "HOME_DIR": "%s/home", "pools": [{"url":"h:3333"}] }\n' "$ZH" >"$ZH/config.json"
     ZTLOG="$ZH/home/worker/rigforge-tune.json"
     out="$(cd "$ZH" && PATH="$STUBS:$PATH" CPUFREQ_MAX="$ZH/cpu_max" CPU_SYSFS="$ZH/cpuok" \
-        TUNE_POWER_CMD='echo 90' TUNE_ITERS=1 TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
+        TUNE_ITERS=1 TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
         TUNE_MAX_ROUNDS=1 RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
     assert_rc "zero-hashrate iteration doesn't stop the run (#277)" "$?" "0"
     assert_eq "zero-hashrate iteration recorded 0 H/s in the log (#277)" \
