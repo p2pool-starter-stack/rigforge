@@ -4637,11 +4637,14 @@ _bios_guide() { # <state_file>
     if [ "$B_BOOST_STATUS" = ok ]; then _ck_ok "CPU boost under load: $B_BOOST_BEFORE"; fi
     if [ "$B_BOOST_STATUS" = pending ]; then _ck_warn "CPU boost under load: $B_BOOST_BEFORE — likely power-capped"; fi
     if [ "$B_BOOST_STATUS" = unknown ]; then _ck_info "CPU boost not checked — the miner isn't running (start it and re-run bios to include the power/boost item)"; fi
-    for id in memory_profile smt power_boost; do
+    if [ "$B_NPS_STATUS" = ok ]; then _ck_ok "NUMA per socket (NPS): $B_NPS_BEFORE"; fi
+    if [ "$B_NPS_STATUS" = pending ]; then _ck_warn "NUMA per socket (NPS): $B_NPS_BEFORE — set NUMA nodes per socket to NPS4 in BIOS so RandomX gets quadrant-local memory."; fi
+    for id in memory_profile smt power_boost numa_nps; do
         case "$id" in
         memory_profile) if [ "$B_MEM_STATUS" = pending ]; then pending="$pending $id"; fi ;;
         smt) if [ "$B_SMT_STATUS" = pending ]; then pending="$pending $id"; fi ;;
         power_boost) if [ "$B_BOOST_STATUS" = pending ]; then pending="$pending $id"; fi ;;
+        numa_nps) if [ "$B_NPS_STATUS" = pending ]; then pending="$pending $id"; fi ;;
         esac
     done
     if [ -z "$pending" ]; then
@@ -4695,6 +4698,10 @@ _bios_verify() { # <state_file>
             fresh_status="$B_BOOST_STATUS"
             fresh_before="$B_BOOST_BEFORE"
             ;;
+        numa_nps)
+            fresh_status="$B_NPS_STATUS"
+            fresh_before="$B_NPS_BEFORE"
+            ;;
         *) continue ;;
         esac
         if [ "$fresh_status" = ok ]; then
@@ -4722,6 +4729,7 @@ _bios_verify() { # <state_file>
         case " $kept " in *" memory_profile "*) : ;; *) B_MEM_STATUS="done" ;; esac
         case " $kept " in *" smt "*) : ;; *) B_SMT_STATUS="done" ;; esac
         case " $kept " in *" power_boost "*) : ;; *) B_BOOST_STATUS="done" ;; esac
+        case " $kept " in *" numa_nps "*) : ;; *) B_NPS_STATUS="done" ;; esac
         if [ "$B_BOOST_STATUS" = unknown ]; then B_BOOST_STATUS=pending; fi # keep it resumable
         if [ "$B_MEM_STATUS" = unknown ]; then B_MEM_STATUS=pending; fi
         _bios_state_write "$state"

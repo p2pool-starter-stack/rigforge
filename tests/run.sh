@@ -3292,6 +3292,29 @@ if [ "$(uname -s)" != Linux ]; then
     assert_contains "bios: refuses off-Linux (#80)" "$out" "only supported on Linux"
 fi
 
+# #268: numa_nps was detected and persisted (#201) but never walked or verified — a pending-only NPS
+# item silently fell through both the guide loop and the verify case. Reuses the $NPS/one and $NPS/four
+# node-count fixtures from the #201 detection tests above.
+# 11. Guide: NPS is the only pending item -> it renders in the walk, and the early-out must not fire.
+out="$(run_bios 'export STUB_CPU_MODEL="AMD EPYC 7642 48-Core Processor"; NODE_SYSFS=$NPS/one SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios: NPS-only pending renders the NPS step (#268)" "$out" "NUMA per socket (NPS)"
+assert_absent "bios: NPS-only pending is not 'already set' (#268)" "$out" "already set"
+assert_eq "bios: NPS-only pending saves exactly one item (#268)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["numa_nps"]'
+rm -f "$BIO/rigforge-bios.json"
+# 12. Verify (still wrong): detection still reports NPS1 -> stays pending, not counted applied, state survives.
+printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"numa_nps","status":"pending","before":"1 NUMA node (NPS1)","menu":"AMD CBS"}]}' >"$BIO/rigforge-bios.json"
+out="$(run_bios 'export STUB_CPU_MODEL="AMD EPYC 7642 48-Core Processor"; NODE_SYSFS=$NPS/one SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: NPS still wrong stays pending (#268)" "$out" "still 1 NUMA node (NPS1)"
+assert_absent "bios verify: NPS still pending -> not 'All BIOS items applied' (#268)" "$out" "All BIOS items applied"
+assert_eq "bios verify: NPS still pending -> state survives (#268)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["numa_nps"]'
+rm -f "$BIO/rigforge-bios.json"
+# 13. Verify (fixed): detection now reports NPS4 -> counted applied; nothing else pending -> state removed.
+printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"numa_nps","status":"pending","before":"1 NUMA node (NPS1)","menu":"AMD CBS"}]}' >"$BIO/rigforge-bios.json"
+out="$(run_bios 'export STUB_CPU_MODEL="AMD EPYC 7642 48-Core Processor"; NODE_SYSFS=$NPS/four SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: NPS fixed counts as applied (#268)" "$out" "NUMA per socket (NPS) — now multiple NUMA nodes"
+assert_contains "bios verify: NPS fixed -> all applied (#268)" "$out" "All BIOS items applied"
+assert_eq "bios verify: NPS fixed removes the state file (#268)" "$([ -f "$BIO/rigforge-bios.json" ] && echo y || echo n)" "n"
+
 # #audit A3: doctor's "service is not active" WARN + issue branch, and the gating of the clock-under-load
 # check on a RUNNING service. Every other doctor test uses the shared systemctl stub, which is always
 # "active", so these paths were never exercised. A stub variant reports inactive (is-active -> exit 3).
