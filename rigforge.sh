@@ -3774,9 +3774,20 @@ control_apply() {
         log "control-apply: change $cid applied."
     else
         warn "control-apply: change $cid did not come back live — rolling back to $backup."
-        cp "$backup" "$CONFIG_JSON"
-        _control_do_apply || true
-        _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate" "$backup"
+        # #276: the backup must be readable to restore it — guard the cp explicitly (not just -e/ERR)
+        # so an unreadable backup still writes a terminal status instead of ERR-trapping the oneshot
+        # out silently, which would leave the receiver serving the stale previous outcome forever.
+        if ! cp "$backup" "$CONFIG_JSON" 2>/dev/null; then
+            _control_status "$status" failed "$cid" "$change_keys" "rollback backup unreadable: $backup" "$backup"
+            return 0
+        fi
+        # #276: distinguish "rolled back and live" from "rolled back, rig still down" — both restore
+        # config.json, but only one leaves the miner hashing; the reason string pins which happened.
+        if _control_do_apply; then
+            _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate; rolled back and live" "$backup"
+        else
+            _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate; rollback re-apply also failed to restore liveness" "$backup"
+        fi
     fi
     return 0
 }
