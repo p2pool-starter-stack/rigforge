@@ -630,13 +630,15 @@ perf() {
         bad "perf: bench failed"
         printf '%s\n' "$out" | tail -3 >&2
         "$RIGFORGE" start >/dev/null 2>&1 || true
-        return 0
+        summary "perf"
+        return
     fi
     "$RIGFORGE" start >/dev/null 2>&1 || true
     hr="$(printf '%s' "$out" | grep -oiE '[0-9.]+ H/s' | tail -1 | grep -oE '[0-9.]+')"
     if [ -z "$hr" ]; then
         bad "perf: no hashrate parsed from bench output"
-        return 0
+        summary "perf"
+        return
     fi
     if [ -n "${E2E_PERF_RECORD:-}" ]; then
         # #214: judge BEFORE writing — recording is the only perf run most rigs ever get, and a
@@ -645,7 +647,8 @@ perf() {
         if [ -f "$bl" ] && ! _perf_judge "$hr" "$bl" "$hist" "$tol"; then
             if [ -z "${E2E_PERF_FORCE:-}" ]; then
                 bad "perf: NOT recorded — the measurement regressed (see above). Fix the regression, or consciously re-record with E2E_PERF_FORCE=1."
-                return 0
+                summary "perf"
+                return
             fi
             printf '  \033[1;33m∙\033[0m E2E_PERF_FORCE=1 — recording a REGRESSED measurement as the new baseline\n'
         fi
@@ -657,14 +660,17 @@ perf() {
         # dirty tracked files — say so now, not at the next deploy.
         printf '  \033[1;33m∙\033[0m collect: %s and %s\n' "$bl" "$hist"
         printf '  \033[1;33m∙\033[0m after they are committed upstream, reset this rig or the next tag deploy aborts: git checkout -- tests/perf-baselines/\n'
-        return 0
+        summary "perf"
+        return
     fi
     if [ ! -f "$bl" ]; then
         printf '  \033[1;33m∙\033[0m no baseline for %s — measured %s H/s; record with E2E_PERF_RECORD=1 and commit tests/perf-baselines/\n' "$(hostname)" "$hr"
-        return 0
+        summary "perf"
+        return
     fi
     # The bad lines inside the judge already counted any failure; nothing more to decide here.
     _perf_judge "$hr" "$bl" "$hist" "$tol" || true
+    summary "perf"
 }
 
 case "${1:-}" in
