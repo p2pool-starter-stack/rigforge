@@ -35,9 +35,15 @@ The receiver (`util/control-server.py`) gains a `POST /upgrade` distinct from `/
 
 As in ADR 0001 D2, the network-facing receiver stays unprivileged (`DynamicUser`): it authenticates, checks the flag, and **stages** the request; it never fetches or runs code itself. The privileged path-triggered oneshot does the fetch-and-upgrade through the existing gated flow. The response is `202 Accepted` with a change id; the consumer polls `/status` for the terminal outcome.
 
-### D4. The receiver cannot choose what gets installed — the rig re-derives the target
+### D4. Dashboard-supplied target, bounded by monotonic + reachability guards
 
-The staged body is tiny: `{"version": "vX.Y.Z"}`. That value is a **confirmation guard, not a target selector**. The `control-upgrade` verb re-derives the real latest release tag directly from the GitHub release API (reusing `_upgrade_check`) and **refuses if the requested version ≠ the real latest** (terminal `failed`). A rig only ever upgrades to *latest-or-nothing*; neither the intent nor a compromised consumer can pin a rig to an arbitrary (e.g. downgrade-to-vulnerable) tag. pithead #597 independently re-derives the same target host-side over Tor — belt and suspenders.
+The staged body is tiny: `{"version": "vX.Y.Z"}`, and it **is** the target. The rig does **not** make its own `api.github.com/releases/latest` call: a per-rig version-check dial re-introduces the "version beacon" the project's no-phone-home posture forbids (it leaks each rig's public IP over clearnet, correlatable over time), and behind one NAT the fleet would share GitHub's 60/hr unauthenticated bucket, so a fan-out or a looping trigger could `403` every rig at once. pithead #597 already re-derives the real latest host-side over Tor; the rig trusts that supplied tag but **bounds what it will act on**, so a compromised trigger can only ever pick a *real, published, reachable release newer than what is installed* — never an arbitrary tag, a downgrade, or a dangling commit:
+
+- **Monotonic anti-rollback** — refuse a target version ≤ installed (D10).
+- **Reachable-from-default-branch** — refuse a commit that is not an ancestor of `origin/<default>` (D10).
+- **Immutable releases + tag protection** (D10) make the tag→commit binding a platform guarantee.
+
+The rig still `git`-fetches the tag directly from GitHub — the code has to come from somewhere, and that fetch happens only on an actual upgrade (rare, throttled), not on every trigger — but it makes no separate version-check dial. Anything that fails a guard is terminal `failed`. This trades away rig-*independent* confirmation of "is this THE latest" (the dashboard, over Tor, is the deriver) for privacy, fewer moving parts, and no fleet rate-limit coupling; the anti-rollback + reachability guards are what make trusting a supplied target safe.
 
 ### D5. Trust model: hash-only, git-tag checkout, no signing (settled)
 
@@ -90,7 +96,7 @@ Low-cost integrity controls that need no standing signing key, shoring up the Gi
 - New opt-in surface, off by default, fail-closed. A rig that does not enable `control_upgrade` carries zero new capability; a rig on `control` alone is unchanged.
 - Residual risk accepted: GitHub-account/release compromise → fleet-wide root RCE (D5). Mitigation is account hardening, not signing.
 - Producer for pithead #597. Backwards compatible (a new MINOR capability). It must ship in a RigForge release before pithead #597 can run end-to-end; pithead #596 (version badge) has no RigForge dependency and ships first.
-- Consumer contract: `POST :8082/upgrade {"version":"vX.Y.Z"}` → `202 Accepted` + change id → poll `:8082/status` for `applied` / `rolled_back` / `failed`. The host never trusts a host/port/token from the intent; both host and rig re-derive the real target.
+- Consumer contract: `POST :8082/upgrade {"version":"vX.Y.Z"}` → `202 Accepted` + change id → poll `:8082/status` for `applied` / `rolled_back` / `failed`. The host never trusts a host/port/token from the intent; the rig bounds the dashboard-supplied target with monotonic anti-rollback + reachable-from-default-branch guards (D4/D10) rather than making its own version-check dial.
 
 ## Open questions (resolved 2026-07-17 — see Resolution above)
 
