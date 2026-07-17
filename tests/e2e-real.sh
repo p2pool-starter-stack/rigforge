@@ -16,6 +16,11 @@
 #               systemd re-own + EVERY verb & alias (version/-v/--version, help/-h/--help, status, logs,
 #               start|up, stop|down, restart, enable, disable, upgrade, backup, restore, apply, autotune
 #               + non-root doctor)
+#   control   : the writable control path (#236), for real, for the first time — enable it, prove the
+#               receiver is up, POST a benign change through it, poll the real path-unit -> control-apply
+#               round trip to "applied", assert it landed (config + revision + live miner), then revert.
+#               Config is snapshotted and control is force-disabled again on ANY exit (see _control_cleanup) —
+#               the fleet runs this disabled on purpose and this phase must never leave it on.
 #   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
 # Env knobs:
@@ -32,6 +37,7 @@
 #   sudo bash tests/e2e-real.sh provision
 #   sudo reboot                         # then reconnect
 #   sudo bash tests/e2e-real.sh verify
+#   sudo bash tests/e2e-real.sh control
 #   sudo bash tests/e2e-real.sh teardown
 # Or, when HugePages are already active (no reboot needed), one shot:
 #   sudo bash tests/e2e-real.sh all
@@ -44,6 +50,11 @@ GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 
 PASS=0
 FAIL=0
+# control phase state (script-global, not `local` — must survive past control()'s own return so a
+# late trap fire, e.g. during a later phase in `all` mode, is still a safe idempotent no-op; see
+# _control_cleanup).
+CTL_SAVED_CFG=""
+CTL_CLEANUP_DONE=0
 ok() {
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
     PASS=$((PASS + 1))
@@ -536,6 +547,210 @@ verify() {
     summary "verify"
 }
 
+# --- control (#272): the writable control path (#236), for real, for the first time ------------
+#
+# Everything below has only ever run against stubs: tests/run.sh stubs apply()/_wait_miner_live for
+# control_apply(), and the wire test (tests/run.sh's control-server checks) stops at the receiver
+# staging a change — it never lets the real rigforge-control-apply.path unit fire the real root
+# oneshot against a real systemd. This phase is the first time the whole chain runs for real:
+#   POST /apply (receiver, DynamicUser) -> spool -> rigforge-control-apply.path (PathExistsGlob)
+#   -> rigforge-control-apply.service (root oneshot: rigforge.sh control-apply) -> _control_commit
+#   -> apply() -> _wait_miner_live -> GET /status?change_id=... "applied"
+#
+# Runs between verify and perf: it restarts services repeatedly (config toggled on, a change
+# applied, config toggled back off — each an `apply`), which is exactly the kind of churn perf's
+# "clean, idle-machine" bench should NOT be measured through. Sitting it before perf means perf's
+# offline bench (which stops the service outright anyway) still runs last against a fully-settled,
+# already-reverted config — the same rig state teardown then tears down. Deliberately not "verify"
+# itself: verify covers rigforge.sh directly, this exercises the separate control-server.py process
+# + two more systemd units, so a broken chain reads as `E2E-REAL (control): FAIL` on its own.
+#
+# Rollback leg (#272's stretch goal): SKIPPED. control_apply()'s rollback only fires when
+# _wait_miner_live times out post-apply, and the only way to force that from outside rigforge.sh
+# without editing a live systemd unit (which this gate must not do to a production-adjacent rig) is
+# to make the miner fail to come up on purpose — e.g. divert the built xmrig binary out from under a
+# running install. That is exactly the kind of "leaves a window where the rig can't mine if cleanup
+# doesn't run" risk the task brief calls out as the thing to avoid on miner-0. No clean hook for it
+# turned up while reading control_apply()/rigforge-control-apply.path — see #276 for the rollback
+# failure-path tests (those exercise it against a stubbed apply, which is the safe place to do it).
+control() {
+    require_linux_root control
+    [ -f "$HERE/config.json" ] || die "no $HERE/config.json — run 'provision' first (this phase needs an already-provisioned worker)."
+    phase "control — enable the writable control path + apply"
+
+    # Snapshot BEFORE any mutation and install the EXIT trap immediately: every step below can fail
+    # under `set -Eeuo pipefail`, and the rig must come back with control OFF regardless. Same shape
+    # as e2e-pithead.sh's snapshot_config/_cleanup (see there for why: traps replace, not stack, so
+    # this REPLACES rig_lock's holder-only EXIT trap set at the bottom of this file — _control_cleanup
+    # re-does that one-line holder-file removal itself, same as e2e-pithead.sh's _cleanup does).
+    CTL_SAVED_CFG="$(mktemp)"
+    cp "$HERE/config.json" "$CTL_SAVED_CFG"
+    trap '_control_cleanup' EXIT
+
+    # Ephemeral bearer token for this run only: generated, used over loopback, and discarded. Never
+    # echoed, never written anywhere but config.json itself (which the snapshot above restores).
+    local tok cur_donation new_donation control_port rev_before rev_after cid st tmp
+    tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
+    cur_donation=$(jq -r '.DONATION // 1' "$HERE/config.json" 2>/dev/null || echo 1)
+    new_donation=$(((cur_donation + 1) % 101)) # DONATION is 0-100 (rigforge.sh); always differs from cur_donation
+
+    # api_allow_from is pinned to loopback: every request this phase makes is FROM this box (root, on
+    # miner-0 itself), and the nft firewall install_api_firewall renders always accepts iifname "lo"
+    # regardless of the configured scope — so 127.0.0.1/32 both satisfies the hard-required check
+    # (rigforge.sh:540-541) and is the literal, correct scope for how this phase actually talks to it.
+    tmp="$(mktemp)"
+    if jq --arg tok "$tok" '.control = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
+        "$HERE/config.json" >"$tmp" && [ -s "$tmp" ]; then
+        mv "$tmp" "$HERE/config.json"
+    else
+        rm -f "$tmp"
+        bad "could not stage a control-enabled config.json"
+    fi
+    "$RIGFORGE" apply >/tmp/e2e-control-enable.log 2>&1 &&
+        ok "apply enabled the control path" ||
+        bad "apply failed while enabling control (see /tmp/e2e-control-enable.log)"
+    sleep 3 # let rigforge-control.service (restarted by install_control) and xmrig settle
+
+    control_port=$(jq -r '.control_port // 8082' "$HERE/config.json" 2>/dev/null || echo 8082)
+    # Captured AFTER enabling control (not before): control/ACCESS_TOKEN/api_allow_from aren't part
+    # of the writable-config hash _stamp_config_meta tracks (only pools/DONATION/autotune/watchdog/
+    # watchdog_interval_min/max_temp_c are — the same set control-apply is allowed to touch), so
+    # enabling control alone never bumps the revision. This is the true "before" for the #254 check.
+    # `|| true`: the meta file may not exist yet on a rig where 'control' runs standalone before any
+    # apply() has ever stamped it — jq erroring on a missing file must not abort the phase (set -e).
+    rev_before=$(jq -r '.revision // ""' "$HERE/.rigforge-config-meta.json" 2>/dev/null || true)
+
+    phase "control — receiver up"
+    systemctl is-active --quiet rigforge-control &&
+        ok "rigforge-control.service is active" ||
+        bad "rigforge-control.service is not active after enabling control"
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $tok" \
+        "http://127.0.0.1:$control_port/status" 2>/dev/null || true)
+    case "$code" in
+    200 | 503) ok "authed GET /status reachable (HTTP $code)" ;;
+    *) bad "authed GET /status returned HTTP '$code' (expected 200, or 503 'no change applied yet')" ;;
+    esac
+
+    phase "control — POST a benign change (DONATION $cur_donation -> $new_donation) and poll to applied"
+    local resp_file resp_code
+    resp_file="$(mktemp)"
+    resp_code=$(curl -s -o "$resp_file" -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $tok" \
+        -H "Content-Type: application/json" -d "{\"DONATION\": $new_donation}" \
+        "http://127.0.0.1:$control_port/apply" 2>/dev/null || true)
+    if [ "$resp_code" = 202 ]; then
+        cid=$(jq -r '.change_id // empty' "$resp_file" 2>/dev/null || true)
+        [ -n "$cid" ] && ok "POST /apply accepted (change_id=$cid)" || bad "POST /apply returned 202 with no change_id"
+    else
+        bad "POST /apply returned HTTP '$resp_code' (expected 202): $(head -c 300 "$resp_file" 2>/dev/null)"
+    fi
+    rm -f "$resp_file"
+
+    st=""
+    if [ -n "${cid:-}" ]; then
+        # Bounded by control_apply()'s own CONTROL_LIVE_TRIES*sleep (default 20*3s=60s) plus the
+        # path-unit trigger (near-instant, inotify) and commit/backup overhead — 150s leaves margin.
+        local waited=0 poll_to=150 body
+        while [ "$waited" -lt "$poll_to" ]; do
+            body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" \
+                "http://127.0.0.1:$control_port/status?change_id=$cid" 2>/dev/null || true)
+            # `|| true`: an empty/unreachable body makes jq exit non-zero on some builds — under
+            # pipefail that would abort the whole phase (set -e) on a single transient miss instead
+            # of letting the poll loop retry.
+            st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
+            case "$st" in applied | rejected | rolled_back | failed) break ;; esac
+            sleep 5
+            waited=$((waited + 5))
+        done
+        [ "$st" = applied ] &&
+            ok "change $cid reached 'applied' within ${waited}s (path-unit -> control-apply -> real systemd)" ||
+            bad "change $cid did not reach 'applied' within ${poll_to}s (last status: ${st:-unreachable})"
+    else
+        bad "no change_id to poll — the POST above didn't succeed"
+    fi
+
+    phase "control — assert the change actually landed"
+    local landed
+    landed=$(jq -r '.DONATION' "$HERE/config.json" 2>/dev/null || true)
+    [ "$landed" = "$new_donation" ] &&
+        ok "config.json carries DONATION=$new_donation (control-apply persisted it)" ||
+        bad "config.json DONATION is '$landed', expected $new_donation"
+    systemctl is-active --quiet xmrig &&
+        ok "miner service is active after the control-path apply" ||
+        bad "miner service is not active after the control-path apply"
+    rev_after=$(jq -r '.revision // ""' "$HERE/.rigforge-config-meta.json" 2>/dev/null || true)
+    if [ -n "$rev_after" ] && [ "$rev_after" != "$rev_before" ]; then
+        ok "feed config revision moved ($rev_before -> $rev_after, #254)"
+    else
+        bad "feed config revision did not move (before='$rev_before' after='$rev_after')"
+    fi
+
+    # Revert now (not just on exit): in `all` mode later phases (perf, teardown) run in this SAME
+    # process, and the EXIT trap only fires once the whole script exits — an explicit call here is
+    # what actually gets the rig back to control-disabled before perf/teardown see it. The trap stays
+    # armed as a backstop for a hard abort mid-phase; _control_cleanup is idempotent so the (harmless)
+    # second run at real process exit is a no-op.
+    _control_cleanup
+    summary "control"
+}
+
+# Idempotent: restores the snapshotted config.json, then INDEPENDENTLY forces control back to
+# disabled (belt-and-suspenders — even if the snapshot copy itself failed, this still lands), re-runs
+# apply, and logs (never gates the exit code — this runs from a trap, possibly after summary() has
+# already decided pass/fail) whether the receiver is gone and the miner is back live. Guarded by
+# CTL_CLEANUP_DONE so a trap fire after control() already ran its own explicit cleanup is a no-op.
+_control_cleanup() {
+    [ "$CTL_CLEANUP_DONE" = 1 ] && return 0
+    CTL_CLEANUP_DONE=1
+    echo ""
+    echo "control: reverting — restoring the snapshotted config.json and disabling control..."
+    if [ -n "$CTL_SAVED_CFG" ] && [ -f "$CTL_SAVED_CFG" ]; then
+        cp "$CTL_SAVED_CFG" "$HERE/config.json" 2>/dev/null &&
+            echo "  restored config.json from the pre-phase snapshot" ||
+            echo "  WARNING: could not restore config.json from $CTL_SAVED_CFG — check it by hand" >&2
+        rm -f "$CTL_SAVED_CFG"
+    else
+        echo "  WARNING: no config.json snapshot on hand to restore — leaving config.json as-is" >&2
+    fi
+    if [ -f "$HERE/config.json" ]; then
+        # This whole block is best-effort belt-and-suspenders on top of the restore above — a failure
+        # here (mktemp, jq, mv) must WARN and fall through, never abort mid-cleanup (a partial run
+        # here would skip the apply/holder-file steps below).
+        local dtmp
+        dtmp="$(mktemp 2>/dev/null || true)"
+        if [ -n "$dtmp" ] && jq '.control = "disabled"' "$HERE/config.json" >"$dtmp" 2>/dev/null && [ -s "$dtmp" ]; then
+            mv "$dtmp" "$HERE/config.json" 2>/dev/null ||
+                echo "  WARNING: could not move the disabled-control config into place — check $HERE/config.json by hand" >&2
+        else
+            rm -f "$dtmp" 2>/dev/null || true
+            echo "  WARNING: could not force control=disabled via jq — check $HERE/config.json by hand" >&2
+        fi
+    fi
+    "$RIGFORGE" apply >/tmp/e2e-control-cleanup-apply.log 2>&1 ||
+        echo "  WARNING: the revert 'apply' exited non-zero (see /tmp/e2e-control-cleanup-apply.log)" >&2
+    if systemctl is-active --quiet rigforge-control 2>/dev/null; then
+        echo "  WARNING: rigforge-control.service is STILL ACTIVE after revert — check the rig by hand" >&2
+    else
+        echo "  rigforge-control.service is inactive/absent (control path off)"
+    fi
+    local _tok _auth=() i hr=""
+    _tok=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null || true)
+    [ -n "$_tok" ] && _auth=(-H "Authorization: Bearer $_tok")
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        # `|| true`: a connection-refused curl (miner not up yet) makes the pipeline non-zero under
+        # pipefail even when jq itself succeeds on empty input — must not abort cleanup mid-poll.
+        hr=$(curl -fsS --max-time 4 "${_auth[@]}" http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null || true)
+        { [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null; } && break
+        sleep 3
+    done
+    if [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null; then
+        echo "  miner is live post-revert ($hr H/s)"
+    else
+        echo "  WARNING: miner did not report a live hashrate post-revert within 30s — check the rig by hand" >&2
+    fi
+    rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" # #183: the rig lock's display-only sidecar (this trap replaced rig_lock's own — same expression as e2e-pithead.sh's _cleanup)
+}
+
 teardown() {
     require_linux_root teardown
     phase "teardown — ./rigforge.sh uninstall --yes (a COMPLETE revert)"
@@ -680,8 +895,8 @@ perf() {
 }
 
 case "${1:-}" in
-provision | verify | perf | teardown | all) ;;
-*) die "usage: sudo bash tests/e2e-real.sh {provision|verify|perf|teardown|all}" ;;
+provision | verify | control | perf | teardown | all) ;;
+*) die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|perf|teardown|all}" ;;
 esac
 # #183: serialize the shared rig — taken after arg parsing, before the first systemctl/API touch.
 rig_lock rigforge e2e-real
@@ -689,12 +904,14 @@ rig_lock rigforge e2e-real
 case "$1" in
 provision) provision ;;
 verify) verify ;;
+control) control ;;
 perf) perf ;;
 teardown) teardown ;;
 all)
     provision
     if [ "$(hugepages_total)" -gt 0 ]; then
         verify
+        control
         perf
         teardown
     else
@@ -702,6 +919,6 @@ all)
     fi
     ;;
 *)
-    die "usage: sudo bash tests/e2e-real.sh {provision|verify|perf|teardown|all}"
+    die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|perf|teardown|all}"
     ;;
 esac
