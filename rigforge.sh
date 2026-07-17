@@ -4741,7 +4741,11 @@ _bios_verify() { # <state_file>
             _ck_warn "CPU boost — can't verify with the miner stopped; run 'sudo $0 start', let it warm up, then re-run bios."
             kept="$kept $id"
         else
-            _ck_warn "$(_bios_item_label "$id") — can't verify (run as root so dmidecode can read the RAM state)."
+            case "$id" in
+            memory_profile) _ck_warn "$(_bios_item_label "$id") — can't verify (run as root so dmidecode can read the RAM state)." ;;
+            smt) _ck_warn "$(_bios_item_label "$id") — can't verify (no SMT control exposed in sysfs on this system)." ;;
+            numa_nps) _ck_warn "$(_bios_item_label "$id") — can't verify (lscpu didn't report an EPYC CPU model, so the NUMA-node count can't be checked)." ;;
+            esac
             kept="$kept $id"
         fi
     done <<<"$rows"
@@ -4759,6 +4763,8 @@ _bios_verify() { # <state_file>
         case " $kept " in *" numa_nps "*) : ;; *) B_NPS_STATUS="done" ;; esac
         if [ "$B_BOOST_STATUS" = unknown ]; then B_BOOST_STATUS=pending; fi # keep it resumable
         if [ "$B_MEM_STATUS" = unknown ]; then B_MEM_STATUS=pending; fi
+        if [ "$B_SMT_STATUS" = unknown ]; then B_SMT_STATUS=pending; fi
+        if [ "$B_NPS_STATUS" = unknown ]; then B_NPS_STATUS=pending; fi
         _bios_state_write "$state"
         log "$applied of $total applied, $(jq -r '.items | length' "$state") still pending. Reboot into BIOS to finish, then run 'sudo $0 bios' again."
     fi
