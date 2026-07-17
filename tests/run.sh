@@ -4871,6 +4871,17 @@ out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" resto
 assert_rc "restore of a config-less archive fails" "$?" "1"
 assert_contains "restore of a config-less archive is reported" "$out" "no config.json"
 assert_eq "config-less archive did not clobber the existing config" "$(J "$FR/config.json" '.DONATION')" "7"
+# (3) a valid tar whose config.json fails parse_config semantically (not just invalid JSON — pools
+# isn't an array). Checksum the live config before/after: it must be byte-identical, not merely
+# equal on the one field the earlier assertions happen to check.
+BADCFG="$(mktemp -d "$SANDBOX/badcfg.XXXXXX")"
+printf '{"pools": "not-an-array"}\n' >"$BADCFG/config.json"
+tar -czf "$FR/badcfg.tar.gz" -C "$BADCFG" config.json
+before_sum="$(cksum "$FR/config.json")"
+out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$FR/badcfg.tar.gz" </dev/null 2>&1)"
+assert_rc "restore of a semantically invalid config fails" "$?" "1"
+assert_contains "restore of a semantically invalid config is reported" "$out" "validation"
+assert_eq "invalid config did not clobber the existing config" "$(cksum "$FR/config.json")" "$before_sum"
 # backup needs a config to snapshot.
 NOC="$(mktemp -d "$SANDBOX/noc.XXXXXX")"
 cp "$ROOT/VERSION" "$NOC/"

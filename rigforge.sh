@@ -3133,6 +3133,14 @@ restore() {
         rm -rf "$stage"
         error "Archive has no config.json — not a RigForge backup."
     }
+    # Validate the staged config BEFORE it ever touches the live one — same subshell idiom as
+    # _control_commit (rigforge.sh:~3652): parse_config's error() only exits the subshell, so a bad
+    # backup can be rejected without corrupting this shell's CONFIG_JSON. shellcheck flags this as
+    # SC2031 (info), same as there — intentional, not suppressed.
+    if ! (CONFIG_JSON="$stage/config.json" && parse_config) >/dev/null 2>&1; then
+        rm -rf "$stage"
+        error "Backup's config.json failed validation — existing config left untouched."
+    fi
     if [ -f "$stage/rigforge-backup.json" ]; then
         local src
         src=$(jq -r '.source_host // empty' "$stage/rigforge-backup.json" 2>/dev/null)
