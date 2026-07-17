@@ -7,6 +7,82 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-17
+
+Fixes and hardening from the 2026-07 full-repo scan (five independent review passes over the whole
+tree: security, shell correctness, util/tests/systemd, docs accuracy, and test gaps), plus a
+post-merge re-validation pass over the result. All 13 scan issues (#265–#277) closed.
+
+### Fixed
+
+- **Explicit `false` pool booleans are honored (#265).** jq's `//` operator treats `false` like
+  null, so `"enabled": false` (a parked failover pool) and `"keepalive": false` were silently
+  rewritten to the `true` default — the pool mined anyway. A single-line restore pass (same shape
+  as the #115 tls-fingerprint pass) re-attaches explicit falses after normalization, and the tune
+  seeds (`_seed_g`/`_seed_wr`) keep an explicit base-config `false` instead of benchmarking with
+  the wrong MSR/1G-pages behavior.
+- **`tune --bench` no longer falsely rejects healthy candidates as "throttled to 0 MHz" (#266).**
+  For an even sample count, awk printed large kHz medians in scientific notation (`4.6275e+06`),
+  which the shell floor mangled into `4` — ~97% of candidates per run were rejected on real
+  hardware and the search silently kept the seed baseline. The freq writer now floors to whole
+  kHz; a follow-up keeps an empty sample set (no readable cpufreq) as "no reading" instead of a
+  literal 0, which would have re-introduced the false trip from the other side.
+- **The standalone `perf` release gate exits non-zero on a regression (#267).** `perf()` counted
+  failures but never called `summary`, so `sudo bash tests/e2e-real.sh perf` printed a red
+  regression and exited 0 — a scripted release check would have passed a slower build. The #214
+  unit test now exercises the real exit plumbing instead of reimplementing it.
+- **The guided `bios` flow walks and verifies the EPYC NPS item (#268).** `numa_nps` was detected
+  and persisted (#201) but never rendered in the checklist and never verified — a pending-NPS-only
+  state printed "Everything's already set" and a verify run silently dropped the item. It now
+  guides to NPS4 (mirroring doctor's recommendation) and counts applied/still-pending correctly.
+- **`restore` validates the backup's config before overwriting the live one (#274).** A corrupted
+  or cross-host archive whose `config.json` fails `parse_config` is rejected with the live config
+  left byte-untouched, instead of bricking a working rig until the next `apply`.
+- **`control-apply` writes a terminal status on every exit path (#276).** An unreadable rollback
+  snapshot used to ERR-trap the root oneshot out with *no* status written, leaving the receiver
+  serving the stale previous outcome forever; it now records `failed` with the cause (additive
+  fourth outcome next to `applied`/`rejected`/`rolled_back`). The two rollback outcomes are also
+  distinguishable now: "rolled back and live" vs "rollback re-apply also failed to restore
+  liveness".
+- **`compute_build_jobs` caps at 1 job on sub-1GB hosts (#277).** Integer truncation made the RAM
+  cap vanish on exactly the hosts it protects, compiling with `-j$(nproc)` — the OOM scenario the
+  cap exists for. A zero-hashrate bench iteration also no longer spams the journal with misleading
+  `[ERROR] rigforge aborted` lines from the ERR trap (#277).
+- **`e2e-pithead` cleans up the right rig-lock holder sidecar (#269).** The cleanup still removed
+  the pre-#244 `/run/rig-e2e.holder` path, so every run left a stale "miner-0 busy" breadcrumb at
+  `/var/lock/rig-e2e.lock.holder` for the next blocked arrival; a drift guard now fails the suite
+  if the old path ever reappears.
+- **Docs accuracy (#271 + re-validation).** Coverage-scope claims (kcov instruments
+  `rigforge.sh` + `util/proposed-grub.sh`, not all of `util/`), diff-cover's base branch, which
+  verbs self-elevate vs use inline sudo, the Linux-only command list, the ADR's `control-apply`
+  command name, the `failed` outcome in the control-status enums, and the NPS item in the
+  guided-bios docs.
+
+### Security
+
+- **`config.json` is created mode 600 from the first byte (#270).** The fresh-config write went
+  through the process umask before its `chmod 600`, leaving a short window where another local
+  user could open the file the operator is about to fill with a wallet and `ACCESS_TOKEN`. Now
+  created under `umask 077` like every other secrets-bearing file. (The 2026-07 security pass
+  found nothing else: token comparison, control-path fail-closed posture, unit hardening, and
+  secrets handling all came back clean.)
+
+### Added
+
+- **`control` phase in the release e2e (#272).** `tests/e2e-real.sh` now drives the writable
+  control path (#236) against real systemd for the first time — enable, POST a change, watch the
+  path-unit → root-oneshot chain reach `applied`, assert the config/revision/miner, then revert —
+  with an idempotent cleanup trap that guarantees the rig never stays control-enabled. Wired into
+  `all` between `verify` and `perf`, and into RELEASING.md's gate list.
+- **Test-coverage batch from the scan (#273, #275, #276).** `uninstall` and `apply` now have
+  coverage over the api/control units (a regression leaving the token-authed writable server
+  running after uninstall is caught); five can't-fail assertions actually fail now (stratum-user
+  label, dry-run drift guard, envsubst `NFT_PATH`, two-way reference-config key drift, the #reown
+  skip is explicit); five failure paths are pinned (rollback double-failure, tune-abort restart,
+  config-meta stamping on `apply`, changes-index prune, `api_refresh` partial failure). The two
+  timing-sensitive tune black-box tests are Linux-gated (#292) — their plumbing is Linux sysfs,
+  and the deterministic unit-level halves still run everywhere.
+
 ## [1.8.0] - 2026-07-13
 
 ### Added
