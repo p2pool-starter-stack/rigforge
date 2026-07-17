@@ -1,0 +1,20 @@
+[Unit]
+Description=RigForge remote upgrade (fetch + apply a staged RigForge release, off the request path)
+
+[Service]
+Type=oneshot
+# Root, because it fetches a RigForge release (git checkout in the install dir), rebuilds XMRig if the
+# pin changed, and reinstalls the units — the privileged half the network receiver deliberately is not
+# (#308, ADR 0002). Triggered by rigforge-control-upgrade.path when an upgrade intent is staged; idle
+# priority so a rebuild never starves the miner (D9). This oneshot CANNOT be meaningfully sandboxed: it
+# re-runs RigForge's own installer (git write to the checkout, the compiler, and `sudo` for /etc, GRUB,
+# and systemctl), so ProtectSystem / ProtectHome / NoNewPrivileges / an empty CapabilityBoundingSet
+# would each break it — the same reason the control-apply oneshot isn't sandboxed. The security for
+# this path lives in the verb, not in unit flags: it treats the staged file as untrusted (root-owned
+# handoff, strict version whitelist), re-derives the real latest release and refuses any non-latest,
+# unreachable, or older target, and throttles repeat runs (D4/D6/D8/D10). RIGFORGE_OPERATOR (baked at
+# setup) is who the updated checkout and build get handed back to.
+Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
+ExecStart=$SCRIPT_DIR/rigforge.sh control-upgrade
+Nice=19
+IOSchedulingClass=idle
