@@ -1041,6 +1041,13 @@ assert_eq "sub-2GB host floors to 1 job (never 0)" "$(
     source "$SCRIPT"
     MEMINFO="$(mk_meminfo 1572864 mi1_5)" compute_build_jobs 8
 )" "1"
+# #277: a sub-1GB host truncates mem_gb to 0 too, which used to be mistaken for "unreadable meminfo" and
+# skip the cap entirely (all cores, the exact OOM scenario the cap exists for). mem_kb is still readable
+# and nonzero here, so it must hit the same max<1 floor and cap at 1 job even with many cores available.
+assert_eq "sub-1GB host caps to 1 job even with many cores (#277)" "$(
+    source "$SCRIPT"
+    MEMINFO="$(mk_meminfo 900000 mi900)" compute_build_jobs 32
+)" "1"
 
 echo "== unit: on_err reports the failing step (#9) =="
 out="$(
@@ -3795,6 +3802,45 @@ assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
+
+# #277: a bench candidate whose xmrig stub emits no H/s line must not spam the ERR trap. _bench_once's
+# hashrate grep is allowed to find nothing under pipefail — the run records that candidate as 0 H/s and
+# carries on; only the run's own failures should ever look like an abort. Discriminates on the swept
+# prefetch value (same config-reading idiom as the stub in the #54 block above) so the seed reads 0 H/s
+# but the swept prefetch=2 candidate hashes for real, letting the search finish with a winner (rc 0) — a
+# run that legitimately never hashes is a separate, correctly-reported failure, not what this test is
+# after. TUNE_POWER_CMD bypasses RAPL entirely so the (unrelated, pre-existing) no-RAPL-hardware path
+# never fires the ERR trap and confounds this test — same idiom the #tunefix block below uses.
+echo "== black-box: zero-hashrate bench iteration stays quiet (#277) =="
+ZH="$(mktemp -d "$SANDBOX/tunezero.XXXXXX")"
+cp "$ROOT/VERSION" "$ZH/"
+mkdir -p "$ZH/util" "$ZH/home/worker/xmrig/build" "$ZH/cpuok/cpu0/cpufreq"
+cp "$ROOT/util/proposed-grub.sh" "$ZH/util/" && chmod +x "$ZH/util/proposed-grub.sh"
+printf '5000000\n' >"$ZH/cpu_max"
+printf '4800000\n' >"$ZH/cpuok/cpu0/cpufreq/scaling_cur_freq"
+printf '{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": false }, "cpu": { "yield": false, "priority": 2 } }\n' >"$ZH/home/worker/xmrig/build/config.json"
+cat >"$ZH/home/worker/xmrig/build/xmrig" <<'EOF'
+#!/usr/bin/env bash
+cfg=""
+for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
+if [ "$m" = "1" ]; then
+    echo "miner speed 10s/60s/15m n/a n/a n/a"
+else
+    echo "miner speed 10s/60s/15m 1000.0 n/a n/a H/s max 1000.0 H/s"
+fi
+EOF
+chmod +x "$ZH/home/worker/xmrig/build/xmrig"
+printf '{ "HOME_DIR": "%s/home", "pools": [{"url":"h:3333"}] }\n' "$ZH" >"$ZH/config.json"
+ZTLOG="$ZH/home/worker/rigforge-tune.json"
+out="$(cd "$ZH" && PATH="$STUBS:$PATH" CPUFREQ_MAX="$ZH/cpu_max" CPU_SYSFS="$ZH/cpuok" \
+    TUNE_POWER_CMD='echo 90' TUNE_ITERS=1 TUNE_PREFETCH_MODES="1 2" TUNE_YIELDS=false TUNE_THREADS=-1 \
+    TUNE_MAX_ROUNDS=1 RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+assert_rc "zero-hashrate iteration doesn't stop the run (#277)" "$?" "0"
+assert_eq "zero-hashrate iteration recorded 0 H/s in the log (#277)" \
+    "$(J "$ZTLOG" '[.results[].samples[]] | any(. == 0)')" "true"
+assert_absent "zero-hashrate iteration logs no [ERROR] (#277)" "$out" "[ERROR]"
+assert_absent "zero-hashrate iteration logs no abort (#277)" "$out" "aborted"
 
 # #tunefix: the optimization target defaults to the `autotune` config value (overridable with
 # --perf/--efficiency) and is announced at the start of the run. Isolated sandbox so it doesn't disturb the
