@@ -192,8 +192,8 @@ suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned co
 Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`,
 so both the sourced functions and the command-dispatch paths are credited. CI enforces two gates: a
 committed **total floor** ([`tests/coverage-floor.txt`](tests/coverage-floor.txt), ratcheted up over
-time) and, the important lever, **patch coverage** (`diff-cover` against `main`) so new/changed lines
-must be tested. Neither needs an external service.
+time) and, the important lever, **patch coverage** (`diff-cover` against the PR's base branch,
+normally `develop`) so new/changed lines must be tested. Neither needs an external service.
 
 **`make smoke`** closes that gap at release time. Because the suites never compile or run XMRig, they
 can't prove the shipped binary actually starts and hashes. `make smoke` benches a real worker

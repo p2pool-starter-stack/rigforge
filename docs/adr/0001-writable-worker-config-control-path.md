@@ -43,7 +43,7 @@ The read server stays GET-only and untouched. The control path is its own opt-in
 
 ### D2. Unprivileged receiver, decoupled privileged applier (DECIDED)
 
-The network-facing receiver runs unprivileged. It authenticates, validates, and **stages** an accepted change to a spool file it is allowed to write; it does not itself persist to `config.json` or restart anything. A privileged, systemd-triggered oneshot (a `systemd.path` unit watching the spool, running `rigforge.sh apply` as root) performs the persist + restart through the existing gated path, keeping autotune and watchdog coherent.
+The network-facing receiver runs unprivileged. It authenticates, validates, and **stages** an accepted change to a spool file it is allowed to write; it does not itself persist to `config.json` or restart anything. A privileged, systemd-triggered oneshot (a `systemd.path` unit watching the spool, running `rigforge.sh control-apply` as root, a validation wrapper around `apply`) performs the persist + restart through the existing gated path, keeping autotune and watchdog coherent.
 
 Consequence: the write is **accepted-then-applied**, not applied inline. The HTTP response is `202 Accepted` with a change id; pithead reads the new effective config back from the existing read API (`/2/summary`, which the refresh timer already serves) once apply completes. This preserves the invariant that reads never touch mutation and mutations never touch the read fast-path.
 
