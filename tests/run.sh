@@ -269,6 +269,10 @@ c="$(mkconf p_full "{ \"pools\": [{\"url\":\"pool.example:443\",\"tls\":true,\"p
 assert_eq "explicit url kept" "$(PJ "$c" | jq -r '.[0].url')" "pool.example:443"
 assert_eq "explicit tls kept" "$(PJ "$c" | jq -c '.[0].tls')" "true"
 assert_eq "explicit pass kept" "$(PJ "$c" | jq -r '.[0].pass')" "w"
+# #265: jq `//` treats explicit false the same as null/missing — an operator's false must survive.
+c="$(mkconf p_falsebool "{ \"pools\": [{\"url\":\"h:3333\",\"enabled\":false,\"keepalive\":false}] }")"
+assert_eq "explicit enabled:false kept (#265)" "$(PJ "$c" | jq -c '.[0].enabled')" "false"
+assert_eq "explicit keepalive:false kept (#265)" "$(PJ "$c" | jq -c '.[0].keepalive')" "false"
 # A Pithead stratum password (p2pool.stratum_password) flows through verbatim as the pool pass — the
 # cross-repo contract for an authenticated stack. Covers an auto-generated hex secret and a literal
 # with the punctuation Pithead allows (. _ : @ -); both are valid XMRig passes.
@@ -378,6 +382,16 @@ assert_rc "non-boolean keepalive rejected" "$?" "1"
 c="$(mkconf p_baden "{ \"pools\": [{\"url\":\"h:3333\",\"enabled\":1}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "non-boolean enabled rejected" "$?" "1"
+# #265: the has() guard must still let bogus values through to validation, not swallow them.
+c="$(mkconf p_enstr "{ \"pools\": [{\"url\":\"h:3333\",\"enabled\":\"yes\"}] }")"
+out="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    parse_config 2>&1
+))"
+assert_contains "non-boolean string enabled still rejected by validation (#265)" "$out" "Pool enabled must be true or false"
 # HOME_DIR must be DYNAMIC_HOME or a clean absolute path.
 c="$(mkconf hd_rel "{ \"HOME_DIR\": \"relative/path\", $POOL }")"
 parse_rc "$c" "$ROOT"
@@ -4366,6 +4380,23 @@ rm -f "$FF266" "$DONE266"
 assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
 assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
 assert_eq "healthy candidate recorded as not throttled, eligible for adoption (#266)" "$(J "$TLOG" '.results[0].throttled')" "false"
+
+# #265: _seed_wr / _seed_g must keep an explicit base-config false instead of jq `//` flipping it to
+# the true default; with the key absent, the true default still applies.
+echo "== unit: tune seeds keep explicit false (#265) =="
+seed_base() { # <fn> <TUNE_BASE json>
+    local f="$SANDBOX/seed_base.json"
+    printf '%s' "$2" >"$f"
+    (
+        source "$SCRIPT"
+        TUNE_BASE="$f"
+        "$1"
+    )
+}
+assert_eq "_seed_wr keeps explicit wrmsr:false (#265)" "$(seed_base _seed_wr '{"randomx":{"wrmsr":false}}')" "false"
+assert_eq "_seed_g keeps explicit 1gb-pages:false (#265)" "$(seed_base _seed_g '{"randomx":{"1gb-pages":false}}')" "false"
+assert_eq "_seed_wr defaults to true when wrmsr absent (#265)" "$(seed_base _seed_wr '{"randomx":{}}')" "true"
+assert_eq "_seed_g defaults to true when 1gb-pages absent (#265)" "$(seed_base _seed_g '{"randomx":{}}')" "true"
 
 # #66: the opt-in wrmsr knob sweeps MSR presets. A fake whose hashrate depends on randomx.wrmsr proves the
 # knob is swept and the winner pinned; a single value leaves it off (not pinned, but still recorded).

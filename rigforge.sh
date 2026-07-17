@@ -359,6 +359,12 @@ parse_config() {
     # attribute in-string program lines, and the patch-coverage gate needs every new line hittable.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
+    # #265: jq's `//` treats an explicit false like null/missing, so the map above rewrites an
+    # operator's "keepalive": false / "enabled": false to the true default. Restore explicit falses
+    # from the raw config in another single-line pass (same kcov rationale as #115 above). Only a
+    # boolean false matches `== false`; non-boolean junk flows through `//` untouched to validation.
+    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+
     # Validate every pool field — fail fast with a clear message rather than writing a config XMRig
     # would choke on. url must be host:port: a valid hostname / IPv4 / bracketed-IPv6 host and a port
     # in 1-65535; user/pass reject whitespace and shell/control characters; keepalive/tls/enabled
@@ -2436,10 +2442,10 @@ _gridsearch() {
 # from what the generated config actually uses (both default false). Shared by the seeds.
 _seed_hj() { jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE"; }
 _seed_cq() { jq -r '.randomx.cache_qos // false' "$TUNE_BASE"; }
-_seed_g() { jq -r '.randomx."1gb-pages" // true' "$TUNE_BASE"; } # base 1gb-pages value (default true)
+_seed_g() { jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; } # base 1gb-pages value (default true)
 # wrmsr seed: the base config's value as a single token (true/false/number). An array (advanced custom
 # MSRs) isn't a sweepable scalar, so seed from the safe default 'true' and let the operator set TUNE_WRMSR.
-_seed_wr() { jq -r '(.randomx.wrmsr // true) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
+_seed_wr() { jq -r '(.randomx | if has("wrmsr") then .wrmsr else true end) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
 
 # Seed the state with XMRig's auto baseline (the generated config's own values; threads left to auto).
 _seed_auto() {
