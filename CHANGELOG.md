@@ -7,6 +7,40 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-07-18
+
+Consistency-audit patch: CLI-surface and docs cleanups, plus a real fix to the remote-upgrade
+reachability guard surfaced by the first real-hardware `control-upgrade` e2e (miner-0).
+
+### Fixed
+
+- **`control-upgrade`'s reachability guard pins `origin/main` (#318).** The D10 guard checked the
+  target tag against `origin/HEAD`; on a fresh clone that resolves to `develop` (the repo default),
+  and release tags are merge commits on `main` that `develop` doesn't contain — so such a rig
+  refused every legitimate remote upgrade with a rollback. Releases are cut from `main`, so the
+  guard now checks ancestry against `origin/main` explicitly (fail-closed when the ref is absent,
+  e.g. a single-branch clone). ADR 0002 D10 amended in place. Deployed rigs were unaffected (their
+  clones point `origin/HEAD` at `main`).
+- **`control-upgrade` joins the CLI surface (#312).** It's now listed in `help` with the other
+  internal verbs, rejects stray arguments like its siblings, and is documented in
+  Operations › Writable control path. The unknown-command hint no longer maintains a second,
+  drifting verb list (it had silently lost `watchdog` and both control verbs) — it points at
+  `help` instead.
+- **Unknown-option errors name the verb's valid flags (#314).** Every `Unknown option for <verb>`
+  message now both lists the flags that verb accepts and points at `help`; previously some verbs
+  did one, some the other. New tests cover the previously untested backup/restore/support-bundle
+  error paths, plus a drift guard on the template.
+- **Test suite: the `control_upgrade` unit-test git stub no longer matches subcommands by position.**
+  v1.11.1's `safe.directory` fix shifted git's argument positions, silently breaking the stub's
+  `$3` dispatch — the two rollback tests failed on `develop` from that commit until now.
+
+### Changed
+
+- **README: "What it does" now covers day-2 operation.** New-user feature tour extended past
+  provisioning: `tune`/`autotune`, the watchdog and `max_temp_c`, `doctor`/`status`, the `bios`
+  walkthrough, `backup`/`restore`/`support-bundle`/`completion`, the opt-in Pithead control path,
+  and clean `uninstall`.
+
 ## [1.11.1] - 2026-07-18
 
 The first **published** v1.11 release. `v1.11.0` was tagged but not published: its remote worker-upgrade
