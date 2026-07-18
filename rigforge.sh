@@ -3927,17 +3927,19 @@ _control_upgrade_throttle_ok() { # <state-dir>
 # tag/commit (rollback). D5: the git checkout IS the fetch and the commit hash pins the whole tree; no
 # signing, GitHub over TLS is the trust root. D10: a forward tag's commit must be reachable from the
 # remote default branch (kills a tag pointing at a dangling/side commit); immutable releases lock the
-# tag→commit binding at the platform layer. VALIDATED ON REAL HARDWARE (miner-0) before release — the
-# git/compile/systemctl path can't be exercised in the stubbed unit suite.
+# tag→commit binding at the platform layer. Every git call pins `-c safe.directory="$SCRIPT_DIR"`: the
+# oneshot runs as root with NO $HOME, so git can't read root's safe.directory config and would fatal on
+# "dubious ownership" of the operator-owned install — every git op silently failing the upgrade (a real
+# miner-0 e2e finding the stubbed unit suite couldn't reach, since it stubs git).
 _control_upgrade_do() { # <ref>
     local ref="$1" cobj default
-    git -C "$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        cobj=$(git -C "$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
-        default=$(git -C "$SCRIPT_DIR" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
-        git -C "$SCRIPT_DIR" merge-base --is-ancestor "$cobj" "$default" 2>/dev/null || return 1
+        cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
+        default=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+        git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" "$default" 2>/dev/null || return 1
     fi
-    git -C "$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
+    git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
     # Run the NEW code's upgrade: rebuild XMRig if the pin changed, regenerate config, reinstall units.
     "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
 }
@@ -4016,7 +4018,7 @@ control_upgrade() {
         warn "control-upgrade: throttled."
         return 0
     fi
-    old_tag=$(git -C "$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
+    old_tag=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then

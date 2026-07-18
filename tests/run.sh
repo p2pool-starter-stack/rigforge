@@ -6284,6 +6284,14 @@ sThr="$(
 )"
 assert_contains "control_upgrade within the throttle window -> failed(throttled) (#308)" "$sThr" "throttled"
 
+# #308: the control-upgrade oneshot runs as root with NO $HOME, so git can't read root's safe.directory
+# config and fatals on "dubious ownership" of the operator-owned install — every git op then fails and
+# the upgrade silently dies (a real miner-0 finding; the stubbed suite can't reach it since it stubs
+# git). Every `git -C "$SCRIPT_DIR"` in the upgrade path MUST pin -c safe.directory. Drift-guard it.
+echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
+bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
+assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
+
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
