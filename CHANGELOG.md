@@ -7,6 +7,44 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-07-18
+
+Two opt-in capabilities that let a Pithead stack co-locate and remotely manage RigForge workers, both
+designed ADR-first and default-off. Producers for pithead#593 (co-located local miner) and pithead#597
+(one-click remote worker upgrade).
+
+### Added
+
+- **Co-resident HugePages sizing + a first-class thread cap (#305).** Two `config.json` keys so a
+  RigForge miner can share a busy box (a Pithead stack host) without over-reserving or forcing a reboot.
+  `hugepages_reserve_extra_mb` (default 0) adds that many MB to RigForge's computed mining reservation
+  when it sizes both the GRUB reservation and the runtime pool, so the kernel's shared HugePage pool
+  covers stack + miner while RigForge stays the sole writer. `threads` (empty = auto) caps the RandomX
+  thread count as a ceiling — `min(auto, threads)`, e.g. `nproc-2` — sizing the reservation and clamping
+  the generated `cpu.rx` after any tune overlay. A keep-existing guard leaves GRUB untouched (no reboot)
+  when the box's ambient reservation already covers miner + headroom; scoped to co-resident mode so a
+  normal host's sizing, MSR, and reboot behaviour are unchanged. CPU-generic (no model-specific
+  branching); validated on real hardware.
+
+- **Remote worker-upgrade control path (#308, [ADR 0002](docs/adr/0002-remote-worker-upgrade.md)).** An
+  opt-in `control_upgrade` key (default off, only valid atop `control: enabled`) that lets a Pithead
+  stack trigger a rig to upgrade its own RigForge to the latest release — a deliberate, ADR-recorded
+  extension of the control channel from a tuning surface to a code-update one. The unprivileged receiver
+  gains `POST :8082/upgrade` (403 unless enabled; strict `{"version":"vX.Y.Z"}`; staged as `upgrade-*.json`,
+  a distinct spool glob from the config-apply path). A dedicated `rigforge-control-upgrade.{path,service}`
+  pair fires the privileged `control-upgrade` verb, which treats the staged file as untrusted (root-owned
+  handoff, symlink refusal), bounds the target to a *real, reachable, newer* release (monotonic
+  anti-rollback + reachable-from-default-branch), throttles repeat runs, fetches by git-tag checkout, and
+  is health-gated with rollback on any forward failure. Trust model: releases are checksummed, not signed
+  — GitHub is the trust root (see [SECURITY.md](SECURITY.md#release-integrity)); the residual
+  account-compromise risk is accepted deliberately.
+
+### Docs
+
+- **[ADR 0002](docs/adr/0002-remote-worker-upgrade.md)** records the remote-upgrade decision, the
+  hash-only trust model, and the systemd/handoff hardening; **SECURITY.md** gains a Release-integrity
+  section covering the trust root for the upgrade path.
+
 ## [1.10.0] - 2026-07-18
 
 Follow-ups from the post-v1.9.0 re-validation of the 2026-07 repo scan: one operator-facing check

@@ -907,6 +907,147 @@ out="$(PATH="$SANDBOX/nonuma:$STUBS:$PATH" STUB_L3="256 MiB" STUB_SOCKETS=2 NODE
 assert_contains "grub: NUMA falls back to sockets when undetectable (2 -> 6)" "$out" "hugepagesz=1G hugepages=6"
 
 # ---------------------------------------------------------------------------
+# #305: co-resident reservation headroom + first-class thread cap.
+echo "== unit: proposed-grub.sh co-resident headroom + thread cap (#305) =="
+# RESERVE_EXTRA_MB adds ceil(MB/2) 2MB pages to BOTH the reservation and the runtime pool so the kernel's
+# shared pool covers stack + miner. 2874 MB -> 1437 pages. 1G box base 2M = 154 -> 1591; fallback 1234 -> 2671.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=2874 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: headroom adds 2M pages (1G box, 154+1437)" "$out" "hugepagesz=2M hugepages=1591"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=2874 CPUINFO="$SANDBOX/cpuinfo_no1g" bash "$PG" -q)"
+assert_contains "grub: headroom adds 2M pages (fallback, 1234+1437)" "$out" "hugepages=2671"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=2874 HUGEPAGES_1G_NR="$SANDBOX/nr_none" bash "$PG" --runtime)"
+assert_eq "grub --runtime: headroom grows the shared pool too (1234+1437)" "$out" "2671"
+# Odd MB rounds UP to whole 2MB pages (1 MB -> 1 page); zero (default) leaves sizing untouched.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=1 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: odd headroom MB rounds up (154+1)" "$out" "hugepagesz=2M hugepages=155"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RESERVE_EXTRA_MB=0 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: zero headroom = miner-only sizing (154)" "$out" "hugepagesz=2M hugepages=154"
+# THREADS_CAP is a CEILING: 32 MiB L3 -> 16 threads; cap 8 -> 2M = 128+8+10 = 146. A cap ABOVE the
+# computed count is a no-op (never a raise). It also clamps a tuned RX_THREADS: min(24,8) -> 8.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 THREADS_CAP=8 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: thread cap clamps sizing (16->8 -> 146)" "$out" "hugepagesz=2M hugepages=146"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 THREADS_CAP=100 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q)"
+assert_contains "grub: cap above computed is a no-op (stays 154)" "$out" "hugepagesz=2M hugepages=154"
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 RX_THREADS=24 THREADS_CAP=8 HUGEPAGES_1G_NR="$SANDBOX/nr_none" bash "$PG" --runtime)"
+assert_eq "grub --runtime: cap clamps a tuned RX_THREADS (min(24,8) -> 1226)" "$out" "1226"
+
+# _cmdline_reserved_2mb: total HugePages a cmdline reserves, in 2MB-equivalents (1G page = 512 × 2M).
+echo "== unit: _cmdline_reserved_2mb (#305) =="
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "quiet splash hugepagesz=2M hugepages=3072 transparent_hugepage=never"
+)"
+assert_eq "reserved: pure-2M pool" "$r" "3072"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "hugepagesz=1G hugepages=6 hugepagesz=2M hugepages=200"
+)"
+assert_eq "reserved: 1G counts as 512x2M (6*512+200)" "$r" "3272"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "quiet default_hugepagesz=2M hugepages=1234"
+)"
+assert_eq "reserved: default_hugepagesz used when no explicit hugepagesz" "$r" "1234"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "default_hugepagesz=1G hugepages=4"
+)"
+assert_eq "reserved: default_hugepagesz=1G -> 4*512" "$r" "2048"
+r="$(
+    source "$SCRIPT"
+    _cmdline_reserved_2mb "quiet splash nomodeset"
+)"
+assert_eq "reserved: nothing reserved -> 0" "$r" "0"
+
+# parse_config: the two new keys parse, default, and reject bad values.
+echo "== unit: parse_config hugepages_reserve_extra_mb + threads (#305) =="
+c305="$SANDBOX/c305.json"
+printf '{"pools":[{"url":"h:3333"}],"hugepages_reserve_extra_mb":2874,"threads":6}\n' >"$c305"
+assert_eq "hugepages_reserve_extra_mb parsed" "$(parse_and_print "$c305" "$ROOT" HUGEPAGES_RESERVE_EXTRA_MB)" "2874"
+assert_eq "threads parsed" "$(parse_and_print "$c305" "$ROOT" THREADS_CAP)" "6"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$c305"
+assert_eq "hugepages_reserve_extra_mb defaults to 0" "$(parse_and_print "$c305" "$ROOT" HUGEPAGES_RESERVE_EXTRA_MB)" "0"
+assert_eq "threads defaults to empty (auto)" "$(parse_and_print "$c305" "$ROOT" THREADS_CAP)" ""
+printf '{"pools":[{"url":"h:3333"}],"hugepages_reserve_extra_mb":-5}\n' >"$c305"
+out="$(
+    source "$SCRIPT"
+    CONFIG_JSON="$c305"
+    SCRIPT_DIR="$ROOT"
+    PATH="$STUBS:$PATH" parse_config 2>&1
+)"
+assert_contains "negative headroom rejected" "$out" "hugepages_reserve_extra_mb must be"
+printf '{"pools":[{"url":"h:3333"}],"threads":0}\n' >"$c305"
+out="$(
+    source "$SCRIPT"
+    CONFIG_JSON="$c305"
+    SCRIPT_DIR="$ROOT"
+    PATH="$STUBS:$PATH" parse_config 2>&1
+)"
+assert_contains "threads 0 rejected (min 1)" "$out" "threads must be"
+
+# generate_xmrig_config: the thread cap clamps cpu.rx AFTER any tune overlay (a stale tuned count can't
+# exceed the operator's headroom); a valid count at/under the cap is left alone.
+echo "== config-gen: threads cap clamps cpu.rx (#305) =="
+gen_capped() { # <cap> <tuned-rx-or-empty> -> echoes config dir
+    local d
+    d="$(mktemp -d "$SANDBOX/cap.XXXXXX")"
+    [ -n "$2" ] && printf '{"cpu":{"rx":%s}}\n' "$2" >"$d/tune-overrides.json"
+    (
+        # Scope the CPU stubs to THIS subshell — a top-level `export` would leak into later tests (e.g.
+        # the #296 bios-verify cases that rely on lscpu NOT reporting an EPYC).
+        export STUB_CPU_MODEL="AMD EPYC 7642 48-Core Processor" STUB_NPROC=48 STUB_HOSTNAME=rigbox
+        cd "$d" || exit 1
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        WORKER_ROOT="$d"
+        LOGROTATE_DIR="$d"
+        POOLS_JSON='[{"url":"h:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
+        ACCESS_TOKEN=""
+        DONATION=1
+        THREADS_CAP="$1"
+        set +e
+        PATH="$STUBS:$PATH" generate_xmrig_config >/dev/null 2>&1
+    )
+    echo "$d"
+}
+assert_eq "cap pins cpu.rx from auto (-1 -> 6)" "$(J "$(gen_capped 6 "")/config.json" '.cpu.rx')" "6"
+assert_eq "cap clamps a tuned rx above it (16 -> 6)" "$(J "$(gen_capped 6 16)/config.json" '.cpu.rx')" "6"
+assert_eq "cap leaves a tuned rx at/under it alone (4 stays 4)" "$(J "$(gen_capped 6 4)/config.json" '.cpu.rx')" "4"
+
+# _grub_proposed's keep-existing guard: in co-resident mode, an ambient reservation that already covers
+# miner + headroom is left untouched (MERGED := CURRENT -> no reboot); an insufficient one still gets the
+# new sizing merged in. This is the load-bearing pithead#593 "no reboot on a box that already fits" case.
+echo "== unit: _grub_proposed co-resident keep-existing guard (#305) =="
+gd="$SANDBOX/grub_default_305"
+run_grub_proposed() { # <current-cmdline> <headroom-mb> -> echoes resulting MERGED
+    printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$1" >"$gd"
+    (
+        export PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 CPUINFO="$SANDBOX/cpuinfo_no1g" HUGEPAGES_1G_NR="$SANDBOX/nr_none"
+        source "$SCRIPT"
+        SCRIPT_DIR="$ROOT"
+        GRUB_DEFAULT="$gd"
+        RX_SETUP_THREADS=""
+        HUGEPAGES_RESERVE_EXTRA_MB="$2"
+        THREADS_CAP=""
+        _grub_proposed
+        printf '%s\n' "$MERGED"
+    )
+}
+# 32 MiB L3 -> 16 threads; no-1G fallback + 2874MB headroom (1437 pages) -> need 1168+16+50+1437 = 2671.
+# Ambient 3072 >= 2671: guard keeps the cmdline verbatim (no reboot).
+assert_eq "guard: sufficient ambient reservation left unchanged" \
+    "$(run_grub_proposed "quiet splash hugepagesz=2M hugepages=3072 transparent_hugepage=never" 2874)" \
+    "quiet splash hugepagesz=2M hugepages=3072 transparent_hugepage=never"
+# Ambient 100 < 2671: guard does NOT fire; the new sizing is merged in (quiet/splash preserved).
+m305="$(run_grub_proposed "quiet splash hugepagesz=2M hugepages=100" 2874)"
+assert_contains "guard: insufficient reservation gets the new sizing (2671)" "$m305" "hugepages=2671"
+assert_contains "guard: insufficient case still preserves non-managed params" "$m305" "quiet splash"
+# Headroom 0 (normal host): guard is inert even when the ambient reservation would have sufficed —
+# a normal host keeps its existing sizing/MSR/reboot behaviour, so the proposal is merged as before.
+assert_contains "guard: inert when headroom is 0 (normal host merges proposal)" \
+    "$(run_grub_proposed "quiet splash hugepagesz=2M hugepages=3072" 0)" "msr.allow_writes=on"
+
+# ---------------------------------------------------------------------------
 # tune_kernel must MERGE its HugePage/MSR params into the existing GRUB cmdline, not overwrite it
 # wholesale (#19 — overwriting drops other kernel params; a boot-safety risk).
 echo "== unit: grub_merge_cmdline preserves other kernel params (#19) =="
@@ -2221,7 +2362,7 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
 # sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
@@ -5459,10 +5600,32 @@ ctl_warns="$( (
 ))"
 assert_absent "control* keys are known (no unknown-key warning) (#138/#236)" "$ctl_warns" "unknown key"
 
+# #308: control_upgrade — a SECOND opt-in layered on control, default off, only valid when control is on.
+cu308() { parse_and_print "$1" "$ROOT" CONTROL_UPGRADE; }
+c="$(mkconf cu_def "{ $POOL }")"
+assert_eq "control_upgrade absent -> disabled" "$(cu308 "$c")" "disabled"
+c="$(mkconf cu_noctl "{ $POOL, \"control_upgrade\": \"enabled\" }")"
+assert_contains "control_upgrade without control hard-errors" "$(parse_fails "$c")" "control_upgrade requires control"
+c="$(mkconf cu_ok "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"control_upgrade\": \"enabled\" }")"
+assert_eq "control_upgrade enabled (atop control) -> enabled" "$(cu308 "$c")" "enabled"
+c="$(mkconf cu_default_off "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\" }")"
+assert_eq "control on but control_upgrade absent -> disabled (no silent RCE surface)" "$(cu308 "$c")" "disabled"
+c="$(mkconf cu_badval "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"t\", \"api_allow_from\": \"10.0.0.5\", \"control_upgrade\": \"maybe\" }")"
+assert_contains "control_upgrade typo hard-errors" "$(parse_fails "$c")" 'Invalid "control_upgrade" value'
+c="$(mkconf cu_known "{ $POOL, \"control_upgrade\": \"disabled\" }")"
+cu_warns="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
+))"
+assert_absent "control_upgrade is a known key (no unknown-key warning) (#308)" "$cu_warns" "unknown key"
+
 echo "== black-box: install_control units enable/disable (#236) =="
 CPS="$(mktemp -d "$SANDBOX/cps.XXXXXX")"
 mkdir -p "$CPS/systemd"
-cp "$ROOT/systemd/rigforge-control.service.template" "$ROOT/systemd/rigforge-control-apply.service.template" "$ROOT/systemd/rigforge-control-apply.path.template" "$CPS/systemd/"
+cp "$ROOT/systemd/rigforge-control.service.template" "$ROOT/systemd/rigforge-control-apply.service.template" "$ROOT/systemd/rigforge-control-apply.path.template" "$ROOT/systemd/rigforge-control-upgrade.service.template" "$ROOT/systemd/rigforge-control-upgrade.path.template" "$CPS/systemd/"
 cp -R "$ROOT/util" "$CPS/" 2>/dev/null || true
 run_control_install() { # <disabled|enabled> [port]
     (
@@ -5474,6 +5637,7 @@ run_control_install() { # <disabled|enabled> [port]
         CONTROL_MODE="$1"
         CONTROL_BIND=0.0.0.0
         CONTROL_PORT="${2:-8082}"
+        CONTROL_UPGRADE="${CU:-disabled}" # #308: default off so existing #236 assertions are unchanged
         API_ALLOW_FROM=10.0.0.5
         API_PORT=8081
         ACCESS_TOKEN=tok-secret
@@ -5497,6 +5661,23 @@ out="$(run_control_install disabled)"
 assert_eq "control disable removes the server unit" "$([ -f "$CPS/systemd/rigforge-control.service" ] && echo y || echo n)" "n"
 assert_eq "control disable removes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "n"
 assert_eq "control disable removes the path watcher" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "n"
+
+# #308: the remote-upgrade units ride ON TOP of control — written only when control_upgrade is also on,
+# removed when it's off, and torn down with the control path. The upgrade glob must be DISTINCT from
+# the apply glob so an upgrade intent never wakes the config-applier.
+out="$(CU=enabled run_control_install enabled)"
+assert_eq "control_upgrade on writes the upgrade oneshot" "$([ -f "$CPS/systemd/rigforge-control-upgrade.service" ] && echo y || echo n)" "y"
+assert_eq "control_upgrade on writes the upgrade path watcher" "$([ -f "$CPS/systemd/rigforge-control-upgrade.path" ] && echo y || echo n)" "y"
+assert_contains "upgrade path globs upgrade-*.json" "$(cat "$CPS/systemd/rigforge-control-upgrade.path")" "PathExistsGlob=/var/lib/rigforge-control/spool/upgrade-*.json"
+assert_absent "upgrade path does NOT reuse the apply pending-*.json glob (#308)" "$(cat "$CPS/systemd/rigforge-control-upgrade.path")" "pending-*.json"
+assert_contains "upgrade oneshot runs control-upgrade" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "rigforge.sh control-upgrade"
+assert_contains "upgrade oneshot baked with the operator handback" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "RIGFORGE_OPERATOR=rfop"
+out="$(CU=disabled run_control_install enabled)"
+assert_eq "control_upgrade off removes the upgrade oneshot" "$([ -f "$CPS/systemd/rigforge-control-upgrade.service" ] && echo y || echo n)" "n"
+assert_eq "control_upgrade off keeps the apply path (control still on)" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
+out="$(CU=enabled run_control_install enabled)"
+out="$(run_control_install disabled)"
+assert_eq "control disable tears down the upgrade path too (#308)" "$([ -f "$CPS/systemd/rigforge-control-upgrade.path" ] && echo y || echo n)" "n"
 run_ctl_fw() { # <api_mode> <control_mode> -> the rendered nft rule
     (
         source "$SCRIPT"
@@ -5922,6 +6103,187 @@ fi
 cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply --extra </dev/null) 2>&1 || true)"
 assert_contains "control-apply rejects extra args" "$cb_out" "Unexpected argument for control-apply"
 
+echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
+# The git fetch/checkout/reachability/build half (_control_upgrade_do) and the miner liveness check are
+# stubbed here — they need a real git remote + compiler + systemd, and are validated on miner-0. This
+# exercises the security-critical ORCHESTRATION: strict version whitelist, monotonic anti-rollback,
+# spool handoff, throttle, and the applied/rolled_back/failed status the receiver serves back.
+cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.json contents
+    local d
+    d=$(mktemp -d "$SANDBOX/cu.XXXXXX")
+    mkdir -p "$d/state/spool"
+    printf '%s' "$2" >"$d/VERSION"
+    printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
+    [ -n "$1" ] && printf '%s\n' "$1" >"$d/state/spool/upgrade-abc123def4567890.json"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$d"
+        CONFIG_JSON="$d/config.json"
+        RIGFORGE_CONTROL_STATE="$d/state"
+        CONTROL_UPGRADE_MIN_INTERVAL=0
+        DO="$3"
+        WML=0
+        UDO=0
+        # forward checkout+build is call #1, the rollback checkout+build is call #2.
+        # 'buildfail' = the forward build fails but the rollback rebuild succeeds (-> rolled_back);
+        # 'fail' = both fail (-> terminal failed).
+        _control_upgrade_do() {
+            UDO=$((UDO + 1))
+            case "$DO" in
+            buildfail) [ "$UDO" -eq 1 ] && return 1 ;;
+            fail) return 1 ;;
+            esac
+            return 0
+        }
+        # 'down' = miner dead after the forward build but the rollback restores liveness (-> rolled_back).
+        _wait_miner_live() {
+            WML=$((WML + 1))
+            { [ "$DO" = down ] && [ "$WML" -eq 1 ]; } && return 1
+            return 0
+        }
+        git() { case "$3" in describe) echo v0.0.1 ;; rev-parse) echo deadbeefcafe ;; *) return 0 ;; esac }
+        set +e
+        PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    )
+    cat "$d/state/status.json" 2>/dev/null
+}
+st() { printf '%s' "$1" | jq -r .status 2>/dev/null; }
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" ok)"
+assert_eq "upgrade applied on a newer, buildable release" "$(st "$s")" "applied"
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" down)"
+assert_eq "built but miner stays down -> rolled_back" "$(st "$s")" "rolled_back"
+# #308 security review (HIGH): a build failure AFTER checkout must roll the tree back to the prior
+# version, not leave it pinned to the unbuilt target (which would short-circuit all future retries and
+# run unverified code). A clean rollback reports rolled_back, never a false "no change applied".
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" buildfail)"
+assert_eq "build failure after checkout rolls back cleanly -> rolled_back" "$(st "$s")" "rolled_back"
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" fail)"
+assert_eq "forward AND rollback both fail -> terminal failed" "$(st "$s")" "failed"
+assert_contains "hard-failure reason flags manual intervention" "$s" "manual intervention"
+s="$(cu_run '{"version":"v1.0.0"}' "2.0.0" ok)"
+assert_eq "downgrade refused -> failed (never built)" "$(st "$s")" "failed"
+assert_contains "downgrade reason names anti-rollback" "$s" "not newer"
+s="$(cu_run '{"version":"v1.0.0"}' "1.0.0" ok)"
+assert_contains "same version refused (already on)" "$s" "already on v1.0.0"
+s="$(cu_run '{"version":"garbage"}' "1.0.0" ok)"
+assert_contains "malformed target refused, never run" "$s" "malformed"
+s="$(cu_run '{"version":"v9.9.9","evil":"x"}' "1.0.0" ok)"
+assert_contains "extra key beyond version refused (strict whitelist)" "$s" "malformed"
+s="$(cu_run "" "1.0.0" ok)"
+assert_eq "nothing staged -> no status file" "$s" ""
+# D8 spool handoff: a staged SYMLINK is refused before it's read.
+dsl=$(mktemp -d "$SANDBOX/cusl.XXXXXX")
+mkdir -p "$dsl/state/spool"
+printf '1.0.0' >"$dsl/VERSION"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$dsl/config.json"
+printf '{"version":"v9.9.9"}\n' >"$dsl/evil.json"
+ln -s "$dsl/evil.json" "$dsl/state/spool/upgrade-abc123def4567890.json"
+sl="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$dsl"
+    CONFIG_JSON="$dsl/config.json"
+    RIGFORGE_CONTROL_STATE="$dsl/state"
+    CONTROL_UPGRADE_MIN_INTERVAL=0
+    _control_upgrade_do() { return 0; }
+    _wait_miner_live() { return 0; }
+    git() { echo v0.0.1; }
+    set +e
+    PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    cat "$dsl/state/status.json" 2>/dev/null
+)"
+assert_contains "staged symlink refused (D8 spool handoff)" "$sl" "symlink"
+
+echo "== unit: _control_upgrade_throttle_ok (#308) =="
+td=$(mktemp -d "$SANDBOX/thr.XXXXXX")
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$td"
+)
+assert_eq "throttle: first attempt allowed (and stamps)" "$?" "0"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$td"
+)
+assert_eq "throttle: second attempt within the window blocked" "$?" "1"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=0
+    _control_upgrade_throttle_ok "$td"
+)
+assert_eq "throttle: zero interval always allowed" "$?" "0"
+# Fail OPEN when the state dir is unwritable (can't take the lock) — availability over strictness.
+roThr="$SANDBOX/thr-ro"
+mkdir -p "$roThr"
+chmod 500 "$roThr"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$roThr/cant-mkdir"
+) >/dev/null 2>&1
+assert_eq "throttle: unwritable state dir fails open (allowed)" "$?" "0"
+chmod 700 "$roThr"
+
+# _control_upgrade_do against a STUB git (+ stub rigforge.sh) so the real fetch/reachability/checkout
+# lines run under coverage — and, more importantly, the D10 reachability guard is exercised for real.
+echo "== unit: _control_upgrade_do fetch + reachability + checkout (#308, stub git) =="
+udoDir=$(mktemp -d "$SANDBOX/udo.XXXXXX")
+mkdir -p "$udoDir/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$udoDir/rigforge.sh"
+chmod +x "$udoDir/rigforge.sh"
+_mk_git_stub() { # <merge-base-rc> <fetch-rc>
+    cat >"$udoDir/bin/git" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+*"fetch"*) exit ${2:-0} ;;
+*"merge-base --is-ancestor"*) exit ${1:-0} ;;
+*"rev-parse"*) echo deadbeefcafe; exit 0 ;;
+*"symbolic-ref"*) echo origin/main; exit 0 ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$udoDir/bin/git"
+}
+_run_udo() { (
+    source "$SCRIPT"
+    set +e # sourcing enables -e; a non-zero _control_upgrade_do must not abort before we echo $?
+    SCRIPT_DIR="$udoDir"
+    PATH="$udoDir/bin:$PATH" _control_upgrade_do "v9.9.9" >/dev/null 2>&1
+    echo $?
+); }
+_mk_git_stub 0 0
+assert_eq "_control_upgrade_do: reachable tag, all steps ok -> 0" "$(_run_udo)" "0"
+_mk_git_stub 1 0
+assert_eq "_control_upgrade_do: unreachable tag (merge-base fails) -> 1 (D10)" "$(_run_udo)" "1"
+_mk_git_stub 0 1
+assert_eq "_control_upgrade_do: git fetch failure -> 1" "$(_run_udo)" "1"
+
+# control_upgrade's throttle-blocked path: a fresh stamp inside the window -> failed(throttled).
+cuThr=$(mktemp -d "$SANDBOX/cuthr.XXXXXX")
+mkdir -p "$cuThr/state/spool"
+printf '1.0.0' >"$cuThr/VERSION"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuThr/config.json"
+printf '{"version":"v9.9.9"}\n' >"$cuThr/state/spool/upgrade-abc123def4567890.json"
+date +%s >"$cuThr/state/upgrade-last"
+sThr="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$cuThr"
+    CONFIG_JSON="$cuThr/config.json"
+    RIGFORGE_CONTROL_STATE="$cuThr/state"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_do() { return 0; }
+    _wait_miner_live() { return 0; }
+    git() { echo v0.0.1; }
+    set +e
+    PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    cat "$cuThr/state/status.json" 2>/dev/null
+)"
+assert_contains "control_upgrade within the throttle window -> failed(throttled) (#308)" "$sThr" "throttled"
+
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
@@ -5997,8 +6359,38 @@ else
     assert_eq "?change_id still requires the bearer (#255)" "$(hc "$U/status?change_id=1111222233334444")" "401"
     bigbody="$(head -c 70000 /dev/zero | tr '\0' 'a')"
     assert_eq "POST oversized body -> 413" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' --data-binary "$bigbody")" "413"
+    # #308: /upgrade is gated by control_upgrade — THIS server has it off, so the endpoint is refused.
+    assert_eq "POST /upgrade with control_upgrade off -> 403 (#308)" "$(hc -X POST "$U/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v9.9.9"}')" "403"
+    assert_eq "POST /upgrade still requires the bearer (#308)" "$(hc -X POST "$U/upgrade" -H 'Content-Type: application/json' -d '{"version":"v9.9.9"}')" "401"
     kill "$CSRV_PID" 2>/dev/null || true
     wait "$CSRV_PID" 2>/dev/null || true
+    # #308: a dedicated server WITH control_upgrade enabled — /upgrade now accepts a well-formed version
+    # and stages it as upgrade-*.json (distinct from the apply path's pending-*.json).
+    CSRV2="$(mktemp -d "$SANDBOX/csrv2.XXXXXX")"
+    mkdir -p "$CSRV2/state"
+    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s", "control_upgrade":"enabled" }\n' "$CTOK" >"$CSRV2/config.json"
+    CPORT2=$((20000 + RANDOM % 20000))
+    python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT2" "$CSRV2/state" "$CSRV2/config.json" &
+    CSRV2_PID=$!
+    U2="http://127.0.0.1:$CPORT2"
+    cup2=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -s -o /dev/null --max-time 2 -H "Authorization: Bearer $CTOK" "$U2/status" 2>/dev/null; then
+            cup2=1
+            break
+        fi
+        sleep 0.3
+    done
+    assert_eq "upgrade-enabled control server comes up" "$cup2" "1"
+    ubody="$(curl -sS --max-time 5 -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.3"}' 2>/dev/null)"
+    assert_contains "POST /upgrade well-formed -> accepted (#308)" "$ubody" '"status": "accepted"'
+    assert_eq "upgrade staged as upgrade-*.json (#308)" "$(ls "$CSRV2/state/spool"/upgrade-*.json 2>/dev/null | wc -l | tr -d ' ')" "1"
+    assert_eq "upgrade did NOT stage a pending-*.json (distinct from apply #308)" "$(ls "$CSRV2/state/spool"/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+    assert_eq "POST /upgrade malformed version -> 400 (#308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"garbage"}')" "400"
+    assert_eq "POST /upgrade extra key -> 400 (strict whitelist #308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.3","x":1}')" "400"
+    assert_eq "POST /upgrade missing version -> 400 (#308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "400"
+    kill "$CSRV2_PID" 2>/dev/null || true
+    wait "$CSRV2_PID" 2>/dev/null || true
     # Fail closed: a config with no ACCESS_TOKEN must make the WRITABLE path refuse everyone.
     printf '{ "pools":[{"url":"h:3333"}] }\n' >"$CSRV/config.json"
     python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT" "$CSRV/state" "$CSRV/config.json" &

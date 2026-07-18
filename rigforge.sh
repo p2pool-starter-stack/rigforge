@@ -499,6 +499,25 @@ parse_config() {
         fi
     fi
 
+    # Co-resident reservation headroom (#305): MB of HugePages to leave for another workload on the box
+    # (a co-located pithead stack), ADDED to RigForge's computed mining need when it sizes the GRUB
+    # reservation and the runtime pool. RigForge stays the sole writer of the reservation; the caller
+    # just declares "leave this much for the rest of the box." Default 0 (miner-only sizing). The upper
+    # bound is generous (64 GB of 2MB pages) — this is a deliberate reservation, not a typo guard.
+    HUGEPAGES_RESERVE_EXTRA_MB=$(jq -r '.hugepages_reserve_extra_mb // 0' "$CONFIG_JSON")
+    if ! [[ "$HUGEPAGES_RESERVE_EXTRA_MB" =~ ^[0-9]+$ ]] || [ "$HUGEPAGES_RESERVE_EXTRA_MB" -gt 65536 ]; then
+        error "hugepages_reserve_extra_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_RESERVE_EXTRA_MB)."
+    fi
+    # First-class thread cap (#305): a CEILING on the RandomX thread count — min(auto-detected, threads).
+    # Empty (default) = let XMRig/L3 sizing pick. A co-located miner sets this (e.g. nproc-2) to leave
+    # the stack cores free. Sizing and the generated cpu.rx both honour it; it never raises the count.
+    THREADS_CAP=$(jq -r '.threads // empty' "$CONFIG_JSON")
+    if [ -n "$THREADS_CAP" ]; then
+        if ! [[ "$THREADS_CAP" =~ ^[0-9]+$ ]] || [ "$THREADS_CAP" -lt 1 ] || [ "$THREADS_CAP" -gt 1024 ]; then
+            error "threads must be empty (auto) or a whole number 1-1024 (got: $THREADS_CAP)."
+        fi
+    fi
+
     # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
     # no system-wide convenience change you didn't ask for.
     ADD_TO_PATH=$(jq -r '.add_to_path // false' "$CONFIG_JSON")
@@ -544,6 +563,21 @@ parse_config() {
         [ -n "${ACCESS_TOKEN:-}" ] || error "control: \"enabled\" requires ACCESS_TOKEN — a writable API with no token is an open remote config write. Set ACCESS_TOKEN in config.json."
         [ -n "${API_ALLOW_FROM:-}" ] || error "control: \"enabled\" requires api_allow_from — the writable path must be pinned to the stack host. Set api_allow_from in config.json."
     fi
+
+    # Opt-in REMOTE UPGRADE (#308, ADR 0002): a SECOND switch, layered on control:"enabled", that lets
+    # the stack trigger a rig to upgrade its own RigForge to the latest release — i.e. fetch and run new
+    # root code on a remote trigger. Default off, and it does NOT come up just because `control` is on:
+    # enabling remote tuning must never silently grant a remote code-update surface. It rides the control
+    # channel's existing Bearer token + api_allow_from pin, so it needs no auth of its own.
+    _cu=$(jq -r '.control_upgrade // "disabled"' "$CONFIG_JSON")
+    case "$_cu" in
+    disabled | false | off | none | null | "") CONTROL_UPGRADE=disabled ;;
+    enabled | true | on) CONTROL_UPGRADE=enabled ;;
+    *) error "Invalid \"control_upgrade\" value '$_cu' in config.json — use \"disabled\" or \"enabled\"." ;;
+    esac
+    if [ "$CONTROL_UPGRADE" = enabled ] && [ "${CONTROL_MODE:-disabled}" != enabled ]; then
+        error "control_upgrade requires control: \"enabled\" first — the remote-upgrade path rides the control channel's Bearer token and api_allow_from source pin (ADR 0002)."
+    fi
     # #243/scan: an IPv6 api_allow_from only scopes traffic the APIs actually receive over IPv6, but
     # api_bind/control_bind default to IPv4 (0.0.0.0). Warn on the silent no-op — it fails safe (no
     # reachable v6 to scope), but the operator's intent isn't met until they bind "::".
@@ -572,7 +606,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind"
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb threads"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -969,6 +1003,15 @@ generate_xmrig_config() {
         fi
     fi
 
+    # First-class thread cap (#305): clamp cpu.rx to the ceiling AFTER any tune overlay, so a stale
+    # tuned thread count can't exceed the operator's headroom guarantee (e.g. a co-located miner told to
+    # stay at nproc-2). Auto (-1) or any value above the cap becomes the cap; a valid count at or under
+    # the cap is left untouched — a true ceiling, never a raise.
+    if [ -n "${THREADS_CAP:-}" ]; then
+        local _capped
+        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json 2>/dev/null) && printf '%s\n' "$_capped" >config.json
+    fi
+
     # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
     # redirect would otherwise leave it world-readable). _reown_worker hands ownership to the operator
     # later; chmod here is preserved across that chown, and root (the service) reads it regardless.
@@ -1198,10 +1241,12 @@ install_api() {
 install_control() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
+    local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service" upath="$SYSTEMD_DIR/rigforge-control-upgrade.path"
     if [ "${CONTROL_MODE:-disabled}" = "disabled" ]; then
-        if [ -f "$svc" ] || [ -f "$apath" ]; then
-            sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path 2>/dev/null || true
-            sudo rm -f "$svc" "$asvc" "$apath"
+        if [ -f "$svc" ] || [ -f "$apath" ] || [ -f "$upath" ]; then
+            # #308: tear down the remote-upgrade units alongside the control path — they never outlive it.
+            sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
+            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath"
             sudo systemctl daemon-reload 2>/dev/null || true
             log "Writable control path disabled."
         fi
@@ -1216,10 +1261,26 @@ install_control() {
         envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' \
         <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null
     sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null
+    # #308: the remote-upgrade units ride ON TOP of the control path — installed only when
+    # control_upgrade is ALSO enabled, removed otherwise, so `control` alone never carries a
+    # code-update surface. Same envsubst/operator handback as the apply oneshot.
+    if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
+        RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
+            envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' \
+            <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null
+        sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null
+        log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
+    elif [ -f "$upath" ] || [ -f "$usvc" ]; then
+        sudo systemctl disable --now rigforge-control-upgrade.path 2>/dev/null || true
+        sudo rm -f "$usvc" "$upath"
+    fi
     sudo systemctl daemon-reload
     sudo systemctl enable --now rigforge-control-apply.path 2>/dev/null || true
+    if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
+        sudo systemctl enable --now rigforge-control-upgrade.path 2>/dev/null || true
+    fi
     sudo systemctl enable rigforge-control.service 2>/dev/null || true
-    # restart, not just enable --now: a bind/port/token change must be re-read (restart also starts).
+    # restart, not just enable --now: a bind/port/token/upgrade-flag change must be re-read (restart also starts).
     sudo systemctl restart rigforge-control.service 2>/dev/null || true
 }
 
@@ -1240,10 +1301,35 @@ _rx_setup_threads() {
 # (#146): sets MANAGED (params we manage), CURRENT (the live cmdline), MERGED (#19 merge — never
 # clobbers params the user/distro set). Callers guard on proposed-grub.sh + $GRUB_DEFAULT existing.
 _grub_proposed() {
-    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
+    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
+
+    # Co-resident keep-existing guard (#305): when headroom is requested and the LIVE reservation already
+    # backs miner + headroom, leave GRUB untouched (MERGED := CURRENT) rather than shrinking it or
+    # switching page schemes — no reboot. The co-location contract (pithead#593): on a box whose ambient
+    # reservation already covers stack + miner, RigForge changes nothing; the MSR boost, which does need
+    # a reboot, stays a separate opt-in. Done here (not in tune_kernel) so `setup --dry-run` previews the
+    # same no-reboot outcome. Scoped to co-resident mode (headroom > 0) so a normal host's sizing, MSR
+    # enablement, and reboot behaviour are unchanged.
+    if [ "${HUGEPAGES_RESERVE_EXTRA_MB:-0}" -gt 0 ] 2>/dev/null; then
+        local _need _have
+        _need=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
+        _have=$(_cmdline_reserved_2mb "$CURRENT")
+        if [ -n "$_need" ] && [ "$_have" -gt 0 ] 2>/dev/null && [ "$_have" -ge "$_need" ] 2>/dev/null; then
+            MERGED="$CURRENT"
+        fi
+    fi
+}
+
+# Total HugePages a kernel cmdline reserves, in 2MB-equivalent pages (a 1G page = 512 × 2MB). Each
+# `hugepages=N` pairs with the preceding `hugepagesz=`, or `default_hugepagesz=` if none precedes it —
+# the kernel's own rule. Used by the #305 co-resident keep-existing guard to tell whether the LIVE
+# reservation already backs miner + headroom.
+_cmdline_reserved_2mb() { # <cmdline> -> reserved 2MB-equivalent pages
+    # One awk statement (not a multi-line string): kcov credits it when a test exercises it.
+    awk '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") t+=n*512; else t+=n } } print t+0 }' <<<"$1"
 }
 
 tune_kernel() {
@@ -1268,7 +1354,7 @@ tune_kernel() {
     log "Applying runtime memory tuning..."
     if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
         # Calculate exact requirement based on hardware, the tuned thread count, and 1GB page status
-        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
+        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
         log "Hardware-optimized HugePages: $REQUIRED_PAGES (2MB pages) calculated."
         sudo sysctl -w vm.nr_hugepages="$REQUIRED_PAGES"
     else
@@ -1287,7 +1373,10 @@ tune_kernel() {
         _grub_proposed
 
         if [ "$CURRENT" = "$MERGED" ]; then
-            log "GRUB is already configured with optimal HugePages settings."
+            # Either already optimal, or _grub_proposed's co-resident keep-existing guard (#305) set
+            # MERGED := CURRENT because the ambient reservation already covers miner + headroom — either
+            # way there's nothing to write and no reboot.
+            log "GRUB is already configured for the required HugePages reservation (no reboot)."
         else
             sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
             sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$MERGED")\"|" "$GRUB_DEFAULT"
@@ -1475,7 +1564,7 @@ _setup_plan() {
         [ -e "$MODULES_LOAD_DIR/msr.conf" ] && _msr="msr module already configured"
         if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
             _rx_setup_threads
-            _pages=$(RX_THREADS="$RX_SETUP_THREADS" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
+            _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
             if [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
                 if [ "$CURRENT" = "$MERGED" ]; then
@@ -1764,9 +1853,11 @@ uninstall() {
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service" \
             "$SYSTEMD_DIR/rigforge-api.service" "$SYSTEMD_DIR/rigforge-api-refresh.service" "$SYSTEMD_DIR/rigforge-api-refresh.timer"
     fi
-    if [ -f "$SYSTEMD_DIR/rigforge-control.service" ] || [ -f "$SYSTEMD_DIR/rigforge-control-apply.path" ]; then
-        sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path 2>/dev/null || true
-        sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path"
+    if [ -f "$SYSTEMD_DIR/rigforge-control.service" ] || [ -f "$SYSTEMD_DIR/rigforge-control-apply.path" ] || [ -f "$SYSTEMD_DIR/rigforge-control-upgrade.path" ]; then
+        # #308: tear down the remote-upgrade units too, or uninstall leaves a live code-update surface.
+        sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path" \
+            "$SYSTEMD_DIR/rigforge-control-upgrade.service" "$SYSTEMD_DIR/rigforge-control-upgrade.path"
     fi
     command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
@@ -3486,7 +3577,7 @@ svc_disable() {
 # `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
 # (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
 # dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
-# verbs (api-refresh, msr-apply, control-apply) and the -v/-h flag spellings are deliberately not completed.
+# verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
 _rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
@@ -3799,6 +3890,152 @@ control_apply() {
             _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate; rolled back and live" "$backup"
         else
             _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate; rollback re-apply also failed to restore liveness" "$backup"
+        fi
+    fi
+    return 0
+}
+
+# Pre-dial throttle for the remote-upgrade path (#308, ADR 0002 D6): a persisted stamp under a flock
+# bounds how often a rig will fetch from GitHub / rebuild, so a looping or hostile trigger can't turn
+# the fleet into a beacon or thrash the miner with rebuilds. Returns 0 if allowed (and stamps the
+# attempt), 1 if still inside the window. Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
+_control_upgrade_throttle_ok() { # <state-dir>
+    local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
+    now=$(date +%s)
+    mkdir -p "$dir" 2>/dev/null || true
+    # Can't open the lock (unwritable/full state dir)? Fail OPEN — availability over strictness — but say
+    # so, or a broken state dir would silently disable the anti-beacon/anti-thrash throttle unnoticed.
+    exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
+        warn "control-upgrade: couldn't take the throttle lock under $dir — proceeding UNthrottled (check the state dir)."
+        return 0
+    }
+    flock 9 2>/dev/null || true
+    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+    if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
+        exec 9>&-
+        return 1
+    fi
+    printf '%s\n' "$now" >"$stamp" 2>/dev/null || true
+    exec 9>&-
+    return 0
+}
+
+# The fetch + reachability + checkout + rebuild half of control-upgrade, split out so the orchestration
+# is unit-testable with this stubbed (like control-apply's _control_do_apply). Returns 0 on a successful
+# checkout+build of <ref>, nonzero otherwise. <ref> is a validated vX.Y.Z tag (forward) or a prior
+# tag/commit (rollback). D5: the git checkout IS the fetch and the commit hash pins the whole tree; no
+# signing, GitHub over TLS is the trust root. D10: a forward tag's commit must be reachable from the
+# remote default branch (kills a tag pointing at a dangling/side commit); immutable releases lock the
+# tag→commit binding at the platform layer. VALIDATED ON REAL HARDWARE (miner-0) before release — the
+# git/compile/systemctl path can't be exercised in the stubbed unit suite.
+_control_upgrade_do() { # <ref>
+    local ref="$1" cobj default
+    git -C "$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        cobj=$(git -C "$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
+        default=$(git -C "$SCRIPT_DIR" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+        git -C "$SCRIPT_DIR" merge-base --is-ancestor "$cobj" "$default" 2>/dev/null || return 1
+    fi
+    git -C "$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
+    # Run the NEW code's upgrade: rebuild XMRig if the pin changed, regenerate config, reinstall units.
+    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
+}
+
+# control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
+# rigforge-control-upgrade.path unit when the receiver stages an upgrade intent. Fetches the target
+# RigForge release and applies it, health-gated with rollback to the prior version. Every failure path
+# returns 0 with a recorded status (served by the receiver's GET /status) — a bad request must not
+# wedge the oneshot. The staged version is a CONFIRMATION guard, not a target selector: this verb
+# bounds what it will act on (D4/D10) so a compromised trigger can only ever land a real, reachable,
+# NEWER release — never an arbitrary tag, a downgrade, or a dangling commit.
+control_upgrade() {
+    [ "$OS_TYPE" != "Linux" ] && error "control-upgrade is driven by the rigforge-control-upgrade.path unit and is Linux-only."
+    parse_config # need API_PORT etc. so the post-build liveness check can read the miner
+    local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status proc
+    spool="$state/spool"
+    status="$state/status.json"
+    proc="$state/processing"
+    local newest older cid target installed old_tag
+    newest=$(ls -t "$spool"/upgrade-*.json 2>/dev/null | head -1) || true
+    if [ -z "$newest" ]; then
+        log "control-upgrade: nothing staged."
+        return 0
+    fi
+    older=$(ls -t "$spool"/upgrade-*.json 2>/dev/null | tail -n +2) || true
+    [ -n "$older" ] && printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
+    cid=$(basename "$newest" .json)
+    cid="${cid#upgrade-}"
+    # D8 spool handoff: MOVE the intent into a root-owned 0700 dir the receiver's DynamicUser cannot
+    # write — freezing it against any swap — and ONLY THEN refuse a symlink and read it. Checking BEFORE
+    # the move would be a TOCTOU: the DynamicUser owns the spool and could swap the file for a symlink in
+    # the window between check and move. `mv` renames the link itself, so a symlink survives the move as
+    # a symlink and is caught here, in the root-only dir where it can no longer be swapped.
+    mkdir -p "$proc" && chmod 700 "$proc"
+    local staged="$proc/$cid.json"
+    if ! mv -f "$newest" "$staged" 2>/dev/null; then
+        rm -f "$newest"
+        _control_status "$status" failed "$cid" version "could not secure the staged upgrade" ""
+        return 0
+    fi
+    if [ -L "$staged" ]; then
+        rm -f "$staged"
+        _control_status "$status" failed "$cid" version "staged upgrade was a symlink — refused" ""
+        warn "control-upgrade: $cid was a symlink — refused."
+        return 0
+    fi
+    # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
+    target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)
+    rm -f "$staged"
+    if ! [[ "$target" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        _control_status "$status" failed "$cid" version "staged upgrade target malformed (want vX.Y.Z)" ""
+        warn "control-upgrade: malformed target for $cid — refused."
+        return 0
+    fi
+    installed=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
+    # D10 monotonic anti-rollback: never install a version <= the one running. A compromised trigger
+    # can't pin a rig to an older, known-vulnerable release (reachability + immutable releases cover
+    # tag-moving / dangling commits; this covers downgrade and no-op).
+    if [ -n "$installed" ]; then
+        local want="${target#v}" highest
+        if [ "$want" = "$installed" ]; then
+            _control_status "$status" failed "$cid" version "already on $target — nothing to upgrade" ""
+            log "control-upgrade: already on $target."
+            return 0
+        fi
+        highest=$(printf '%s\n%s\n' "$installed" "$want" | sort -V | tail -n1)
+        if [ "$highest" != "$want" ]; then
+            _control_status "$status" failed "$cid" version "refused a downgrade: $target is not newer than v$installed" ""
+            warn "control-upgrade: $target <= installed v$installed — refused (anti-rollback)."
+            return 0
+        fi
+    fi
+    # D6 throttle: bound how often a rig fetches/rebuilds.
+    if ! _control_upgrade_throttle_ok "$state"; then
+        _control_status "$status" failed "$cid" version "throttled — too soon since the last upgrade attempt" ""
+        warn "control-upgrade: throttled."
+        return 0
+    fi
+    old_tag=$(git -C "$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
+    log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
+    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
+    if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
+        _control_status "$status" applied "$cid" version "" ""
+        log "control-upgrade: $cid applied — now on $target."
+    else
+        # ANY forward failure rolls back — a reachability/build error OR the miner not returning to a live
+        # hashrate. Rollback re-runs _control_upgrade_do, which checks out AND rebuilds the old ref, so a
+        # failed forward attempt never leaves the tree pinned to an unbuilt $target: that would make
+        # VERSION read $target, short-circuit every future retry ("already on"), and run unverified code
+        # on every later invocation. A build failure after checkout is a real on-disk change, not "no
+        # change applied" — this reverts it (#308 security review, the build-failed branch was the gap).
+        warn "control-upgrade: $target did not come up cleanly — rolling back to ${old_tag:-previous}."
+        if [ -n "$old_tag" ] && _control_upgrade_do "$old_tag" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
+            _control_status "$status" rolled_back "$cid" version "upgrade to $target failed; rolled back to $old_tag and live" ""
+            warn "control-upgrade: $cid rolled back to $old_tag."
+        else
+            _control_status "$status" failed "$cid" version "upgrade to $target failed and rollback to ${old_tag:-previous} did not restore a live miner — manual intervention needed" ""
+            warn "control-upgrade: $cid FAILED and rollback did not restore liveness — manual intervention needed on this rig."
         fi
     fi
     return 0
@@ -4944,6 +5181,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     api-refresh) api_refresh ;;
     msr-apply) msr_apply ;;
     control-apply) control_apply ;;
+    control-upgrade) control_upgrade ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;
