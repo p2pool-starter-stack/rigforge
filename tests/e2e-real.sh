@@ -56,12 +56,12 @@ FAIL=0
 CTL_SAVED_CFG=""
 CTL_CLEANUP_DONE=0
 ok() {
-    printf '  \033[1;32m✓\033[0m %s\n' "$1"
     PASS=$((PASS + 1))
+    printf '  \033[1;32m✓\033[0m %s\n' "$1"
 }
 bad() {
-    printf '  \033[1;31m✗\033[0m %s\n' "$1" >&2
     FAIL=$((FAIL + 1))
+    printf '  \033[1;31m✗\033[0m %s\n' "$1" >&2
 }
 phase() { printf '\n\033[1m== e2e-real: %s ==\033[0m\n' "$1"; }
 die() {
