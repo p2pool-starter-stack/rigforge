@@ -1368,6 +1368,7 @@ rc=$?
 assert_rc "help exits 0" "$rc" "0"
 assert_contains "help shows usage" "$out" "Usage:"
 assert_contains "help lists upgrade" "$out" "upgrade"
+assert_contains "help lists control-upgrade as internal (#312)" "$out" "control-upgrade (internal)"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" frobnicate 2>&1)"
 rc=$?
 assert_rc "unknown command fails" "$rc" "1"
@@ -1451,6 +1452,16 @@ out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" ba
 rc=$?
 assert_rc "uninstall rejects unknown flags" "$rc" "1"
 assert_contains "uninstall unknown-flag template" "$out" "Unknown option for uninstall: '--frobnicate'"
+# #314: every unknown-option message names the verb's valid flags AND points at help.
+for v in backup restore support-bundle; do
+    out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" "$v" --frobnicate </dev/null 2>&1)"
+    rc=$?
+    assert_rc "$v rejects unknown flags (#314)" "$rc" "1"
+    assert_contains "$v unknown-flag template (#314)" "$out" "Unknown option for $v: '--frobnicate'"
+    assert_contains "$v unknown-flag message points at help (#314)" "$out" "help"
+done
+assert_eq "every unknown-option message enumerates flags or says it takes none (#314)" \
+    "$(grep -c "Unknown option for [a-z-]*: '[^']*'\. " "$SCRIPT")" "0"
 for v in doctor status bench apply setup; do
     out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" "$v" --skip-deps </dev/null 2>&1)"
     rc=$?
@@ -6102,6 +6113,8 @@ else
 fi
 cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply --extra </dev/null) 2>&1 || true)"
 assert_contains "control-apply rejects extra args" "$cb_out" "Unexpected argument for control-apply"
+cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-upgrade --extra </dev/null) 2>&1 || true)"
+assert_contains "control-upgrade rejects extra args (#312)" "$cb_out" "Unexpected argument for control-upgrade"
 
 echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
 # The git fetch/checkout/reachability/build half (_control_upgrade_do) and the miner liveness check are
@@ -6142,7 +6155,9 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.js
             { [ "$DO" = down ] && [ "$WML" -eq 1 ]; } && return 1
             return 0
         }
-        git() { case "$3" in describe) echo v0.0.1 ;; rev-parse) echo deadbeefcafe ;; *) return 0 ;; esac }
+        # Match the subcommand anywhere in the args: #308's `-c safe.directory=...` sits between
+        # `-C dir` and the subcommand, so positional ($3) matching broke when it landed.
+        git() { case "$*" in *describe*) echo v0.0.1 ;; *rev-parse*) echo deadbeefcafe ;; *) return 0 ;; esac }
         set +e
         PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
     )
@@ -6241,7 +6256,6 @@ case "\$*" in
 *"fetch"*) exit ${2:-0} ;;
 *"merge-base --is-ancestor"*) exit ${1:-0} ;;
 *"rev-parse"*) echo deadbeefcafe; exit 0 ;;
-*"symbolic-ref"*) echo origin/main; exit 0 ;;
 *) exit 0 ;;
 esac
 EOF
@@ -6260,6 +6274,12 @@ _mk_git_stub 1 0
 assert_eq "_control_upgrade_do: unreachable tag (merge-base fails) -> 1 (D10)" "$(_run_udo)" "1"
 _mk_git_stub 0 1
 assert_eq "_control_upgrade_do: git fetch failure -> 1" "$(_run_udo)" "1"
+# #318: the D10 guard must pin origin/main (the branch releases are cut from), never origin/HEAD —
+# a fresh clone resolves HEAD to develop, which doesn't contain the release merge commits on main.
+assert_contains "D10 reachability guard pins origin/main (#318)" \
+    "$(grep 'merge-base --is-ancestor' "$SCRIPT")" 'origin/main'
+assert_eq "D10 guard does not consult origin/HEAD (#318)" \
+    "$(grep -c 'symbolic-ref' "$SCRIPT")" "0"
 
 # control_upgrade's throttle-blocked path: a fresh stamp inside the window -> failed(throttled).
 cuThr=$(mktemp -d "$SANDBOX/cuthr.XXXXXX")
