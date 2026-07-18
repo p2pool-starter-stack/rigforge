@@ -7,6 +7,22 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-07-18
+
+The first **published** v1.11 release. `v1.11.0` was tagged but not published: its remote worker-upgrade
+path (#308) was inert on real rigs — fixed here. Everything under `[1.11.0]` below (co-resident
+HugePages sizing #305, the remote worker-upgrade path #308) ships in this release, with the fix.
+
+### Fixed
+
+- **`control-upgrade` now works when triggered on a real rig (#308).** The privileged upgrade oneshot
+  runs as root with no `$HOME`, so `git` couldn't read root's `safe.directory` config and fatally
+  refused the operator-owned install as "dubious ownership" — every git call in the upgrade failed and
+  the upgrade silently died (rolling back to the same, unbuilt state). Each `git` invocation in the
+  upgrade path now pins `-c safe.directory="$SCRIPT_DIR"`, so fetch / reachability / checkout run
+  regardless of the unit's environment; a drift guard keeps a future git call from dropping it. Caught
+  by the real-hardware (miner-0) upgrade e2e — the stubbed unit suite can't reach it (it stubs git).
+
 ## [1.11.0] - 2026-07-18
 
 Two opt-in capabilities that let a Pithead stack co-locate and remotely manage RigForge workers, both
