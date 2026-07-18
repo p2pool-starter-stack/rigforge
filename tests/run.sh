@@ -6256,7 +6256,6 @@ case "\$*" in
 *"fetch"*) exit ${2:-0} ;;
 *"merge-base --is-ancestor"*) exit ${1:-0} ;;
 *"rev-parse"*) echo deadbeefcafe; exit 0 ;;
-*"symbolic-ref"*) echo origin/main; exit 0 ;;
 *) exit 0 ;;
 esac
 EOF
@@ -6275,6 +6274,12 @@ _mk_git_stub 1 0
 assert_eq "_control_upgrade_do: unreachable tag (merge-base fails) -> 1 (D10)" "$(_run_udo)" "1"
 _mk_git_stub 0 1
 assert_eq "_control_upgrade_do: git fetch failure -> 1" "$(_run_udo)" "1"
+# #318: the D10 guard must pin origin/main (the branch releases are cut from), never origin/HEAD —
+# a fresh clone resolves HEAD to develop, which doesn't contain the release merge commits on main.
+assert_contains "D10 reachability guard pins origin/main (#318)" \
+    "$(grep 'merge-base --is-ancestor' "$SCRIPT")" 'origin/main'
+assert_eq "D10 guard does not consult origin/HEAD (#318)" \
+    "$(grep -c 'symbolic-ref' "$SCRIPT")" "0"
 
 # control_upgrade's throttle-blocked path: a fresh stamp inside the window -> failed(throttled).
 cuThr=$(mktemp -d "$SANDBOX/cuthr.XXXXXX")
