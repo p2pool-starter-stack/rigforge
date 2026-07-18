@@ -30,6 +30,8 @@ you like to your stack's single endpoint.
 
 ## ✨ What it does
 
+**Sets up the rig:**
+
 - Installs build dependencies (`cmake`, `libuv`, `hwloc`, …) and compiles a pinned, commit-verified
   XMRig from source.
 - Tunes for the detected CPU: XMRig's cache-aware auto-detection (thread count, assembly path, MSR
@@ -41,6 +43,25 @@ you like to your stack's single endpoint.
 - Asks for your pool URL on first run if no config exists.
 - Is idempotent: re-running skips the recompile when the pinned XMRig is already built and never
   double-applies system tuning.
+
+**Then keeps it running:**
+
+- `tune` measures the fastest XMRig knobs on your actual hardware (live against the running miner,
+  or offline) and keeps the winners; it can optimize for raw hashrate or hashrate-per-watt, and
+  `autotune` in `config.json` re-tunes on a monthly schedule.
+- An opt-in `watchdog` restarts a wedged miner (alive but hashing 0 H/s), and with `max_temp_c` set
+  it stops the miner above that temperature and resumes once it cools.
+- `doctor` health-checks HugePages, the MSR mod, the governor, and the service; `status` shows live
+  hashrate, pool, uptime, and shares.
+- `bios` is a guided, resumable walkthrough of the BIOS/UEFI changes RigForge can't make itself
+  (XMP/EXPO, SMT, PBO/Eco Mode), and re-verifies what took after the reboot.
+- `backup` and `restore` snapshot your config and tuning; `support-bundle` collects a redacted
+  tarball for bug reports; `completion` prints bash/zsh tab-completion.
+- Running a [Pithead](https://github.com/p2pool-starter-stack/pithead) fleet? An opt-in,
+  token-authenticated control port lets the dashboard apply config changes remotely (and, behind a
+  second opt-in, trigger a RigForge upgrade) while `config.json` stays authoritative. See
+  [Pithead Integration](docs/pithead-integration.md).
+- `uninstall` removes the service and reverts every system change it made.
 
 ---
 
