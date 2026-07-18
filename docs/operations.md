@@ -593,6 +593,14 @@ cp config-backups/config-20260711-120000.json config.json
 sudo ./rigforge.sh apply
 ```
 
+**Remote upgrade (second opt-in).** With `"control_upgrade": "enabled"` (only valid when `control`
+is already enabled), the stack can also trigger this rig to upgrade its own RigForge to a newer
+release: the control server stages the request and the internal `control-upgrade` verb (run by the
+`rigforge-control-upgrade.path` unit, like `control-apply` for config changes) fetches, verifies,
+and health-gates the swap with rollback. It refuses anything that isn't a real release newer than
+the running one. Default off, and never on just because `control` is. The threat model and
+decisions are in [ADR 0002](adr/0002-remote-worker-upgrade.md).
+
 `"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).

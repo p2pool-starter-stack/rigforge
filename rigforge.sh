@@ -1627,7 +1627,7 @@ main() {
             _setup_plan
             return 0
             ;;
-        *) error "Unknown option for setup: '$_arg'. Run '$0 help'." ;;
+        *) error "Unknown option for setup: '$_arg' (use --dry-run). Run '$0 help'." ;;
         esac
     done
     CURRENT_STEP="verifying prerequisites"
@@ -1752,7 +1752,7 @@ upgrade() {
             _upgrade_check
             return 0
             ;;
-        *) error "Unknown option for upgrade: '$arg'. Run '$0 help'." ;;
+        *) error "Unknown option for upgrade: '$arg' (use --check). Run '$0 help'." ;;
         esac
     done
     check_prerequisites
@@ -1822,7 +1822,7 @@ uninstall() {
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
-        *) error "Unknown option for uninstall: '$arg'. Run '$0 help'." ;;
+        *) error "Unknown option for uninstall: '$arg' (use -y|--yes). Run '$0 help'." ;;
         esac
     done
     if [ "$assume_yes" -eq 0 ]; then
@@ -2683,7 +2683,7 @@ tune() {
         --short) now=1 ;;                    # explicit quick pass — the default depth for --now
         --long) TUNE_MODE=live now_long=1 ;; # full all-knob LIVE sweep (= --live), the thorough re-tune
         --history) TUNE_HISTORY=1 ;;         # show current tuning + last run + auto-tune decisions, then exit
-        *) error "Unknown option for tune: '$1' (use --now, --short, --long, --live, --bench, --confirm, --efficiency, --perf, --history, or --clear)." ;;
+        *) error "Unknown option for tune: '$1' (use --now, --short, --long, --live, --bench, --confirm, --efficiency, --perf, --history, or --clear). Run '$0 help'." ;;
         esac
         shift
     done
@@ -3164,7 +3164,7 @@ backup() {
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) ;; # accepted for symmetry with restore; backup has no prompt to skip
-        *) error "Unknown option for backup: '$arg'. Run '$0 help'." ;;
+        *) error "Unknown option for backup: '$arg' (use -y|--yes). Run '$0 help'." ;;
         esac
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to back up. Run 'setup' first."
@@ -3203,7 +3203,7 @@ restore() {
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
-        -*) error "Unknown option for restore: '$arg'. Run '$0 help'." ;;
+        -*) error "Unknown option for restore: '$arg' (use -y|--yes). Run '$0 help'." ;;
         *) [ -n "$archive" ] || archive="$arg" ;;
         esac
     done
@@ -3283,7 +3283,7 @@ _redact_config() {
 support_bundle() {
     local arg
     for arg in "$@"; do
-        error "Unknown option for support-bundle: '$arg'. Run '$0 help'."
+        error "Unknown option for support-bundle: '$arg' (it takes no options). Run '$0 help'."
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to collect. Run 'setup' first."
 
@@ -3678,7 +3678,7 @@ apply() {
             _apply_plan
             return 0
             ;;
-        *) error "Unknown option for apply: '$_arg'. Run '$0 help'." ;;
+        *) error "Unknown option for apply: '$_arg' (use --dry-run). Run '$0 help'." ;;
         esac
     done
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
@@ -5068,7 +5068,7 @@ bios() {
             TUNE_TARGET=perf
             target_set=1
             ;;
-        *) error "Unknown option for bios: '$1' (use --perf or --efficiency)." ;;
+        *) error "Unknown option for bios: '$1' (use --perf or --efficiency). Run '$0 help'." ;;
         esac
         shift
     done
@@ -5136,6 +5136,8 @@ Info:
              rigforge-api-refresh systemd timer ("api": "enabled" in config.json)
   control-apply (internal) persist + apply a config change staged by the control server — run by
              the rigforge-control-apply.path unit ("control": "enabled" in config.json)
+  control-upgrade (internal) fetch + redeploy a newer RigForge release staged by the control server —
+             run by the rigforge-control-upgrade.path unit ("control_upgrade": "enabled" in config.json)
   support-bundle  collect doctor/version/configs/log-tail into a redacted tarball for bug reports
   completion print a bash/zsh tab-completion script: completion bash|zsh
   version    print the RigForge version  (-v, --version)
@@ -5150,7 +5152,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
     # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
     case "${1:-setup}" in
-    autotune | watchdog | doctor | api-refresh | msr-apply | control-apply | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
+    autotune | watchdog | doctor | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
@@ -5214,6 +5216,6 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     version | --version | -v) cmd_version ;;
     help | -h | --help) usage ;;
-    *) error "Unknown command: $1. Try: setup, upgrade, apply, uninstall, doctor, bench, tune, autotune, backup, restore, status, logs, start, stop, restart, enable, disable, bios, api-refresh, msr-apply, support-bundle, completion, version, help." ;;
+    *) error "Unknown command: $1. Run '$0 help' for the command list." ;;
     esac
 fi
