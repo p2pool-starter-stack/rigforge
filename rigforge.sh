@@ -1248,6 +1248,11 @@ install_control() {
             sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
             sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath"
             sudo systemctl daemon-reload 2>/dev/null || true
+            # Under load systemctl can transiently drop the stop half of `disable --now` (real
+            # miner-0 gate, 2026-07-19: unit files removed, receiver left running orphaned — a live
+            # write surface with control "disabled"). One explicit re-stop closes it; no-op when
+            # the stop already landed.
+            sudo systemctl stop rigforge-control.service 2>/dev/null || true
             log "Writable control path disabled."
         fi
         return 0
@@ -3812,7 +3817,8 @@ _control_do_apply() {
     _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"
 }
 
-# Record the outcome for the receiver's GET /status (mode 644 so the DynamicUser server reads it back).
+# Record a status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it
+# back) — a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
 _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
     local f="$1" cid="$3" body cdir
     mkdir -p "$(dirname "$f")"
@@ -3898,16 +3904,20 @@ control_apply() {
 # Pre-dial throttle for the remote-upgrade path (#308, ADR 0002 D6): a persisted stamp under a flock
 # bounds how often a rig will fetch from GitHub / rebuild, so a looping or hostile trigger can't turn
 # the fleet into a beacon or thrash the miner with rebuilds. Returns 0 if allowed (and stamps the
-# attempt), 1 if still inside the window. Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
+# attempt), 1 if still inside the window, 2 if the throttle state itself is unusable (fail-closed,
+# #321). Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
 _control_upgrade_throttle_ok() { # <state-dir>
     local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
     now=$(date +%s)
     mkdir -p "$dir" 2>/dev/null || true
-    # Can't open the lock (unwritable/full state dir)? Fail OPEN — availability over strictness — but say
-    # so, or a broken state dir would silently disable the anti-beacon/anti-thrash throttle unnoticed.
+    # Can't open the lock (unwritable/full state dir)? Fail CLOSED (#321): this guard exists to bound
+    # how often a compromised trigger can make the rig dial out, and a degraded state dir is exactly
+    # what an attacker might arrange — fail-open would invert the posture right there. An operator
+    # with a broken state dir has bigger problems than a delayed upgrade. rc 2 (not 1) so the caller
+    # reports the real cause instead of "throttled — retry later".
     exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
-        warn "control-upgrade: couldn't take the throttle lock under $dir — proceeding UNthrottled (check the state dir)."
-        return 0
+        warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
+        return 2
     }
     flock 9 2>/dev/null || true
     [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
@@ -3988,6 +3998,12 @@ control_upgrade() {
         warn "control-upgrade: $cid was a symlink — refused."
         return 0
     fi
+    # #320: one NON-terminal record now that the intent is claimed (D8 move done, nothing can swap it).
+    # Between 202 Accepted and the terminal write the poller previously saw only the PREVIOUS change's
+    # outcome — indistinguishable from "oneshot died before writing status". `started` is overwritten
+    # by this run's terminal record below; a poller that still reads it after the oneshot exited knows
+    # the run was lost.
+    _control_status "$status" started "$cid" version "" ""
     # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
     target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)
     rm -f "$staged"
@@ -4003,7 +4019,8 @@ control_upgrade() {
     if [ -n "$installed" ]; then
         local want="${target#v}" highest
         if [ "$want" = "$installed" ]; then
-            _control_status "$status" failed "$cid" version "already on $target — nothing to upgrade" ""
+            # #320: an idempotent no-op, not a failure — the rig is exactly where the operator wants it.
+            _control_status "$status" noop "$cid" version "already on $target — nothing to upgrade" ""
             log "control-upgrade: already on $target."
             return 0
         fi
@@ -4014,9 +4031,17 @@ control_upgrade() {
             return 0
         fi
     fi
-    # D6 throttle: bound how often a rig fetches/rebuilds.
-    if ! _control_upgrade_throttle_ok "$state"; then
-        _control_status "$status" failed "$cid" version "throttled — too soon since the last upgrade attempt" ""
+    # D6 throttle: bound how often a rig fetches/rebuilds. rc 2 = throttle state unavailable — a
+    # fail-closed refusal (#321) that must read as a broken rig, not as "throttled — retry later".
+    local thr_rc=0
+    _control_upgrade_throttle_ok "$state" || thr_rc=$?
+    if [ "$thr_rc" -eq 2 ]; then
+        _control_status "$status" failed "$cid" version "throttle state unavailable under $state — refused (fail-closed)" ""
+        warn "control-upgrade: throttle state unavailable — refused."
+        return 0
+    elif [ "$thr_rc" -ne 0 ]; then
+        # #320: distinct from failed — the consumer's right move is retry-later, not alarm.
+        _control_status "$status" throttled "$cid" version "throttled — too soon since the last upgrade attempt" ""
         warn "control-upgrade: throttled."
         return 0
     fi
@@ -4024,7 +4049,8 @@ control_upgrade() {
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-        _control_status "$status" applied "$cid" version "" ""
+        # #320: echo the landed version — the poller shouldn't have to cross-read the miner API for it.
+        _control_status "$status" applied "$cid" version "upgraded to $target" ""
         log "control-upgrade: $cid applied — now on $target."
     else
         # ANY forward failure rolls back — a reachability/build error OR the miner not returning to a live

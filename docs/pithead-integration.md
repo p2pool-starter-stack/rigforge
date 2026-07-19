@@ -188,8 +188,11 @@ and [ADR 0001](adr/0001-writable-worker-config-control-path.md).
 recent* change's outcome, which a concurrent change (another dashboard edit, a local `apply`, an
 autotune restart) can step on between your `POST` and your poll. To avoid that race, poll
 `GET :8082/status?change_id=<the 16-hex id from the 202>` — it returns *that* change's recorded
-outcome (`applied`/`rejected`/`rolled_back`/`failed` + `reason`/`backup`/`changed_keys`/`warnings`), or `404`
-if it isn't among the last ~20 recorded. Same bearer auth as `/status`. Pair it with
+outcome (for a config change: `applied`/`rejected`/`rolled_back`/`failed` +
+`reason`/`backup`/`changed_keys`/`warnings`), or `404` if it isn't among the last ~20 recorded. Same
+bearer auth as `/status`. The same endpoint serves remote-*upgrade* change ids with a richer
+vocabulary (non-terminal `started`, terminal `noop`/`throttled` alongside the above — #320); see
+[Operations › Remote upgrade](operations.md#writable-control-path-opt-in). Pair it with
 `config_meta.revision` on the read feed to confirm the effective config actually moved.
 
 **Prefill from a live read (`rigforge.config`).** The enriched feed exposes the rig's current

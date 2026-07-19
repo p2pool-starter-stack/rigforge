@@ -7,6 +7,50 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-07-19
+
+The pithead#597 producer release: the control-upgrade `/status` contract a one-click worker
+upgrade can poll without string-matching, a fail-closed anti-beacon throttle, corrected
+security docs, and the remote-upgrade chain codified as a repeatable real-hardware e2e phase.
+
+### Added
+
+- **`control-upgrade` status contract: `started` / `noop` / `throttled` + version echo (#320).**
+  Consumer findings from pithead's one-click worker upgrade (pithead#597): the oneshot now writes a
+  non-terminal `started` record the moment it claims a staged intent (so a poller can tell mid-build
+  from queued, and a `started` that outlives the oneshot means the run was lost); the already-on-target
+  refusal reports `noop` and the throttle window reports `throttled` instead of collapsing into
+  `failed`; a successful upgrade's `reason` names the landed version. Additive to the ADR 0002 D3/D6
+  model — D6 amended in place, contract documented in Operations › Writable control path.
+- **`tests/e2e-real.sh` grows an `upgrade` phase (#322).** Codifies the real-hardware
+  control-upgrade run that caught both real bugs in this chain (#308's dubious-ownership silent git
+  death, #318's origin/HEAD refusal) — invisible to the unit suite by design, since it stubs git. A
+  noop leg proves the wire → path unit → root oneshot → `/status` round trip; a rollback leg forges
+  a local tag unreachable from `origin/main` and asserts the D10 refusal rolls back with the tree,
+  `VERSION`, and miner intact and the D6 throttle stamped; an opt-in `E2E_UPGRADE_TARGET` leg drives
+  a real forward upgrade. Runs inside `all` between `control` and `perf`, with the same
+  snapshot-and-revert guarantees. Also the producer half of pithead#597's cross-repo gate.
+
+### Fixed
+
+- **The anti-beacon throttle fails CLOSED on an unusable state dir (#321).** It used to proceed
+  unthrottled (with a warn) when it couldn't take its lock — inverting the guard's whole purpose on
+  exactly the kind of degraded box an attacker might arrange. Now the upgrade is refused with a
+  `failed` status whose reason names the throttle state, distinct from `throttled` so a consumer
+  doesn't retry-later forever against a broken rig.
+- **Disabling the control path re-stops the receiver explicitly.** On the v1.12.0 pre-tag gate,
+  a loaded systemctl transiently dropped the stop half of `disable --now`: the unit files were
+  removed but the running receiver was left orphaned — a live write surface on a rig whose config
+  said control was off. The disable path now issues one explicit re-stop (no-op when the stop
+  landed). The `control` e2e phase also gained the polled receiver-up gate the `upgrade` phase
+  ships with — its single-shot check hit the same pinned-CPU cold-start race on the gate run.
+- **Security-doc drift on the remote-upgrade trust model (#321).** SECURITY.md claimed the remote
+  path is "verified by SHA256SUMS hash only" — it never was; the real anchor is the ADR 0002 D5
+  design (git checkout of the release tag over TLS, `origin/main` ancestry, immutable releases), and
+  the doc now says so. ADR 0002 D8's "a flock serializes concurrent triggers" corrected in place:
+  the only flock guards the throttle stamp; serialization is `Type=oneshot` + newest-wins spool
+  draining.
+
 ## [1.11.2] - 2026-07-18
 
 Consistency-audit patch: CLI-surface and docs cleanups, plus a real fix to the remote-upgrade
