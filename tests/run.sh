@@ -6166,6 +6166,8 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.js
 st() { printf '%s' "$1" | jq -r .status 2>/dev/null; }
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" ok)"
 assert_eq "upgrade applied on a newer, buildable release" "$(st "$s")" "applied"
+# #320: the applied record must say which version landed — no cross-reading the miner API for it.
+assert_contains "applied reason echoes the landed version (#320)" "$s" "upgraded to v9.9.9"
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" down)"
 assert_eq "built but miner stays down -> rolled_back" "$(st "$s")" "rolled_back"
 # #308 security review (HIGH): a build failure AFTER checkout must roll the tree back to the prior
@@ -6180,7 +6182,10 @@ s="$(cu_run '{"version":"v1.0.0"}' "2.0.0" ok)"
 assert_eq "downgrade refused -> failed (never built)" "$(st "$s")" "failed"
 assert_contains "downgrade reason names anti-rollback" "$s" "not newer"
 s="$(cu_run '{"version":"v1.0.0"}' "1.0.0" ok)"
-assert_contains "same version refused (already on)" "$s" "already on v1.0.0"
+# #320: already-on-target is an idempotent no-op, not a failure — a dashboard must not show red
+# for a rig sitting exactly where the operator wants it.
+assert_eq "same version -> noop, not failed (#320)" "$(st "$s")" "noop"
+assert_contains "noop reason still says already on" "$s" "already on v1.0.0"
 s="$(cu_run '{"version":"garbage"}' "1.0.0" ok)"
 assert_contains "malformed target refused, never run" "$s" "malformed"
 s="$(cu_run '{"version":"v9.9.9","evil":"x"}' "1.0.0" ok)"
@@ -6302,7 +6307,41 @@ sThr="$(
     PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
     cat "$cuThr/state/status.json" 2>/dev/null
 )"
-assert_contains "control_upgrade within the throttle window -> failed(throttled) (#308)" "$sThr" "throttled"
+assert_eq "control_upgrade within the throttle window -> status throttled (#308/#320)" "$(st "$sThr")" "throttled"
+assert_contains "throttled reason says why" "$sThr" "too soon"
+
+# #320: between the D8 claim and the terminal outcome the verb writes ONE non-terminal `started`
+# record, so a poller can tell "mid-run" (and "oneshot died mid-run": started never superseded)
+# from "queued, path unit hasn't fired" (previous change's terminal record still served).
+cuSt=$(mktemp -d "$SANDBOX/cust.XXXXXX")
+mkdir -p "$cuSt/state/spool"
+printf '1.0.0' >"$cuSt/VERSION"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuSt/config.json"
+printf '{"version":"v9.9.9"}\n' >"$cuSt/state/spool/upgrade-abc123def4567890.json"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$cuSt"
+    CONFIG_JSON="$cuSt/config.json"
+    RIGFORGE_CONTROL_STATE="$cuSt/state"
+    CONTROL_UPGRADE_MIN_INTERVAL=0
+    # Snapshot the status file at the moment the build half runs — the started record must already
+    # be there, and must carry this change's id (not the previous change's terminal record).
+    _control_upgrade_do() {
+        cp "$cuSt/state/status.json" "$cuSt/mid-status.json" 2>/dev/null
+        return 0
+    }
+    _wait_miner_live() { return 0; }
+    git() { echo v0.0.1; }
+    set +e
+    PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+)
+sMid="$(cat "$cuSt/mid-status.json" 2>/dev/null)"
+assert_eq "started record served while the build runs (#320)" "$(st "$sMid")" "started"
+assert_contains "started record carries this change's id" "$sMid" "abc123def4567890"
+assert_eq "started record indexed under changes/<cid> too (#320)" \
+    "$([ -f "$cuSt/state/changes/abc123def4567890.json" ] && echo y || echo n)" "y"
+assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.json" 2>/dev/null)")" "applied"
 
 # #308: the control-upgrade oneshot runs as root with NO $HOME, so git can't read root's safe.directory
 # config and fatals on "dubious ownership" of the operator-owned install — every git op then fails and

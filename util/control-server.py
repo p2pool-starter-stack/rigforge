@@ -16,7 +16,9 @@ Posture, deliberately paranoid because this one accepts writes:
   - Body size is capped; the staged file is written atomically (temp + rename + fsync) so the
     path unit never sees a half-written request.
 
-Python3 stdlib only. GET /status returns the last applied change's result; POST /apply stages one.
+Python3 stdlib only. GET /status returns the last recorded change record — a terminal outcome, or
+control-upgrade's non-terminal `started` while the oneshot runs (#320). POST /apply stages a config
+change; POST /upgrade stages a release upgrade (#308, gated by control_upgrade).
 """
 import hmac
 import json
@@ -227,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return self._send(500, "Internal Server Error", {"error": "could not stage upgrade: %s" % e})
         self._send(202, "Accepted", {"status": "accepted", "change_id": cid,
-                                     "note": "queued; the rig refuses anything that isn't a real, reachable release newer than the one installed (it does not independently verify the target is the newest). poll GET /status"})
+                                     "note": "queued; the rig refuses anything that isn't a real, reachable release newer than the one installed (posting the installed version ends 'noop'; it does not independently verify the target is the newest). poll GET /status"})
 
     def _handle_apply(self):
         change = self._read_json_body()

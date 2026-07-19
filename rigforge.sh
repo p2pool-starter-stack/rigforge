@@ -3812,7 +3812,8 @@ _control_do_apply() {
     _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"
 }
 
-# Record the outcome for the receiver's GET /status (mode 644 so the DynamicUser server reads it back).
+# Record a status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it
+# back) — a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
 _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
     local f="$1" cid="$3" body cdir
     mkdir -p "$(dirname "$f")"
@@ -3988,6 +3989,12 @@ control_upgrade() {
         warn "control-upgrade: $cid was a symlink — refused."
         return 0
     fi
+    # #320: one NON-terminal record now that the intent is claimed (D8 move done, nothing can swap it).
+    # Between 202 Accepted and the terminal write the poller previously saw only the PREVIOUS change's
+    # outcome — indistinguishable from "oneshot died before writing status". `started` is overwritten
+    # by this run's terminal record below; a poller that still reads it after the oneshot exited knows
+    # the run was lost.
+    _control_status "$status" started "$cid" version "" ""
     # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
     target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)
     rm -f "$staged"
@@ -4003,7 +4010,8 @@ control_upgrade() {
     if [ -n "$installed" ]; then
         local want="${target#v}" highest
         if [ "$want" = "$installed" ]; then
-            _control_status "$status" failed "$cid" version "already on $target — nothing to upgrade" ""
+            # #320: an idempotent no-op, not a failure — the rig is exactly where the operator wants it.
+            _control_status "$status" noop "$cid" version "already on $target — nothing to upgrade" ""
             log "control-upgrade: already on $target."
             return 0
         fi
@@ -4016,7 +4024,8 @@ control_upgrade() {
     fi
     # D6 throttle: bound how often a rig fetches/rebuilds.
     if ! _control_upgrade_throttle_ok "$state"; then
-        _control_status "$status" failed "$cid" version "throttled — too soon since the last upgrade attempt" ""
+        # #320: distinct from failed — the consumer's right move is retry-later, not alarm.
+        _control_status "$status" throttled "$cid" version "throttled — too soon since the last upgrade attempt" ""
         warn "control-upgrade: throttled."
         return 0
     fi
@@ -4024,7 +4033,8 @@ control_upgrade() {
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-        _control_status "$status" applied "$cid" version "" ""
+        # #320: echo the landed version — the poller shouldn't have to cross-read the miner API for it.
+        _control_status "$status" applied "$cid" version "upgraded to $target" ""
         log "control-upgrade: $cid applied — now on $target."
     else
         # ANY forward failure rolls back — a reachability/build error OR the miner not returning to a live
