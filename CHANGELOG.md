@@ -7,6 +7,12 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-07-19
+
+The pithead#597 producer release: the control-upgrade `/status` contract a one-click worker
+upgrade can poll without string-matching, a fail-closed anti-beacon throttle, corrected
+security docs, and the remote-upgrade chain codified as a repeatable real-hardware e2e phase.
+
 ### Added
 
 - **`control-upgrade` status contract: `started` / `noop` / `throttled` + version echo (#320).**
