@@ -17,6 +17,20 @@ All notable changes to RigForge are documented here. The format is based on
   `failed`; a successful upgrade's `reason` names the landed version. Additive to the ADR 0002 D3/D6
   model — D6 amended in place, contract documented in Operations › Writable control path.
 
+### Fixed
+
+- **The anti-beacon throttle fails CLOSED on an unusable state dir (#321).** It used to proceed
+  unthrottled (with a warn) when it couldn't take its lock — inverting the guard's whole purpose on
+  exactly the kind of degraded box an attacker might arrange. Now the upgrade is refused with a
+  `failed` status whose reason names the throttle state, distinct from `throttled` so a consumer
+  doesn't retry-later forever against a broken rig.
+- **Security-doc drift on the remote-upgrade trust model (#321).** SECURITY.md claimed the remote
+  path is "verified by SHA256SUMS hash only" — it never was; the real anchor is the ADR 0002 D5
+  design (git checkout of the release tag over TLS, `origin/main` ancestry, immutable releases), and
+  the doc now says so. ADR 0002 D8's "a flock serializes concurrent triggers" corrected in place:
+  the only flock guards the throttle stamp; serialization is `Type=oneshot` + newest-wins spool
+  draining.
+
 ## [1.11.2] - 2026-07-18
 
 Consistency-audit patch: CLI-surface and docs cleanups, plus a real fix to the remote-upgrade

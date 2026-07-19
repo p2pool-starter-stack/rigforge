@@ -6235,17 +6235,19 @@ assert_eq "throttle: second attempt within the window blocked" "$?" "1"
     _control_upgrade_throttle_ok "$td"
 )
 assert_eq "throttle: zero interval always allowed" "$?" "0"
-# Fail OPEN when the state dir is unwritable (can't take the lock) — availability over strictness.
+# Fail CLOSED when the lock can't be opened (#321): the anti-beacon throttle must not silently
+# disable itself on exactly the degraded state dir an attacker might arrange. rc 2, not 1, so the
+# caller can report the real cause instead of "throttled — retry later". The dangling symlink into
+# a missing dir makes the open fail for ANY uid (root included), unlike a chmod-based setup.
 roThr="$SANDBOX/thr-ro"
 mkdir -p "$roThr"
-chmod 500 "$roThr"
+ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
 (
     source "$SCRIPT"
     CONTROL_UPGRADE_MIN_INTERVAL=3600
-    _control_upgrade_throttle_ok "$roThr/cant-mkdir"
+    _control_upgrade_throttle_ok "$roThr"
 ) >/dev/null 2>&1
-assert_eq "throttle: unwritable state dir fails open (allowed)" "$?" "0"
-chmod 700 "$roThr"
+assert_eq "throttle: unopenable lock fails CLOSED (rc 2) (#321)" "$?" "2"
 
 # _control_upgrade_do against a STUB git (+ stub rigforge.sh) so the real fetch/reachability/checkout
 # lines run under coverage — and, more importantly, the D10 reachability guard is exercised for real.
@@ -6309,6 +6311,31 @@ sThr="$(
 )"
 assert_eq "control_upgrade within the throttle window -> status throttled (#308/#320)" "$(st "$sThr")" "throttled"
 assert_contains "throttled reason says why" "$sThr" "too soon"
+
+# #321: unusable throttle state (rc 2) is a fail-closed refusal, and must NOT read as "throttled"
+# — a consumer would retry-later forever against a rig whose state dir is actually broken.
+cuTs=$(mktemp -d "$SANDBOX/cuts.XXXXXX")
+mkdir -p "$cuTs/state/spool"
+printf '1.0.0' >"$cuTs/VERSION"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuTs/config.json"
+printf '{"version":"v9.9.9"}\n' >"$cuTs/state/spool/upgrade-abc123def4567890.json"
+ln -s "$cuTs/state/no-such-dir/lock" "$cuTs/state/.upgrade-throttle.lock"
+sTs="$(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$cuTs"
+    CONFIG_JSON="$cuTs/config.json"
+    RIGFORGE_CONTROL_STATE="$cuTs/state"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_do() { return 0; }
+    _wait_miner_live() { return 0; }
+    git() { echo v0.0.1; }
+    set +e
+    PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    cat "$cuTs/state/status.json" 2>/dev/null
+)"
+assert_eq "unusable throttle state -> failed, never built (#321)" "$(st "$sTs")" "failed"
+assert_contains "fail-closed reason names the throttle state, not 'throttled'" "$sTs" "throttle state unavailable"
 
 # #320: between the D8 claim and the terminal outcome the verb writes ONE non-terminal `started`
 # record, so a poller can tell "mid-run" (and "oneshot died mid-run": started never superseded)

@@ -121,13 +121,16 @@ the key-custody burden wasn't worth it for this project's users, who deploy from
 that trade ever changes (a real download-based user base), the signing machinery lives in the
 git history of `.github/workflows/release.yml` (#137, #205).
 
-The same trust boundary governs the planned remote-upgrade path (`control-upgrade`, #308 — opt-in,
-off by default). There a rig would fetch a release and run it as root unattended, verified by
-`SHA256SUMS` hash only. That path removes the human who would otherwise eyeball a bad release, so it
-inherits the origin gap above as a deliberately accepted risk: a full GitHub-account compromise could
-push malicious root code across a fleet. We accept that rather than plan around a compromise of
-GitHub itself — the proportionate mitigation is hardening the account (hardware-key 2FA, tight
-release and branch-protection permissions), not re-adding release signing.
+The same trust boundary governs the remote-upgrade path (`control-upgrade`, #308 — opt-in, off by
+default, [ADR 0002](docs/adr/0002-remote-worker-upgrade.md)). There a rig fetches a release and runs
+it as root unattended — but not via the release bundles or `SHA256SUMS` at all: the fetch is a
+**git checkout of the release tag over TLS to GitHub**, gated on the tag's commit being reachable
+from `origin/main` and on GitHub's immutable releases locking the tag→commit binding. Checksums play
+no role on that path (ADR 0002 D5). It removes the human who would otherwise eyeball a bad release,
+so it inherits the origin gap above as a deliberately accepted risk: a full GitHub-account
+compromise could push malicious root code across a fleet. We accept that rather than plan around a
+compromise of GitHub itself — the proportionate mitigation is hardening the account (hardware-key
+2FA, tight release and branch-protection permissions), not re-adding release signing.
 
 For the strongest guarantee available today, deploy from a git checkout at the release tag —
 the commit hash is the integrity anchor, and the XMRig source it builds is itself pinned and

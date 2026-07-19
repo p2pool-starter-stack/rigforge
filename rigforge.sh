@@ -3899,16 +3899,20 @@ control_apply() {
 # Pre-dial throttle for the remote-upgrade path (#308, ADR 0002 D6): a persisted stamp under a flock
 # bounds how often a rig will fetch from GitHub / rebuild, so a looping or hostile trigger can't turn
 # the fleet into a beacon or thrash the miner with rebuilds. Returns 0 if allowed (and stamps the
-# attempt), 1 if still inside the window. Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
+# attempt), 1 if still inside the window, 2 if the throttle state itself is unusable (fail-closed,
+# #321). Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
 _control_upgrade_throttle_ok() { # <state-dir>
     local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
     now=$(date +%s)
     mkdir -p "$dir" 2>/dev/null || true
-    # Can't open the lock (unwritable/full state dir)? Fail OPEN — availability over strictness — but say
-    # so, or a broken state dir would silently disable the anti-beacon/anti-thrash throttle unnoticed.
+    # Can't open the lock (unwritable/full state dir)? Fail CLOSED (#321): this guard exists to bound
+    # how often a compromised trigger can make the rig dial out, and a degraded state dir is exactly
+    # what an attacker might arrange — fail-open would invert the posture right there. An operator
+    # with a broken state dir has bigger problems than a delayed upgrade. rc 2 (not 1) so the caller
+    # reports the real cause instead of "throttled — retry later".
     exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
-        warn "control-upgrade: couldn't take the throttle lock under $dir — proceeding UNthrottled (check the state dir)."
-        return 0
+        warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
+        return 2
     }
     flock 9 2>/dev/null || true
     [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
@@ -4022,8 +4026,15 @@ control_upgrade() {
             return 0
         fi
     fi
-    # D6 throttle: bound how often a rig fetches/rebuilds.
-    if ! _control_upgrade_throttle_ok "$state"; then
+    # D6 throttle: bound how often a rig fetches/rebuilds. rc 2 = throttle state unavailable — a
+    # fail-closed refusal (#321) that must read as a broken rig, not as "throttled — retry later".
+    local thr_rc=0
+    _control_upgrade_throttle_ok "$state" || thr_rc=$?
+    if [ "$thr_rc" -eq 2 ]; then
+        _control_status "$status" failed "$cid" version "throttle state unavailable under $state — refused (fail-closed)" ""
+        warn "control-upgrade: throttle state unavailable — refused."
+        return 0
+    elif [ "$thr_rc" -ne 0 ]; then
         # #320: distinct from failed — the consumer's right move is retry-later, not alarm.
         _control_status "$status" throttled "$cid" version "throttled — too soon since the last upgrade attempt" ""
         warn "control-upgrade: throttled."
