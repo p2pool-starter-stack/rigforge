@@ -29,6 +29,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo reboot                             # HugePages (1G + GRUB cmdline) take effect on boot; reconnect
    sudo bash tests/e2e-real.sh verify      # doctor (HugePages/MSR/governor/service) + bench (real H/s) + a short tune + a live auto-tune pass
    sudo bash tests/e2e-real.sh control     # the writable control path (#236) against real systemd: enable, POST a change, poll to applied, revert
+   sudo bash tests/e2e-real.sh upgrade     # the remote-upgrade chain (#308/#322) with REAL git: noop + refused-tag rollback legs, revert (opt-in forward leg: E2E_UPGRADE_TARGET=vX.Y.Z)
    sudo bash tests/e2e-real.sh perf        # offline bench vs the committed per-host baseline + best-ever history (the release perf gate)
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```

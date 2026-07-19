@@ -21,6 +21,11 @@
 #               round trip to "applied", assert it landed (config + revision + live miner), then revert.
 #               Config is snapshotted and control is force-disabled again on ANY exit (see _control_cleanup) —
 #               the fleet runs this disabled on purpose and this phase must never leave it on.
+#   upgrade   : the remote-upgrade chain (#308/#322) against the real units and REAL git — a noop leg
+#               (POST the installed version -> terminal `noop`), a rollback leg (a forged tag the D10
+#               ancestry guard must refuse -> `rolled_back`, tree + VERSION untouched, throttle
+#               stamped), and an opt-in forward leg (E2E_UPGRADE_TARGET). Same snapshot/revert
+#               guarantees as control.
 #   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
 # Env knobs:
@@ -32,12 +37,15 @@
 #   E2E_PERF_TOLERANCE_PCT       allowed drop vs the committed baseline/best-ever (default 5)
 #   E2E_PERF_RECORD              1 = record the baseline + append history instead of judging
 #   E2E_PERF_TAG                 release tag stamped into the history entry (with E2E_PERF_RECORD)
+#   E2E_UPGRADE_TARGET           vX.Y.Z = the upgrade phase also drives a REAL forward upgrade to this
+#                                release and asserts it lands (PERMANENT: upgrades the checkout)
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
 #   sudo bash tests/e2e-real.sh provision
 #   sudo reboot                         # then reconnect
 #   sudo bash tests/e2e-real.sh verify
 #   sudo bash tests/e2e-real.sh control
+#   sudo bash tests/e2e-real.sh upgrade
 #   sudo bash tests/e2e-real.sh teardown
 # Or, when HugePages are already active (no reboot needed), one shot:
 #   sudo bash tests/e2e-real.sh all
@@ -720,7 +728,7 @@ _control_cleanup() {
         # here would skip the apply/holder-file steps below).
         local dtmp
         dtmp="$(mktemp 2>/dev/null || true)"
-        if [ -n "$dtmp" ] && jq '.control = "disabled"' "$HERE/config.json" >"$dtmp" 2>/dev/null && [ -s "$dtmp" ]; then
+        if [ -n "$dtmp" ] && jq '.control = "disabled" | .control_upgrade = "disabled"' "$HERE/config.json" >"$dtmp" 2>/dev/null && [ -s "$dtmp" ]; then
             mv "$dtmp" "$HERE/config.json" 2>/dev/null ||
                 echo "  WARNING: could not move the disabled-control config into place — check $HERE/config.json by hand" >&2
         else
@@ -750,6 +758,186 @@ _control_cleanup() {
     else
         echo "  WARNING: miner did not report a live hashrate post-revert within 30s — check the rig by hand" >&2
     fi
+}
+
+# --- upgrade (#322): the remote-upgrade chain (#308, ADR 0002), for real -----------------------
+#
+# Both real bugs in this chain — #308's missing-$HOME "dubious ownership" silent git death (v1.11.1)
+# and #318's origin/HEAD-resolves-to-develop refusal (v1.11.2) — were caught only by a real-hardware
+# miner-0 control-upgrade run: the unit suite stubs git BY DESIGN, so this chain regresses in exactly
+# the ways only a real rig catches. This codifies that run as a repeatable phase:
+#   POST /upgrade (receiver, DynamicUser) -> spool upgrade-*.json -> rigforge-control-upgrade.path
+#   -> rigforge-control-upgrade.service (root oneshot: rigforge.sh control-upgrade)
+#   -> _control_upgrade_do (REAL git fetch/ancestry/checkout + rebuild) -> health gate -> /status
+#
+# Legs:
+#   noop     : POST the installed version -> terminal `noop` (#320). Proves the wire, path unit,
+#              oneshot, and status round trip without touching the tree (never dials GitHub).
+#   rollback : POST v99.99.99 from a locally-forged tag on a commit NOT reachable from origin/main
+#              -> the D10 ancestry guard refuses the forward leg, the verb rolls back to the running
+#              ref -> terminal `rolled_back`, checkout + VERSION unchanged, throttle stamp written.
+#              This runs the real git calls (fetch, rev-parse, merge-base, checkout) as the root
+#              oneshot with no $HOME — the #308 dubious-ownership class dies here, not in the
+#              stubbed suite. Cheap: the forward refusal happens before any checkout or build.
+#   forward  : opt-in via E2E_UPGRADE_TARGET=vX.Y.Z (a real release newer than the installed one)
+#              -> poll to `applied`, assert VERSION landed. PERMANENTLY upgrades this checkout, so
+#              it is not part of the repeatable default — it's the release-flow leg that would have
+#              caught #318 (a legit upgrade being refused).
+#
+# Sits after control (same restart churn perf must not measure through) and reuses control's
+# snapshot/cleanup machinery (CTL_ globals + _control_cleanup) — config is snapshotted and BOTH
+# control flags are forced off again on ANY exit, plus the upgrade-phase leftovers (probe tag,
+# throttle stamp) are removed. Also the producer half of pithead#597's cross-repo tier-4 gate.
+
+# POST /upgrade {"version":<target>} and poll /status?change_id= to a terminal status (echoed).
+# `started` (#320) is non-terminal — keep polling through it. Echoes "post-failed:<http-code>" when
+# the POST itself is refused, "timeout" when no terminal status lands inside <timeout-s>.
+_upg_post_and_poll() { # <token> <port> <vX.Y.Z> <timeout-s> -> terminal status on stdout
+    local tok=$1 port=$2 target=$3 to=$4 resp code cid st="" waited=0 body
+    resp="$(mktemp)"
+    code=$(curl -s -o "$resp" -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $tok" \
+        -H "Content-Type: application/json" -d "{\"version\": \"$target\"}" \
+        "http://127.0.0.1:$port/upgrade" 2>/dev/null || true)
+    cid=$(jq -r '.change_id // empty' "$resp" 2>/dev/null || true)
+    rm -f "$resp"
+    if [ "$code" != 202 ] || [ -z "$cid" ]; then
+        printf 'post-failed:%s' "$code"
+        return 0
+    fi
+    while [ "$waited" -lt "$to" ]; do
+        # `|| true` on both: transient unreachability mid-oneshot (units restarting) must not abort
+        # the poll under set -e/pipefail — same shape as control()'s poll loop.
+        body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" \
+            "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
+        st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
+        case "$st" in applied | rolled_back | failed | noop | throttled) break ;; esac
+        sleep 5
+        waited=$((waited + 5))
+    done
+    case "$st" in applied | rolled_back | failed | noop | throttled) printf '%s' "$st" ;; *) printf 'timeout' ;; esac
+}
+
+# The upgrade-phase leftovers on top of _control_cleanup (which restores the snapshot, forces both
+# control flags off, re-applies, and checks the miner comes back). Idempotent like its parts.
+_upgrade_cleanup() {
+    git -C "$HERE" tag -d v99.99.99 >/dev/null 2>&1 || true
+    rm -f /var/lib/rigforge-control/upgrade-last 2>/dev/null || true
+    _control_cleanup
+}
+
+upgrade() {
+    require_linux_root upgrade
+    [ -f "$HERE/config.json" ] || die "no $HERE/config.json — run 'provision' first (this phase needs an already-provisioned worker)."
+    phase "upgrade — enable control + control_upgrade"
+
+    # Same snapshot-first/trap-immediately shape as control(); see there. The trap REPLACES any
+    # earlier phase's (control() has already run its explicit, guard-protected cleanup by the time
+    # `all` reaches this phase, so replacing its backstop is safe).
+    CTL_SAVED_CFG="$(mktemp)"
+    cp "$HERE/config.json" "$CTL_SAVED_CFG"
+    CTL_CLEANUP_DONE=0
+    trap '_upgrade_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
+
+    local tok control_port tmp installed st
+    local stamp="/var/lib/rigforge-control/upgrade-last"
+    tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
+    tmp="$(mktemp)"
+    if jq --arg tok "$tok" '.control = "enabled" | .control_upgrade = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
+        "$HERE/config.json" >"$tmp" && [ -s "$tmp" ]; then
+        mv "$tmp" "$HERE/config.json"
+    else
+        rm -f "$tmp"
+        bad "could not stage a control_upgrade-enabled config.json"
+    fi
+    "$RIGFORGE" apply >/tmp/e2e-upgrade-enable.log 2>&1 &&
+        ok "apply enabled control + control_upgrade" ||
+        bad "apply failed while enabling control_upgrade (see /tmp/e2e-upgrade-enable.log)"
+    sleep 3 # let rigforge-control.service and xmrig settle
+    control_port=$(jq -r '.control_port // 8082' "$HERE/config.json" 2>/dev/null || echo 8082)
+    systemctl is-active --quiet rigforge-control &&
+        ok "rigforge-control.service is active" ||
+        bad "rigforge-control.service is not active after enabling control_upgrade"
+    systemctl cat rigforge-control-upgrade.path >/dev/null 2>&1 &&
+        ok "rigforge-control-upgrade.path is installed (the upgrade watcher rides on control)" ||
+        bad "rigforge-control-upgrade.path is not installed"
+    # Receiver-up gate, POLLED: on a rig whose every core the miner is pinning, the freshly-started
+    # DynamicUser python server can take >3s to bind — a single-shot check here read as
+    # connection-refused POSTs on the first real miner-0 run of this phase. 200 = a prior change's
+    # status, 503 = "no change applied yet"; both mean it's serving.
+    local code up=0 i
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $tok" \
+            "http://127.0.0.1:$control_port/status" 2>/dev/null || true)
+        case "$code" in 200 | 503)
+            up=1
+            break
+            ;;
+        esac
+        sleep 2
+    done
+    [ "$up" = 1 ] &&
+        ok "authed GET /status reachable (HTTP $code, try $i)" ||
+        bad "receiver not reachable on :$control_port after $((i * 2))s (last HTTP '$code')"
+    # A stale stamp (a previous run, or a real recent upgrade) would throttle the rollback leg into
+    # `throttled` — this run holds the rig_lock, so clearing our own guard here keeps the phase
+    # repeatable inside the 6h window without touching CONTROL_UPGRADE_MIN_INTERVAL in the baked unit.
+    rm -f "$stamp" 2>/dev/null || true
+
+    installed=$(tr -d '[:space:]' <"$HERE/VERSION" 2>/dev/null || true)
+    [ -n "$installed" ] && ok "installed version reads v$installed" || bad "could not read $HERE/VERSION"
+
+    phase "upgrade — noop leg: POST the installed v$installed, poll to terminal"
+    st=$(_upg_post_and_poll "$tok" "$control_port" "v$installed" 120)
+    [ "$st" = noop ] &&
+        ok "already-on-target reached terminal 'noop' (path unit -> root oneshot -> /status, #320)" ||
+        bad "noop leg ended '$st' (expected noop)"
+
+    phase "upgrade — rollback leg: POST a tag the D10 ancestry guard must refuse"
+    # A commit provably NOT reachable from origin/main, without moving HEAD or dirtying the tree:
+    # commit-tree forges a throwaway child of HEAD and a local tag names it (fetch --tags never
+    # prunes local-only tags). -f survives a leftover tag from a crashed run; cleanup deletes it.
+    local probe rev_before
+    probe=$(git -C "$HERE" -c user.name=e2e -c user.email=e2e@localhost \
+        commit-tree "HEAD^{tree}" -p HEAD -m "e2e-real upgrade probe (unreachable from origin/main)" 2>/dev/null || true)
+    if [ -n "$probe" ] && git -C "$HERE" tag -f v99.99.99 "$probe" >/dev/null 2>&1; then
+        ok "forged probe tag v99.99.99 -> ${probe:0:12} (not on origin/main)"
+    else
+        bad "could not forge the probe tag"
+    fi
+    rev_before=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)
+    st=$(_upg_post_and_poll "$tok" "$control_port" "v99.99.99" 420)
+    [ "$st" = rolled_back ] &&
+        ok "unreachable tag refused and rolled back to the running ref (D10, REAL git as the root oneshot)" ||
+        bad "rollback leg ended '$st' (expected rolled_back)"
+    [ "$(git -C "$HERE" rev-parse HEAD 2>/dev/null)" = "$rev_before" ] &&
+        ok "checkout still on ${rev_before:0:12} (tree untouched by the refused forward leg)" ||
+        bad "checkout moved off ${rev_before:0:12}"
+    [ "$(tr -d '[:space:]' <"$HERE/VERSION" 2>/dev/null)" = "$installed" ] &&
+        ok "VERSION still reads $installed" ||
+        bad "VERSION changed across a refused upgrade"
+    [ -f "$stamp" ] &&
+        ok "throttle stamp written by the attempt ($stamp)" ||
+        bad "no throttle stamp after the rollback leg (D6)"
+    systemctl is-active --quiet xmrig &&
+        ok "miner service is active after the rollback" ||
+        bad "miner service is not active after the rollback"
+
+    if [ -n "${E2E_UPGRADE_TARGET:-}" ]; then
+        phase "upgrade — forward leg: POST $E2E_UPGRADE_TARGET (PERMANENT — upgrades this checkout)"
+        rm -f "$stamp" 2>/dev/null || true # the rollback leg stamped; this leg is operator-requested
+        st=$(_upg_post_and_poll "$tok" "$control_port" "$E2E_UPGRADE_TARGET" 600)
+        [ "$st" = applied ] &&
+            ok "upgrade to $E2E_UPGRADE_TARGET reached 'applied' (fetch + build + health gate, for real)" ||
+            bad "forward leg ended '$st' (expected applied)"
+        [ "v$(tr -d '[:space:]' <"$HERE/VERSION" 2>/dev/null)" = "$E2E_UPGRADE_TARGET" ] &&
+            ok "VERSION reads ${E2E_UPGRADE_TARGET#v} — the target landed" ||
+            bad "VERSION did not land at $E2E_UPGRADE_TARGET"
+    fi
+
+    # Explicit cleanup now (not just on exit) for the same reason control() does it — later phases
+    # in `all` mode must see the rig back to control-disabled; the trap stays as a backstop.
+    _upgrade_cleanup
+    summary "upgrade"
 }
 
 teardown() {
@@ -896,8 +1084,8 @@ perf() {
 }
 
 case "${1:-}" in
-provision | verify | control | perf | teardown | all) ;;
-*) die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|perf|teardown|all}" ;;
+provision | verify | control | upgrade | perf | teardown | all) ;;
+*) die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|perf|teardown|all}" ;;
 esac
 # #183: serialize the shared rig — taken after arg parsing, before the first systemctl/API touch.
 rig_lock rigforge e2e-real
@@ -906,6 +1094,7 @@ case "$1" in
 provision) provision ;;
 verify) verify ;;
 control) control ;;
+upgrade) upgrade ;;
 perf) perf ;;
 teardown) teardown ;;
 all)
@@ -913,6 +1102,7 @@ all)
     if [ "$(hugepages_total)" -gt 0 ]; then
         verify
         control
+        upgrade
         perf
         teardown
     else
@@ -920,6 +1110,6 @@ all)
     fi
     ;;
 *)
-    die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|perf|teardown|all}"
+    die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|perf|teardown|all}"
     ;;
 esac

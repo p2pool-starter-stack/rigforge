@@ -16,6 +16,14 @@ All notable changes to RigForge are documented here. The format is based on
   refusal reports `noop` and the throttle window reports `throttled` instead of collapsing into
   `failed`; a successful upgrade's `reason` names the landed version. Additive to the ADR 0002 D3/D6
   model — D6 amended in place, contract documented in Operations › Writable control path.
+- **`tests/e2e-real.sh` grows an `upgrade` phase (#322).** Codifies the real-hardware
+  control-upgrade run that caught both real bugs in this chain (#308's dubious-ownership silent git
+  death, #318's origin/HEAD refusal) — invisible to the unit suite by design, since it stubs git. A
+  noop leg proves the wire → path unit → root oneshot → `/status` round trip; a rollback leg forges
+  a local tag unreachable from `origin/main` and asserts the D10 refusal rolls back with the tree,
+  `VERSION`, and miner intact and the D6 throttle stamped; an opt-in `E2E_UPGRADE_TARGET` leg drives
+  a real forward upgrade. Runs inside `all` between `control` and `perf`, with the same
+  snapshot-and-revert guarantees. Also the producer half of pithead#597's cross-repo gate.
 
 ### Fixed
 
