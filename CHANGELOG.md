@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`control-upgrade` status contract: `started` / `noop` / `throttled` + version echo (#320).**
+  Consumer findings from pithead's one-click worker upgrade (pithead#597): the oneshot now writes a
+  non-terminal `started` record the moment it claims a staged intent (so a poller can tell mid-build
+  from queued, and a `started` that outlives the oneshot means the run was lost); the already-on-target
+  refusal reports `noop` and the throttle window reports `throttled` instead of collapsing into
+  `failed`; a successful upgrade's `reason` names the landed version. Additive to the ADR 0002 D3/D6
+  model — D6 amended in place, contract documented in Operations › Writable control path.
+
 ## [1.11.2] - 2026-07-18
 
 Consistency-audit patch: CLI-surface and docs cleanups, plus a real fix to the remote-upgrade

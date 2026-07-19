@@ -601,6 +601,13 @@ and health-gates the swap with rollback. It refuses anything that isn't a real r
 the running one. Default off, and never on just because `control` is. The threat model and
 decisions are in [ADR 0002](adr/0002-remote-worker-upgrade.md).
 
+Polling an upgrade works like polling a config change, with a slightly richer vocabulary (#320):
+`GET :8082/status?change_id=<id>` serves a non-terminal `started` once the root oneshot has claimed
+the intent (so a poller can tell "mid-build" from "queued" — and a `started` that outlives the
+oneshot means the run was lost), then one terminal outcome: `applied` (the `reason` names the
+landed version), `rolled_back`, `noop` (already on the requested version — idempotent, not an
+error), `throttled` (inside the anti-beacon window — retry later), or `failed` (with `reason`).
+
 `"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).

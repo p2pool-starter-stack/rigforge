@@ -55,6 +55,8 @@ GitHub is therefore accepted as the trust root. The residual risk is explicit: a
 
 `control-upgrade` is fail-closed and every step is rollback-guarded, reusing the upgrade flow's existing rebuild-only-if-the-pin-changed logic. A **pre-dial throttle stamp** on the rig bounds how often it will reach out to GitHub, so a looping or hostile consumer cannot turn the fleet into a beacon or a request amplifier. Outcomes use the same `/status` surface as control-apply, extended with a **`failed`** terminal (with reason) alongside `applied` / `rolled_back`, so a pre-apply refusal (non-latest, throttled, fetch/build error) surfaces a clear terminal result to the consumer's poll rather than hanging in a non-terminal state.
 
+*Amended (#320, consumer feedback from pithead #597):* the status vocabulary grew three additive members so a poller never has to string-match `reason`. A non-terminal **`started`** is written the moment the oneshot claims the intent (D8 move done), so "mid-run" and "oneshot died mid-run" are distinguishable from "queued"; **`noop`** replaces `failed` for the already-on-target refusal (idempotent, not an error); **`throttled`** replaces `failed` for the D6 throttle refusal (retry-later, not an error). `applied`'s `reason` echoes the landed version. All other refusals stay `failed`.
+
 ### D7. Auth and source-pinning inherited from ADR 0001 D4/D9
 
 `/upgrade` reuses the control path's Bearer `ACCESS_TOKEN` and the `api_allow_from` source pin (which D1 already requires for `control: enabled`), and the same nftables scoping (#142). The stack host is the only trusted writer; the miner never accepts an upgrade trigger from a miner-advertised or arbitrary host. The cleartext-token-on-LAN posture (ADR 0001 D9) applies unchanged — the mining LAN is the trust boundary.
@@ -100,7 +102,7 @@ Low-cost integrity controls that need no standing signing key, shoring up the Gi
 - New opt-in surface, off by default, fail-closed. A rig that does not enable `control_upgrade` carries zero new capability; a rig on `control` alone is unchanged.
 - Residual risk accepted: GitHub-account/release compromise → fleet-wide root RCE (D5). Mitigation is account hardening, not signing.
 - Producer for pithead #597. Backwards compatible (a new MINOR capability). It must ship in a RigForge release before pithead #597 can run end-to-end; pithead #596 (version badge) has no RigForge dependency and ships first.
-- Consumer contract: `POST :8082/upgrade {"version":"vX.Y.Z"}` → `202 Accepted` + change id → poll `:8082/status` for `applied` / `rolled_back` / `failed`. The host never trusts a host/port/token from the intent; the rig bounds the dashboard-supplied target with monotonic anti-rollback + reachable-from-main guards (D4/D10) rather than making its own version-check dial.
+- Consumer contract: `POST :8082/upgrade {"version":"vX.Y.Z"}` → `202 Accepted` + change id → poll `:8082/status` for a non-terminal `started`, then terminal `applied` (reason names the landed version) / `rolled_back` / `noop` (already on target) / `throttled` (retry after the window) / `failed` (#320 amendment, D6). The host never trusts a host/port/token from the intent; the rig bounds the dashboard-supplied target with monotonic anti-rollback + reachable-from-main guards (D4/D10) rather than making its own version-check dial.
 
 ## Open questions (resolved 2026-07-17 — see Resolution above)
 
