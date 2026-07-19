@@ -3812,7 +3812,8 @@ _control_do_apply() {
     _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"
 }
 
-# Record the outcome for the receiver's GET /status (mode 644 so the DynamicUser server reads it back).
+# Record a status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it
+# back) — a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
 _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
     local f="$1" cid="$3" body cdir
     mkdir -p "$(dirname "$f")"

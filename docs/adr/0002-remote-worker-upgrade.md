@@ -33,7 +33,7 @@ The receiver (`util/control-server.py`) gains a `POST /upgrade` distinct from `/
 
 ### D3. Unprivileged receiver stages only; the privileged oneshot fetches and runs
 
-As in ADR 0001 D2, the network-facing receiver stays unprivileged (`DynamicUser`): it authenticates, checks the flag, and **stages** the request; it never fetches or runs code itself. The privileged path-triggered oneshot does the fetch-and-upgrade through the existing gated flow. The response is `202 Accepted` with a change id; the consumer polls `/status` for the terminal outcome.
+As in ADR 0001 D2, the network-facing receiver stays unprivileged (`DynamicUser`): it authenticates, checks the flag, and **stages** the request; it never fetches or runs code itself. The privileged path-triggered oneshot does the fetch-and-upgrade through the existing gated flow. The response is `202 Accepted` with a change id; the consumer polls `/status` to a terminal outcome (a non-terminal `started` appears first while the oneshot runs — #320, see D6).
 
 ### D4. Dashboard-supplied target, bounded by monotonic + reachability guards
 
@@ -43,7 +43,7 @@ The staged body is tiny: `{"version": "vX.Y.Z"}`, and it **is** the target. The 
 - **Reachable-from-main** — refuse a commit that is not an ancestor of `origin/main` (D10; amended by #318).
 - **Immutable releases + tag protection** (D10) make the tag→commit binding a platform guarantee.
 
-The rig still `git`-fetches the tag directly from GitHub — the code has to come from somewhere, and that fetch happens only on an actual upgrade (rare, throttled), not on every trigger — but it makes no separate version-check dial. Anything that fails a guard is terminal `failed`. This trades away rig-*independent* confirmation of "is this THE latest" (the dashboard, over Tor, is the deriver) for privacy, fewer moving parts, and no fleet rate-limit coupling; the anti-rollback + reachability guards are what make trusting a supplied target safe.
+The rig still `git`-fetches the tag directly from GitHub — the code has to come from somewhere, and that fetch happens only on an actual upgrade (rare, throttled), not on every trigger — but it makes no separate version-check dial. Anything that fails a guard ends terminal: `failed`, except the two benign refusals distinguished since #320 — `noop` (already on the target) and `throttled` (inside the D6 window). This trades away rig-*independent* confirmation of "is this THE latest" (the dashboard, over Tor, is the deriver) for privacy, fewer moving parts, and no fleet rate-limit coupling; the anti-rollback + reachability guards are what make trusting a supplied target safe.
 
 ### D5. Trust model: hash-only, git-tag checkout, no signing (settled)
 
