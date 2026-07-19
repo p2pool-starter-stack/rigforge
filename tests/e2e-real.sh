@@ -555,6 +555,22 @@ verify() {
     summary "verify"
 }
 
+# Poll the authed receiver until it serves: 200 = a prior change's record, 503 = "no change applied
+# yet" — both mean it's up. On a rig whose every core the miner pins, a freshly-(re)started
+# DynamicUser python server can take >3s to bind; a single-shot check after `sleep 3` read as
+# connection-refused on real miner-0 runs (the upgrade phase's first run, then the control phase on
+# the v1.12.0 gate). Sets RCV_CODE/RCV_TRY for the caller's ok/bad line.
+_await_receiver() { # <token> <port> -> 0 once serving, 1 after ~30s
+    local tok=$1 port=$2
+    for RCV_TRY in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        RCV_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $tok" \
+            "http://127.0.0.1:$port/status" 2>/dev/null || true)
+        case "$RCV_CODE" in 200 | 503) return 0 ;; esac
+        sleep 2
+    done
+    return 1
+}
+
 # --- control (#272): the writable control path (#236), for real, for the first time ------------
 #
 # Everything below has only ever run against stubs: tests/run.sh stubs apply()/_wait_miner_live for
@@ -634,13 +650,9 @@ control() {
     systemctl is-active --quiet rigforge-control &&
         ok "rigforge-control.service is active" ||
         bad "rigforge-control.service is not active after enabling control"
-    local code
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $tok" \
-        "http://127.0.0.1:$control_port/status" 2>/dev/null || true)
-    case "$code" in
-    200 | 503) ok "authed GET /status reachable (HTTP $code)" ;;
-    *) bad "authed GET /status returned HTTP '$code' (expected 200, or 503 'no change applied yet')" ;;
-    esac
+    _await_receiver "$tok" "$control_port" &&
+        ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
+        bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
 
     phase "control — POST a benign change (DONATION $cur_donation -> $new_donation) and poll to applied"
     local resp_file resp_code
@@ -860,24 +872,9 @@ upgrade() {
     systemctl cat rigforge-control-upgrade.path >/dev/null 2>&1 &&
         ok "rigforge-control-upgrade.path is installed (the upgrade watcher rides on control)" ||
         bad "rigforge-control-upgrade.path is not installed"
-    # Receiver-up gate, POLLED: on a rig whose every core the miner is pinning, the freshly-started
-    # DynamicUser python server can take >3s to bind — a single-shot check here read as
-    # connection-refused POSTs on the first real miner-0 run of this phase. 200 = a prior change's
-    # status, 503 = "no change applied yet"; both mean it's serving.
-    local code up=0 i
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $tok" \
-            "http://127.0.0.1:$control_port/status" 2>/dev/null || true)
-        case "$code" in 200 | 503)
-            up=1
-            break
-            ;;
-        esac
-        sleep 2
-    done
-    [ "$up" = 1 ] &&
-        ok "authed GET /status reachable (HTTP $code, try $i)" ||
-        bad "receiver not reachable on :$control_port after $((i * 2))s (last HTTP '$code')"
+    _await_receiver "$tok" "$control_port" &&
+        ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
+        bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
     # A stale stamp (a previous run, or a real recent upgrade) would throttle the rollback leg into
     # `throttled` — this run holds the rig_lock, so clearing our own guard here keeps the phase
     # repeatable inside the 6h window without touching CONTROL_UPGRADE_MIN_INTERVAL in the baked unit.

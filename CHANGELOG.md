@@ -38,6 +38,12 @@ security docs, and the remote-upgrade chain codified as a repeatable real-hardwa
   exactly the kind of degraded box an attacker might arrange. Now the upgrade is refused with a
   `failed` status whose reason names the throttle state, distinct from `throttled` so a consumer
   doesn't retry-later forever against a broken rig.
+- **Disabling the control path re-stops the receiver explicitly.** On the v1.12.0 pre-tag gate,
+  a loaded systemctl transiently dropped the stop half of `disable --now`: the unit files were
+  removed but the running receiver was left orphaned — a live write surface on a rig whose config
+  said control was off. The disable path now issues one explicit re-stop (no-op when the stop
+  landed). The `control` e2e phase also gained the polled receiver-up gate the `upgrade` phase
+  ships with — its single-shot check hit the same pinned-CPU cold-start race on the gate run.
 - **Security-doc drift on the remote-upgrade trust model (#321).** SECURITY.md claimed the remote
   path is "verified by SHA256SUMS hash only" — it never was; the real anchor is the ADR 0002 D5
   design (git checkout of the release tag over TLS, `origin/main` ancestry, immutable releases), and

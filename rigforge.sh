@@ -1248,6 +1248,11 @@ install_control() {
             sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
             sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath"
             sudo systemctl daemon-reload 2>/dev/null || true
+            # Under load systemctl can transiently drop the stop half of `disable --now` (real
+            # miner-0 gate, 2026-07-19: unit files removed, receiver left running orphaned — a live
+            # write surface with control "disabled"). One explicit re-stop closes it; no-op when
+            # the stop already landed.
+            sudo systemctl stop rigforge-control.service 2>/dev/null || true
             log "Writable control path disabled."
         fi
         return 0
