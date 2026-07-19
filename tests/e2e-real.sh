@@ -860,6 +860,24 @@ upgrade() {
     systemctl cat rigforge-control-upgrade.path >/dev/null 2>&1 &&
         ok "rigforge-control-upgrade.path is installed (the upgrade watcher rides on control)" ||
         bad "rigforge-control-upgrade.path is not installed"
+    # Receiver-up gate, POLLED: on a rig whose every core the miner is pinning, the freshly-started
+    # DynamicUser python server can take >3s to bind — a single-shot check here read as
+    # connection-refused POSTs on the first real miner-0 run of this phase. 200 = a prior change's
+    # status, 503 = "no change applied yet"; both mean it's serving.
+    local code up=0 i
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $tok" \
+            "http://127.0.0.1:$control_port/status" 2>/dev/null || true)
+        case "$code" in 200 | 503)
+            up=1
+            break
+            ;;
+        esac
+        sleep 2
+    done
+    [ "$up" = 1 ] &&
+        ok "authed GET /status reachable (HTTP $code, try $i)" ||
+        bad "receiver not reachable on :$control_port after $((i * 2))s (last HTTP '$code')"
     # A stale stamp (a previous run, or a real recent upgrade) would throttle the rollback leg into
     # `throttled` — this run holds the rig_lock, so clearing our own guard here keeps the phase
     # repeatable inside the 6h window without touching CONTROL_UPGRADE_MIN_INTERVAL in the baked unit.
