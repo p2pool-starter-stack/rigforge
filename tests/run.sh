@@ -5218,6 +5218,12 @@ if [ "$HOST_OS" = Linux ]; then
     assert_absent "appliance full run: no memlock append (#797)" "$(cat "$APW/etc/security/limits.conf")" "memlock"
     assert_eq "appliance full run: no msr.conf drop-in (#797)" "$([ -e "$APW/etc/modules-load.d/msr.conf" ] && echo present || echo absent)" "absent"
     assert_contains "appliance full run: unit enabled --runtime (#797)" "$(cat "$APW/calls.log")" "[systemctl] enable --runtime xmrig.service"
+    # Every enable under the flag must be --runtime — a persisted enable writes the volatile
+    # /etc overlay and silently vanishes on reboot. The xmrig assert above pins one site; this
+    # guards the other enable sites (timers, api, control) against a future call that forgets
+    # its ${ENABLE_RUNTIME:+...} expansion.
+    assert_eq "appliance full run: every systemctl enable is --runtime (#797)" \
+        "$(grep -F "[systemctl] enable" "$APW/calls.log" | grep -cv -- --runtime)" "0"
     # /etc/logrotate.d is volatile on the appliance and the image runs no logrotate — the drop-in
     # must not be written (log policy is the integration layer's, pithead#797 R2).
     assert_eq "appliance full run: no logrotate drop-in (#797)" "$([ -e "$APW/etc/logrotate.d/xmrig" ] && echo present || echo absent)" "absent"
