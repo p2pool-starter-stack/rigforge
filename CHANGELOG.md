@@ -7,6 +7,22 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Appliance mode: `RIGFORGE_APPLIANCE=1` (pithead#797 R1).** One opt-in env flag for running
+  `setup` on the Pithead appliance image, whose root filesystem is read-only and whose `/etc` is a
+  volatile overlay — every write there vanishes at reboot, and the image's boot path re-runs setup
+  each boot instead of relying on persisted state. Under the flag, setup installs no packages (the
+  toolchain is baked at image build; if a required tool is absent, setup fails naming it), skips the
+  GRUB leg deliberately (the kernel cmdline, including any 1 GB-hugepage reservation, is
+  image-owned), renders its systemd units into `/run/systemd/system` and enables them with
+  `--runtime`, mounts `hugetlbfs` at runtime instead of appending to `fstab`, and skips the
+  `limits.conf` memlock append (the unit already sets `LimitMEMLOCK=infinity`). Runtime tuning is
+  unchanged: `modprobe msr`, the grow-only HugePages sysctl (#328), and the performance governor all
+  work on a read-only root — each decision proven on the pithead#797 R0 bench. `setup --dry-run`
+  previews the same decisions. Everything else (a normal Linux install, macOS) behaves exactly as
+  before.
+
 ### Fixed
 
 - **Runtime HugePages reservation is grow-only (#328).** `tune_kernel`'s runtime sysctl wrote the

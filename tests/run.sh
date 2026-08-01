@@ -156,8 +156,10 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
     -e "s|\$CONTROL_BIND|${CONTROL_BIND:-}|g" -e "s|\$CONTROL_PORT|${CONTROL_PORT:-}|g"
 EOF
     # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
+    # cc: the appliance-mode tool check (pithead#797 R1) probes `command -v cc` — stub it so black-box
+    # runs don't depend on whether the host has a compiler.
     local cmd
-    for cmd in make cmake systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3 nft useradd; do
+    for cmd in make cmake cc systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3 nft useradd; do
         cat >"$bin/$cmd" <<EOF
 #!/usr/bin/env bash
 echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
@@ -5020,6 +5022,203 @@ SC="$HP/calls6"
 : >"$SC"
 out="$(run_tk328_nopg "$SC")"
 assert_contains "fallback (no proposed-grub.sh) is grow-only too (#328)" "$(cat "$SC")" "vm.nr_hugepages=3072"
+
+# ---------------------------------------------------------------------------
+# Appliance mode (pithead#797 R1): RIGFORGE_APPLIANCE=1 runs setup on the Pithead appliance image —
+# read-only root, volatile /etc overlay, a boot leg re-runs setup every boot. Under the flag setup
+# must: never install packages (fail naming missing tools instead), skip the GRUB leg, render units
+# into /run and enable them --runtime, mount hugetlbfs at runtime with no fstab/limits.conf writes —
+# while runtime tuning (modprobe msr, grow-only sysctl) stays byte-identical.
+echo "== black-box: appliance mode (pithead#797 R1) =="
+AP="$(mktemp -d "$SANDBOX/appliance.XXXXXX")"
+
+# The flag presets SYSTEMD_DIR to /run and flips enablement to --runtime; an explicit override and
+# the no-flag defaults are unchanged.
+out="$( (unset SYSTEMD_DIR && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
+assert_eq "flag presets /run/systemd/system + --runtime (#797)" "$out" "/run/systemd/system|--runtime"
+out="$( (unset SYSTEMD_DIR && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
+assert_eq "no flag: /etc/systemd/system + persistent enable (#797)" "$out" "/etc/systemd/system|"
+out="$( (SYSTEMD_DIR="$AP/custom-sd" && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s' "$SYSTEMD_DIR"))"
+assert_eq "explicit SYSTEMD_DIR still wins under the flag (#797)" "$out" "$AP/custom-sd"
+
+# Dependency handling: tools verified (command -v), never installed. The toolchain is only required
+# while a build is pending; a prebuilt tree needs envsubst alone (the R0 bench re-ran with a broken
+# compiler). PATH is restricted to purpose-built bins so the host's real toolchain can't leak in.
+mkbin_ap() { # <dir> <cmd...>: a dir of exit-0 fakes
+    local d="$1" c
+    shift
+    mkdir -p "$d"
+    for c in "$@"; do
+        printf '#!/bin/sh\nexit 0\n' >"$d/$c"
+        chmod +x "$d/$c"
+    done
+}
+mkbin_ap "$AP/bin-all" git cmake make cc envsubst
+mkbin_ap "$AP/bin-envsubst" envsubst
+run_apdeps() { # <bin_dir> <xmrig_rebuild>; echoes output, exits with install_dependencies' rc
+    (
+        RIGFORGE_APPLIANCE=1
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        XMRIG_REBUILD="$2"
+        set +e
+        # PATH is ONLY the purpose-built bin dir — no $STUBS (it fakes the whole toolchain, which
+        # would mask the missing-tool case) and no real PATH (a host compiler would too). The
+        # appliance branch itself needs nothing but shell builtins.
+        PATH="$1" CALL_LOG="$AP/deps-calls.log" install_dependencies </dev/null 2>&1
+    )
+}
+: >"$AP/deps-calls.log"
+out="$(run_apdeps "$AP/bin-all" true)"
+assert_rc "all tools baked -> deps step passes (#797)" "$?" "0"
+assert_contains "deps step says baked, skipping install (#797)" "$out" "skipping package install"
+assert_absent "no package manager is ever invoked (#797)" "$(cat "$AP/deps-calls.log")" "[apt-get]"
+out="$(run_apdeps "$AP/bin-envsubst" true)"
+assert_rc "missing toolchain while a build pends -> hard fail (#797)" "$?" "1"
+assert_contains "failure names the missing tools (#797)" "$out" "missing from the image: git cmake make cc"
+assert_contains "failure points at image build, not runtime install (#797)" "$out" "baked at image build"
+out="$(run_apdeps "$AP/bin-envsubst" false)"
+assert_rc "prebuilt tree needs no compiler — envsubst alone passes (#797)" "$?" "0"
+
+# tune_kernel: GRUB file present and update-grub available, yet the appliance skip branch runs —
+# no cmdline edit, no backup, no update-grub, no modules-load drop-in. Runtime tuning unchanged:
+# modprobe msr still runs and the grow-only sysctl still writes the shortfall.
+APK="$AP/kernel"
+mkdir -p "$APK/util" "$APK/home/worker" "$APK/mld" "$APK/bin"
+cat >"$APK/util/proposed-grub.sh" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+--runtime) echo 200 ;;
+-q) echo "quiet splash default_hugepagesz=2M hugepages=200 msr.allow_writes=on" ;;
+esac
+EOF
+chmod +x "$APK/util/proposed-grub.sh"
+cat >"$APK/bin/sysctl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$SYSCTL_CALLS"
+EOF
+chmod +x "$APK/bin/sysctl"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$APK/grub"
+printf 'HugePages_Free:    0\n' >"$APK/meminfo"
+printf '0\n' >"$APK/nr_hugepages"
+out="$(
+    (
+        RIGFORGE_APPLIANCE=1
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$APK"
+        WORKER_ROOT="$APK/home/worker"
+        MODULES_LOAD_DIR="$APK/mld" # exists — the non-appliance path WOULD drop msr.conf here
+        GRUB_DEFAULT="$APK/grub"    # exists — the non-appliance path WOULD edit it
+        MEMINFO="$APK/meminfo"
+        NR_HUGEPAGES_FILE="$APK/nr_hugepages"
+        export SYSCTL_CALLS="$APK/sysctl-calls.log"
+        set +e
+        PATH="$APK/bin:$STUBS:$PATH" CALL_LOG="$APK/calls.log" tune_kernel 2>&1
+    )
+)"
+assert_contains "GRUB leg skipped with the image-owned message (#797)" "$out" "skipping GRUB updates — the kernel cmdline is image-owned"
+assert_eq "GRUB file untouched (#797)" "$(cat "$APK/grub")" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"'
+assert_eq "no GRUB backup written (#797)" "$([ -e "$APK/grub.bak" ] && echo present || echo absent)" "absent"
+assert_absent "update-grub never runs (#797)" "$(cat "$APK/calls.log")" "[update-grub]"
+assert_eq "no modules-load drop-in (#797)" "$([ -e "$APK/mld/msr.conf" ] && echo present || echo absent)" "absent"
+assert_contains "modprobe msr still runs — runtime tuning unchanged (#797)" "$(cat "$APK/calls.log")" "[modprobe] msr"
+assert_contains "grow-only HugePages sysctl still writes (#797/#328)" "$(cat "$APK/sysctl-calls.log")" "vm.nr_hugepages=200"
+
+# configure_limits: hugetlbfs mounted at runtime (both page sizes), fstab and limits.conf never
+# touched. mountpoint is faked not-mounted so the mount calls are observable; the second run fakes
+# already-mounted and must mount nothing (idempotent re-run, the every-boot path).
+APL="$AP/limits"
+mkdir -p "$APL/bin"
+printf '#!/bin/sh\nexit 1\n' >"$APL/bin/mountpoint"
+chmod +x "$APL/bin/mountpoint"
+printf 'seeded\n' >"$APL/fstab"
+printf 'seeded\n' >"$APL/limits.conf"
+run_aplimits() { # <bin_dir> <call_log>
+    (
+        RIGFORGE_APPLIANCE=1
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        FSTAB="$APL/fstab"
+        LIMITS_CONF="$APL/limits.conf"
+        HUGEPAGES_1G_DIR="$APL/hp1g"
+        set +e
+        PATH="$1:$STUBS:$PATH" CALL_LOG="$2" configure_limits 2>&1
+    )
+}
+out="$(run_aplimits "$APL/bin" "$APL/calls.log")"
+assert_contains "2MB hugetlbfs mounted at runtime (#797)" "$(cat "$APL/calls.log")" "[mount] -t hugetlbfs hugetlbfs /dev/hugepages"
+assert_contains "1G hugetlbfs mounted at runtime (#797)" "$(cat "$APL/calls.log")" "[mount] -t hugetlbfs -o pagesize=1G hugetlbfs_1g $APL/hp1g"
+assert_eq "fstab untouched (#797)" "$(cat "$APL/fstab")" "seeded"
+assert_eq "limits.conf untouched (#797)" "$(cat "$APL/limits.conf")" "seeded"
+out="$(run_aplimits "$STUBS" "$APL/calls2.log")" # stub mountpoint exits 0 = already mounted
+assert_absent "already mounted -> no mount calls (#797)" "$(cat "$APL/calls2.log")" "[mount]"
+
+# install_service: unit rendered into the (appliance-preset) systemd dir, enabled with --runtime.
+APS="$AP/svc"
+mkdir -p "$APS/run-systemd" "$APS/xmrig/build"
+(
+    cd "$APS" || exit 1
+    RIGFORGE_APPLIANCE=1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$ROOT" # real systemd/xmrig.service.template
+    WORKER_ROOT="$APS"
+    SYSTEMD_DIR="$APS/run-systemd"
+    REBOOT_REQUIRED=false
+    XMRIG_REBUILD=true
+    set +e
+    PATH="$STUBS:$PATH" CALL_LOG="$APS/calls.log" install_service >/dev/null 2>&1
+)
+assert_eq "unit rendered into the runtime systemd dir (#797)" "$([ -f "$APS/run-systemd/xmrig.service" ] && echo yes || echo no)" "yes"
+assert_contains "unit enabled with --runtime (#797)" "$(cat "$APS/calls.log")" "[systemctl] enable --runtime xmrig.service"
+
+# setup --dry-run previews the SAME appliance decisions (shared logic, #146): baked deps, GRUB skip,
+# runtime-only msr and mounts, --runtime enablement — and still covers every main() step.
+APDR="$AP/dryrun"
+mkdir -p "$APDR/etc" "$APDR/util"
+cp "$APK/util/proposed-grub.sh" "$APDR/util/proposed-grub.sh"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$APDR/etc/grub"
+printf 'HugePages_Free:    0\n' >"$APDR/etc/meminfo"
+cat >"$APDR/config.json" <<EOF
+{ "HOME_DIR": "$APDR/home", "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+apdr_out="$(cd "$APDR" && PATH="$STUBS:$PATH" CALL_LOG="$APDR/calls.log" RIGFORGE_APPLIANCE=1 \
+    GRUB_DEFAULT="$APDR/etc/grub" FSTAB="$APDR/etc/fstab" LIMITS_CONF="$APDR/etc/limits.conf" \
+    MEMINFO="$APDR/etc/meminfo" RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+assert_rc "appliance dry-run exits 0 (#797/#146)" "$?" "0"
+assert_contains "plan: baked-deps arm (#797)" "$apdr_out" "appliance mode: baked into the image — no package install"
+assert_contains "plan: GRUB skip arm (#797)" "$apdr_out" "skipping GRUB updates (appliance: the kernel cmdline is image-owned)"
+assert_contains "plan: runtime-only msr arm (#797)" "$apdr_out" "modprobe msr at runtime only (appliance: no modules-load drop-in)"
+assert_contains "plan: runtime mounts, no fstab/limits writes (#797)" "$apdr_out" "appliance mode: mount hugetlbfs at runtime"
+assert_contains "plan: unit goes to /run with --runtime (#797)" "$apdr_out" "/run/systemd/system/xmrig.service"
+assert_contains "plan: enable --runtime wording (#797)" "$apdr_out" "enable --runtime --now"
+assert_contains "plan: grow-only preview still renders (#797/#328)" "$apdr_out" "grow the pool so 200 2MB HugePages are available"
+for mut in apt-get modprobe tee mount sysctl update-grub; do
+    assert_absent "appliance dry-run never invokes $mut (#797/#146)" "$(cat "$APDR/calls.log" 2>/dev/null)" "[$mut]"
+done
+while IFS= read -r step; do
+    assert_contains "appliance plan covers main() step '$step' (#797/#146)" "$apdr_out" "$step"
+done <<<"$main_steps"
+
+# Full black-box setup with the flag, host-native OS path: proves the flag survives main() wiring
+# end to end. Portable asserts here; the Linux-only /etc assertions run on Linux hosts and in the
+# Linux CI job (the macOS path skips kernel/limits/service by OS, not by flag).
+APW="$(e2e_setup)"
+RIGFORGE_APPLIANCE=1 e2e_run "$APW" "$HOST_OS"
+rc=$?
+assert_rc "appliance full run exits 0 (#797)" "$rc" "0"
+assert_absent "appliance full run: no apt-get (#797)" "$(cat "$APW/calls.log")" "[apt-get]"
+assert_absent "appliance full run: no brew install (#797)" "$(cat "$APW/calls.log")" "[brew] install"
+assert_contains "appliance full run: says deps are baked (#797)" "$E2E_OUT" "dependencies are baked into the image"
+if [ "$HOST_OS" = Linux ]; then
+    assert_contains "appliance full run: GRUB skip taken (#797)" "$E2E_OUT" "the kernel cmdline is image-owned"
+    assert_contains "appliance full run: GRUB file untouched (#797)" "$(cat "$APW/etc/default/grub")" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash memmap=4G&2M"'
+    assert_absent "appliance full run: no fstab hugetlbfs lines (#797)" "$(cat "$APW/etc/fstab")" "hugetlbfs"
+    assert_absent "appliance full run: no memlock append (#797)" "$(cat "$APW/etc/security/limits.conf")" "memlock"
+    assert_eq "appliance full run: no msr.conf drop-in (#797)" "$([ -e "$APW/etc/modules-load.d/msr.conf" ] && echo present || echo absent)" "absent"
+    assert_contains "appliance full run: unit enabled --runtime (#797)" "$(cat "$APW/calls.log")" "[systemctl] enable --runtime xmrig.service"
+fi
 
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
