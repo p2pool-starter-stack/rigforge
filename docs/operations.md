@@ -139,9 +139,9 @@ power/efficiency and reservation-aware details are all in
 settings with the biggest RandomX impact: Secure Boot when kernel lockdown is blocking the MSR mod
 (it leads the checklist — the cheapest change, and it gates the ~5–15% MSR mod outright; whether to
 make it is the operator's call, `bios` just makes the cost visible), the memory profile
-(XMP/EXPO/DOCP), SMT, the CPU power/boost posture (`--efficiency` swaps the boost item for Eco-Mode
-+ Curve Optimizer), and — on EPYC — NUMA nodes per socket (NPS4, so RandomX gets quadrant-local
-memory). It reads
+(XMP/EXPO/DOCP), SMT, the CPU power/boost posture (`--efficiency` swaps the boost item for
+Eco-Mode + Curve Optimizer), and — on EPYC — NUMA nodes per socket (NPS4, so RandomX gets
+quadrant-local memory). It reads
 the same probes `doctor` reports on, so the two never disagree; pending items are saved to
 `rigforge-bios.json` (included in `backup`/`restore`) and the next `bios` run re-checks exactly
 those items against fresh probes — an item only counts as applied when its OS-visible fingerprint
