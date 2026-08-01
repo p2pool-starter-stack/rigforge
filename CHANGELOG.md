@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-08-01
+
 ### Fixed
 
 - **`doctor` detects kernel lockdown directly instead of inferring it from MSR failure (#333).**
