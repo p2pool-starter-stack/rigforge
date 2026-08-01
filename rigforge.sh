@@ -108,6 +108,7 @@ MEMINFO="${MEMINFO:-/proc/meminfo}"
 MSR_MODULE_DIR="${MSR_MODULE_DIR:-/sys/module/msr}"
 GOVERNOR_FILE="${GOVERNOR_FILE:-/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor}"
 HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages}"
+NR_HUGEPAGES_FILE="${NR_HUGEPAGES_FILE:-/proc/sys/vm/nr_hugepages}"
 # Hashrate-capping-hardware diagnostics (#67): RAM layout (dmidecode) + effective CPU clock under load.
 DMIDECODE="${DMIDECODE:-dmidecode}"
 RDMSR_BIN="${RDMSR_BIN:-rdmsr}" # msr-tools, for doctor's register-level MSR verification (#66)
@@ -1337,6 +1338,48 @@ _cmdline_reserved_2mb() { # <cmdline> -> reserved 2MB-equivalent pages
     awk '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") t+=n*512; else t+=n } } print t+0 }' <<<"$1"
 }
 
+# 2MB pages the running miner already holds (kB -> pages), 0 when stopped: pages it holds now are
+# pages it re-uses across a restart, so they count as available when sizing the pool. HugetlbPages
+# spans every page size, so a dataset sitting in 1GB pages overstates this credit — in exactly the
+# case where the 2MB pool is not needed for the dataset, so nothing actually used goes unreserved.
+_miner_held_hugepages() {
+    local pid kb
+    pid=$(systemctl show "$SERVICE_NAME.service" -p MainPID --value 2>/dev/null) || pid=""
+    if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null && [ -r "/proc/$pid/status" ]; then
+        kb=$(awk '/^HugetlbPages:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null)
+        echo $((${kb:-0} / 2048))
+        return
+    fi
+    echo 0
+}
+
+# Grow-only runtime reservation (#328, the runtime half of #305's keep-existing guard): another
+# consumer may hold pages from the same pool (a co-hosted pithead stack's p2pool/monerod), and
+# writing our raw requirement shrinks that pool to its in-use floor — 0 free pages on both sides,
+# measured live on the pithead#797 appliance bench. Ensure the miner's pages are AVAILABLE (free
+# now, or already held by the running miner) and grow the pool by the shortfall only; never shrink
+# a reservation someone else made. Idempotent: a re-run that finds enough available writes nothing.
+# ponytail: with headroom configured AND the co-resident already running, its live pages and the
+# headroom both count toward the target — a bounded over-reserve in the safe direction; tighten to
+# max(headroom, live use) if a real box ever needs the difference.
+_hugepages_avail() { # -> 2MB pages the miner could draw on right now (free + already held)
+    local free held
+    free=$(awk '/^HugePages_Free:/ { print $2; exit }' "$MEMINFO" 2>/dev/null) || free=""
+    held=$(_miner_held_hugepages)
+    echo $((${free:-0} + held))
+}
+
+_ensure_hugepages() { # <required 2MB pages>
+    local required=$1 current avail
+    current=$(cat "$NR_HUGEPAGES_FILE" 2>/dev/null) || current=0
+    avail=$(_hugepages_avail)
+    if [ "$avail" -lt "$required" ]; then
+        sudo sysctl -w vm.nr_hugepages=$((current + required - avail))
+    else
+        log "HugePages pool already covers the miner ($avail of $required pages available; pool: $current) — leaving it as-is (#328)."
+    fi
+}
+
 tune_kernel() {
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Skipping kernel tuning (Not supported on $OS_TYPE)."
@@ -1361,13 +1404,13 @@ tune_kernel() {
         # Calculate exact requirement based on hardware, the tuned thread count, and 1GB page status
         REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
         log "Hardware-optimized HugePages: $REQUIRED_PAGES (2MB pages) calculated."
-        sudo sysctl -w vm.nr_hugepages="$REQUIRED_PAGES"
+        _ensure_hugepages "$REQUIRED_PAGES"
     else
         # Fallback when proposed-grub.sh is missing: 3072 × 2MB = 6 GB of huge pages — enough for the
         # ~2.3 GB RandomX dataset plus per-thread scratchpads on a large desktop/server, without over-
         # reserving on smaller hosts. proposed-grub.sh computes an exact, hardware-sized value instead.
         warn "Utility script not found. Fallback to safe default (3072)."
-        sudo sysctl -w vm.nr_hugepages=3072
+        _ensure_hugepages 3072
     fi
 
     log "Configuring bootloader (GRUB) for persistent HugePages..."
@@ -1580,7 +1623,12 @@ _setup_plan() {
                 fi
             fi
         fi
-        _p "tuning the kernel" "$_msr; reserve $_pages 2MB HugePages (runtime sysctl); $_grubline$_reboot"
+        # Grow-only preview (#328): same availability check _ensure_hugepages runs, read-only.
+        local _hpline="grow the pool so $_pages 2MB HugePages are available (grow-only runtime sysctl)"
+        if [[ "$_pages" =~ ^[0-9]+$ ]] && [ "$(_hugepages_avail)" -ge "$_pages" ] 2>/dev/null; then
+            _hpline="HugePages pool already covers the miner ($_pages pages needed) — no change"
+        fi
+        _p "tuning the kernel" "$_msr; $_hpline; $_grubline$_reboot"
         local _f1="hugetlbfs /dev/hugepages hugetlbfs defaults 0 0" _f2="hugetlbfs_1g $HUGEPAGES_1G_DIR hugetlbfs pagesize=1G 0 0" _add=""
         grep -qxF "$_f1" "$FSTAB" 2>/dev/null || _add=" '$_f1'"
         grep -qxF "$_f2" "$FSTAB" 2>/dev/null || _add="$_add '$_f2'"

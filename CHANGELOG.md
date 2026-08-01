@@ -7,6 +7,18 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Runtime HugePages reservation is grow-only (#328).** `tune_kernel`'s runtime sysctl wrote the
+  miner's computed requirement absolutely, which SHRINKS a pool another consumer already reserved
+  (a co-hosted pithead stack's p2pool/monerod share the same 2MB pool) down to its in-use floor —
+  zero free pages on both sides, measured live on the pithead#797 appliance bench. The write is now
+  availability-based: pages the miner can draw on = free + whatever a running miner already holds;
+  the pool grows by the shortfall only and never shrinks. Fresh single-purpose rigs see the same
+  reservation as before; re-runs that find enough available write nothing. This is the runtime half
+  of #305's co-resident keep-existing guard, and it applies with or without
+  `hugepages_reserve_extra_mb` set. The `setup --dry-run` plan previews the same decision.
+
 ## [1.12.0] - 2026-07-19
 
 The pithead#597 producer release: the control-upgrade `/status` contract a one-click worker
