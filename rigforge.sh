@@ -146,6 +146,10 @@ MIN_CLOCK_PCT="${MIN_CLOCK_PCT:-75}" # warn when the loaded clock is below this 
 # BIOS/firmware advisory (#78): board/BIOS identity + SMT state (both world-readable from sysfs).
 DMI_DIR="${DMI_DIR:-/sys/class/dmi/id}"
 SMT_CONTROL="${SMT_CONTROL:-/sys/devices/system/cpu/smt/control}"
+# Kernel lockdown state (#333): securityfs exposes the active level, world-readable. Distro kernels
+# (Ubuntu >= 20.04, RHEL, Debian) turn lockdown on automatically under UEFI Secure Boot, and lockdown
+# blocks every /dev/cpu/*/msr write — so the MSR mod silently can't apply. Read, never inferred.
+LOCKDOWN_FILE="${LOCKDOWN_FILE:-/sys/kernel/security/lockdown}"
 
 # systemd service name for the worker.
 SERVICE_NAME="${SERVICE_NAME:-xmrig}"
@@ -4370,6 +4374,24 @@ _cpu_eff_khz() {
     if [ "$n" -gt 0 ]; then echo $((sum / n)); fi # always exit 0 (empty output when no data)
 }
 
+# Kernel lockdown level (#333). securityfs prints every level with the ACTIVE one in square brackets,
+# e.g. "none [integrity] confidentiality" (security/lockdown/lockdown.c:lockdown_read). Echoes just the
+# bracketed level; empty when the file is absent or unreadable (lockdown LSM not built in, securityfs
+# not mounted, or a non-root reader) — "unknown", never "off". Always exits 0: an unreadable probe is
+# missing information, not a failure, and must not trip the ERR trap.
+_lockdown_state() { # -> none|integrity|confidentiality, or empty when unknown
+    [ -r "$LOCKDOWN_FILE" ] || return 0
+    sed -nE 's/.*\[([a-z]+)\].*/\1/p' "$LOCKDOWN_FILE" 2>/dev/null | head -1
+    return 0
+}
+
+# True when lockdown is at a level that blocks MSR writes (#333). LOCKDOWN_MSR sits below
+# LOCKDOWN_INTEGRITY_MAX in enum lockdown_reason (include/linux/security.h), so both `integrity` and
+# `confidentiality` deny the write; only `none` permits it.
+_lockdown_blocks_msr() { # <level> -> 0 when MSR writes are denied
+    case "$1" in integrity | confidentiality) return 0 ;; *) return 1 ;; esac
+}
+
 # #66 MSR-verification helpers. doctor confirms the prefetcher MSR mod actually took effect — not just
 # that the `msr` module loaded — in two layers: XMRig's own log line (always available) and an rdmsr
 # read-back (when msr-tools is installed), which catches a write a hypervisor / kernel-lockdown silently
@@ -4842,10 +4864,29 @@ doctor() {
     # MSR mod applied? (#66) The ~10-15% RandomX gain needs three things, checked in order: the msr
     # module loadable, XMRig's own log line confirming it WROTE the prefetcher preset, and — when rdmsr
     # (msr-tools) is present — a register read-back that catches a write a hypervisor/lockdown dropped.
+    # Kernel lockdown (#333) — checked BEFORE the MSR probes below, because it is the CAUSE and they are
+    # the symptom. Under lockdown, msr_write()/msr_ioctl() call security_locked_down(LOCKDOWN_MSR) and
+    # return -EPERM *before* consulting the allow_writes filter (arch/x86/kernel/msr.c), so the
+    # msr.allow_writes=on we put on the cmdline cannot override it. Reading the state beats inferring it
+    # from Secure Boot: whether Secure Boot implies lockdown is a distro patch, not upstream behaviour.
+    local ld
+    ld=$(_lockdown_state)
+    if [ -z "$ld" ]; then
+        _ck_info "kernel lockdown state unknown ($LOCKDOWN_FILE unreadable) — run 'doctor' as root, or the lockdown LSM isn't built in"
+    elif _lockdown_blocks_msr "$ld"; then
+        _ck_warn "kernel lockdown is ACTIVE ('$ld') — it denies every /dev/cpu/*/msr write, so the MSR mod cannot apply (worth ~5-15% RandomX). msr.allow_writes=on does NOT override it: disable Secure Boot in BIOS ($(_bios_menu "$(_dmi board_vendor)" secure_boot "${TUNE_TARGET:-perf}")), then re-run 'sudo $0 doctor'."
+        issues=$((issues + 1))
+    else
+        _ck_ok "kernel lockdown: none — MSR writes are permitted"
+    fi
+
     if [ -d "$MSR_MODULE_DIR" ]; then
         _ck_ok "msr kernel module loaded"
     else
-        _ck_warn "msr module not loaded — the MSR mod won't apply; if it persists, disable Secure Boot"
+        # Secure Boot does NOT stop the in-tree, distro-signed `msr` module from loading, so the old
+        # "disable Secure Boot" hint pointed the wrong way here (#333). A missing module is a modprobe /
+        # packaging problem; lockdown is reported separately above.
+        _ck_warn "msr module not loaded — the MSR mod won't apply; check 'sudo modprobe msr' and $MODULES_LOAD_DIR/msr.conf"
         issues=$((issues + 1))
     fi
     if [ -n "$log_file" ] && [ -f "$log_file" ]; then
@@ -4870,7 +4911,13 @@ EOF
                     _ck_ok "MSR registers verified via rdmsr ($_MSR_OK/$_MSR_TOTAL match the $preset preset)"
                 elif [ -n "$_MSR_BAD" ]; then
                     # A genuine value mismatch — the write didn't take. This is the real failure (#66).
-                    _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — a hypervisor/lockdown may have dropped the write, or XMRig changed its preset"
+                    # #333: when lockdown is active we already know which of the three causes it was —
+                    # say so instead of listing all of them.
+                    if _lockdown_blocks_msr "$ld"; then
+                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — kernel lockdown ('$ld') dropped the write; see the lockdown item above"
+                    else
+                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — a hypervisor may have dropped the write, or XMRig changed its preset"
+                    fi
                     issues=$((issues + 1))
                 else
                     # No mismatch, but some/all registers were unreadable (e.g. msr module not loaded). Advisory.
@@ -4879,7 +4926,13 @@ EOF
             fi
             ;;
         fail)
-            _ck_warn "XMRig reports the MSR preset FAILED to set — check Secure Boot / msr.allow_writes=on"
+            # #333: msr.allow_writes=on is only the answer when lockdown is NOT the blocker — under
+            # lockdown the kernel rejects the write before the filter ever runs.
+            if _lockdown_blocks_msr "$ld"; then
+                _ck_warn "XMRig reports the MSR preset FAILED to set — kernel lockdown ('$ld') is denying the write; see the lockdown item above"
+            else
+                _ck_warn "XMRig reports the MSR preset FAILED to set — check msr.allow_writes=on and that no hypervisor is masking MSR access"
+            fi
             issues=$((issues + 1))
             ;;
         *) : ;; # no msr line yet (the miner may not have started a RandomX job) — stay quiet
@@ -5021,6 +5074,21 @@ _bios_detect() {
     local mem pop nch spd rated smt effk maxk pct cpu_m
     B_MEM_STATUS=unknown B_MEM_BEFORE="" B_SMT_STATUS=unknown B_SMT_BEFORE="" B_BOOST_STATUS=unknown B_BOOST_BEFORE=""
     B_NPS_STATUS=unknown B_NPS_BEFORE=""
+    B_SB_STATUS=unknown B_SB_BEFORE=""
+    # Secure Boot / lockdown (#333). Same probe doctor uses (the #80 rule: they can never disagree).
+    # `unknown` when securityfs isn't readable — never guessed from Secure Boot state, which only
+    # implies lockdown on distro kernels, not upstream.
+    local ld_state
+    ld_state=$(_lockdown_state)
+    if [ -n "$ld_state" ]; then
+        if _lockdown_blocks_msr "$ld_state"; then
+            B_SB_STATUS=pending
+            B_SB_BEFORE="lockdown=$ld_state (MSR writes denied)"
+        else
+            B_SB_STATUS=ok
+            B_SB_BEFORE="lockdown=none"
+        fi
+    fi
     cpu_m=$(lscpu 2>/dev/null | awk -F: '/^Model name:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || true)
     case "$cpu_m" in
     *EPYC*)
@@ -5082,6 +5150,13 @@ _bios_menu() { # <board_vendor> <item_id> <target> -> menu-path line(s) on stdou
     memory_profile:msi) echo "OC ▸ A-XMP / EXPO ▸ Profile 1" ;;
     memory_profile:*) echo "look for the memory profile setting (XMP / EXPO / DOCP) and enable profile 1" ;;
     smt:*) echo "Advanced ▸ CPU Configuration ▸ SMT / Hyper-Threading ▸ Enabled" ;;
+    # #333: Secure Boot itself is the lever — distro kernels enable lockdown from it, and lockdown is
+    # what denies the MSR writes. On most boards the toggle only appears once the OS type is "Other OS".
+    secure_boot:asus) echo "Boot ▸ Secure Boot ▸ OS Type ▸ Other OS (then Secure Boot state reads 'Disabled')" ;;
+    secure_boot:asrock) echo "Security ▸ Secure Boot ▸ Disabled" ;;
+    secure_boot:gigabyte) echo "Boot ▸ Secure Boot ▸ Secure Boot Enable ▸ Disabled" ;;
+    secure_boot:msi) echo "Settings ▸ Advanced ▸ Windows OS Configuration ▸ Secure Boot ▸ Disabled" ;;
+    secure_boot:*) echo "find the Secure Boot setting (usually under Boot or Security) and disable it" ;;
     numa_nps:*) echo "Advanced ▸ AMD CBS ▸ DF Common Options ▸ Memory Addressing ▸ NUMA nodes per socket ▸ NPS4" ;;
     power_boost:*)
         if [ "$3" = efficiency ]; then
@@ -5102,6 +5177,7 @@ _bios_state_write() { # <state_file>; reads the B_* globals + TUNE_TARGET
     if [ "$B_SMT_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_SMT_BEFORE" --arg m "$(_bios_menu "$vendor" smt "$TUNE_TARGET")" -n '$a + [{id: "smt", status: "pending", before: $b, menu: $m}]'); fi
     if [ "$B_BOOST_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_BOOST_BEFORE" --arg m "$(_bios_menu "$vendor" power_boost "$TUNE_TARGET")" -n '$a + [{id: "power_boost", status: "pending", before: $b, menu: $m}]'); fi
     if [ "$B_NPS_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_NPS_BEFORE" --arg m "$(_bios_menu "$vendor" numa_nps "$TUNE_TARGET")" -n '$a + [{id: "numa_nps", status: "pending", before: $b, menu: $m}]'); fi
+    if [ "$B_SB_STATUS" = pending ]; then items=$(jq -c --argjson a "$items" --arg b "$B_SB_BEFORE" --arg m "$(_bios_menu "$vendor" secure_boot "$TUNE_TARGET")" -n '$a + [{id: "secure_boot", status: "pending", before: $b, menu: $m}]'); fi
     jq -n --arg t "$TUNE_TARGET" --arg when "$(date '+%Y-%m-%d %H:%M')" --argjson items "$items" '{target: $t, saved: $when, items: $items}' >"$f"
     log "Saved $(jq -r '.items | length' "$f") pending item(s) to $f."
 }
@@ -5112,6 +5188,7 @@ _bios_item_label() { # <id> -> human label
     smt) printf 'SMT / Hyper-Threading' ;;
     power_boost) printf 'CPU boost / power' ;;
     numa_nps) printf 'NUMA per socket (NPS)' ;;
+    secure_boot) printf 'Secure Boot (kernel lockdown)' ;;
     esac
 }
 
@@ -5134,12 +5211,17 @@ _bios_guide() { # <state_file>
     if [ "$B_BOOST_STATUS" = unknown ]; then _ck_info "CPU boost not checked — the miner isn't running (start it and re-run bios to include the power/boost item)"; fi
     if [ "$B_NPS_STATUS" = ok ]; then _ck_ok "NUMA per socket (NPS): $B_NPS_BEFORE"; fi
     if [ "$B_NPS_STATUS" = pending ]; then _ck_warn "NUMA per socket (NPS): $B_NPS_BEFORE — set NUMA nodes per socket to NPS4 in BIOS so RandomX gets quadrant-local memory."; fi
-    for id in memory_profile smt power_boost numa_nps; do
+    if [ "$B_SB_STATUS" = ok ]; then _ck_ok "Secure Boot / kernel lockdown: $B_SB_BEFORE — the MSR mod can apply"; fi
+    if [ "$B_SB_STATUS" = pending ]; then _ck_warn "Secure Boot / kernel lockdown: $B_SB_BEFORE — the MSR mod (~5-15% RandomX) cannot apply until Secure Boot is off."; fi
+    if [ "$B_SB_STATUS" = unknown ]; then _ck_info "Secure Boot / kernel lockdown: can't verify — $LOCKDOWN_FILE isn't readable (run as root, or the lockdown LSM isn't built in)"; fi
+    # Secure Boot leads: it's the cheapest change and it gates the MSR mod outright.
+    for id in secure_boot memory_profile smt power_boost numa_nps; do
         case "$id" in
         memory_profile) if [ "$B_MEM_STATUS" = pending ]; then pending="$pending $id"; fi ;;
         smt) if [ "$B_SMT_STATUS" = pending ]; then pending="$pending $id"; fi ;;
         power_boost) if [ "$B_BOOST_STATUS" = pending ]; then pending="$pending $id"; fi ;;
         numa_nps) if [ "$B_NPS_STATUS" = pending ]; then pending="$pending $id"; fi ;;
+        secure_boot) if [ "$B_SB_STATUS" = pending ]; then pending="$pending $id"; fi ;;
         esac
     done
     if [ -z "$pending" ]; then
@@ -5197,6 +5279,10 @@ _bios_verify() { # <state_file>
             fresh_status="$B_NPS_STATUS"
             fresh_before="$B_NPS_BEFORE"
             ;;
+        secure_boot)
+            fresh_status="$B_SB_STATUS"
+            fresh_before="$B_SB_BEFORE"
+            ;;
         *) continue ;;
         esac
         if [ "$fresh_status" = ok ]; then
@@ -5213,6 +5299,7 @@ _bios_verify() { # <state_file>
             memory_profile) _ck_warn "$(_bios_item_label "$id") — can't verify (run as root so dmidecode can read the RAM state)." ;;
             smt) _ck_warn "$(_bios_item_label "$id") — can't verify (no SMT control exposed in sysfs on this system)." ;;
             numa_nps) _ck_warn "$(_bios_item_label "$id") — can't verify (lscpu didn't report an EPYC CPU model, so the NUMA-node count can't be checked)." ;;
+            secure_boot) _ck_warn "$(_bios_item_label "$id") — can't verify ($LOCKDOWN_FILE isn't readable; re-run as root)." ;;
             esac
             kept="$kept $id"
         fi
@@ -5229,10 +5316,12 @@ _bios_verify() { # <state_file>
         case " $kept " in *" smt "*) : ;; *) B_SMT_STATUS="done" ;; esac
         case " $kept " in *" power_boost "*) : ;; *) B_BOOST_STATUS="done" ;; esac
         case " $kept " in *" numa_nps "*) : ;; *) B_NPS_STATUS="done" ;; esac
+        case " $kept " in *" secure_boot "*) : ;; *) B_SB_STATUS="done" ;; esac
         if [ "$B_BOOST_STATUS" = unknown ]; then B_BOOST_STATUS=pending; fi # keep it resumable
         if [ "$B_MEM_STATUS" = unknown ]; then B_MEM_STATUS=pending; fi
         if [ "$B_SMT_STATUS" = unknown ]; then B_SMT_STATUS=pending; fi
         if [ "$B_NPS_STATUS" = unknown ]; then B_NPS_STATUS=pending; fi
+        if [ "$B_SB_STATUS" = unknown ]; then B_SB_STATUS=pending; fi
         _bios_state_write "$state"
         log "$applied of $total applied, $(jq -r '.items | length' "$state") still pending. Reboot into BIOS to finish, then run 'sudo $0 bios' again."
     fi

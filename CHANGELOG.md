@@ -7,6 +7,26 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`doctor` detects kernel lockdown directly instead of inferring it from MSR failure (#333).**
+  When kernel lockdown is active (distro kernels — Ubuntu, RHEL, Debian — enable it automatically
+  under UEFI Secure Boot), every `/dev/cpu/*/msr` write is denied and the MSR prefetcher mod
+  silently can't apply, costing ~5–15% RandomX. `doctor` only reacted after something downstream had
+  already failed, and its remedy for the most common cause was wrong: `msr.allow_writes=on` is dead
+  code under lockdown, because the kernel checks `security_locked_down(LOCKDOWN_MSR)` and returns
+  before the `allow_writes` filter is ever consulted (`arch/x86/kernel/msr.c`). `doctor` now reads
+  the actual state from `/sys/kernel/security/lockdown` *before* the MSR probes — cause before
+  symptom — and flags active lockdown (`integrity` and `confidentiality` both block the write) as a
+  counted issue naming the level, the cost, and the real fix (disable Secure Boot, with the
+  board-specific menu path). Reading beats inferring from `mokutil`: Secure-Boot-implies-lockdown is
+  a distro patch, not upstream behaviour. The three messages that guessed between causes now name
+  the one that applies, the missing-`msr`-module hint no longer blames Secure Boot (the in-tree
+  signed module loads fine under it — that's a modprobe/packaging problem), and `secure_boot` joins
+  the guided `bios` checklist (#80), leading it, verified against the same securityfs probe so
+  `doctor` and `bios` can't disagree. Unreadable securityfs stays advisory — unknown, never a
+  manufactured issue.
+
 ## [1.13.0] - 2026-08-01
 
 The pithead#797 appliance release: an opt-in setup mode for the read-only appliance image —
