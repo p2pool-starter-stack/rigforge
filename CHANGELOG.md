@@ -7,6 +7,12 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-08-01
+
+The pithead#797 appliance release: an opt-in setup mode for the read-only appliance image —
+baked deps, runtime units, image-owned kernel cmdline — plus a grow-only runtime HugePages
+reservation so a co-resident stack's pool is never shrunk out from under it.
+
 ### Added
 
 - **Appliance mode: `RIGFORGE_APPLIANCE=1` (pithead#797 R1).** One opt-in env flag for running
