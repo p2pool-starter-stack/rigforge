@@ -255,6 +255,11 @@ _sed_escape_replacement() { # <value> -> escaped value on stdout
 check_prerequisites() {
     log "Verifying system prerequisites..."
     if ! command -v jq &>/dev/null; then
+        # Appliance mode never installs packages — same contract as install_dependencies: the read-only
+        # image bakes everything at build, and an install here would silently violate it (pithead#797 R1).
+        if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+            error "jq is required but missing — appliance mode never installs packages; bake jq into the image."
+        fi
         if [ "$OS_TYPE" == "Darwin" ]; then
             if command -v brew &>/dev/null; then
                 log "Installing prerequisite: jq..."
@@ -1075,6 +1080,13 @@ generate_xmrig_config() {
     chmod 600 config.json
 
     if [ "$OS_TYPE" == "Linux" ]; then
+        # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
+        # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
+        # which re-renders the miner's config every boot and can cap or journald-route the log there.
+        if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+            log "Appliance mode: skipping the logrotate policy (image-owned logging)."
+            return
+        fi
         log "Configuring log rotation policy..."
         # Install logrotate configuration
         sudo tee "$LOGROTATE_DIR/xmrig" >/dev/null <<EOF

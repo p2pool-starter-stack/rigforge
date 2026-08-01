@@ -5218,7 +5218,26 @@ if [ "$HOST_OS" = Linux ]; then
     assert_absent "appliance full run: no memlock append (#797)" "$(cat "$APW/etc/security/limits.conf")" "memlock"
     assert_eq "appliance full run: no msr.conf drop-in (#797)" "$([ -e "$APW/etc/modules-load.d/msr.conf" ] && echo present || echo absent)" "absent"
     assert_contains "appliance full run: unit enabled --runtime (#797)" "$(cat "$APW/calls.log")" "[systemctl] enable --runtime xmrig.service"
+    # /etc/logrotate.d is volatile on the appliance and the image runs no logrotate — the drop-in
+    # must not be written (log policy is the integration layer's, pithead#797 R2).
+    assert_eq "appliance full run: no logrotate drop-in (#797)" "$([ -e "$APW/etc/logrotate.d/xmrig" ] && echo present || echo absent)" "absent"
 fi
+# check_prerequisites under the flag: a missing jq is a hard, actionable failure — never an install
+# (the non-appliance path would apt/brew it; PATH without jq simulates an image that forgot to bake it).
+apjq_out="$( (
+    source "$SCRIPT"
+    RIGFORGE_APPLIANCE=1
+    OS_TYPE=Linux
+    set +e
+    # Sourcing ran jq, so bash hashed its real path — clear the table or `command -v jq`
+    # ignores the emptied PATH and the missing-tool branch never fires.
+    hash -r
+    PATH="/nonexistent" check_prerequisites 2>&1
+))"
+apjq_rc=$?
+assert_rc "appliance + missing jq fails hard (#797)" "$apjq_rc" "1"
+assert_contains "appliance + missing jq names the fix (#797)" "$apjq_out" "bake jq into the image"
+assert_absent "appliance + missing jq never installs (#797)" "$apjq_out" "Installing prerequisite"
 
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
