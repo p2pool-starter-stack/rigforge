@@ -90,6 +90,33 @@ XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
 # recompile and the service restart — making re-runs idempotent (#4).
 XMRIG_REBUILD=true
 
+# Appliance mode (pithead#797 R1): opt-in via RIGFORGE_APPLIANCE=1 for running setup on the Pithead
+# appliance image, whose root filesystem is read-only and whose /etc is a volatile overlay — every
+# write there vanishes at reboot, and a pithead boot leg re-runs setup each boot instead. An env
+# flag, not a config.json key, because the caller is the image's boot path (not the operator) and
+# the mode is a preset bundle over the env-overridable system paths below — the same seam the R0
+# bench drove by hand with GRUB_DEFAULT=/nonexistent. Under the flag, setup:
+#   - never installs packages (the toolchain is baked at image build; apt cannot run on the RO
+#     root) — it verifies the tools it needs and fails naming what's missing;
+#   - skips the GRUB leg deliberately (the kernel cmdline, incl. any 1GB-hugepage reservation, is
+#     image-owned; update-grub aborted the whole run on the RO /boot);
+#   - renders systemd units into /run/systemd/system and enables them with --runtime;
+#   - mounts hugetlbfs at runtime instead of appending to fstab, and skips the limits.conf memlock
+#     append (the unit already sets LimitMEMLOCK=infinity; interactive-run memlock is not an
+#     appliance concern).
+# Runtime tuning is unchanged: modprobe msr, the grow-only HugePages sysctl (#328), and the
+# cpupower governor via ExecStartPre all work on a read-only root.
+RIGFORGE_APPLIANCE="${RIGFORGE_APPLIANCE:-0}" # every consumer tests `= 1`; anything else is off
+if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+    # Preset only — an explicit SYSTEMD_DIR in the environment (the test sandbox) still wins, and
+    # the non-appliance default below keeps this value because it is now set.
+    SYSTEMD_DIR="${SYSTEMD_DIR:-/run/systemd/system}"
+fi
+# Unit-enablement mode: appliance units live in /run, so their wants/ symlinks must too (a plain
+# `enable` would write them to the volatile /etc overlay — working until reboot, then gone).
+ENABLE_RUNTIME=""
+if [ "$RIGFORGE_APPLIANCE" = 1 ]; then ENABLE_RUNTIME="--runtime"; fi
+
 # System paths the script writes to. Overridable so the test suite can redirect them at a sandbox
 # (the defaults are the real locations, so production behaviour is unchanged).
 LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
@@ -228,6 +255,11 @@ _sed_escape_replacement() { # <value> -> escaped value on stdout
 check_prerequisites() {
     log "Verifying system prerequisites..."
     if ! command -v jq &>/dev/null; then
+        # Appliance mode never installs packages — same contract as install_dependencies: the read-only
+        # image bakes everything at build, and an install here would silently violate it (pithead#797 R1).
+        if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+            error "jq is required but missing — appliance mode never installs packages; bake jq into the image."
+        fi
         if [ "$OS_TYPE" == "Darwin" ]; then
             if command -v brew &>/dev/null; then
                 log "Installing prerequisite: jq..."
@@ -738,7 +770,36 @@ _missing_deps() {
     printf '%s' "$missing"
 }
 
+# Appliance-mode tool check (pithead#797 R1), shared with the setup --dry-run plan (#146 — never a
+# second copy to drift). Echoes the tools setup would actually invoke that are absent. `command -v`,
+# not the package manager: on the appliance, dpkg/alternatives state rides the volatile /etc overlay
+# and can be stale while the tools in /usr are fine (observed on the R0 bench after a reboot).
+# envsubst renders the unit on every run; the compiler chain only matters when a build is pending —
+# the R0 bench restored mining from a cached build with a half-broken toolchain, and the every-boot
+# re-run must keep doing that.
+_missing_appliance_tools() {
+    local t missing="" tools="envsubst"
+    [ "$XMRIG_REBUILD" = true ] && tools="git cmake make cc envsubst"
+    for t in $tools; do
+        command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+    done
+    printf '%s' "$missing"
+}
+
 install_dependencies() {
+    # Appliance mode: the toolchain is baked into the image at build — apt cannot run on the
+    # read-only root, and even a rw-remounted install leaves its /etc state on the volatile overlay
+    # (pithead#797 R0 item 1). So never install here: verify and fail naming the missing tools —
+    # that's an image build bug, not something a rig can fix at runtime.
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+        local _missing
+        _missing="$(_missing_appliance_tools)"
+        if [ -n "$_missing" ]; then
+            error "Appliance mode: required tool(s) missing from the image:$_missing. The toolchain must be baked at image build — package install cannot run on the read-only root."
+        fi
+        log "Appliance mode: dependencies are baked into the image — skipping package install."
+        return 0
+    fi
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
         if command -v brew &>/dev/null; then
@@ -1019,6 +1080,13 @@ generate_xmrig_config() {
     chmod 600 config.json
 
     if [ "$OS_TYPE" == "Linux" ]; then
+        # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
+        # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
+        # which re-renders the miner's config every boot and can cap or journald-route the log there.
+        if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+            log "Appliance mode: skipping the logrotate policy (image-owned logging)."
+            return
+        fi
         log "Configuring log rotation policy..."
         # Install logrotate configuration
         sudo tee "$LOGROTATE_DIR/xmrig" >/dev/null <<EOF
@@ -1079,8 +1147,8 @@ install_service() {
         # Reload systemd daemon
         sudo systemctl daemon-reload
 
-        # Enable service to start on boot
-        sudo systemctl enable "$SERVICE_NAME.service"
+        # Enable service to start on boot (transiently in appliance mode — the boot leg re-enables)
+        sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME.service"
 
         if [ "$REBOOT_REQUIRED" = true ]; then
             # HugePages aren't reserved until the GRUB change takes effect on reboot — starting the miner
@@ -1127,7 +1195,7 @@ install_autotune() {
         envsubst '$AUTOTUNE_ONCALENDAR' \
         <"$SCRIPT_DIR/systemd/rigforge-autotune.timer.template" | sudo tee "$tmr" >/dev/null
     sudo systemctl daemon-reload
-    sudo systemctl enable --now rigforge-autotune.timer 2>/dev/null || true
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-autotune.timer 2>/dev/null || true
 }
 
 # Install (or remove) the systemd timer that runs the miner watchdog periodically, based on the
@@ -1154,7 +1222,7 @@ install_watchdog() {
         envsubst '$WATCHDOG_INTERVAL_MIN' \
         <"$SCRIPT_DIR/systemd/rigforge-watchdog.timer.template" | sudo tee "$tmr" >/dev/null
     sudo systemctl daemon-reload
-    sudo systemctl enable --now rigforge-watchdog.timer 2>/dev/null || true
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-watchdog.timer 2>/dev/null || true
 }
 
 # Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
@@ -1228,8 +1296,8 @@ install_api() {
     RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null
     sudo tee "$rtmr" <"$SCRIPT_DIR/systemd/rigforge-api-refresh.timer.template" >/dev/null
     sudo systemctl daemon-reload
-    sudo systemctl enable --now rigforge-api-refresh.timer 2>/dev/null || true
-    sudo systemctl enable rigforge-api.service 2>/dev/null || true
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-api-refresh.timer 2>/dev/null || true
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api.service 2>/dev/null || true
     # restart, not just enable --now: a bind/port/token change must be re-read (restart also starts).
     sudo systemctl restart rigforge-api.service 2>/dev/null || true
     # Prime the state files so the first poll isn't a 503 for a whole timer period.
@@ -1281,11 +1349,11 @@ install_control() {
         sudo rm -f "$usvc" "$upath"
     fi
     sudo systemctl daemon-reload
-    sudo systemctl enable --now rigforge-control-apply.path 2>/dev/null || true
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-apply.path 2>/dev/null || true
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
-        sudo systemctl enable --now rigforge-control-upgrade.path 2>/dev/null || true
+        sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || true
     fi
-    sudo systemctl enable rigforge-control.service 2>/dev/null || true
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-control.service 2>/dev/null || true
     # restart, not just enable --now: a bind/port/token/upgrade-flag change must be re-read (restart also starts).
     sudo systemctl restart rigforge-control.service 2>/dev/null || true
 }
@@ -1389,7 +1457,13 @@ tune_kernel() {
     if [[ "$(uname -m)" == "x86_64" || "$(uname -m)" == "i686" ]]; then
         log "Enabling MSR module for hardware prefetcher tuning..."
         sudo modprobe msr 2>/dev/null || true
-        if [ -d "$MODULES_LOAD_DIR" ]; then
+        if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+            # The modprobe above is the whole job on the appliance: setup re-runs every boot (the
+            # pithead boot leg), so a modules-load drop-in is persistence machinery for a
+            # persistence layer the box doesn't have. Smaller than writing /run/modules-load.d
+            # for the same effect — that dir is only read at boot, before this run exists.
+            log "Appliance mode: msr loaded at runtime only (no modules-load drop-in — setup re-runs each boot)."
+        elif [ -d "$MODULES_LOAD_DIR" ]; then
             echo "msr" | sudo tee "$MODULES_LOAD_DIR/msr.conf" >/dev/null
         elif [ -f "$MODULES_FILE" ]; then
             append_once "$MODULES_FILE" "msr"
@@ -1414,7 +1488,14 @@ tune_kernel() {
     fi
 
     log "Configuring bootloader (GRUB) for persistent HugePages..."
-    if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+        # A deliberate skip, not the utility-not-found fallback below: on the appliance /boot is
+        # read-only and the kernel cmdline (incl. any 1GB-hugepage reservation) is image-owned —
+        # an unguarded update-grub took the whole R0 run down after a completed compile. Without
+        # the 1G reservation XMRig falls back to 2MB pages at 100%: working, small known cost
+        # (pithead#797 R0 item 2).
+        log "Appliance mode: skipping GRUB updates — the kernel cmdline is image-owned."
+    elif [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
         # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
         # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
         # clobber other kernel parameters the user/distro set (#19 — boot-safety).
@@ -1443,6 +1524,22 @@ tune_kernel() {
 configure_limits() {
     if [ "$OS_TYPE" != "Linux" ]; then
         return
+    fi
+
+    # Appliance mode: mount hugetlbfs at RUNTIME only. The fstab lines would land on the volatile
+    # /etc overlay and vanish at reboot (proven on the R0 bench) — setup re-runs each boot and just
+    # mounts again. The limits.conf memlock append covers interactive runs only, which are not an
+    # appliance concern: the unit already sets LimitMEMLOCK=infinity.
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+        log "Appliance mode: mounting hugetlbfs at runtime (no fstab or limits.conf writes)..."
+        sudo mkdir -p "$HUGEPAGES_1G_DIR"
+        mountpoint -q /dev/hugepages 2>/dev/null ||
+            sudo mount -t hugetlbfs hugetlbfs /dev/hugepages ||
+            warn "Could not mount /dev/hugepages. Check 'dmesg' for details."
+        mountpoint -q "$HUGEPAGES_1G_DIR" 2>/dev/null ||
+            sudo mount -t hugetlbfs -o pagesize=1G hugetlbfs_1g "$HUGEPAGES_1G_DIR" ||
+            warn "Could not mount $HUGEPAGES_1G_DIR (1G pages need an image-owned cmdline reservation)."
+        return 0
     fi
 
     log "Configuring persistent HugePage mounts and memory limits..."
@@ -1583,7 +1680,16 @@ _setup_plan() {
         _p "checking the build" "skip the build — XMRig $XMRIG_VERSION already built at the pinned commit"
     fi
     _p "preparing workspace" "workspace at $WORKER_ROOT (an existing prior install would be archived first)"
-    if [ "$OS_TYPE" = "Darwin" ]; then
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+        # Same check install_dependencies runs (shared _missing_appliance_tools — no second copy).
+        local _mt
+        _mt="$(_missing_appliance_tools)"
+        if [ -n "$_mt" ]; then
+            _p "installing dependencies" "appliance mode: FAIL — required tool(s) missing from the image:$_mt (the toolchain must be baked at image build)"
+        else
+            _p "installing dependencies" "appliance mode: baked into the image — no package install"
+        fi
+    elif [ "$OS_TYPE" = "Darwin" ]; then
         _p "installing dependencies" "install/verify via brew: cmake libuv openssl hwloc"
     elif _detect_pkg_manager; then
         local _md
@@ -1610,10 +1716,16 @@ _setup_plan() {
         local _msr _pages="(proposed-grub.sh missing — fallback 3072)" _grubline="GRUB: will check at run time" _reboot=""
         _msr="write msr to $MODULES_LOAD_DIR/msr.conf (module autoload)"
         [ -e "$MODULES_LOAD_DIR/msr.conf" ] && _msr="msr module already configured"
+        # Appliance arms: the same flag checks tune_kernel makes, previewed (pithead#797 R1). The
+        # GRUB probe/diff below is also gated off — the appliance skip line must stand as-is.
+        if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+            _msr="modprobe msr at runtime only (appliance: no modules-load drop-in)"
+            _grubline="skipping GRUB updates (appliance: the kernel cmdline is image-owned)"
+        fi
         if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
             _rx_setup_threads
             _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
-            if [ -f "$GRUB_DEFAULT" ]; then
+            if [ "$RIGFORGE_APPLIANCE" != 1 ] && [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
                 if [ "$CURRENT" = "$MERGED" ]; then
                     _grubline="GRUB already configured (no reboot needed for it)"
@@ -1629,15 +1741,19 @@ _setup_plan() {
             _hpline="HugePages pool already covers the miner ($_pages pages needed) — no change"
         fi
         _p "tuning the kernel" "$_msr; $_hpline; $_grubline$_reboot"
-        local _f1="hugetlbfs /dev/hugepages hugetlbfs defaults 0 0" _f2="hugetlbfs_1g $HUGEPAGES_1G_DIR hugetlbfs pagesize=1G 0 0" _add=""
-        grep -qxF "$_f1" "$FSTAB" 2>/dev/null || _add=" '$_f1'"
-        grep -qxF "$_f2" "$FSTAB" 2>/dev/null || _add="$_add '$_f2'"
-        if [ -n "$_add" ]; then
-            _p "configuring limits" "append to $FSTAB:$_add; memlock unlimited for $REAL_USER in $LIMITS_CONF"
+        if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+            _p "configuring limits" "appliance mode: mount hugetlbfs at runtime — no $FSTAB or $LIMITS_CONF writes (volatile /etc)"
         else
-            _p "configuring limits" "fstab already configured; memlock unlimited for $REAL_USER in $LIMITS_CONF"
+            local _f1="hugetlbfs /dev/hugepages hugetlbfs defaults 0 0" _f2="hugetlbfs_1g $HUGEPAGES_1G_DIR hugetlbfs pagesize=1G 0 0" _add=""
+            grep -qxF "$_f1" "$FSTAB" 2>/dev/null || _add=" '$_f1'"
+            grep -qxF "$_f2" "$FSTAB" 2>/dev/null || _add="$_add '$_f2'"
+            if [ -n "$_add" ]; then
+                _p "configuring limits" "append to $FSTAB:$_add; memlock unlimited for $REAL_USER in $LIMITS_CONF"
+            else
+                _p "configuring limits" "fstab already configured; memlock unlimited for $REAL_USER in $LIMITS_CONF"
+            fi
         fi
-        _p "installing the service" "render systemd/xmrig.service.template -> $SYSTEMD_DIR/$SERVICE_NAME.service (User=${MINER_USER:-root}), daemon-reload, enable --now"
+        _p "installing the service" "render systemd/xmrig.service.template -> $SYSTEMD_DIR/$SERVICE_NAME.service (User=${MINER_USER:-root}), daemon-reload, enable${ENABLE_RUNTIME:+ $ENABLE_RUNTIME} --now"
     fi
     case "$AUTOTUNE_MODE" in
     disabled) _p "configuring autotune" "no periodic timer (autotune disabled) — an installed one would be removed" ;;
@@ -3615,7 +3731,7 @@ svc_enable() {
         mac_enable
         return
     }
-    sudo systemctl enable "$SERVICE_NAME" && log "Enabled $SERVICE_NAME (starts on boot)."
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" && log "Enabled $SERVICE_NAME (starts on boot)."
 }
 svc_disable() {
     [ "$OS_TYPE" = "Linux" ] || {

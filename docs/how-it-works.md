@@ -209,6 +209,32 @@ XMRig accordingly (and there's no systemd service, so you run the miner yourself
 
 ---
 
+## Appliance mode (`RIGFORGE_APPLIANCE=1`)
+
+The Pithead appliance image runs from a read-only root with a volatile `/etc` overlay: anything
+setup writes there disappears at reboot, and the image's boot path re-runs setup every boot
+instead. `RIGFORGE_APPLIANCE=1` adapts setup to that contract (pithead#797):
+
+- No package install. The toolchain is baked into the image at build; setup verifies the tools it
+  needs and fails naming any that are missing, rather than attempting an install that can't work
+  on a read-only root. A prebuilt worker needs no compiler at all — the every-boot re-run keeps
+  mining even without one.
+- GRUB skipped deliberately. The kernel cmdline — including any 1 GB-hugepage reservation — is
+  owned by the image. Without that reservation XMRig falls back to 2 MB pages at 100%: working,
+  with a small known cost.
+- Units in `/run`. The systemd units render into `/run/systemd/system` and are enabled with
+  `systemctl enable --runtime`, so the enablement lives and dies with the boot, matching the
+  re-run-every-boot model.
+- Runtime mounts only. `hugetlbfs` is mounted directly instead of via `fstab`, and the
+  `limits.conf` memlock append is skipped — the unit already sets `LimitMEMLOCK=infinity`, and
+  interactive runs are not an appliance concern.
+
+Runtime tuning is untouched: `modprobe msr`, the grow-only HugePages sysctl, and the performance
+governor all work on a read-only root. `setup --dry-run` previews the appliance decisions with the
+same logic. On a normal install, leave the flag unset — nothing changes.
+
+---
+
 ## Safety & idempotency
 
 RigForge is built to be re-run:
