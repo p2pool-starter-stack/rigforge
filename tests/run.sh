@@ -2276,13 +2276,16 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$DR/util/proposed-grub.sh"
+# MEMINFO is pinned (0 free) so the grow-only preview (#328) renders the same on any host —
+# a runner with a real, large HugePages_Free would otherwise flip the plan line to "no change".
+printf 'HugePages_Free:        0\n' >"$DR/etc/meminfo"
 dr_out="$(cd "$DR" && PATH="$STUBS:$PATH" CALL_LOG="$DR/calls.log" GRUB_DEFAULT="$DR/etc/grub" FSTAB="$DR/etc/fstab" \
-    RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+    MEMINFO="$DR/etc/meminfo" RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
 dr_rc=$?
 assert_rc "dry-run exits 0 (#146)" "$dr_rc" "0"
 assert_contains "plan: build line names the pinned version (#146)" "$dr_out" "build XMRig"
 assert_contains "plan: dependency probe ran (#146)" "$dr_out" "installing dependencies"
-assert_contains "plan: computed HugePages count (#146)" "$dr_out" "reserve 2514 2MB HugePages"
+assert_contains "plan: computed HugePages count, grow-only wording (#146/#328)" "$dr_out" "grow the pool so 2514 2MB HugePages are available"
 assert_contains "plan: GRUB before -> after diff (#146)" "$dr_out" "GRUB cmdline: 'quiet splash' -> 'quiet splash default_hugepagesz=2M hugepages=2514 msr.allow_writes=on'"
 assert_contains "plan: reboot called out when GRUB changes (#146)" "$dr_out" "a reboot WILL be required"
 assert_contains "plan: fstab append lines (#146)" "$dr_out" "hugetlbfs /dev/hugepages"
@@ -4924,6 +4927,55 @@ PGC="$TK/calls3"
 out="$(RIGFORGE_THREADS=abc run_tunekernel "$PGC")"
 assert_absent "garbage RIGFORGE_THREADS is sanitized away (#65)" "$out" "Sizing the HugePages reservation"
 assert_contains "sanitized RIGFORGE_THREADS -> empty RX_THREADS to proposed-grub (#65)" "$(cat "$PGC")" "RX_THREADS=[]"
+
+# #328: the runtime HugePages write is grow-only — it must never shrink a pool another consumer
+# (a co-hosted pithead stack) already reserved. The proposed-grub stub above says the miner needs
+# 200 pages; MEMINFO/NR_HUGEPAGES_FILE fake the live pool and a recording sysctl captures writes.
+echo "== black-box: runtime HugePages reservation is grow-only (#328) =="
+HP="$(mktemp -d "$SANDBOX/hp328.XXXXXX")"
+mkdir -p "$HP/bin"
+cat >"$HP/bin/sysctl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$SYSCTL_CALLS"
+EOF
+chmod +x "$HP/bin/sysctl"
+run_tk328() { # <sysctl_calls_file> <HugePages_Free> <pool_total> [miner_held_pages]
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$TK"
+        WORKER_ROOT="$TK/home/worker"
+        MODULES_LOAD_DIR="$TK/nope"
+        MODULES_FILE="$TK/nope/modules"
+        GRUB_DEFAULT="$TK/nope/grub" # nonexistent -> the GRUB block is skipped
+        printf 'HugePages_Free:    %s\n' "$2" >"$HP/meminfo"
+        printf '%s\n' "$3" >"$HP/nr_hugepages"
+        MEMINFO="$HP/meminfo"
+        NR_HUGEPAGES_FILE="$HP/nr_hugepages"
+        # The held-pages credit has its own seam: a running miner is out of scope for a sandbox.
+        [ -n "${4:-}" ] && eval "_miner_held_hugepages() { echo $4; }"
+        export PG_CALLS="$HP/pg_calls" SYSCTL_CALLS="$1"
+        set +e
+        PATH="$HP/bin:$STUBS:$PATH" tune_kernel 2>&1
+    )
+}
+SC="$HP/calls1"
+: >"$SC"
+out="$(run_tk328 "$SC" 0 3072)"
+assert_contains "co-resident pool grows by the shortfall, never shrinks (#328)" "$(cat "$SC")" "vm.nr_hugepages=3272"
+SC="$HP/calls2"
+: >"$SC"
+out="$(run_tk328 "$SC" 500 3072)"
+assert_absent "enough free pages -> no write at all (#328)" "$(cat "$SC")" "vm.nr_hugepages"
+assert_contains "enough free pages -> says it left the pool alone (#328)" "$out" "leaving it as-is"
+SC="$HP/calls3"
+: >"$SC"
+out="$(run_tk328 "$SC" 0 0)"
+assert_contains "fresh box -> plain requirement, unchanged behavior (#328)" "$(cat "$SC")" "vm.nr_hugepages=200"
+SC="$HP/calls4"
+: >"$SC"
+out="$(run_tk328 "$SC" 50 1300 180)"
+assert_absent "a running miner's held pages count as available — idempotent re-run (#328)" "$(cat "$SC")" "vm.nr_hugepages"
 
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
