@@ -65,6 +65,8 @@ export CPU_SYSFS="$NOHW/cpu"
 export RAPL_DIR="$NOHW/powercap"
 export DMI_DIR="$NOHW/dmi"
 export SMT_CONTROL="$NOHW/smt"
+# #333: absent by default -> lockdown reads "unknown", never the real host's securityfs state.
+export LOCKDOWN_FILE="$NOHW/lockdown"
 export NODE_SYSFS="$NOHW/node" # _nps_suspect's NUMA-node count (#201)
 export THERMAL_ZONE="$NOHW/thermal"
 export HWMON_DIR="$NOHW/hwmon"            # _read_temp's k10temp/coretemp fallback (#208)
@@ -3348,6 +3350,74 @@ out="$(DMI_DIR="/nonexistent-dmi" SMT_CONTROL="/nonexistent-smt" DMIDECODE="$DOC
     run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_absent "doctor: no firmware context when DMI unreadable (#78)" "$out" "Firmware:"
 
+# #333: kernel lockdown denies /dev/cpu/*/msr writes, so the MSR mod (~5-15% RandomX) silently can't
+# apply. doctor must DETECT it from securityfs rather than infer it after a downstream failure, and must
+# not offer msr.allow_writes=on as the remedy — the kernel checks lockdown BEFORE that filter
+# (arch/x86/kernel/msr.c). Fakes drive every level, so one run covers all of them on any machine.
+echo "== unit: doctor kernel-lockdown detection (#333) =="
+printf 'none [integrity] confidentiality\n' >"$DOC/lockdown_integrity"
+printf 'none integrity [confidentiality]\n' >"$DOC/lockdown_conf"
+printf '[none] integrity confidentiality\n' >"$DOC/lockdown_none"
+: >"$DOC/lockdown_empty"
+
+# --- the two pure helpers, exercised directly ---
+ld_state() { (source "$SCRIPT" && LOCKDOWN_FILE="$1" _lockdown_state); }
+assert_eq "lockdown: parses the bracketed level (integrity) (#333)" "$(ld_state "$DOC/lockdown_integrity")" "integrity"
+assert_eq "lockdown: parses the bracketed level (confidentiality) (#333)" "$(ld_state "$DOC/lockdown_conf")" "confidentiality"
+assert_eq "lockdown: parses the bracketed level (none) (#333)" "$(ld_state "$DOC/lockdown_none")" "none"
+assert_eq "lockdown: unreadable file -> unknown, not 'none' (#333)" "$(ld_state "/nonexistent-lockdown")" ""
+assert_eq "lockdown: empty file -> unknown (#333)" "$(ld_state "$DOC/lockdown_empty")" ""
+ld_blocks() { (source "$SCRIPT" && _lockdown_blocks_msr "$1" && echo yes || echo no); }
+assert_eq "lockdown: integrity blocks MSR writes (#333)" "$(ld_blocks integrity)" "yes"
+assert_eq "lockdown: confidentiality blocks MSR writes (#333)" "$(ld_blocks confidentiality)" "yes"
+assert_eq "lockdown: none permits MSR writes (#333)" "$(ld_blocks none)" "no"
+assert_eq "lockdown: unknown is not treated as blocking (#333)" "$(ld_blocks "")" "no"
+
+# --- doctor, one level per run ---
+# Active lockdown: named, counted, with the ASUS-specific menu path and the allow_writes correction.
+out="$(LOCKDOWN_FILE="$DOC/lockdown_integrity" DMI_DIR="$DOC/dmi" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: names the active lockdown level (#333)" "$out" "kernel lockdown is ACTIVE ('integrity')"
+assert_contains "doctor: says lockdown denies MSR writes (#333)" "$out" "denies every /dev/cpu/*/msr write"
+assert_contains "doctor: corrects the allow_writes remedy (#333)" "$out" "msr.allow_writes=on does NOT override it"
+assert_contains "doctor: gives the board-specific Secure Boot path (#333)" "$out" "Boot ▸ Secure Boot ▸ OS Type ▸ Other OS"
+assert_contains "doctor: active lockdown counts as an issue (#333)" "$out" "issue(s) found"
+# Confidentiality blocks MSR writes too — it is strictly above integrity.
+out="$(LOCKDOWN_FILE="$DOC/lockdown_conf" DMI_DIR="$DOC/dmi" \
+    run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: confidentiality also flagged (#333)" "$out" "kernel lockdown is ACTIVE ('confidentiality')"
+# lockdown=none: a clean pass, and no scare text.
+out="$(LOCKDOWN_FILE="$DOC/lockdown_none" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: lockdown none passes (#333)" "$out" "kernel lockdown: none"
+assert_absent "doctor: no lockdown warning when inactive (#333)" "$out" "lockdown is ACTIVE"
+# Unreadable: advisory only. An unverifiable probe must never manufacture an issue (the #67/#78 rule).
+out="$(LOCKDOWN_FILE="/nonexistent-lockdown" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: unknown lockdown is advisory (#333)" "$out" "kernel lockdown state unknown"
+assert_absent "doctor: unknown lockdown raises no false alarm (#333)" "$out" "lockdown is ACTIVE"
+
+# The msr-module hint no longer blames Secure Boot: Secure Boot does not stop the in-tree signed `msr`
+# module from loading, so that advice sent people to the wrong screen.
+out="$(LOCKDOWN_FILE="$DOC/lockdown_none" run_doctor "$DOC/meminfo_ok" "$DOC/nope-missing" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: missing msr module points at modprobe (#333)" "$out" "check 'sudo modprobe msr'"
+assert_absent "doctor: missing msr module no longer blames Secure Boot (#333)" "$out" "msr module not loaded — the MSR mod won't apply; if it persists, disable Secure Boot"
+
+# XMRig's own MSR failure is attributed to lockdown when lockdown is active, and only then.
+printf 'net use pool ...\nmsr   register values for "ryzen_19h_zen4" preset have FAILED to set\n' >"$DOC/home/worker/xmrig.log"
+out="$(LOCKDOWN_FILE="$DOC/lockdown_integrity" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: MSR failure attributed to lockdown (#333)" "$out" "kernel lockdown ('integrity') is denying the write"
+out="$(LOCKDOWN_FILE="$DOC/lockdown_none" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: MSR failure without lockdown keeps the allow_writes hint (#333)" "$out" "check msr.allow_writes=on"
+assert_absent "doctor: no lockdown blame when lockdown is off (#333)" "$out" "is denying the write"
+printf 'net use pool ...\n* HUGE PAGES 100%%\n' >"$DOC/home/worker/xmrig.log" # restore the shared fixture
+
+# Per-vendor Secure Boot menu paths (#333), mirroring the #80 memory_profile coverage.
+bm_sb() { (source "$SCRIPT" && _bios_menu "$1" secure_boot perf); }
+assert_contains "bios menu: ASUS Secure Boot path (#333)" "$(bm_sb ASUSTeK)" "OS Type ▸ Other OS"
+assert_contains "bios menu: ASRock Secure Boot path (#333)" "$(bm_sb ASRock)" "Security ▸ Secure Boot"
+assert_contains "bios menu: Gigabyte Secure Boot path (#333)" "$(bm_sb "Gigabyte Technology")" "Secure Boot Enable"
+assert_contains "bios menu: MSI Secure Boot path (#333)" "$(bm_sb "Micro-Star International")" "Windows OS Configuration"
+assert_contains "bios menu: unknown vendor falls back generically (#333)" "$(bm_sb "Some OEM")" "usually under Boot or Security"
+
 # #278: doctor reports control receiver health when `control` is enabled. Active + responding (200 or
 # 503, per util/control-server.py) is ok; enabled-but-down (service inactive, or active but not
 # answering) warns with a hint and counts as an issue; disabled prints no control-receiver lines at all.
@@ -3548,6 +3618,27 @@ printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"memory_prof
 out="$(run_bios 'SMT_CONTROL=$DOC/smt_on DMIDECODE=$NOHW/dmidecode-absent CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
 assert_contains "bios verify: unreadable RAM keeps the item with the root hint (#80)" "$out" "can't verify (run as root"
 assert_eq "bios verify: unverifiable memory item stays pending (#80)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["memory_profile"]'
+rm -f "$BIO/rigforge-bios.json"
+
+# #333: Secure Boot joins the guided BIOS walk-through. It leads the checklist (cheapest change, and it
+# gates the MSR mod outright), persists like every other item, and — unlike the others — is verifiable
+# purely from securityfs, so the reboot loop can confirm it took.
+# Guide pass with lockdown active: secure_boot is pending and comes FIRST.
+out="$(run_bios 'LOCKDOWN_FILE=$DOC/lockdown_integrity SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios: flags active lockdown (#333)" "$out" "lockdown=integrity (MSR writes denied)"
+assert_contains "bios: names the Secure Boot item (#333)" "$out" "Secure Boot (kernel lockdown)"
+assert_eq "bios: Secure Boot leads the checklist (#333)" "$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^  1\. ' | head -1)" "  1. Secure Boot (kernel lockdown)"
+assert_eq "bios: Secure Boot persisted as pending (#333)" "$(jq -r '[.items[].id] | index("secure_boot") != null' "$BIO/rigforge-bios.json")" "true"
+assert_contains "bios: persisted item carries the vendor menu path (#333)" "$(jq -r '.items[] | select(.id=="secure_boot") | .menu' "$BIO/rigforge-bios.json")" "OS Type ▸ Other OS"
+# Verify pass after the operator disabled Secure Boot: lockdown reads none -> the item took.
+out="$(run_bios 'LOCKDOWN_FILE=$DOC/lockdown_none SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: Secure Boot change took (#333)" "$out" "Secure Boot (kernel lockdown) — now lockdown=none"
+rm -f "$BIO/rigforge-bios.json"
+# Unverifiable securityfs must keep the item rather than claim success (the #80 honesty rule).
+printf '%s\n' '{"target":"perf","saved":"2026-07-10","items":[{"id":"secure_boot","status":"pending","before":"lockdown=integrity","menu":"Boot"}]}' >"$BIO/rigforge-bios.json"
+out="$(run_bios 'LOCKDOWN_FILE=/nonexistent-lockdown SMT_CONTROL=$DOC/smt_on DMIDECODE=$DOC/dmidecode_xmpon CPU_SYSFS=$DOC/cpu_ok CPUFREQ_MAX=$DOC/cpufreq_max')"
+assert_contains "bios verify: unreadable securityfs is honest, not a pass (#333)" "$out" "isn't readable; re-run as root"
+assert_eq "bios verify: unverifiable Secure Boot item stays pending (#333)" "$(jq -c '[.items[].id]' "$BIO/rigforge-bios.json")" '["secure_boot"]'
 rm -f "$BIO/rigforge-bios.json"
 # Dispatch: the case entry shifts and forwards flags (any OS: the rc-1 proves the verb was reached).
 out="$( (RIGFORGE_HOME="$BIO" bash "$SCRIPT" bios --wat </dev/null) 2>&1 || true)"
