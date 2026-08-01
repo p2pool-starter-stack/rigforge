@@ -1343,10 +1343,12 @@ _cmdline_reserved_2mb() { # <cmdline> -> reserved 2MB-equivalent pages
 # spans every page size, so a dataset sitting in 1GB pages overstates this credit — in exactly the
 # case where the 2MB pool is not needed for the dataset, so nothing actually used goes unreserved.
 _miner_held_hugepages() {
-    local pid
+    local pid kb
     pid=$(systemctl show "$SERVICE_NAME.service" -p MainPID --value 2>/dev/null) || pid=""
     if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null && [ -r "/proc/$pid/status" ]; then
-        awk '/^HugetlbPages:/ { print int($2 / 2048); exit }' "/proc/$pid/status" 2>/dev/null && return
+        kb=$(awk '/^HugetlbPages:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null)
+        echo $((${kb:-0} / 2048))
+        return
     fi
     echo 0
 }

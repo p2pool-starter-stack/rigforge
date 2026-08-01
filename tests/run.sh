@@ -2293,6 +2293,12 @@ assert_contains "plan: autotune timer with the configured target (#146)" "$dr_ou
 assert_contains "plan: sister API units (#146)" "$dr_out" "install rigforge-api.service"
 assert_contains "plan: add_to_path symlink (#146)" "$dr_out" "symlink"
 assert_contains "plan: footer says nothing changed (#146)" "$dr_out" "Dry run — nothing was changed"
+# Grow-only preview, covered branch (#328): with plenty of free pages the plan says "no change"
+# instead of the grow line — same availability check the mutation runs.
+printf 'HugePages_Free:    99999\n' >"$DR/etc/meminfo_full"
+dr_out_full="$(cd "$DR" && PATH="$STUBS:$PATH" CALL_LOG="$DR/calls2.log" GRUB_DEFAULT="$DR/etc/grub" FSTAB="$DR/etc/fstab" \
+    MEMINFO="$DR/etc/meminfo_full" RIGFORGE_HOME="$PWD" bash "$SCRIPT" setup --dry-run </dev/null 2>&1)"
+assert_contains "plan: covered pool renders the no-change line (#328)" "$dr_out_full" "HugePages pool already covers the miner (2514 pages needed) — no change"
 # No-mutation guard: none of the stubbed mutating commands were invoked (the stubs log every call).
 for mut in apt-get modprobe tee mount sysctl; do
     assert_absent "dry-run never invokes $mut (#146)" "$(cat "$DR/calls.log" 2>/dev/null)" "[$mut]"
@@ -4976,6 +4982,44 @@ SC="$HP/calls4"
 : >"$SC"
 out="$(run_tk328 "$SC" 50 1300 180)"
 assert_absent "a running miner's held pages count as available — idempotent re-run (#328)" "$(cat "$SC")" "vm.nr_hugepages"
+# The real held-pages probe (no seam): a stub systemctl reports this test shell as the miner's
+# MainPID. On Linux /proc/$$/status exists with HugetlbPages: 0 kB — the probe reads it and
+# credits 0; on macOS there is no /proc, the guard falls through to the same 0. Either way the
+# outcome matches calls1: grow by the full shortfall.
+cat >"$HP/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+echo $$
+EOF
+chmod +x "$HP/bin/systemctl"
+SC="$HP/calls5"
+: >"$SC"
+out="$(run_tk328 "$SC" 0 3072)"
+assert_contains "real MainPID probe -> zero credit for a page-less process (#328)" "$(cat "$SC")" "vm.nr_hugepages=3272"
+rm -f "$HP/bin/systemctl"
+# proposed-grub.sh missing -> the 3072 fallback goes through the same grow-only path.
+run_tk328_nopg() { # <sysctl_calls_file>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$HP/empty" # no util/proposed-grub.sh here
+        WORKER_ROOT="$TK/home/worker"
+        MODULES_LOAD_DIR="$TK/nope"
+        MODULES_FILE="$TK/nope/modules"
+        GRUB_DEFAULT="$TK/nope/grub"
+        printf 'HugePages_Free:    0\n' >"$HP/meminfo"
+        printf '0\n' >"$HP/nr_hugepages"
+        MEMINFO="$HP/meminfo"
+        NR_HUGEPAGES_FILE="$HP/nr_hugepages"
+        export SYSCTL_CALLS="$1"
+        set +e
+        PATH="$HP/bin:$STUBS:$PATH" tune_kernel 2>&1
+    )
+}
+mkdir -p "$HP/empty"
+SC="$HP/calls6"
+: >"$SC"
+out="$(run_tk328_nopg "$SC")"
+assert_contains "fallback (no proposed-grub.sh) is grow-only too (#328)" "$(cat "$SC")" "vm.nr_hugepages=3072"
 
 # tune with no built worker fails clearly.
 TN2="$(mktemp -d "$SANDBOX/tune2.XXXXXX")"
