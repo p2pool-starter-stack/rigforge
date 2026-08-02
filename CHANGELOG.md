@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Missing AES-NI / AVX2 is surfaced instead of mining silently slow (#338).** RandomX without
+  AES-NI falls back to XMRig's soft-AES path, roughly 4x slower, and nothing anywhere said why — the
+  last undelivered acceptance criterion from #1. `setup`/`apply` now warn at configure time when the
+  CPU flags lack `aes` (and, advisory, `avx2` — that one only slows dataset init), and `doctor`
+  counts a missing AES-NI as an issue. Judged only when an x86-style `flags` line exists in
+  `/proc/cpuinfo`; macOS, ARM and stubbed sandboxes read as unknown, and unknown never manufactures
+  an issue (the #333 lockdown stance). Never aborts: a knowingly-old rig is a valid choice.
+
 ### Fixed
 
 - **Debian: dependency install no longer fails on `linux-tools-common` (#327).** The apt dependency
