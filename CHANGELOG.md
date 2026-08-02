@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-08-02
+
 ### Added
 
 - **Missing AES-NI / AVX2 is surfaced instead of mining silently slow (#338).** RandomX without
