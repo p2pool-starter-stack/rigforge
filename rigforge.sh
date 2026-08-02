@@ -1009,14 +1009,8 @@ generate_xmrig_config() {
         # XMRig still runs (soft AES / non-AVX2 init) and a knowingly-old rig is a valid choice.
         local _missing_isa
         _missing_isa=$(_cpu_missing_isa)
-        case " $_missing_isa " in *" aes "*)
-            warn "This CPU has no AES-NI: RandomX falls back to soft AES, roughly 4x slower. Mining will work, but expect a fraction of a modern CPU's rate."
-            ;;
-        esac
-        case " $_missing_isa " in *" avx2 "*)
-            warn "This CPU has no AVX2: dataset init will be slower (steady-state hashrate is unaffected)."
-            ;;
-        esac
+        [[ " $_missing_isa " == *" aes "* ]] && warn "This CPU has no AES-NI: RandomX falls back to soft AES, roughly 4x slower. Mining will work, but expect a fraction of a modern CPU's rate."
+        [[ " $_missing_isa " == *" avx2 "* ]] && warn "This CPU has no AVX2: dataset init will be slower (steady-state hashrate is unaffected)."
     fi
 
     # Rig label for the pool `user` field (#22): any pool entry that didn't set its own `user` gets the
@@ -4797,19 +4791,14 @@ doctor() {
     # flags line to judge (unknown, not unsupported).
     local miss_isa
     miss_isa=$(_cpu_missing_isa)
-    case " $miss_isa " in *" aes "*)
+    if [[ " $miss_isa " == *" aes "* ]]; then
         _ck_warn "CPU has no AES-NI — RandomX runs soft AES, roughly 4x slower; this hardware cannot mine at a competitive rate"
         issues=$((issues + 1))
-        ;;
-    *)
+    else
         # The ok line only when there IS a flags line to have judged; no flags line = unknown, say nothing.
         grep -q '^flags' "$CPUINFO" 2>/dev/null && _ck_ok "CPU supports AES-NI (hardware RandomX path)" || true
-        ;;
-    esac
-    case " $miss_isa " in *" avx2 "*)
-        _ck_info "CPU has no AVX2 — dataset init is slower (steady-state hashrate unaffected)"
-        ;;
-    esac
+    fi
+    [[ " $miss_isa " == *" avx2 "* ]] && _ck_info "CPU has no AVX2 — dataset init is slower (steady-state hashrate unaffected)"
 
     # Resolve the worker's xmrig.log once — the MSR-applied (#66) and HUGE PAGES checks both read it.
     local wr="" log_file=""
