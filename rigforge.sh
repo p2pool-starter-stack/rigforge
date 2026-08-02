@@ -738,7 +738,20 @@ _detect_pkg_manager() {
         DEP_LIST="git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3"
         if [ "$OS_TYPE" == "Linux" ]; then
             # msr-tools (rdmsr): lets `doctor` verify the prefetcher MSR mod actually applied (#66).
-            DEP_LIST="$DEP_LIST linux-tools-common msr-tools"
+            DEP_LIST="$DEP_LIST msr-tools"
+            # cpupower's package name differs by distro: linux-tools-common on Ubuntu,
+            # linux-cpupower on Debian. apt's install transaction is all-or-nothing, so one unknown
+            # name would fail the ENTIRE dependency install — gcc/cmake included (#327). Probe with
+            # apt-cache show (same guard as the kernel-versioned package below) and add only the
+            # name this distro actually ships; when neither exists, warn and carry on — cpupower is
+            # a tuning aid, never worth losing the compiler toolchain over.
+            if apt-cache show linux-tools-common &>/dev/null; then
+                DEP_LIST="$DEP_LIST linux-tools-common"
+            elif apt-cache show linux-cpupower &>/dev/null; then
+                DEP_LIST="$DEP_LIST linux-cpupower"
+            else
+                warn "No cpupower package found (tried linux-tools-common, linux-cpupower) — skipping it. Frequency tuning via cpupower may be unavailable."
+            fi
             if apt-cache show "linux-tools-$(uname -r)" &>/dev/null; then
                 DEP_LIST="$DEP_LIST linux-tools-$(uname -r)"
             fi
