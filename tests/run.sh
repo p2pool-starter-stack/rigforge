@@ -2534,6 +2534,56 @@ chmod +x "$LT"/*
     PATH="$LT" CALL_LOG="$LT/calls.log" install_dependencies </dev/null
 ) >/dev/null 2>&1
 assert_contains "apt install list includes linux-tools-<rel> (#74)" "$(cat "$LT/calls.log")" "linux-tools-6.0.0-rig"
+# The same run doubles as the Ubuntu cpupower shape (#327): apt-cache says linux-tools-common
+# exists, so it's picked and the Debian name never enters the list.
+assert_contains "Ubuntu shape: cpupower via linux-tools-common (#327)" "$(cat "$LT/calls.log")" "linux-tools-common"
+assert_absent "Ubuntu shape: linux-cpupower stays out (#327)" "$(cat "$LT/calls.log")" "linux-cpupower"
+
+# #327: cpupower's apt package is distro-dependent — linux-tools-common (Ubuntu) vs linux-cpupower
+# (Debian) — and apt's all-or-nothing transaction means one unknown name kills the ENTIRE dependency
+# install (gcc/cmake included). The probe must pick the name the distro ships, and a double miss must
+# warn without touching the toolchain install. Ubuntu shape is asserted on the #74 run above.
+echo "== unit: apt cpupower package probe — Debian / neither exists (#327) =="
+DEB="$(mktemp -d "$SANDBOX/deb327.XXXXXX")"
+printf '#!/bin/sh\nexit 1\n' >"$DEB/dpkg" # every dep "missing" -> all go to the install list
+cat >"$DEB/apt-cache" <<'EOF'
+#!/bin/sh
+# Debian trixie shape: linux-cpupower exists; linux-tools-common and linux-tools-<rel> do not.
+case "$*" in *linux-cpupower*) exit 0 ;; *) exit 1 ;; esac
+EOF
+printf '#!/bin/sh\necho "[apt-get] $*" >>"$CALL_LOG"\n' >"$DEB/apt-get"
+printf '#!/bin/sh\nwhile [ "${1#*=}" != "$1" ]; do export "$1"; shift; done\nexec "$@"\n' >"$DEB/sudo"
+printf '#!/bin/sh\necho 6.0.0-rig\n' >"$DEB/uname"
+chmod +x "$DEB"/*
+: >"$DEB/calls.log"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux REAL_USER=test
+    PATH="$DEB" CALL_LOG="$DEB/calls.log" install_dependencies </dev/null
+) >/dev/null 2>&1
+assert_contains "Debian shape: cpupower via linux-cpupower (#327)" "$(cat "$DEB/calls.log")" "linux-cpupower"
+assert_absent "Debian shape: linux-tools-common stays out (#327)" "$(cat "$DEB/calls.log")" "linux-tools-common"
+
+# Neither name exists (apt-cache always says no): warn, keep going, and the toolchain still installs.
+NC="$(mktemp -d "$SANDBOX/nc327.XXXXXX")"
+printf '#!/bin/sh\nexit 1\n' >"$NC/dpkg"
+printf '#!/bin/sh\nexit 1\n' >"$NC/apt-cache" # no cpupower package under ANY name
+printf '#!/bin/sh\necho "[apt-get] $*" >>"$CALL_LOG"\n' >"$NC/apt-get"
+printf '#!/bin/sh\nwhile [ "${1#*=}" != "$1" ]; do export "$1"; shift; done\nexec "$@"\n' >"$NC/sudo"
+printf '#!/bin/sh\necho 6.0.0-rig\n' >"$NC/uname"
+chmod +x "$NC"/*
+: >"$NC/calls.log"
+nc_out="$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux REAL_USER=test
+    PATH="$NC" CALL_LOG="$NC/calls.log" install_dependencies </dev/null
+) 2>&1)"
+rc=$?
+assert_rc "no cpupower package never fails the install (#327)" "$rc" "0"
+assert_contains "warns when no cpupower package exists (#327)" "$nc_out" "No cpupower package found"
+assert_contains "toolchain still installs without a cpupower package (#327)" "$(cat "$NC/calls.log")" "build-essential"
+assert_absent "no cpupower name reaches apt when neither exists (#327)" "$(cat "$NC/calls.log")" "linux-tools-common"
+assert_absent "linux-cpupower also stays out when absent (#327)" "$(cat "$NC/calls.log")" "linux-cpupower"
 
 # check_prerequisites (the jq bootstrap) had NO test. jq is deliberately kept OFF the scenario PATH so the
 # install branch runs; each dir holds ONLY the package manager(s) under test, so `command -v` selects the
