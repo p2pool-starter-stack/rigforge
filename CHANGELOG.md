@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Debian: dependency install no longer fails on `linux-tools-common` (#327).** The apt dependency
+  list named `linux-tools-common` unconditionally, but that package is Ubuntu-only — Debian ships
+  cpupower as `linux-cpupower` — and apt's install transaction is all-or-nothing, so the one unknown
+  name failed the ENTIRE install: git, build-essential and cmake never arrived either. `setup` now
+  probes with `apt-cache show` (the same guard the kernel-versioned `linux-tools-$(uname -r)`
+  package already had) and adds whichever name the distro actually ships; when neither exists it
+  warns and moves on — cpupower is a tuning aid, never worth losing the compiler toolchain over.
+
 ## [1.13.1] - 2026-08-01
 
 ### Fixed
