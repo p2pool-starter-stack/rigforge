@@ -132,6 +132,9 @@ BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 
 # Read-only system paths the `doctor` health check inspects (overridable for tests).
 MEMINFO="${MEMINFO:-/proc/meminfo}"
+# CPU flags source for the ISA preflight (#338). Same override name util/proposed-grub.sh already
+# uses for its pdpe1gb probe — one knob, and the test harness already isolates it from the host.
+CPUINFO="${CPUINFO:-/proc/cpuinfo}"
 MSR_MODULE_DIR="${MSR_MODULE_DIR:-/sys/module/msr}"
 GOVERNOR_FILE="${GOVERNOR_FILE:-/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor}"
 HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages}"
@@ -1001,6 +1004,13 @@ generate_xmrig_config() {
     # where only one CCD has the V-cache). See issue #44.
     if [ "$OS_TYPE" != "Darwin" ]; then
         log "Detected CPU: ${CPU_MODEL:-unknown} — using XMRig auto-tuning (threads, asm, MSR, NUMA auto-detected)."
+        # ISA preflight (#338): surface missing AES-NI/AVX2 here, at the moment the rig is being
+        # configured, instead of letting unsupported hardware mine silently slow. Warn, never abort:
+        # XMRig still runs (soft AES / non-AVX2 init) and a knowingly-old rig is a valid choice.
+        local _missing_isa
+        _missing_isa=$(_cpu_missing_isa)
+        [[ " $_missing_isa " == *" aes "* ]] && warn "This CPU has no AES-NI: RandomX falls back to soft AES, roughly 4x slower. Mining will work, but expect a fraction of a modern CPU's rate."
+        [[ " $_missing_isa " == *" avx2 "* ]] && warn "This CPU has no AVX2: dataset init will be slower (steady-state hashrate is unaffected)."
     fi
 
     # Rig label for the pool `user` field (#22): any pool entry that didn't set its own `user` gets the
@@ -4398,6 +4408,22 @@ _lockdown_state() { # -> none|integrity|confidentiality, or empty when unknown
     return 0
 }
 
+# RandomX ISA preflight (#338, the last acceptance criterion from #1): echo which of aes / avx2 the
+# CPU lacks, from the kernel's flags line. RandomX without AES-NI silently falls back to XMRig's
+# soft-AES path (~4x slower) and without AVX2 dataset init slows — neither aborts anything, so a rig
+# on unsupported hardware "works" at a mysteriously bad rate unless somebody says why. Judged ONLY
+# when an x86-style "flags" line exists: no flags line (macOS has no /proc, ARM cpuinfo says
+# "Features", sandboxes stub the file) means unknown, and unknown never manufactures an issue — the
+# same stance as #333's lockdown probe. `-w` so vaes/avx2_vnni style neighbors can't false-match.
+_cpu_missing_isa() { # -> "aes", "avx2", "aes avx2", or empty when all present / undeterminable
+    grep -q '^flags' "$CPUINFO" 2>/dev/null || return 0
+    local missing=""
+    grep -qw aes "$CPUINFO" || missing="aes"
+    grep -qw avx2 "$CPUINFO" || missing="$missing${missing:+ }avx2"
+    printf '%s' "$missing"
+    return 0
+}
+
 # True when lockdown is at a level that blocks MSR writes (#333). LOCKDOWN_MSR sits below
 # LOCKDOWN_INTEGRITY_MAX in enum lockdown_reason (include/linux/security.h), so both `integrity` and
 # `confidentiality` deny the write; only `none` permits it.
@@ -4758,6 +4784,21 @@ doctor() {
     else
         _ck_warn "1GB HugePages not reserved (optional; needs a pdpe1gb CPU + reboot)"
     fi
+
+    # CPU ISA support (#338): a rig without AES-NI mines at soft-AES speed (~4x slower) with no
+    # error anywhere — exactly the "silently failing" #1's acceptance criterion forbids, so it's a
+    # counted issue. Missing AVX2 only slows dataset init: advisory. Quiet when there's no x86
+    # flags line to judge (unknown, not unsupported).
+    local miss_isa
+    miss_isa=$(_cpu_missing_isa)
+    if [[ " $miss_isa " == *" aes "* ]]; then
+        _ck_warn "CPU has no AES-NI — RandomX runs soft AES, roughly 4x slower; this hardware cannot mine at a competitive rate"
+        issues=$((issues + 1))
+    else
+        # The ok line only when there IS a flags line to have judged; no flags line = unknown, say nothing.
+        grep -q '^flags' "$CPUINFO" 2>/dev/null && _ck_ok "CPU supports AES-NI (hardware RandomX path)" || true
+    fi
+    [[ " $miss_isa " == *" avx2 "* ]] && _ck_info "CPU has no AVX2 — dataset init is slower (steady-state hashrate unaffected)"
 
     # Resolve the worker's xmrig.log once — the MSR-applied (#66) and HUGE PAGES checks both read it.
     local wr="" log_file=""

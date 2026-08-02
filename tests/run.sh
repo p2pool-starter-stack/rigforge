@@ -3468,6 +3468,77 @@ assert_contains "bios menu: Gigabyte Secure Boot path (#333)" "$(bm_sb "Gigabyte
 assert_contains "bios menu: MSI Secure Boot path (#333)" "$(bm_sb "Micro-Star International")" "Windows OS Configuration"
 assert_contains "bios menu: unknown vendor falls back generically (#333)" "$(bm_sb "Some OEM")" "usually under Boot or Security"
 
+# #338 (the last #1 acceptance criterion): missing AES-NI/AVX2 must be SURFACED — soft-AES mining is
+# ~4x slower with no error anywhere. AES-NI missing = counted doctor issue + setup warn; AVX2 missing =
+# advisory only; no x86 "flags" line (macOS, ARM's "Features", stubs) = unknown = silence, never an issue.
+echo "== unit: CPU ISA preflight — AES-NI / AVX2 surfaced (#338) =="
+printf 'processor : 0\nflags     : fpu vme aes avx avx2 vaes\n' >"$DOC/cpuinfo_full"
+# vaes but NOT the standalone aes word: proves the -w match can't be satisfied by a neighbor flag.
+printf 'processor : 0\nflags     : fpu vme avx avx2 vaes\n' >"$DOC/cpuinfo_noaes"
+printf 'processor : 0\nflags     : fpu vme aes avx\n' >"$DOC/cpuinfo_noavx2"
+printf 'processor : 0\nflags     : fpu vme avx\n' >"$DOC/cpuinfo_neither"
+printf 'processor : 0\nFeatures  : fp asimd aes\n' >"$DOC/cpuinfo_arm" # ARM shape: no "flags" line
+
+# --- the pure helper, exercised directly ---
+isa_miss() { (source "$SCRIPT" && CPUINFO="$1" _cpu_missing_isa); }
+assert_eq "isa: full flags -> nothing missing (#338)" "$(isa_miss "$DOC/cpuinfo_full")" ""
+assert_eq "isa: vaes does not satisfy the aes word-match (#338)" "$(isa_miss "$DOC/cpuinfo_noaes")" "aes"
+assert_eq "isa: missing avx2 reported alone (#338)" "$(isa_miss "$DOC/cpuinfo_noavx2")" "avx2"
+assert_eq "isa: both missing, space-separated (#338)" "$(isa_miss "$DOC/cpuinfo_neither")" "aes avx2"
+assert_eq "isa: ARM Features line -> unknown, not unsupported (#338)" "$(isa_miss "$DOC/cpuinfo_arm")" ""
+assert_eq "isa: absent cpuinfo -> unknown (#338)" "$(isa_miss "/nonexistent-cpuinfo")" ""
+
+# --- doctor: counted for aes, advisory for avx2, silent on unknown ---
+out="$(CPUINFO="$DOC/cpuinfo_noaes" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: missing AES-NI named (#338)" "$out" "CPU has no AES-NI"
+assert_contains "doctor: missing AES-NI is a counted issue (#338)" "$out" "issue(s) found"
+out="$(CPUINFO="$DOC/cpuinfo_noavx2" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: missing AVX2 is advisory (#338)" "$out" "CPU has no AVX2"
+assert_contains "doctor: missing AVX2 alone still passes (#338)" "$out" "all critical checks passed"
+out="$(CPUINFO="$DOC/cpuinfo_full" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: AES-NI present reported ok (#338)" "$out" "CPU supports AES-NI"
+out="$(CPUINFO="$DOC/cpuinfo_arm" run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_absent "doctor: unknown ISA raises no alarm (#338)" "$out" "AES-NI"
+
+# --- setup path: generate_xmrig_config warns at configure time, and never aborts ---
+export STUB_CPU_MODEL="Old Xeon E5405" STUB_NPROC=4 STUB_HOSTNAME=rigbox
+ISA338="$(mktemp -d "$SANDBOX/isa338.XXXXXX")"
+gen338_out="$(
+    cd "$ISA338" || exit 1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$ISA338"
+    POOL_ADDRESS=myrig.local
+    POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
+    ACCESS_TOKEN=tok123
+    DONATION=1
+    LOGROTATE_DIR="$ISA338"
+    CPUINFO="$DOC/cpuinfo_neither"
+    set +e
+    PATH="$STUBS:$PATH" generate_xmrig_config 2>&1
+)"
+assert_rc "config-gen still succeeds on unsupported hardware (#338)" "$?" "0"
+assert_contains "config-gen warns about missing AES-NI (#338)" "$gen338_out" "no AES-NI"
+assert_contains "config-gen warns about missing AVX2 (#338)" "$gen338_out" "no AVX2"
+assert_contains "config-gen: the config was still generated (#338)" "$(J "$ISA338/config.json" '.pools[0].url')" "myrig.local:3333"
+# A fully-capable CPU stays quiet — the warn must not become noise on normal rigs.
+QUIET338="$(mktemp -d "$SANDBOX/isaq338.XXXXXX")"
+genq_out="$(
+    cd "$QUIET338" || exit 1
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$QUIET338"
+    POOL_ADDRESS=myrig.local
+    POOLS_JSON='[{"url":"myrig.local:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true}]'
+    ACCESS_TOKEN=tok123
+    DONATION=1
+    LOGROTATE_DIR="$QUIET338"
+    CPUINFO="$DOC/cpuinfo_full"
+    set +e
+    PATH="$STUBS:$PATH" generate_xmrig_config 2>&1
+)"
+assert_absent "config-gen: no ISA warning on a capable CPU (#338)" "$genq_out" "AES-NI"
+
 # #278: doctor reports control receiver health when `control` is enabled. Active + responding (200 or
 # 503, per util/control-server.py) is ok; enabled-but-down (service inactive, or active but not
 # answering) warns with a hint and counts as an issue; disabled prints no control-receiver lines at all.
