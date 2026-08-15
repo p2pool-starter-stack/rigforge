@@ -1210,6 +1210,21 @@ out="$(
 assert_contains "err trap names the step" "$out" "compiling XMRig"
 assert_contains "err trap suggests bash -x" "$out" "bash -x"
 
+# #353 (1): CURRENT_STEP used to be set only inside main() (setup) — an unexpected failure in ANY
+# other verb reported the stale "starting up" default. Force a real dispatch-time failure (a
+# systemctl that dies, uncaught by svc_start's `&&`) and check on_err names the actual verb.
+echo "== black-box: on_err names the running verb, not the stale setup default (#353) =="
+CSV="$(mktemp -d "$SANDBOX/current-step-verb.XXXXXX")"
+mkdir -p "$CSV/bin"
+cat >"$CSV/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 7
+EOF
+chmod +x "$CSV/bin/systemctl"
+csv_out="$(cd "$CSV" && PATH="$CSV/bin:$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_HOME="$PWD" bash "$SCRIPT" start </dev/null 2>&1)"
+assert_contains "on_err names the 'start' verb on an unexpected failure (#353)" "$csv_out" "aborted while running 'start'"
+assert_absent "on_err no longer falls back to the stale setup default (#353)" "$csv_out" "aborted while starting up"
+
 # prepare_workspace archives the existing build and must prune old archives so re-runs don't grow the
 # disk without bound (#4). KEEP_ARCHIVES caps how many are retained.
 echo "== unit: prepare_workspace prunes old build archives (#4) =="
@@ -2407,6 +2422,27 @@ assert_rc "apply --dry-run exits 0 (#146)" "$?" "0"
 assert_contains "apply plan: config regen target (#146)" "$ap_out" "regenerate"
 assert_contains "apply plan: reconcile line (#146)" "$ap_out" "autotune: performance"
 assert_absent "apply --dry-run never restarts (#146)" "$(cat "$DR/calls.log" 2>/dev/null)" "restart"
+# #353 (2): drift guard — every install_* apply() actually reconciles must be named in _apply_plan's
+# line 3, or the plan under-reports what apply does (found: watchdog + control were called but never
+# named). Hand-maintained map from function name -> plan wording, same shape as the #207 FLAGMAP below
+# (reconciles change rarely; the failure message says exactly where to add the plan line) since the
+# plan's prose can't be derived from the function names automatically.
+apply_reconciles="$(sed -n '/^apply() {/,/^}/p' "$SCRIPT" | grep -oE 'install_[a-z_]+' | sort -u)"
+[ -n "$apply_reconciles" ] || bad "could not extract install_* calls from apply() (#353)" "sed/grep extraction was empty"
+while IFS= read -r _fn; do
+    case "$_fn" in
+    install_autotune) _word="autotune" ;;
+    install_watchdog) _word="watchdog" ;;
+    install_api) _word="sister API" ;;
+    install_control) _word="control path" ;;
+    install_api_firewall) _word="firewall" ;;
+    *)
+        bad "apply --dry-run plan drift guard (#353)" "apply() now calls $_fn but the map above doesn't know its plan wording — add it"
+        _word=""
+        ;;
+    esac
+    [ -n "$_word" ] && assert_contains "apply --dry-run plan covers apply()'s $_fn (#353)" "$ap_out" "$_word"
+done <<<"$apply_reconciles"
 # Unknown setup arg: hard error, house style.
 bash "$SCRIPT" setup --bogus >/dev/null 2>&1 || setup_arg_rc=$?
 assert_rc "unknown setup arg errors (#146)" "${setup_arg_rc:-0}" "1"
@@ -2447,6 +2483,32 @@ comp_rc=0
 bash "$SCRIPT" completion >/dev/null 2>&1 || comp_rc=$?
 assert_rc "completion without a shell errors with usage (#145)" "$comp_rc" "1"
 
+# #353 (6): _read_api_summary + _xmrig_summary_json were near-identical readers, merged into one
+# function with a mode argument. #364 then deleted that mode: "propagate" let curl's exit escape so an
+# unreachable API would "surface upstream", but no caller ever read the status (every one branches on
+# an empty body) and letting it escape fired the inherited ERR trap inside the $( ) each caller reads
+# through. Both readers now ALWAYS return 0 with an empty body — the contract the callers assume.
+echo "== unit: the API readers never let a curl failure escape (#353/#364) =="
+rap_out="$( (
+    source "$SCRIPT"
+    unset API_CMD
+    curl() { return 7; } # simulate an unreachable worker API
+    set +e
+    printf 'summary:[%s] rc=%s\n' "$(_read_api_summary)" "$?"
+    printf 'hashrate:[%s] rc=%s\n' "$(_read_api_hashrate)" "$?"
+    # NB: no apostrophes in comments inside this $( ) — bash 3.2 (macOS) opens a quote on one and
+    # swallows the rest of the file. The override is how the suite stands in for the worker API, and
+    # a FAILING one is how the watchdog strike-2 case simulates "unreachable". It must honour the
+    # same contract as the curl path, or the never-fails guarantee callers lean on has a hole there.
+    API_CMD=false
+    printf 'summary-cmd:[%s] rc=%s\n' "$(_read_api_summary)" "$?"
+    printf 'hashrate-cmd:[%s] rc=%s\n' "$(_read_api_hashrate)" "$?"
+) 2>&1)"
+assert_contains "_read_api_summary swallows a curl failure (rc 0, empty body)" "$rap_out" "summary:[] rc=0"
+assert_contains "_read_api_hashrate swallows a curl failure (rc 0, empty body)" "$rap_out" "hashrate:[] rc=0"
+assert_contains "_read_api_summary swallows a failing API_CMD (rc 0, empty body)" "$rap_out" "summary-cmd:[] rc=0"
+assert_contains "_read_api_hashrate swallows a failing API_CMD (rc 0, empty body)" "$rap_out" "hashrate-cmd:[] rc=0"
+
 # #143: `status` prepends a one-glance live summary from ONE /2/summary fetch — facts, no ✓/! markers,
 # never sudo. Unreachable API (miner stopped / http off) degrades to a single explanatory line and the
 # untouched platform block; a bad config can't crash it (parse_config runs in a subshell).
@@ -2479,6 +2541,58 @@ assert_contains "status: platform block still follows (#143)" "$(cat "$ST/calls.
 out="$(run_status fail)"
 assert_contains "status: unreachable API -> one explanatory line (#143)" "$out" "worker API not reachable at 127.0.0.1:8080"
 assert_contains "status: platform block untouched when API is down (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
+
+# #364: the same unreachable API through the REAL dispatch, where errexit and the ERR trap are live.
+# `run_status fail` above cannot catch this — shadowing curl inside a `set +e` subshell disarms the
+# very path that produced the bug, which is how it shipped. Here curl is a real failing BINARY on
+# PATH, so its exit rides out of _read_api_summary exactly as it does against a stopped miner. It
+# used to print "[ERROR] rigforge aborted while running 'status'" TWICE: set -E inherits the trap
+# into the $( ) _status_api_summary reads through, and bash does NOT carry svc_status's suppressed
+# errexit (`( ... ) || true`) into that child, so the trap fired once per frame the failure unwound.
+echo "== black-box: unreachable worker API is quiet, not an abort (#364) =="
+STE="$(mktemp -d "$SANDBOX/statuserr.XXXXXX")"
+mkdir -p "$STE/bin" "$STE/home/worker"
+cat >"$STE/config.json" <<EOF
+{ "HOME_DIR": "$STE/home", "pools": [{"url": "h:3333"}] }
+EOF
+printf '#!/usr/bin/env bash\nexit 7\n' >"$STE/bin/curl"
+chmod +x "$STE/bin/curl"
+out="$(cd "$STE" && PATH="$STE/bin:$STUBS:$PATH" STUB_UNAME_S=Linux CALL_LOG="$STE/calls.log" RIGFORGE_HOME="$PWD" bash "$SCRIPT" status </dev/null 2>&1)"
+rc=$?
+assert_rc "status: unreachable API exits 0 through real dispatch (#364)" "$rc" "0"
+assert_absent "status: no ERR-trap abort on a real curl failure (#364)" "$out" "aborted while"
+assert_eq "status: the unreachable line prints exactly once (#364)" \
+    "$(printf '%s\n' "$out" | grep -c "worker API not reachable")" "1"
+assert_contains "status: platform block still follows (#364)" "$(cat "$STE/calls.log")" "[systemctl] status xmrig"
+
+# The same root cause on the tune/autotune side, which reads through _read_api_hashrate — and the
+# shape that bites on a RIG, not just a dev laptop: an UNGUARDED read under errexit. Verified against
+# both bashes with the API refusing connections (miner-0, Linux 5.2 / this box, macOS 3.2): the old
+# reader killed the run outright and printed four abort lines, the current one returns empty and the
+# sampling loop runs to the end. So an API that went away mid-sweep — the miner restarting under you
+# — used to take the sweep with it.
+#
+# Driven as a SEPARATE bash process on purpose. Running it in a subshell here would inherit this
+# suite's own errexit context, and bash 5.2 carries a suppressed context into a $( ) (3.2 does not),
+# which silently disarms the very failure under test on one platform or the other — a green that
+# means nothing. A child process starts from a clean top-level context on both.
+echo "== black-box: an unreachable API never aborts a tune sampling read (#364) =="
+cat >"$STE/drive.sh" <<DRV
+source "$SCRIPT"
+set -Eeuo pipefail
+trap on_err ERR
+CURRENT_STEP="running 'tune'"
+unset API_CMD
+sleep() { :; }            # drop the retry delay; curl stays a real failing binary
+hr=\$(_read_api_hashrate) # unguarded on purpose: the reader itself must not fail
+echo "SURVIVED hr=[\$hr]"
+_wait_miner_live 3 >/dev/null || true # returns 1 once it gives up; that is not a failure
+echo "LOOP-DONE"
+DRV
+wml_out="$(cd "$STE" && PATH="$STE/bin:$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$STE/drive.sh" 2>&1 || true)"
+assert_contains "tune: an unreachable API never aborts the reader (#364)" "$wml_out" "SURVIVED hr=[]"
+assert_contains "tune: the sampling loop runs to the end (#364)" "$wml_out" "LOOP-DONE"
+assert_absent "tune: no ERR-trap noise while the API is down (#364)" "$wml_out" "aborted while"
 : >"$ST/calls.log"
 out="$(
     (
@@ -4326,6 +4440,39 @@ assert_rc "uninstall 'n' exits 0" "$?" "0"
 assert_contains "uninstall 'n' reports it aborted" "$out" "Aborted"
 assert_eq "uninstall 'n' left the service unit in place" "$([ -f "$UNN/etc/systemd/system/xmrig.service" ] && echo present || echo gone)" "present"
 
+# #353 (4): appliance disable must mirror appliance enable — verified empirically against a real
+# systemd (255): a plain `disable` only ever removes the /etc-side wants-symlink, silently leaving a
+# --runtime-enabled unit's /run symlink in place (`is-enabled` still reports "enabled-runtime", rc
+# 0). Same sandbox shape as the uninstall test above (reuses UN_OPT_UNITS so the seeded unit list
+# can't drift from it), just under RIGFORGE_APPLIANCE=1 with SYSTEMD_DIR standing in for /run —
+# mirrors the #797 "every enable is --runtime" guard, on the disable side.
+echo "== black-box: appliance uninstall disables with --runtime too (#353) =="
+UNA="$(mktemp -d "$SANDBOX/uninst-appliance.XXXXXX")"
+cp "$ROOT/VERSION" "$UNA/"
+mkdir -p "$UNA/run-systemd" "$UNA/dev/hp1g" "$UNA/home/worker/xmrig/build" "$UNA/usr-local-bin"
+: >"$UNA/run-systemd/xmrig.service"
+for _u in $UN_OPT_UNITS; do
+    : >"$UNA/run-systemd/$_u"
+done
+cat >"$UNA/config.json" <<EOF
+{ "HOME_DIR": "$UNA/home", "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+una_out="$(cd "$UNA" && RIGFORGE_APPLIANCE=1 PATH="$STUBS:$PATH" \
+    SYSTEMD_DIR="$UNA/run-systemd" LOGROTATE_DIR="$UNA/nonexistent-logrotate" \
+    FSTAB="$UNA/nonexistent-fstab" LIMITS_CONF="$UNA/nonexistent-limits" \
+    MODULES_LOAD_DIR="$UNA/nonexistent-modules-load.d" MODULES_FILE="$UNA/nonexistent-modules" \
+    HUGEPAGES_1G_DIR="$UNA/dev/hp1g" GRUB_DEFAULT="$UNA/nonexistent-grub" \
+    BIN_DIR="$UNA/usr-local-bin" CALL_LOG="$UNA/calls.log" \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)"
+assert_rc "appliance uninstall exits 0 (#353)" "$?" "0"
+disable_calls="$(grep -F '[systemctl] disable' "$UNA/calls.log" 2>/dev/null)"
+# If the sandbox seeding ever drifts from what uninstall() actually disables, an empty $disable_calls
+# would make the grep -c below vacuously pass (0 non---runtime lines out of 0 total) — fail loudly
+# instead, same principle as the CURRENT_STEP extraction guard above.
+[ -n "$disable_calls" ] || bad "appliance uninstall drift guard (#353)" "no '[systemctl] disable' calls were logged — the guard below would vacuously pass"
+assert_eq "appliance uninstall: every systemctl disable is --runtime (#353)" \
+    "$(printf '%s\n' "$disable_calls" | grep -cv -- --runtime)" "0"
+
 # #54: tune is an iterative, noise-aware, multi-knob hill-climb. It sweeps prefetch_mode, cpu.yield and
 # the RandomX thread count (cpu.rx, around L3/2 MB), measures each candidate as the MEDIAN of N runs,
 # memoizes so a combo is never benchmarked twice, climbs from two seeds (auto + educated guess), and
@@ -5853,6 +6000,73 @@ out="$(cd "$NOC" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" back
 assert_rc "backup without a config fails" "$?" "1"
 assert_contains "backup no-config message" "$out" "No config.json"
 
+# #353 (3): backup/restore/support-bundle's mktemp -d staging (config.json, tokens) must not survive
+# a set -e abort — same EXIT-trap treatment tune() got in #135. Force a real abort (a tar that always
+# fails) and confirm the staged tempdir is actually GONE afterward, not just that the command failed.
+# mktemp is wrapped, not replaced — it still creates a real dir; the wrapper only logs the path so the
+# test can check it from outside the subprocess that owned it.
+REAL_MKTEMP="$(command -v mktemp)"
+_leak_test_bins() { # <dir> -> writes a logging mktemp wrapper + an always-fails tar into <dir>/bin
+    mkdir -p "$1/bin"
+    cat >"$1/bin/mktemp" <<EOF
+#!/usr/bin/env bash
+p="\$("$REAL_MKTEMP" "\$@")"
+echo "\$p" >>"$1/mktemp.log"
+printf '%s' "\$p"
+EOF
+    cat >"$1/bin/tar" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$1/bin/mktemp" "$1/bin/tar"
+    : >"$1/mktemp.log"
+}
+
+echo "== black-box: backup leaks no staging tempdir on a set -e abort (#353) =="
+BKT="$(mktemp -d "$SANDBOX/backup-trap.XXXXXX")"
+_leak_test_bins "$BKT"
+cat >"$BKT/config.json" <<EOF
+{ "HOME_DIR": "$BKT/home", "pools": [{"url": "h:3333"}] }
+EOF
+bkt_rc=0
+(cd "$BKT" && PATH="$BKT/bin:$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" backup </dev/null >/dev/null 2>&1) || bkt_rc=$?
+bkt_stage="$(tail -1 "$BKT/mktemp.log" 2>/dev/null)"
+if [ -z "$bkt_stage" ]; then
+    bad "backup leak-test setup (#353)" "mktemp was never logged — the wrapper stub isn't wired correctly"
+else
+    assert_rc "backup with a failing tar exits nonzero (sanity: the abort really happened)" "$bkt_rc" "1"
+    assert_eq "backup's EXIT trap removed the staging tempdir after the abort (#353)" "$([ -d "$bkt_stage" ] && echo leaked || echo clean)" "clean"
+fi
+
+echo "== black-box: restore leaks no staging tempdir on a set -e abort (#353) =="
+RST="$(mktemp -d "$SANDBOX/restore-trap.XXXXXX")"
+_leak_test_bins "$RST"
+rst_rc=0
+(cd "$RST" && PATH="$RST/bin:$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$ARCHIVE" </dev/null >/dev/null 2>&1) || rst_rc=$?
+rst_stage="$(tail -1 "$RST/mktemp.log" 2>/dev/null)"
+if [ -z "$rst_stage" ]; then
+    bad "restore leak-test setup (#353)" "mktemp was never logged — the wrapper stub isn't wired correctly"
+else
+    assert_rc "restore with a failing tar -xzf exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
+    assert_eq "restore's EXIT trap removed the staging tempdir after the abort (#353)" "$([ -d "$rst_stage" ] && echo leaked || echo clean)" "clean"
+fi
+
+echo "== black-box: support-bundle leaks no staging tempdir on a set -e abort (#353) =="
+SBT="$(mktemp -d "$SANDBOX/support-bundle-trap.XXXXXX")"
+_leak_test_bins "$SBT"
+cat >"$SBT/config.json" <<EOF
+{ "HOME_DIR": "$SBT/home", "pools": [{"url": "h:3333"}] }
+EOF
+sbt_rc=0
+(cd "$SBT" && PATH="$SBT/bin:$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" support-bundle </dev/null >/dev/null 2>&1) || sbt_rc=$?
+sbt_stage="$(tail -1 "$SBT/mktemp.log" 2>/dev/null)"
+if [ -z "$sbt_stage" ]; then
+    bad "support-bundle leak-test setup (#353)" "mktemp was never logged — the wrapper stub isn't wired correctly"
+else
+    assert_rc "support-bundle with a failing tar exits nonzero (sanity: the abort really happened)" "$sbt_rc" "1"
+    assert_eq "support-bundle's EXIT trap removed the staging tempdir after the abort (#353)" "$([ -d "$sbt_stage" ] && echo leaked || echo clean)" "clean"
+fi
+
 echo "== unit: VERSION is SemVer (#3) =="
 ver="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null)"
 if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.].*)?$ ]]; then ok "VERSION is SemVer ($ver)"; else bad "VERSION is SemVer" "got [$ver]"; fi
@@ -7330,6 +7544,55 @@ out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 run_perf)"
 rc=$?
 assert_rc "record: first-ever recording needs no judge (#214)" "$rc" "0"
 assert_eq "record: first-ever wrote the baseline (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
+
+# #362: the DynamicUser services (control/api) can't traverse a checkout under a mode-750 $HOME —
+# require_traversable_checkout catches it before any phase runs. Same extraction+eval technique as
+# rig_lock below. `stat` is faked (not a real directory tree) so the result never depends on the REAL
+# host's tmp/HOME permissions, which this exact suite run already showed vary by OS (#362 dev note:
+# mktemp -d is 700 on macOS, and even its TMPDIR parent can be 700) — a real-directory version of this
+# test would be hostage to whatever the CI runner or developer's box happens to have.
+echo "== unit: require_traversable_checkout — DynamicUser traversal pre-flight (#362) =="
+RTC_SRC="$(sed -n '/^require_traversable_checkout()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
+if [ -z "$RTC_SRC" ]; then
+    bad "could not extract require_traversable_checkout from e2e-real.sh (#362)" "sed extraction was empty"
+else
+    RTCD="$(mktemp -d "$SANDBOX/travcheck.XXXXXX")"
+    mkdir -p "$RTCD/bin"
+    # The exact shape #362 found live: the checkout itself (mode 750) blocks; its ancestors don't.
+    cat >"$RTCD/bin/stat" <<'EOF'
+#!/usr/bin/env bash
+case "$3" in
+"/home/vijit/rigforge") echo 750 ;;
+*) echo 755 ;;
+esac
+EOF
+    chmod +x "$RTCD/bin/stat"
+    out="$( (
+        eval "$RTC_SRC"
+        die() {
+            echo "DIE: $1"
+            exit 2
+        }
+        set +e
+        PATH="$RTCD/bin:$PATH" require_traversable_checkout /home/vijit/rigforge/tests
+        echo "rc=$?"
+    ) 2>&1)"
+    assert_contains "a mode-750 ancestor is caught (#362)" "$out" "DIE:"
+    assert_contains "names the exact blocking path and mode (#362)" "$out" "'/home/vijit/rigforge' is mode 750"
+    assert_contains "names the remedy (#362)" "$out" "/opt/rigforge-e2e"
+    out2="$( (
+        eval "$RTC_SRC"
+        die() {
+            echo "DIE: $1"
+            exit 2
+        }
+        set +e
+        PATH="$RTCD/bin:$PATH" require_traversable_checkout /opt/rigforge-e2e
+        echo "rc=$?"
+    ) 2>&1)"
+    assert_absent "a fully-traversable path never dies (#362)" "$out2" "DIE:"
+    assert_contains "a fully-traversable path returns cleanly (#362)" "$out2" "rc=0"
+fi
 
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"

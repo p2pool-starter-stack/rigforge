@@ -24,8 +24,10 @@
 #   upgrade   : the remote-upgrade chain (#308/#322) against the real units and REAL git — a noop leg
 #               (POST the installed version -> terminal `noop`), a rollback leg (a forged tag the D10
 #               ancestry guard must refuse -> `rolled_back`, tree + VERSION untouched, throttle
-#               stamped), and an opt-in forward leg (E2E_UPGRADE_TARGET). Same snapshot/revert
-#               guarantees as control.
+#               stamped), and a MANDATORY forward leg (#350: auto-derives the previous real release
+#               tag -> current and proves a genuine fetch/build/apply into it, then restores the
+#               checkout — E2E_UPGRADE_TARGET/E2E_UPGRADE_SKIP_REASON override it). Same
+#               snapshot/revert guarantees as control.
 #   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
 # Env knobs:
@@ -37,8 +39,17 @@
 #   E2E_PERF_TOLERANCE_PCT       allowed drop vs the committed baseline/best-ever (default 5)
 #   E2E_PERF_RECORD              1 = record the baseline + append history instead of judging
 #   E2E_PERF_TAG                 release tag stamped into the history entry (with E2E_PERF_RECORD)
-#   E2E_UPGRADE_TARGET           vX.Y.Z = the upgrade phase also drives a REAL forward upgrade to this
-#                                release and asserts it lands (PERMANENT: upgrades the checkout)
+#   E2E_UPGRADE_TARGET           vX.Y.Z = override the forward leg's target explicitly instead of the
+#                                auto-derived previous-tag -> current-tag pair (PERMANENT: upgrades
+#                                the checkout — does not restore afterward, unlike the default leg)
+#   E2E_UPGRADE_SKIP_REASON      set (to a reason string) to skip the now-mandatory forward leg — an
+#                                explicit, logged escape hatch, not a silent bypass
+#
+# The checkout itself must be traversable by an unprivileged user too (#362): rigforge-control.service
+# and rigforge-api.service run as systemd DynamicUser, so a checkout under $HOME (typically mode 750)
+# makes them die in a Permission-denied restart loop that reads as a product failure. Every phase
+# pre-flights this and fails immediately with the fix if not — move the checkout somewhere
+# world-traversable, e.g. /opt/rigforge-e2e.
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
 #   sudo bash tests/e2e-real.sh provision
@@ -63,6 +74,10 @@ FAIL=0
 # _control_cleanup).
 CTL_SAVED_CFG=""
 CTL_CLEANUP_DONE=0
+# #350: the pre-forward-leg HEAD sha, set only by the auto-derived forward leg (never by the
+# E2E_UPGRADE_TARGET override, which stays deliberately PERMANENT). Same script-global reasoning as
+# above — _upgrade_cleanup must see it from a late trap fire too.
+UPG_ORIG_REF=""
 ok() {
     PASS=$((PASS + 1))
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
@@ -147,10 +162,31 @@ _set_boot() { # <enable|disable> <enabled|disabled>
     return 1
 }
 
+# #362: rigforge-control.service and rigforge-api.service run as systemd DynamicUser (an
+# unprivileged, ephemeral UID) and must traverse every directory from / down to the checkout to open
+# util/*.py. A checkout under $HOME (typically mode 750) blocks that — the service dies in a restart
+# loop with "Permission denied" and the control/upgrade phases then read as a product failure
+# (receiver down, POST 000, DONATION unchanged) instead of a harness-placement problem. Checks every
+# ancestor directory's o+x bit; root can always stat regardless of permissions, so this never
+# false-fails. Split out from require_linux_root so it's unit-testable without root/Linux/a real rig.
+require_traversable_checkout() { # <path>
+    local _d="$1" _mode
+    while true; do
+        _mode="$(stat -c '%a' "$_d" 2>/dev/null)" || break
+        case "$_mode" in
+        *[1357]) ;; # last digit (others) has the execute bit set — traversable
+        *) die "checkout path is not traversable by an unprivileged user: '$_d' is mode $_mode (others lack +x). rigforge-control.service/rigforge-api.service run as DynamicUser and would fail to open files under $1. Move the checkout to a world-traversable path, e.g. /opt/rigforge-e2e." ;;
+        esac
+        [ "$_d" = / ] && break
+        _d="$(dirname "$_d")"
+    done
+}
+
 require_linux_root() {
     [ "$(uname -s)" = "Linux" ] || die "Linux-only (this host is $(uname -s)) — run on the release rig."
     [ "$(id -u)" -eq 0 ] || die "must run as root (kernel tuning / modprobe / apt): sudo bash tests/e2e-real.sh $*"
     [ -x "$RIGFORGE" ] || die "$RIGFORGE not found or not executable."
+    require_traversable_checkout "$HERE" # #362: called by every phase, not just provision
 }
 
 hugepages_total() { awk '/^HugePages_Total:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0; }
@@ -791,15 +827,24 @@ _control_cleanup() {
 #              This runs the real git calls (fetch, rev-parse, merge-base, checkout) as the root
 #              oneshot with no $HOME — the #308 dubious-ownership class dies here, not in the
 #              stubbed suite. Cheap: the forward refusal happens before any checkout or build.
-#   forward  : opt-in via E2E_UPGRADE_TARGET=vX.Y.Z (a real release newer than the installed one)
-#              -> poll to `applied`, assert VERSION landed. PERMANENTLY upgrades this checkout, so
-#              it is not part of the repeatable default — it's the release-flow leg that would have
-#              caught #318 (a legit upgrade being refused).
+#   forward  : MANDATORY (#350) — a broken fetch/rebuild path must fail the gate, not slip through on
+#              an operator forgetting to opt in. Auto-derives the last two REAL, already-published
+#              release tags (git tag listing: previous -> current/installed) — the release this gate
+#              is actually cutting has no tag yet at this point in RELEASING.md's flow, so "current"
+#              stands in for it. Rewinds the checkout to the previous tag, proves a genuine forward
+#              upgrade back to current through the same wire/path-unit/oneshot chain as the other
+#              legs, then restores the checkout to exactly where this phase found it (_upgrade_cleanup)
+#              — repeatable, unlike a target past current, so it can be the default. This is the leg
+#              that would have caught #318 (a legit upgrade being refused) and would catch a broken
+#              fetch/rebuild path before it ships. E2E_UPGRADE_TARGET=vX.Y.Z overrides the target
+#              explicitly (PERMANENT — does not restore, the pre-#350 shape, still useful for a
+#              deliberate real deploy); E2E_UPGRADE_SKIP_REASON="..." skips it with a logged reason.
 #
 # Sits after control (same restart churn perf must not measure through) and reuses control's
 # snapshot/cleanup machinery (CTL_ globals + _control_cleanup) — config is snapshotted and BOTH
 # control flags are forced off again on ANY exit, plus the upgrade-phase leftovers (probe tag,
-# throttle stamp) are removed. Also the producer half of pithead#597's cross-repo tier-4 gate.
+# throttle stamp, and #350's checkout rewind) are removed. Also the producer half of pithead#597's
+# cross-repo tier-4 gate.
 
 # POST /upgrade {"version":<target>} and poll /status?change_id= to a terminal status (echoed).
 # `started` (#320) is non-terminal — keep polling through it. Echoes "post-failed:<http-code>" when
@@ -834,6 +879,22 @@ _upg_post_and_poll() { # <token> <port> <vX.Y.Z> <timeout-s> -> terminal status 
 _upgrade_cleanup() {
     git -C "$HERE" tag -d v99.99.99 >/dev/null 2>&1 || true
     rm -f /var/lib/rigforge-control/upgrade-last 2>/dev/null || true
+    # #350: the auto-derived forward leg rewinds the checkout to a real previous tag to prove the
+    # forward step for real, then must land back on the exact ref this phase started from — on ANY
+    # exit, success or a hard abort mid-leg. A release gate must never leave the rig pinned to an
+    # older release. Restore BEFORE _control_cleanup's `apply` below, so apply runs the right code.
+    if [ -n "$UPG_ORIG_REF" ]; then
+        if [ "$(git -C "$HERE" rev-parse HEAD 2>/dev/null)" != "$UPG_ORIG_REF" ]; then
+            if git -C "$HERE" checkout --quiet --force "$UPG_ORIG_REF" 2>/dev/null; then
+                echo "  restored the checkout to ${UPG_ORIG_REF:0:12} (the ref this phase started from)"
+                "$RIGFORGE" upgrade >/tmp/e2e-upgrade-restore.log 2>&1 ||
+                    echo "  WARNING: 'rigforge.sh upgrade' failed while restoring the pre-leg ref (see /tmp/e2e-upgrade-restore.log)" >&2
+            else
+                echo "  WARNING: could not restore the checkout to ${UPG_ORIG_REF:0:12} — check $HERE by hand" >&2
+            fi
+        fi
+        UPG_ORIG_REF=""
+    fi
     _control_cleanup
 }
 
@@ -919,7 +980,13 @@ upgrade() {
         ok "miner service is active after the rollback" ||
         bad "miner service is not active after the rollback"
 
-    if [ -n "${E2E_UPGRADE_TARGET:-}" ]; then
+    # #350: MANDATORY by default (was opt-in) — a broken fetch/rebuild path must fail the gate. See
+    # the phase header above for what each branch proves and why "current" stands in for the release
+    # actually being cut.
+    if [ -n "${E2E_UPGRADE_SKIP_REASON:-}" ]; then
+        phase "upgrade — forward leg: SKIPPED"
+        ok "SKIP forward leg — ${E2E_UPGRADE_SKIP_REASON}"
+    elif [ -n "${E2E_UPGRADE_TARGET:-}" ]; then
         phase "upgrade — forward leg: POST $E2E_UPGRADE_TARGET (PERMANENT — upgrades this checkout)"
         rm -f "$stamp" 2>/dev/null || true # the rollback leg stamped; this leg is operator-requested
         st=$(_upg_post_and_poll "$tok" "$control_port" "$E2E_UPGRADE_TARGET" 600)
@@ -929,6 +996,35 @@ upgrade() {
         [ "v$(tr -d '[:space:]' <"$HERE/VERSION" 2>/dev/null)" = "$E2E_UPGRADE_TARGET" ] &&
             ok "VERSION reads ${E2E_UPGRADE_TARGET#v} — the target landed" ||
             bad "VERSION did not land at $E2E_UPGRADE_TARGET"
+    else
+        phase "upgrade — forward leg: auto-derive previous -> current real tags, prove a forward upgrade"
+        local all_tags cur_tag="v$installed" prev_tag
+        git -C "$HERE" fetch --quiet --tags origin 2>/dev/null || true
+        all_tags="$(git -C "$HERE" tag --list --sort=-v:refname 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vxF v99.99.99 || true)"
+        prev_tag="$(printf '%s\n' "$all_tags" | awk -v c="$cur_tag" '$0==c{f=1;next} f{print; exit}')"
+        if [ -z "$prev_tag" ]; then
+            ok "SKIP forward leg — fewer than two real release tags reachable yet (installed $cur_tag); nothing to prove a forward upgrade from"
+        else
+            # Rewind OUT OF BAND (direct git + rigforge.sh upgrade, the same two steps
+            # _control_upgrade_do takes) to a real prior release, so the control channel then has a
+            # genuinely older rig to upgrade forward from — D10's anti-rollback in control_upgrade()
+            # refuses a downgrade POST, so this step can only happen this way, same as a genuinely
+            # older rig got here. _upgrade_cleanup restores $UPG_ORIG_REF on ANY exit from here on.
+            UPG_ORIG_REF="$(git -C "$HERE" rev-parse HEAD)"
+            if git -C "$HERE" checkout --quiet --force "$prev_tag" 2>/dev/null && "$RIGFORGE" upgrade >/tmp/e2e-upgrade-rewind.log 2>&1; then
+                ok "rewound the checkout to $prev_tag (a real prior release, to prove the forward leg from)"
+                rm -f "$stamp" 2>/dev/null || true # the rollback leg stamped; this is a fresh attempt
+                st=$(_upg_post_and_poll "$tok" "$control_port" "$cur_tag" 600)
+                [ "$st" = applied ] &&
+                    ok "forward upgrade $prev_tag -> $cur_tag reached 'applied' (real fetch + build + health gate)" ||
+                    bad "forward leg ended '$st' (expected applied, $prev_tag -> $cur_tag)"
+                [ "v$(tr -d '[:space:]' <"$HERE/VERSION" 2>/dev/null)" = "$cur_tag" ] &&
+                    ok "VERSION reads ${cur_tag#v} — the forward leg landed" ||
+                    bad "VERSION did not land at $cur_tag after the forward leg"
+            else
+                bad "could not rewind the checkout to $prev_tag to stage the forward leg (see /tmp/e2e-upgrade-rewind.log)"
+            fi
+        fi
     fi
 
     # Explicit cleanup now (not just on exit) for the same reason control() does it — later phases

@@ -7,6 +7,34 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-08-15
+
+### Fixed
+
+- **An unreachable worker API no longer aborts the run, or cries abort while succeeding (#364).**
+  The API readers had a "propagate" mode that let curl's exit escape, so an unreachable miner would
+  "surface upstream". Nothing upstream ever read it — every caller branches on an empty body — and
+  letting it escape broke two different ways depending on the bash running the script:
+
+  - **Any caller that was not guarded aborted outright.** Measured on a rig (Linux, bash 5.2): with
+    the API refusing connections, `tune`/`autotune`'s sampling loop and a bare `_status_api_summary`
+    both died with `[ERROR] rigforge aborted ... (exit 7)`. An API that went away mid-sweep — the
+    miner restarting under you — took the sweep with it. This is the failure #210 first hit on
+    miner-0 and papered over with a `|| true` at one call site.
+  - **On bash 3.2 (macOS) even the guarded callers printed the abort banner.** `status` wraps its
+    read in `( ... ) || true` and still emitted two `[ERROR] rigforge aborted while running 'status'`
+    lines to stderr before printing its correct "worker API not reachable" line and exiting 0 — the
+    reported shape. `set -E` inherits the ERR trap into the `$( )` the caller reads through, and 3.2
+    does not carry the caller's suppressed-errexit context into that child, so the trap fires there
+    once per frame the failure unwinds through. Bash 5.2 does carry it and stays quiet, which is why
+    this showed up on dev machines and not on the rigs. Spending the line operators are taught to
+    read as "something broke" on a routine, handled, exit-0 path is what made #341's real abort easy
+    to miss.
+
+  The mode is gone. Both readers now always return 0 with an empty body when the API is unreachable
+  — the contract every caller already assumed — so neither failure shape is reachable, and #210's
+  guard-inside-the-`$( )` idiom is no longer needed for these readers.
+
 ## [1.15.0] - 2026-08-15
 
 ### Added
