@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml/badge.svg)](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-![Platform: Ubuntu 22.04+](https://img.shields.io/badge/Platform-Ubuntu%2022.04%2B-E95420?logo=ubuntu&logoColor=white)
+![Platform: Ubuntu 22.04+ / Debian 12](https://img.shields.io/badge/Platform-Ubuntu%2022.04%2B%20%2F%20Debian%2012-E95420?logo=ubuntu&logoColor=white)
 [![Miner: XMRig](https://img.shields.io/badge/Miner-XMRig-F26822?logo=monero&logoColor=white)](https://github.com/xmrig/xmrig)
 [![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 

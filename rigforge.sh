@@ -3688,10 +3688,11 @@ _status_api_summary() {
         echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
         return 0
     fi
-    # One jq fork for every field, tab-separated (bash-3.2-safe read into locals).
+    # One jq fork for every field, tab-separated (bash-3.2-safe read into locals). /2/summary reports
+    # hugepages as a [loaded, total] pages array — @tsv rejects nested arrays (exit 5, killing the whole
+    # row on every healthy rig, #341), so serialize it; scalar/absent shapes pass through untouched.
     IFS=$(printf '\t') read -r hs pool up acc rej hp < <(printf '%s' "$body" |
-        jq -r '[(.hashrate.total[0] // 0), (.connection.pool // "?"), (.uptime // 0),
-                (.connection.accepted // 0), (.connection.rejected // 0), (.hugepages // "")] | @tsv' 2>/dev/null) || true
+        jq -r '[(.hashrate.total[0] // 0), (.connection.pool // "?"), (.uptime // 0), (.connection.accepted // 0), (.connection.rejected // 0), (.hugepages // "" | if type == "array" then join("/") else . end)] | @tsv' 2>/dev/null) || true
     [ -n "${hs:-}" ] || return 0 # half-up API / unparseable body: stay quiet, platform block follows
     printf '  %-10s %s H/s\n' "Hashrate:" "$hs"
     printf '  %-10s %s\n' "Pool:" "$pool"
@@ -4177,9 +4178,10 @@ _control_upgrade_do() { # <ref>
 # rigforge-control-upgrade.path unit when the receiver stages an upgrade intent. Fetches the target
 # RigForge release and applies it, health-gated with rollback to the prior version. Every failure path
 # returns 0 with a recorded status (served by the receiver's GET /status) — a bad request must not
-# wedge the oneshot. The staged version is a CONFIRMATION guard, not a target selector: this verb
-# bounds what it will act on (D4/D10) so a compromised trigger can only ever land a real, reachable,
-# NEWER release — never an arbitrary tag, a downgrade, or a dangling commit.
+# wedge the oneshot. The staged version IS the target (D4) — the dashboard re-derives latest host-side,
+# this verb makes no version check of its own: it bounds what it will act on (D4/D10) so a compromised
+# trigger can only ever land a real, reachable, NEWER release — never an arbitrary tag, a downgrade, or
+# a dangling commit.
 control_upgrade() {
     [ "$OS_TYPE" != "Linux" ] && error "control-upgrade is driven by the rigforge-control-upgrade.path unit and is Linux-only."
     parse_config # need API_PORT etc. so the post-build liveness check can read the miner

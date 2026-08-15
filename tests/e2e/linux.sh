@@ -9,7 +9,9 @@
 # compile (git/cmake/make), the package install (dpkg reports "already present"), and the host-only
 # bits (systemctl/modprobe/mount/sysctl). Hardware detection is stubbed so the CPU profile is
 # deterministic. We force linux/amd64 so the x86-only MSR path actually fires (emulated on Apple
-# Silicon). Run: tests/e2e/linux.sh   (or: make test-e2e)
+# Silicon). Two passes, a fresh container each: the standard deploy, then RIGFORGE_APPLIANCE=1
+# (#348) — appliance mode against a real /etc, which must stay untouched while units land in /run.
+# Run: tests/e2e/linux.sh   (or: make test-e2e)
 #
 set -uo pipefail
 
@@ -28,14 +30,24 @@ fi
 # multi-arch index digest; --platform below selects linux/amd64 from it. Refresh with:
 #   docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manifest.Digest}}'
 IMAGE="ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54"
-echo "=================== E2E: $IMAGE (linux/amd64) ==================="
-if docker run --rm --platform linux/amd64 \
-    -v "$ROOT:/src:ro" \
-    "$IMAGE" bash /src/tests/e2e/in-container.sh; then
-    echo ""
-    echo "rigforge e2e: $IMAGE passed"
+
+run_pass() { # <label> [docker env args...] — one disposable container per pass
+    local label="$1"
+    shift
+    echo "=================== E2E ($label): $IMAGE (linux/amd64) ==================="
+    docker run --rm --platform linux/amd64 "$@" \
+        -v "$ROOT:/src:ro" \
+        "$IMAGE" bash /src/tests/e2e/in-container.sh
+}
+
+STATUS=0
+run_pass "deploy" || STATUS=1
+echo ""
+run_pass "appliance" -e RIGFORGE_APPLIANCE=1 || STATUS=1
+echo ""
+if [ "$STATUS" = 0 ]; then
+    echo "rigforge e2e: both passes (deploy + appliance) passed"
 else
-    echo ""
-    echo "rigforge e2e: $IMAGE failed"
-    exit 1
+    echo "rigforge e2e: FAILED (see the failing pass above)"
 fi
+exit "$STATUS"

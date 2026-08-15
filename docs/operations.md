@@ -258,7 +258,7 @@ Each timer tick runs one check (`journalctl -u rigforge-watchdog.service` shows 
   design (a loaded EPYC sits near 90 °C Tctl in perfectly normal operation), so a damage-avoidance
   cutoff belongs well above the everyday reading, not near it. Editing `max_temp_c` takes effect on
   the next tick — the watchdog re-reads `config.json` every run, no `apply` needed.
-- A miner that's simply **not running** is left alone — dead-process recovery is systemd's job.
+- A miner that's **not running** is left alone — dead-process recovery is systemd's job.
 
 Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed
 cleanly. `uninstall` removes them too.
