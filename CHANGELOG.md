@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-08-15
+
 ### Fixed
 
 - **An unreachable worker API no longer aborts the run, or cries abort while succeeding (#364).**
