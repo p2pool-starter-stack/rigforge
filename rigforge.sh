@@ -113,7 +113,12 @@ if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
     SYSTEMD_DIR="${SYSTEMD_DIR:-/run/systemd/system}"
 fi
 # Unit-enablement mode: appliance units live in /run, so their wants/ symlinks must too (a plain
-# `enable` would write them to the volatile /etc overlay — working until reboot, then gone).
+# `enable` would write them to the volatile /etc overlay — working until reboot, then gone). The
+# same flag is REQUIRED on `disable` too (#353) — verified empirically (systemd 255, real enable/
+# disable round-trip): a plain `disable` only ever removes the /etc-side wants-symlink, silently
+# leaving a --runtime-enabled unit's /run one in place (`is-enabled` still reports
+# "enabled-runtime", rc 0) — it is NOT a superset that also cleans up /run. Every disable call
+# below passes ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"}, mirroring its enable counterpart exactly.
 ENABLE_RUNTIME=""
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then ENABLE_RUNTIME="--runtime"; fi
 
@@ -204,14 +209,14 @@ compute_build_jobs() { # <ncpu>
     echo "$jobs"
 }
 
-# True if a finished XMRig build for the pinned commit already exists, so we can skip the recompile.
-# Requires BOTH the built binary and a commit marker that matches XMRIG_COMMIT (a marker without a
-# binary means an incomplete build → rebuild).
 # SHA-256 of a file, portable (Linux sha256sum / macOS shasum).
 _sha256() { # <file>
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
 }
 
+# True if a finished XMRig build for the pinned commit already exists, so we can skip the recompile.
+# Requires BOTH the built binary and a commit marker that matches XMRIG_COMMIT (a marker without a
+# binary means an incomplete build → rebuild).
 xmrig_already_built() {
     local marker="$WORKER_ROOT/xmrig/.rigforge-commit" sums="$WORKER_ROOT/xmrig/.rigforge-sha256"
     [ -x "$WORKER_ROOT/xmrig/build/xmrig" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$XMRIG_COMMIT" ] || return 1
@@ -1204,7 +1209,7 @@ install_autotune() {
     local svc="$SYSTEMD_DIR/rigforge-autotune.service" tmr="$SYSTEMD_DIR/rigforge-autotune.timer"
     if [ "${AUTOTUNE_MODE:-disabled}" = "disabled" ]; then
         if [ -f "$tmr" ]; then
-            sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
+            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-autotune.timer 2>/dev/null || true
             sudo rm -f "$svc" "$tmr"
             sudo systemctl daemon-reload 2>/dev/null || true
             log "Periodic autotune disabled."
@@ -1232,7 +1237,7 @@ install_watchdog() {
     local svc="$SYSTEMD_DIR/rigforge-watchdog.service" tmr="$SYSTEMD_DIR/rigforge-watchdog.timer"
     if [ "${WATCHDOG_MODE:-disabled}" = "disabled" ]; then
         if [ -f "$tmr" ]; then
-            sudo systemctl disable --now rigforge-watchdog.timer 2>/dev/null || true
+            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-watchdog.timer 2>/dev/null || true
             sudo rm -f "$svc" "$tmr"
             sudo systemctl daemon-reload 2>/dev/null || true
             log "Miner watchdog disabled."
@@ -1303,13 +1308,13 @@ install_api() {
     local svc="$SYSTEMD_DIR/rigforge-api.service" rsvc="$SYSTEMD_DIR/rigforge-api-refresh.service" rtmr="$SYSTEMD_DIR/rigforge-api-refresh.timer"
     # v1.2.x shipped a per-connection socket pair (Accept=yes) — remove it on sight so upgrades converge.
     if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ]; then
-        sudo systemctl disable --now rigforge-api.socket 2>/dev/null || true
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-api.socket 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service"
         sudo systemctl daemon-reload 2>/dev/null || true
     fi
     if [ "${API_MODE:-disabled}" = "disabled" ]; then
         if [ -f "$svc" ] || [ -f "$rtmr" ]; then
-            sudo systemctl disable --now rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
+            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
             sudo rm -f "$svc" "$rsvc" "$rtmr"
             sudo systemctl daemon-reload 2>/dev/null || true
             log "Sister API disabled."
@@ -1341,7 +1346,7 @@ install_control() {
     if [ "${CONTROL_MODE:-disabled}" = "disabled" ]; then
         if [ -f "$svc" ] || [ -f "$apath" ] || [ -f "$upath" ]; then
             # #308: tear down the remote-upgrade units alongside the control path — they never outlive it.
-            sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
+            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
             sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath"
             sudo systemctl daemon-reload 2>/dev/null || true
             # Under load systemctl can transiently drop the stop half of `disable --now` (real
@@ -1372,7 +1377,7 @@ install_control() {
         sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
     elif [ -f "$upath" ] || [ -f "$usvc" ]; then
-        sudo systemctl disable --now rigforge-control-upgrade.path 2>/dev/null || true
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || true
         sudo rm -f "$usvc" "$upath"
     fi
     sudo systemctl daemon-reload
@@ -2045,28 +2050,28 @@ uninstall() {
         log "Left system user '$_mu' in place — remove it yourself with: sudo userdel $_mu"
     fi
     if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ] || [ -f "$SYSTEMD_DIR/rigforge-api.service" ]; then
-        sudo systemctl disable --now rigforge-api.socket rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-api.socket rigforge-api.service rigforge-api-refresh.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service" \
             "$SYSTEMD_DIR/rigforge-api.service" "$SYSTEMD_DIR/rigforge-api-refresh.service" "$SYSTEMD_DIR/rigforge-api-refresh.timer"
     fi
     if [ -f "$SYSTEMD_DIR/rigforge-control.service" ] || [ -f "$SYSTEMD_DIR/rigforge-control-apply.path" ] || [ -f "$SYSTEMD_DIR/rigforge-control-upgrade.path" ]; then
         # #308: tear down the remote-upgrade units too, or uninstall leaves a live code-update surface.
-        sudo systemctl disable --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path" \
             "$SYSTEMD_DIR/rigforge-control-upgrade.service" "$SYSTEMD_DIR/rigforge-control-upgrade.path"
     fi
     command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
-        sudo systemctl disable --now rigforge-autotune.timer 2>/dev/null || true
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-autotune.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-autotune.timer" "$SYSTEMD_DIR/rigforge-autotune.service"
     fi
     if [ -f "$SYSTEMD_DIR/rigforge-watchdog.timer" ]; then
-        sudo systemctl disable --now rigforge-watchdog.timer 2>/dev/null || true
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-watchdog.timer 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-watchdog.timer" "$SYSTEMD_DIR/rigforge-watchdog.service"
     fi
     if [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-        sudo systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service"
         sudo systemctl daemon-reload 2>/dev/null || true
         log "Removed the $SERVICE_NAME service."
@@ -2667,9 +2672,9 @@ _thread_candidates() { # <center>
     echo "$list"
 }
 
-# Coordinate hill-climb from the current S_* state: sweep each active knob, adopt the best value that
 # --- Auto-tuning: search strategies & seeding ---
 
+# Coordinate hill-climb from the current S_* state: sweep each active knob, adopt the best value that
 # beats the running best by TUNE_MIN_DELTA, and repeat rounds until a pass makes no gain (plateau).
 # Echoes the best hashrate reached; leaves S_* at the winning combination.
 _hillclimb() {
@@ -3357,21 +3362,38 @@ autotune() {
     _AUTOTUNE_DIRTY=0 # #347: a deliberate final mode is in place; the abort-restore stands down
 }
 
-# Read the current total hashrate from the worker's HTTP API (empty if unreachable). Overridable for
-# tests via API_CMD. This is RigForge's own local reader (loopback) used by tune/autotune; it uses the
-# `/2/summary` endpoint. Pithead's dashboard separately reads `/1/summary` from the stack host — both
-# are valid XMRig endpoints, the divergence is intentional.
-# Raw /2/summary JSON from the worker API, or nothing when curl is missing/unreachable (#143).
-_read_api_summary() {
+# Raw /2/summary JSON from the worker's HTTP API (loopback), or empty when curl/API_CMD is
+# missing/unreachable (#143). Pithead's dashboard separately reads `/1/summary` from the stack host —
+# both are valid XMRig endpoints, the divergence is intentional. Overridable for tests via API_CMD
+# (evaluated as-is — a raw hashrate for _read_api_hashrate's own check below, a full JSON body for
+# every other caller). Shared by tune/autotune/status and the sister API's stats superset — was two
+# near-identical readers, _read_api_summary + _xmrig_summary_json (#353).
+# <mode>: "propagate" lets a curl failure raise under set -e — what tune/autotune/status relied on so
+# an unreachable API surfaces upstream. Default "swallow" always returns 0 — what the sister API
+# refresh loop and the pool-connection probe need, since an unreachable miner there is routine, not a
+# crash. The API is open (read-only) with no token by default; only send a Bearer when ACCESS_TOKEN is
+# set (XMRig 401s a token it never asked for, and curl -f's exit 22 would then hit the mode check
+# below either way). Branches on the Bearer header rather than an empty-array curl arg, and on mode
+# rather than appending to a built-up arg list — both trip set -u on bash 3.2 (macOS).
+_read_api_summary() { # [propagate]
     local url="http://127.0.0.1:8080/2/summary"
+    if [ -n "${API_CMD:-}" ]; then
+        eval "$API_CMD"
+        return
+    fi
     command -v curl >/dev/null 2>&1 || return 0
-    # The API is open (read-only) with no token by default; only send a Bearer when ACCESS_TOKEN is set.
-    # XMRig 401s a token it never asked for, and curl -f (exit 22) would then abort the caller under set -e.
-    # Branch rather than an empty-array curl arg, which also trips set -u on bash 3.2 (macOS).
-    if [ -n "${ACCESS_TOKEN:-}" ]; then
-        curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null
+    if [ "${1:-}" = propagate ]; then
+        if [ -n "${ACCESS_TOKEN:-}" ]; then
+            curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null
+        else
+            curl -fsS --max-time 5 "$url" 2>/dev/null
+        fi
     else
-        curl -fsS --max-time 5 "$url" 2>/dev/null
+        if [ -n "${ACCESS_TOKEN:-}" ]; then
+            curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
+        else
+            curl -fsS --max-time 5 "$url" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -3380,7 +3402,7 @@ _read_api_hashrate() {
         eval "$API_CMD"
         return
     fi
-    _read_api_summary | jq -r '.hashrate.total[0] // empty' 2>/dev/null
+    _read_api_summary propagate | jq -r '.hashrate.total[0] // empty' 2>/dev/null
 }
 
 # Median of N live API hashrate samples, <interval> seconds apart. Smooths the jittery live reading so a
@@ -3404,6 +3426,13 @@ _sample_api_median() { # <n> <interval>
 # machines so you tune once and roll the result out across a fleet. (Tuning is CPU-specific — only reuse
 # it between identical CPUs.) Mirrors Pithead's backup/restore UX.
 
+# The secret-bearing staging dir shared by backup/restore/support_bundle below — a script global (like
+# TUNE_TMP), not `local`, because each function's EXIT trap must still resolve it when it actually
+# fires: on a clean run that's after the function has already returned, where a `local` would be out
+# of scope and die "unbound variable" under set -u (#353). One at a time is safe: the three verbs are
+# mutually exclusive per invocation, same as tune()/autotune() sharing TUNE_TMP.
+STAGE_DIR=""
+
 # backup: write config.json + tuning into a timestamped tar.gz under ./backups (owner-only).
 backup() {
     local arg
@@ -3415,27 +3444,30 @@ backup() {
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to back up. Run 'setup' first."
 
-    local wr stage included="config.json" f
+    local wr included="config.json" f
     wr=$(_worker_root_from_config)
-    stage=$(mktemp -d)
-    cp "$CONFIG_JSON" "$stage/config.json"
+    STAGE_DIR=$(mktemp -d)
+    # Cleanup is armed the moment the temp dir exists — a set -e abort anywhere below (disk full,
+    # tar failure) must not leak this secret-bearing staging content (config.json, tokens). Same
+    # EXIT-trap treatment tune() got in #135. (#353)
+    trap 'rm -rf "$STAGE_DIR"' EXIT
+    cp "$CONFIG_JSON" "$STAGE_DIR/config.json"
     # The tuning files live under the worker root; include whichever exist (a fresh worker has none yet).
     for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
         if [ -n "$wr" ] && [ -f "$wr/$f" ]; then
-            cp "$wr/$f" "$stage/$f"
+            cp "$wr/$f" "$STAGE_DIR/$f"
             included="$included $f"
         fi
     done
     # A small manifest for provenance — handy when rolling a tune out across a fleet.
     jq -n --arg v "$(cmd_version)" --arg host "$(hostname 2>/dev/null)" --arg files "$included" \
-        '{rigforge: $v, source_host: $host, files: ($files | split(" "))}' >"$stage/rigforge-backup.json" 2>/dev/null || true
+        '{rigforge: $v, source_host: $host, files: ($files | split(" "))}' >"$STAGE_DIR/rigforge-backup.json" 2>/dev/null || true
 
     local backups_dir="$SCRIPT_DIR/backups" stamp archive
     mkdir -p "$backups_dir"
     stamp=$(date +%Y%m%d-%H%M%S)
     archive="$backups_dir/rigforge-backup-$stamp.tar.gz"
-    (umask 077 && tar -czf "$archive" -C "$stage" .)
-    rm -rf "$stage"
+    (umask 077 && tar -czf "$archive" -C "$STAGE_DIR" .)
     chmod 600 "$archive" 2>/dev/null || true
 
     log "Backed up: $included"
@@ -3465,44 +3497,37 @@ restore() {
         }
     fi
 
-    local stage
-    stage=$(mktemp -d)
-    tar -xzf "$archive" -C "$stage" 2>/dev/null || {
-        rm -rf "$stage"
-        error "Could not extract $archive — is it a RigForge backup?"
-    }
-    [ -f "$stage/config.json" ] || {
-        rm -rf "$stage"
-        error "Archive has no config.json — not a RigForge backup."
-    }
+    STAGE_DIR=$(mktemp -d)
+    # Cleanup is armed the moment the temp dir exists — a set -e abort anywhere below (an error() call
+    # included: EXIT traps fire for those same as any other exit) must not leak this secret-bearing
+    # staging content. Same EXIT-trap treatment tune() got in #135. (#353)
+    trap 'rm -rf "$STAGE_DIR"' EXIT
+    tar -xzf "$archive" -C "$STAGE_DIR" 2>/dev/null || error "Could not extract $archive — is it a RigForge backup?"
+    [ -f "$STAGE_DIR/config.json" ] || error "Archive has no config.json — not a RigForge backup."
     # Validate the staged config BEFORE it ever touches the live one — same subshell idiom as
     # _control_commit (rigforge.sh:~3652): parse_config's error() only exits the subshell, so a bad
     # backup can be rejected without corrupting this shell's CONFIG_JSON. shellcheck flags this as
     # SC2031 (info), same as there — intentional, not suppressed.
-    if ! (CONFIG_JSON="$stage/config.json" && parse_config) >/dev/null 2>&1; then
-        rm -rf "$stage"
-        error "Backup's config.json failed validation — existing config left untouched."
-    fi
-    if [ -f "$stage/rigforge-backup.json" ]; then
+    (CONFIG_JSON="$STAGE_DIR/config.json" && parse_config) >/dev/null 2>&1 || error "Backup's config.json failed validation — existing config left untouched."
+    if [ -f "$STAGE_DIR/rigforge-backup.json" ]; then
         local src
-        src=$(jq -r '.source_host // empty' "$stage/rigforge-backup.json" 2>/dev/null)
+        src=$(jq -r '.source_host // empty' "$STAGE_DIR/rigforge-backup.json" 2>/dev/null)
         [ -n "$src" ] && log "Backup was made on host: $src"
     fi
 
     # config.json -> repo root; tuning -> the worker root resolved from the RESTORED config (so it lands
     # correctly even if this machine's paths differ from the source's).
-    cp "$stage/config.json" "$CONFIG_JSON"
+    cp "$STAGE_DIR/config.json" "$CONFIG_JSON"
     _stamp_config_meta restore # #254: attribute this config to a restore (bumps revision if it differs)
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
     for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
-        if [ -f "$stage/$f" ]; then
+        if [ -f "$STAGE_DIR/$f" ]; then
             mkdir -p "$wr" 2>/dev/null || sudo mkdir -p "$wr"
-            cp "$stage/$f" "$wr/$f" 2>/dev/null || sudo cp "$stage/$f" "$wr/$f"
+            cp "$STAGE_DIR/$f" "$wr/$f" 2>/dev/null || sudo cp "$STAGE_DIR/$f" "$wr/$f"
             restored="$restored $f"
         fi
     done
-    rm -rf "$stage"
 
     log "Restored: $restored"
     case " $restored " in
@@ -3533,38 +3558,41 @@ support_bundle() {
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to collect. Run 'setup' first."
 
-    local wr stage collected="" skipped="" f
+    local wr collected="" skipped="" f
     wr=$(_worker_root_from_config)
-    stage=$(mktemp -d)
+    STAGE_DIR=$(mktemp -d)
+    # Cleanup is armed the moment the temp dir exists — a set -e abort anywhere below must not leak
+    # this secret-bearing staging content. Same EXIT-trap treatment tune() got in #135. (#353)
+    trap 'rm -rf "$STAGE_DIR"' EXIT
     _take() { collected="$collected $1"; }
     _skip() { skipped="$skipped $1"; }
 
-    cmd_version >"$stage/version.txt" && _take version.txt
+    cmd_version >"$STAGE_DIR/version.txt" && _take version.txt
     # Subprocess, not a function call: doctor's error-exits can't kill the bundle. Strip ANSI codes.
-    ("$0" doctor </dev/null 2>&1 || true) | sed -e $'s/\x1b\[[0-9;]*m//g' >"$stage/doctor.txt" && _take doctor.txt
+    ("$0" doctor </dev/null 2>&1 || true) | sed -e $'s/\x1b\[[0-9;]*m//g' >"$STAGE_DIR/doctor.txt" && _take doctor.txt
     # Fail closed: if jq can't redact a file, the file stays OUT of the bundle — never the original.
-    if _redact_config <"$CONFIG_JSON" >"$stage/config.redacted.json" 2>/dev/null; then
+    if _redact_config <"$CONFIG_JSON" >"$STAGE_DIR/config.redacted.json" 2>/dev/null; then
         _take config.redacted.json
     else
-        rm -f "$stage/config.redacted.json"
+        rm -f "$STAGE_DIR/config.redacted.json"
         _skip "config.redacted.json(unparseable)"
     fi
     if [ -n "$wr" ] && [ -f "$wr/xmrig/build/config.json" ]; then
-        if _redact_config <"$wr/xmrig/build/config.json" >"$stage/xmrig-config.redacted.json" 2>/dev/null; then
+        if _redact_config <"$wr/xmrig/build/config.json" >"$STAGE_DIR/xmrig-config.redacted.json" 2>/dev/null; then
             _take xmrig-config.redacted.json
         else
-            rm -f "$stage/xmrig-config.redacted.json"
+            rm -f "$STAGE_DIR/xmrig-config.redacted.json"
             _skip "xmrig-config.redacted.json(unparseable)"
         fi
     fi
     if [ -n "$wr" ] && [ -f "$wr/xmrig.log" ]; then
-        tail -n 500 "$wr/xmrig.log" >"$stage/xmrig.log.tail" 2>/dev/null && _take xmrig.log.tail
+        tail -n 500 "$wr/xmrig.log" >"$STAGE_DIR/xmrig.log.tail" 2>/dev/null && _take xmrig.log.tail
     fi
     for f in tune-overrides.json rigforge-tune.json; do
-        [ -n "$wr" ] && [ -f "$wr/$f" ] && cp "$wr/$f" "$stage/$f" && _take "$f"
+        [ -n "$wr" ] && [ -f "$wr/$f" ] && cp "$wr/$f" "$STAGE_DIR/$f" && _take "$f"
     done
     for f in "$SERVICE_NAME.service" rigforge-autotune.service rigforge-autotune.timer; do
-        [ -f "$SYSTEMD_DIR/$f" ] && cp "$SYSTEMD_DIR/$f" "$stage/$f" 2>/dev/null && _take "$f"
+        [ -f "$SYSTEMD_DIR/$f" ] && cp "$SYSTEMD_DIR/$f" "$STAGE_DIR/$f" 2>/dev/null && _take "$f"
     done
     {
         uname -a
@@ -3575,16 +3603,15 @@ support_bundle() {
             sysctl -n machdep.cpu.brand_string 2>/dev/null || true
             sysctl -n hw.memsize 2>/dev/null || true
         fi
-    } >"$stage/system.txt" 2>/dev/null && _take system.txt
+    } >"$STAGE_DIR/system.txt" 2>/dev/null && _take system.txt
     jq -n --arg v "$(cmd_version)" --arg host "$(hostname 2>/dev/null)" --arg files "${collected# }" --arg skipped "${skipped# }" \
         '{rigforge: $v, source_host: $host, files: ($files | split(" ")), not_collected: (["journalctl (system-wide)", "shell history", "unredacted configs", "backups/"] + (if $skipped != "" then ($skipped | split(" ")) else [] end))}' \
-        >"$stage/manifest.json" 2>/dev/null || true
+        >"$STAGE_DIR/manifest.json" 2>/dev/null || true
 
     local stamp archive
     stamp=$(date +%Y%m%d-%H%M%S)
     archive="$SCRIPT_DIR/rigforge-support-$(hostname 2>/dev/null)-$stamp.tar.gz"
-    (umask 077 && tar -czf "$archive" -C "$stage" .)
-    rm -rf "$stage"
+    (umask 077 && tar -czf "$archive" -C "$STAGE_DIR" .)
     chmod 600 "$archive" 2>/dev/null || true
 
     log "Collected:${collected}"
@@ -3733,7 +3760,7 @@ mac_disable() {
 # markers (that's doctor's job); plain aligned lines stay grep-friendly. Never sudo, never prompts.
 _status_api_summary() {
     local body hs pool up acc rej hp
-    body=$(_read_api_summary)
+    body=$(_read_api_summary propagate)
     if [ -z "$body" ]; then
         echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
         return 0
@@ -3816,7 +3843,7 @@ svc_disable() {
         mac_disable
         return
     }
-    sudo systemctl disable "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
+    sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
 }
 # --- Commands: version, apply & bench ---
 
@@ -3913,7 +3940,7 @@ _apply_plan() {
     else
         echo " 2. restart the miner manually ('$0 restart') — no service on $OS_TYPE"
     fi
-    echo " 3. reconcile the autotune timer + sister API + firewall to config (autotune: $AUTOTUNE_MODE, api: $API_MODE)"
+    echo " 3. reconcile the autotune timer + watchdog + sister API + control path + firewall to config (autotune: $AUTOTUNE_MODE, api: $API_MODE, control: $CONTROL_MODE)"
     echo "Dry run — nothing was changed. Run 'sudo $0 apply' to apply."
 }
 
@@ -4645,22 +4672,6 @@ EOF
 
 # --- Sister API (#99): read-only stats superset on its own port ---
 
-# Full /2/summary body from the local worker API (empty when unreachable). Sibling of
-# _read_api_hashrate with the same API_CMD test hook and Bearer branch (see the comment there).
-_xmrig_summary_json() {
-    local url="http://127.0.0.1:8080/2/summary"
-    if [ -n "${API_CMD:-}" ]; then
-        eval "$API_CMD"
-        return
-    fi
-    command -v curl >/dev/null 2>&1 || return 0
-    if [ -n "${ACCESS_TOKEN:-}" ]; then
-        curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
-    else
-        curl -fsS --max-time 5 "$url" 2>/dev/null || true
-    fi
-}
-
 # {watts, hs_per_watt} over a 1-second RAPL energy window; nulls when unmeasurable (no RAPL /
 # non-root). RAPL only — TUNE_POWER_CMD is an operator-session env var whose value is eval'd, and
 # config-derived text must never reach eval inside a network-facing handler.
@@ -4822,7 +4833,7 @@ api_refresh() {
     parse_config >/dev/null
     local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body
     mkdir -p "$dir"
-    sum=$(_xmrig_summary_json || true)
+    sum=$(_read_api_summary || true)
     printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
     hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
     rf=$(_api_rigforge_block "$hr")
@@ -4839,7 +4850,7 @@ api_refresh() {
 # --- Pool-connection probe (#343), shared by doctor and apply ---
 
 # The miner's own verdict on its pool connection, read from the local /2/summary (API_CMD test hook
-# + Bearer discipline via _xmrig_summary_json). One TSV line:
+# + Bearer discipline via _read_api_summary). One TSV line:
 #   connected <pool> <conn_uptime_s> <accepted>   — a stratum connection is live
 #   disconnected <pool> <failures>                — miner answers, but no live connection
 #   api-down                                      — no parseable summary (API unreachable)
@@ -4849,7 +4860,7 @@ api_refresh() {
 # disagree with the miner's (proxied, TLS) one, and the miner is the party that has to be connected.
 _pool_conn_status() {
     local body pool cup fails acc
-    body=$(_xmrig_summary_json)
+    body=$(_read_api_summary)
     if ! printf '%s' "$body" | jq -e '.connection' >/dev/null 2>&1; then
         echo api-down
         return 0
@@ -5665,6 +5676,10 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
+    # #353 (1): name the verb before dispatch so an UNEXPECTED failure in any of them reports where it
+    # actually happened, not the stale "starting up" default — setup's own main() overwrites this a
+    # moment later with its fine-grained per-phase steps, so this is a no-op there.
+    CURRENT_STEP="running '${1:-setup}'"
     case "${1:-setup}" in
     setup)
         # if-form, not `[ $# -gt 0 ] && shift`: a false && list at top level trips set -e on the
