@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-08-15
+
 ### Added
 
 - **The enriched feed mirrors the last control outcome (#346).** Pithead's host runner caps its
