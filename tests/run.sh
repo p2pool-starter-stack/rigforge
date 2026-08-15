@@ -2484,20 +2484,30 @@ bash "$SCRIPT" completion >/dev/null 2>&1 || comp_rc=$?
 assert_rc "completion without a shell errors with usage (#145)" "$comp_rc" "1"
 
 # #353 (6): _read_api_summary + _xmrig_summary_json were near-identical readers, merged into one
-# function with a mode argument. Prove the two modes actually differ: "propagate" (tune/autotune/
-# status's shape) surfaces a curl failure as a nonzero exit; the default "swallow" (the sister API's
-# shape) always returns 0. Both must still yield an EMPTY body either way — only the exit code differs.
-echo "== unit: _read_api_summary propagate vs swallow (#353) =="
+# function with a mode argument. #364 then deleted that mode: "propagate" let curl's exit escape so an
+# unreachable API would "surface upstream", but no caller ever read the status (every one branches on
+# an empty body) and letting it escape fired the inherited ERR trap inside the $( ) each caller reads
+# through. Both readers now ALWAYS return 0 with an empty body — the contract the callers assume.
+echo "== unit: the API readers never let a curl failure escape (#353/#364) =="
 rap_out="$( (
     source "$SCRIPT"
     unset API_CMD
     curl() { return 7; } # simulate an unreachable worker API
     set +e
-    printf 'default:[%s] rc=%s\n' "$(_read_api_summary)" "$?"
-    printf 'propagate:[%s] rc=%s\n' "$(_read_api_summary propagate)" "$?"
+    printf 'summary:[%s] rc=%s\n' "$(_read_api_summary)" "$?"
+    printf 'hashrate:[%s] rc=%s\n' "$(_read_api_hashrate)" "$?"
+    # NB: no apostrophes in comments inside this $( ) — bash 3.2 (macOS) opens a quote on one and
+    # swallows the rest of the file. The override is how the suite stands in for the worker API, and
+    # a FAILING one is how the watchdog strike-2 case simulates "unreachable". It must honour the
+    # same contract as the curl path, or the never-fails guarantee callers lean on has a hole there.
+    API_CMD=false
+    printf 'summary-cmd:[%s] rc=%s\n' "$(_read_api_summary)" "$?"
+    printf 'hashrate-cmd:[%s] rc=%s\n' "$(_read_api_hashrate)" "$?"
 ) 2>&1)"
-assert_contains "default mode swallows a curl failure (rc 0, empty body)" "$rap_out" "default:[] rc=0"
-assert_contains "propagate mode surfaces a curl failure (nonzero rc, empty body)" "$rap_out" "propagate:[] rc=7"
+assert_contains "_read_api_summary swallows a curl failure (rc 0, empty body)" "$rap_out" "summary:[] rc=0"
+assert_contains "_read_api_hashrate swallows a curl failure (rc 0, empty body)" "$rap_out" "hashrate:[] rc=0"
+assert_contains "_read_api_summary swallows a failing API_CMD (rc 0, empty body)" "$rap_out" "summary-cmd:[] rc=0"
+assert_contains "_read_api_hashrate swallows a failing API_CMD (rc 0, empty body)" "$rap_out" "hashrate-cmd:[] rc=0"
 
 # #143: `status` prepends a one-glance live summary from ONE /2/summary fetch — facts, no ✓/! markers,
 # never sudo. Unreachable API (miner stopped / http off) degrades to a single explanatory line and the
@@ -2531,6 +2541,58 @@ assert_contains "status: platform block still follows (#143)" "$(cat "$ST/calls.
 out="$(run_status fail)"
 assert_contains "status: unreachable API -> one explanatory line (#143)" "$out" "worker API not reachable at 127.0.0.1:8080"
 assert_contains "status: platform block untouched when API is down (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
+
+# #364: the same unreachable API through the REAL dispatch, where errexit and the ERR trap are live.
+# `run_status fail` above cannot catch this — shadowing curl inside a `set +e` subshell disarms the
+# very path that produced the bug, which is how it shipped. Here curl is a real failing BINARY on
+# PATH, so its exit rides out of _read_api_summary exactly as it does against a stopped miner. It
+# used to print "[ERROR] rigforge aborted while running 'status'" TWICE: set -E inherits the trap
+# into the $( ) _status_api_summary reads through, and bash does NOT carry svc_status's suppressed
+# errexit (`( ... ) || true`) into that child, so the trap fired once per frame the failure unwound.
+echo "== black-box: unreachable worker API is quiet, not an abort (#364) =="
+STE="$(mktemp -d "$SANDBOX/statuserr.XXXXXX")"
+mkdir -p "$STE/bin" "$STE/home/worker"
+cat >"$STE/config.json" <<EOF
+{ "HOME_DIR": "$STE/home", "pools": [{"url": "h:3333"}] }
+EOF
+printf '#!/usr/bin/env bash\nexit 7\n' >"$STE/bin/curl"
+chmod +x "$STE/bin/curl"
+out="$(cd "$STE" && PATH="$STE/bin:$STUBS:$PATH" STUB_UNAME_S=Linux CALL_LOG="$STE/calls.log" RIGFORGE_HOME="$PWD" bash "$SCRIPT" status </dev/null 2>&1)"
+rc=$?
+assert_rc "status: unreachable API exits 0 through real dispatch (#364)" "$rc" "0"
+assert_absent "status: no ERR-trap abort on a real curl failure (#364)" "$out" "aborted while"
+assert_eq "status: the unreachable line prints exactly once (#364)" \
+    "$(printf '%s\n' "$out" | grep -c "worker API not reachable")" "1"
+assert_contains "status: platform block still follows (#364)" "$(cat "$STE/calls.log")" "[systemctl] status xmrig"
+
+# The same root cause on the tune/autotune side, which reads through _read_api_hashrate — and the
+# shape that bites on a RIG, not just a dev laptop: an UNGUARDED read under errexit. Verified against
+# both bashes with the API refusing connections (miner-0, Linux 5.2 / this box, macOS 3.2): the old
+# reader killed the run outright and printed four abort lines, the current one returns empty and the
+# sampling loop runs to the end. So an API that went away mid-sweep — the miner restarting under you
+# — used to take the sweep with it.
+#
+# Driven as a SEPARATE bash process on purpose. Running it in a subshell here would inherit this
+# suite's own errexit context, and bash 5.2 carries a suppressed context into a $( ) (3.2 does not),
+# which silently disarms the very failure under test on one platform or the other — a green that
+# means nothing. A child process starts from a clean top-level context on both.
+echo "== black-box: an unreachable API never aborts a tune sampling read (#364) =="
+cat >"$STE/drive.sh" <<DRV
+source "$SCRIPT"
+set -Eeuo pipefail
+trap on_err ERR
+CURRENT_STEP="running 'tune'"
+unset API_CMD
+sleep() { :; }            # drop the retry delay; curl stays a real failing binary
+hr=\$(_read_api_hashrate) # unguarded on purpose: the reader itself must not fail
+echo "SURVIVED hr=[\$hr]"
+_wait_miner_live 3 >/dev/null || true # returns 1 once it gives up; that is not a failure
+echo "LOOP-DONE"
+DRV
+wml_out="$(cd "$STE" && PATH="$STE/bin:$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$STE/drive.sh" 2>&1 || true)"
+assert_contains "tune: an unreachable API never aborts the reader (#364)" "$wml_out" "SURVIVED hr=[]"
+assert_contains "tune: the sampling loop runs to the end (#364)" "$wml_out" "LOOP-DONE"
+assert_absent "tune: no ERR-trap noise while the API is down (#364)" "$wml_out" "aborted while"
 : >"$ST/calls.log"
 out="$(
     (

@@ -3368,41 +3368,41 @@ autotune() {
 # (evaluated as-is — a raw hashrate for _read_api_hashrate's own check below, a full JSON body for
 # every other caller). Shared by tune/autotune/status and the sister API's stats superset — was two
 # near-identical readers, _read_api_summary + _xmrig_summary_json (#353).
-# <mode>: "propagate" lets a curl failure raise under set -e — what tune/autotune/status relied on so
-# an unreachable API surfaces upstream. Default "swallow" always returns 0 — what the sister API
-# refresh loop and the pool-connection probe need, since an unreachable miner there is routine, not a
-# crash. The API is open (read-only) with no token by default; only send a Bearer when ACCESS_TOKEN is
-# set (XMRig 401s a token it never asked for, and curl -f's exit 22 would then hit the mode check
-# below either way). Branches on the Bearer header rather than an empty-array curl arg, and on mode
-# rather than appending to a built-up arg list — both trip set -u on bash 3.2 (macOS).
-_read_api_summary() { # [propagate]
+# ALWAYS returns 0 with an empty body when the API is unreachable — curl's exit never escapes. There
+# was a "propagate" mode that let it, so an unreachable miner would "surface upstream"; nothing
+# upstream ever read that status (every caller branches on an empty body) and it broke two ways under
+# the ERR trap (#364). Unguarded callers aborted outright: on a rig (bash 5.2) an API refusing
+# connections killed tune/autotune's sampling loop with exit 7 mid-sweep — the failure #210 hit on
+# miner-0. And on bash 3.2 (macOS) even GUARDED callers printed the banner: set -E inherits the trap
+# into the $( ) each caller reads through, and 3.2 does not carry the caller's suppressed-errexit
+# context (`( ... ) || true`) into that child, so the trap fires there once per frame the failure
+# unwinds — `status` emitted "[ERROR] rigforge aborted while running 'status'" TWICE for a stopped
+# miner while still exiting 0. Swallowing here kills both shapes for every reader at once. The API is
+# open (read-only) with no token by default; only send a Bearer when ACCESS_TOKEN is set (XMRig 401s a
+# token it never asked for). Branches on the Bearer header rather than an empty-array curl arg — an
+# empty array trips set -u on bash 3.2 (macOS).
+_read_api_summary() {
     local url="http://127.0.0.1:8080/2/summary"
     if [ -n "${API_CMD:-}" ]; then
-        eval "$API_CMD"
+        eval "$API_CMD" || true # the override stands in for the API — a failing one means "unreachable", not "crash"
         return
     fi
     command -v curl >/dev/null 2>&1 || return 0
-    if [ "${1:-}" = propagate ]; then
-        if [ -n "${ACCESS_TOKEN:-}" ]; then
-            curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null
-        else
-            curl -fsS --max-time 5 "$url" 2>/dev/null
-        fi
+    if [ -n "${ACCESS_TOKEN:-}" ]; then
+        curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
     else
-        if [ -n "${ACCESS_TOKEN:-}" ]; then
-            curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
-        else
-            curl -fsS --max-time 5 "$url" 2>/dev/null || true
-        fi
+        curl -fsS --max-time 5 "$url" 2>/dev/null || true
     fi
 }
 
+# Same never-fails contract as its reader: `|| true` covers the jq leg too, so a malformed body (or a
+# missing jq) can't ride pipefail out and trip the ERR trap in a caller's $( ) either (#364).
 _read_api_hashrate() {
     if [ -n "${API_CMD:-}" ]; then
-        eval "$API_CMD"
+        eval "$API_CMD" || true
         return
     fi
-    _read_api_summary propagate | jq -r '.hashrate.total[0] // empty' 2>/dev/null
+    _read_api_summary | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true
 }
 
 # Median of N live API hashrate samples, <interval> seconds apart. Smooths the jittery live reading so a
@@ -3760,7 +3760,7 @@ mac_disable() {
 # markers (that's doctor's job); plain aligned lines stay grep-friendly. Never sudo, never prompts.
 _status_api_summary() {
     local body hs pool up acc rej hp
-    body=$(_read_api_summary propagate)
+    body=$(_read_api_summary)
     if [ -z "$body" ]; then
         echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
         return 0
@@ -4412,14 +4412,16 @@ watchdog() {
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0
     fi
-    # Wedge check: the API probe returns empty (unreachable) or the live hashrate (a float).
-    # `|| true` INSIDE the substitution (#210): curl's nonzero exit (refused/timeout) rides the
-    # pipeline out of the probe via pipefail; unguarded, the assignment errexits the whole check,
-    # and a guard OUTSIDE the $() still lets the ERR trap fire in the subshell and spam "aborted
-    # while" into the journal every tick. An unreachable API is a STRIKE, not a crash.
-    hr=$(_read_api_hashrate || true)
+    # Wedge check: the API probe returns empty (unreachable) or the live hashrate (a float). An
+    # unreachable API is a STRIKE, not a crash — _read_api_hashrate swallows curl's refused/timeout
+    # exit itself (#364), so this unguarded assignment can't errexit the check (verified on a rig:
+    # the old reader aborted here with exit 7, the current one returns empty). #210 needed a
+    # `|| true` here for exactly that; the reader now owns the guarantee, so the guard is gone.
+    hr=$(_read_api_hashrate)
     if [ -z "$hr" ] || awk -v h="$hr" 'BEGIN { exit !(h == 0) }'; then
-        f=$(cat "$fails_f" 2>/dev/null || true) # guard inside the $() — see the probe above (#210)
+        # Guard INSIDE the $( ): on bash 3.2 a caller-side `|| true` does NOT stop the ERR trap
+        # firing in the child, because 3.2 doesn't carry suppressed errexit into it (#210/#364).
+        f=$(cat "$fails_f" 2>/dev/null || true)
         [[ "$f" =~ ^[0-9]+$ ]] || f=0
         f=$((f + 1))
         if [ "$f" -ge 2 ]; then
