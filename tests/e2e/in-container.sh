@@ -2,7 +2,10 @@
 #
 # Runs INSIDE a disposable Linux container (invoked by tests/e2e/linux.sh). Provisions a writable copy
 # of the repo, runs the real rigforge.sh twice against the container's real /etc, and asserts the
-# Linux deploy path + idempotency. Exits non-zero on any failed assertion.
+# Linux deploy path + idempotency. With RIGFORGE_APPLIANCE=1 in the environment (linux.sh's second
+# pass, #348) it instead asserts the appliance contracts against the same real /etc: units in
+# /run/systemd/system, no package installs, no fstab/limits.conf/logrotate writes, --runtime enables.
+# Exits non-zero on any failed assertion.
 #
 set -uo pipefail
 
@@ -20,6 +23,16 @@ assert_rc() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected rc $3, g
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3], got [$2]"; fi; }
 assert_contains() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "[$2] missing [$3]" ;; esac }
 assert_absent() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contains [$3]" ;; *) ok "$1" ;; esac }
+summarize() { # print the tally and exit (non-zero if any assertion failed)
+    echo ""
+    printf 'in-container: \033[1;32m%d passed\033[0m, ' "$PASS"
+    if [ "$FAIL" -gt 0 ]; then
+        printf '\033[1;31m%d failed\033[0m\n' "$FAIL"
+        exit 1
+    fi
+    printf '0 failed\n'
+    exit 0
+}
 
 # 1. Real prerequisites: jq + envsubst (gettext). Installed with the REAL apt before stubs go on
 #    PATH, so the script's own dependency step is the only thing we stub out.
@@ -61,6 +74,7 @@ exec "$@"
 X
 cat >"$STUBS/git" <<'X'
 #!/usr/bin/env bash
+echo "[git] $*" >>"${CALL_LOG:-/dev/null}"
 case "$*" in
   *rev-parse*) echo "${XMRIG_COMMIT:-}" ;;   # #18 verifies the cloned commit
   *clone*)     mkdir -p xmrig/src; printf 'static int DonateLevel = 1;\n' > xmrig/src/donate.h ;;
@@ -75,9 +89,11 @@ echo "Socket(s):             2"
 X
 printf '#!/usr/bin/env bash\necho 8\n' >"$STUBS/nproc"
 printf '#!/usr/bin/env bash\necho poolbox\n' >"$STUBS/hostname"
-# No-op the rest (sysctl -w / mount / systemctl etc. cannot run unprivileged in a container).
-for c in cmake make systemctl modprobe mount cpupower update-grub sysctl dpkg nft; do
-    printf '#!/usr/bin/env bash\nexit 0\n' >"$STUBS/$c"
+# No-op the rest (sysctl -w / mount / systemctl etc. cannot run unprivileged in a container). Each
+# stub logs "[cmd] args" to $CALL_LOG (run.sh's idiom) so call-shape assertions read real evidence
+# instead of an always-empty file. cc exists only for the appliance pass's baked-toolchain probe.
+for c in cmake make systemctl modprobe mount cpupower update-grub sysctl dpkg nft cc; do
+    printf '#!/usr/bin/env bash\necho "[%s] $*" >>"${CALL_LOG:-/dev/null}"\nexit 0\n' "$c" >"$STUBS/$c"
 done
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
@@ -93,6 +109,78 @@ EOF
 
 BUILD="$WORK/data-home/worker/xmrig/build"
 ARCH="$(uname -m)"
+
+# Appliance pass (#348): RIGFORGE_APPLIANCE=1 in the environment (linux.sh's second pass) asserts
+# the appliance contracts against the same real container /etc, then exits — tests/run.sh already
+# covers the mode's per-function branches with PATH stubs; this proves the /etc side for real.
+# What is REAL here: the filesystem (/etc and /run), the unit renders (envsubst | tee), sed, jq,
+# useradd, and the mountpoint probe. What stays STUBBED — so those contracts are proven at the
+# argument level only: systemctl (no pid-1 systemd in a container; --runtime is asserted on the
+# logged args), mount (needs privileges), the compile toolchain, and apt-get (stubbed to LOG so a
+# wrongful install attempt becomes assertion evidence instead of a real package install).
+if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then
+    cat >"$STUBS/apt-get" <<'X'
+#!/usr/bin/env bash
+echo "[apt-get] $*" >>"${CALL_LOG:-/dev/null}"
+exit 0
+X
+    chmod +x "$STUBS/apt-get"
+    # systemd owns /run/systemd/system on the real appliance; the container has no pid-1 systemd.
+    mkdir -p /run/systemd/system
+    # Byte-identical before/after is the contract: appliance mode writes NOTHING to these files.
+    # (Grepping for e.g. "memlock" would false-fail — the stock limits.conf documents it in comments.)
+    grub_before="$(cat /etc/default/grub)"
+    fstab_before="$(cat /etc/fstab)"
+    limits_before="$(cat /etc/security/limits.conf)"
+
+    echo "== appliance run (the real /etc must stay untouched) =="
+    aout="$(CALL_LOG="$WORK/appliance-calls.log" ./rigforge.sh </dev/null 2>&1)"
+    arc=$?
+    assert_rc "appliance run exits 0" "$arc" "0"
+    [ "$arc" = 0 ] || printf '%s\n' "$aout" | tail -20
+    acalls="$(cat "$WORK/appliance-calls.log" 2>/dev/null)"
+    # Units land in /run/systemd/system, never on the volatile /etc overlay.
+    assert_eq "appliance: xmrig unit rendered into /run/systemd/system" "$([ -f /run/systemd/system/xmrig.service ] && echo y || echo n)" "y"
+    assert_eq "appliance: no xmrig unit in /etc/systemd/system" "$([ -e /etc/systemd/system/xmrig.service ] && echo present || echo absent)" "absent"
+    assert_eq "appliance: sister API server unit in /run (#99)" "$([ -f /run/systemd/system/rigforge-api.service ] && echo y || echo n)" "y"
+    assert_eq "appliance: API refresh timer in /run (#99)" "$([ -f /run/systemd/system/rigforge-api-refresh.timer ] && echo y || echo n)" "y"
+    assert_eq "appliance: no rigforge/xmrig unit anywhere under /etc/systemd/system" "$(find /etc/systemd/system \( -name '*.service' -o -name '*.timer' -o -name '*.path' \) 2>/dev/null | grep -c 'xmrig\|rigforge')" "0"
+    assert_contains "appliance: unit rendered by real envsubst" "$(cat /run/systemd/system/xmrig.service 2>/dev/null)" "ReadWritePaths=$WORK/data-home/worker"
+    assert_absent "appliance: server unit fully rendered (no unexpanded vars)" "$(cat /run/systemd/system/rigforge-api.service 2>/dev/null)" '$SCRIPT_DIR'
+    # Never installs packages: the toolchain reads baked (stub cc + git/cmake/make on PATH).
+    assert_contains "appliance: deps declared baked, no install" "$aout" "dependencies are baked into the image"
+    assert_absent "appliance: apt-get never invoked" "$acalls" "[apt-get]"
+    # /etc stays byte-identical: no fstab/limits/GRUB/modules-load/logrotate writes.
+    assert_eq "appliance: fstab byte-identical" "$(cat /etc/fstab)" "$fstab_before"
+    assert_eq "appliance: limits.conf byte-identical" "$(cat /etc/security/limits.conf)" "$limits_before"
+    assert_eq "appliance: GRUB byte-identical" "$(cat /etc/default/grub)" "$grub_before"
+    assert_eq "appliance: no GRUB backup written" "$([ -e /etc/default/grub.bak ] && echo present || echo absent)" "absent"
+    assert_contains "appliance: GRUB skip is deliberate (image-owned cmdline)" "$aout" "the kernel cmdline is image-owned"
+    assert_eq "appliance: no modules-load drop-in" "$([ -e /etc/modules-load.d/msr.conf ] && echo present || echo absent)" "absent"
+    assert_eq "appliance: no logrotate drop-in" "$([ -e /etc/logrotate.d/xmrig ] && echo present || echo absent)" "absent"
+    # Enablement is transient. The xmrig assert pins one real site (non-vacuous), the count guards
+    # every other enable site (timers, api, control) against a forgotten ${ENABLE_RUNTIME:+...}.
+    assert_contains "appliance: xmrig enable carries --runtime" "$acalls" "[systemctl] enable --runtime xmrig.service"
+    assert_eq "appliance: every systemctl enable is --runtime" "$(grep -F "[systemctl] enable" "$WORK/appliance-calls.log" | grep -cv -- --runtime)" "0"
+    # hugetlbfs is mounted at runtime instead of via fstab (mount is stubbed: argument-level proof;
+    # the real mountpoint probe reports not-mounted in a fresh container, so both mounts must fire).
+    assert_contains "appliance: runtime 2MB hugetlbfs mount" "$acalls" "[mount] -t hugetlbfs hugetlbfs /dev/hugepages"
+    assert_contains "appliance: runtime 1G hugetlbfs mount" "$acalls" "[mount] -t hugetlbfs -o pagesize=1G hugetlbfs_1g /dev/hugepages1G"
+    assert_eq "appliance: 1G mountpoint dir created for real" "$([ -d /dev/hugepages1G ] && echo y || echo n)" "y"
+
+    echo "== appliance second run (the every-boot path accretes no /etc state) =="
+    aout2="$(CALL_LOG="$WORK/appliance-calls2.log" ./rigforge.sh </dev/null 2>&1)"
+    arc2=$?
+    assert_rc "appliance re-run exits 0" "$arc2" "0"
+    [ "$arc2" = 0 ] || printf '%s\n' "$aout2" | tail -20
+    assert_eq "appliance re-run: fstab still byte-identical" "$(cat /etc/fstab)" "$fstab_before"
+    assert_eq "appliance re-run: limits.conf still byte-identical" "$(cat /etc/security/limits.conf)" "$limits_before"
+    assert_eq "appliance re-run: GRUB still byte-identical" "$(cat /etc/default/grub)" "$grub_before"
+    assert_contains "appliance re-run: xmrig re-enabled --runtime" "$(cat "$WORK/appliance-calls2.log" 2>/dev/null)" "[systemctl] enable --runtime xmrig.service"
+    assert_eq "appliance re-run: every systemctl enable is --runtime" "$(grep -F "[systemctl] enable" "$WORK/appliance-calls2.log" | grep -cv -- --runtime)" "0"
+
+    summarize
+fi
 
 # #146: the dry-run plan, against the REAL container: real dpkg probe, real /proc for the
 # HugePages count, real proposed-grub.sh for the exact GRUB before -> after diff. Run BEFORE the
@@ -273,10 +361,4 @@ assert_eq "uninstall: removed the 'rigforge' command from PATH" "$([ -L /usr/loc
 ./rigforge.sh uninstall --yes </dev/null >/dev/null 2>&1
 assert_rc "uninstall is idempotent" "$?" "0"
 
-echo ""
-printf 'in-container: \033[1;32m%d passed\033[0m, ' "$PASS"
-if [ "$FAIL" -gt 0 ]; then
-    printf '\033[1;31m%d failed\033[0m\n' "$FAIL"
-    exit 1
-fi
-printf '0 failed\n'
+summarize
