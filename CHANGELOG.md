@@ -31,7 +31,6 @@ All notable changes to RigForge are documented here. The format is based on
   restores the pre-sweep mode via the same merge the sweep uses, so knobs pinned by an offline
   `tune` survive the abort too.
 
-
 - **`status` no longer aborts on a healthy rig (#341).** XMRig's `/2/summary` reports
   `"hugepages"` as an array (`[pages, total]`); the status renderer fed it to jq's `@tsv`,
   which rejects arrays — so the operator's first command printed an abort line instead of
