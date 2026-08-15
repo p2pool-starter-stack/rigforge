@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **The enriched feed mirrors the last control outcome (#346).** Pithead's host runner caps its
+  synchronous `/status` poll after a worker-apply, so a slow auto-rollback outruns it and the change
+  history row froze at `accepted`. The sister API's `rigforge` block now carries `control` —
+  `{change_id, status, reason}` read from the control status file — so the next routine poll of the
+  open read feed catches the terminal outcome without a new authenticated dial to the control port.
+  A rig that never took a control change, or an unreadable/malformed status file, serves
+  `control: null`; the mirror never breaks the feed.
+
 ## [1.14.0] - 2026-08-02
 
 ### Added
