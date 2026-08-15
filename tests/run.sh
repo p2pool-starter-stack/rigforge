@@ -189,7 +189,7 @@ EOF
     cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "[curl] $*" >> "${CURL_LOG:-/dev/null}"
-printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}\n' "${STUB_API_HR:-1234.5}"
+printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}\n' "${STUB_API_HR:-1234.5}"
 EOF
 
     chmod +x "$bin"/*
@@ -1544,6 +1544,38 @@ assert_contains "logrotate has a minsize guard" "$(cat "$LRF")" "minsize 50M"
 out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" SUDO_USER=rfoperator \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
 assert_contains "logrotate recreates the log owned by the operator, not whoami (#16)" "$(cat "$LRF")" "create 0644 rfoperator rfoperator"
+
+# #343: apply's post-reconcile summary asks the miner itself whether a pool connection came up.
+# Connected (the stock curl stub's body) reports it; a disconnected miner draws a WARN naming the
+# pool — but apply still exits 0 (warn, never refuse: the pool may be legitimately down); an
+# unreachable API warns that it couldn't confirm. APPLY_POOL_IVL=0 keeps the retry loop instant.
+echo "== black-box: apply reports the miner's pool connection (#343) =="
+out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" APPLY_POOL_IVL=0 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
+assert_rc "apply exits 0 when connected (#343)" "$?" "0"
+assert_contains "apply reports the live pool connection (#343)" "$out" "live pool connection to poolbox.lan:3333"
+APC="$(mktemp -d "$SANDBOX/apc.XXXXXX")"
+cat >"$APC/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"connection":{"pool":"nosuch.host:3333","uptime":0,"failures":4,"accepted":0}}'
+EOF
+cat >"$APC/curl_dead" <<'EOF'
+#!/usr/bin/env bash
+exit 7
+EOF
+chmod +x "$APC/curl" "$APC/curl_dead"
+out="$(cd "$U" && PATH="$APC:$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" APPLY_POOL_TRIES=2 APPLY_POOL_IVL=0 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
+assert_rc "apply still exits 0 on a disconnected miner (#343: warn, not refuse)" "$?" "0"
+assert_contains "apply warns on no live pool connection (#343)" "$out" "NO live pool connection"
+assert_contains "apply's warn names the pool + failure count (#343)" "$out" "nosuch.host:3333, 4 failed attempt(s)"
+APDEAD="$(mktemp -d "$SANDBOX/apdead.XXXXXX")"
+cp "$APC/curl_dead" "$APDEAD/curl"
+chmod +x "$APDEAD/curl"
+out="$(cd "$U" && PATH="$APDEAD:$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" APPLY_POOL_TRIES=1 APPLY_POOL_IVL=0 \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
+assert_rc "apply exits 0 when the API can't confirm (#343)" "$?" "0"
+assert_contains "apply warns when the API can't confirm the connection (#343)" "$out" "confirm a pool connection"
 
 # #95: a top-level `apply` reports the configured periodic-autotune target so the operator can see what
 # the nightly run optimizes for. Linux-only (the timer is Linux-only). Drive the notice directly with
@@ -3608,6 +3640,59 @@ assert_contains "control: enabled+active but not responding -> warn (#278)" "$ou
 out="$(run_ctl_doctor "$DOC/config.json" y 200)"
 assert_absent "control: disabled prints no control-receiver ok line (#278)" "$out" "control receiver"
 assert_absent "control: disabled prints no control-receiver warn line either (#278)" "$out" "rigforge-control is inactive"
+
+# #343: doctor's pool-connection check — the miner's own /2/summary is the signal while the service
+# runs (connected ok / disconnected counted issue / silent API advisory); a stopped service falls
+# back to one TCP dial of pools[0]. Fixture bodies mirror XMRig's connection object shapes.
+echo "== unit: doctor pool connection (#343) =="
+printf '{"connection":{"pool":"poolbox.lan:3333","uptime":345,"failures":0,"accepted":7}}\n' >"$DOC/api_connected.json"
+printf '{"connection":{"pool":"nosuch.host:3333","uptime":0,"failures":9,"accepted":0}}\n' >"$DOC/api_disconnected.json"
+run_pool_doctor() { # <xmrig active y|n> <API_CMD> [extra eval, e.g. a _tcp_probe override]
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$DOC/config.json"
+        MEMINFO="$DOC/meminfo_ok"
+        MSR_MODULE_DIR="$DOC/msrmod"
+        GOVERNOR_FILE="$DOC/gov_perf"
+        HUGEPAGES_1G_NR="$DOC/nr1g"
+        DMIDECODE="/nonexistent"
+        CPUFREQ_MAX="/nonexistent"
+        CPU_SYSFS="/nonexistent"
+        _ACT="$1"
+        API_CMD="$2"
+        systemctl() { case "$*" in *"is-active --quiet xmrig"*) [ "$_ACT" = y ] ;; *) return 0 ;; esac }
+        eval "${3:-}"
+        set +e
+        PATH="$STUBS:$PATH" doctor 2>&1
+    )
+}
+out="$(run_pool_doctor y "cat \"$DOC/api_connected.json\"")"
+assert_contains "pool: connected miner -> ok line with pool + shares (#343)" "$out" "pool connection live: poolbox.lan:3333"
+assert_contains "pool: connected stays all-clear (#343)" "$out" "all critical checks passed"
+out="$(run_pool_doctor y "cat \"$DOC/api_disconnected.json\"")"
+assert_contains "pool: running but disconnected -> warn (#343)" "$out" "NO live pool connection"
+assert_contains "pool: warn names the miner's pool + failure count (#343)" "$out" "nosuch.host:3333, 9 failed attempt(s)"
+assert_contains "pool: disconnected counts as an issue (#343)" "$out" "issue(s) found"
+out="$(run_pool_doctor y 'printf %s ""')"
+assert_contains "pool: silent API -> advisory only (#343)" "$out" "can't verify the pool connection"
+assert_contains "pool: silent API is not a counted issue (#343)" "$out" "all critical checks passed"
+# A disconnected miner that hasn't picked a pool yet reports connection.pool "" — the warn falls
+# back to naming config's pools[0], so the operator still sees which pool to go fix.
+printf '{"connection":{"pool":"","uptime":0,"failures":2,"accepted":0}}\n' >"$DOC/api_nopool.json"
+out="$(run_pool_doctor y "cat \"$DOC/api_nopool.json\"")"
+assert_contains "pool: empty pool name falls back to config's pools[0] (#343)" "$out" "pool: h:3333, 2 failed attempt(s)"
+# Service stopped: the miner can't testify, so pools[0] gets one TCP dial (overridden here — the
+# real dial is a /dev/tcp connect, exercised by the closed-port probe below and by e2e-real).
+out="$(run_pool_doctor n "" '_tcp_probe() { return 0; }')"
+assert_contains "pool: stopped + reachable pool -> advisory with host:port (#343)" "$out" "pool h:3333 accepts TCP"
+out="$(run_pool_doctor n "" '_tcp_probe() { return 1; }')"
+assert_contains "pool: stopped + unreachable pool -> warn (#343)" "$out" "pool h:3333 is unreachable"
+assert_contains "pool: unreachable pool counts as an issue (#343)" "$out" "issue(s) found"
+# The real probe against a loopback port nothing listens on: refused, so rc != 0, instantly.
+prb="$( (source "$SCRIPT" && set +e && _tcp_probe 127.0.0.1 1 && echo open || echo closed))"
+assert_eq "tcp probe: closed loopback port reads closed (#343)" "$prb" "closed"
 
 # #201: NPS regression detection — an EPYC reporting ONE NUMA node is NPS1 (a BIOS reset ate the
 # NPS4 setting); desktop parts correctly report one node and must never be flagged; a missing
