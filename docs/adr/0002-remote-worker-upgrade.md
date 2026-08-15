@@ -92,7 +92,7 @@ Low-cost integrity controls that need no standing signing key, shoring up the Gi
 
 - **Widen the ADR 0001 D3 allowlist to include a `version`/upgrade key.** Rejected: a code update is not an operationally-mutable config knob; folding it into the tuning path would silently grant every existing remote-tuning user a remote-RCE surface. A second opt-in (D1) is the point.
 - **Sign releases (cosign, as pithead did) and verify before running.** Considered and rejected for this project (D5): signing only helps against a distribution-point compromise and only with an out-of-band pinned/offline key; the key-custody burden isn't warranted, and GitHub is accepted as the trust root.
-- **Let the consumer choose the target version.** Rejected: the receiver/intent must not be able to pin a rig to an arbitrary tag (downgrade/rollback-to-vulnerable). The rig re-derives latest and refuses anything else (D4).
+- **Let the consumer choose the target version unbounded.** Rejected in that form: the receiver/intent must not be able to pin a rig to an arbitrary tag (downgrade/rollback-to-vulnerable). D4 does accept the dashboard-supplied target — the rig makes no version check of its own — but bounds it with the monotonic anti-rollback and reachable-from-main guards.
 - **Receiver fetches and runs directly (scoped-privilege network process).** Rejected for the same reason as ADR 0001 D2: the network-facing process stays unprivileged and stages only.
 - **No network upgrade path; keep SSH + `rigforge.sh upgrade`.** Lowest surface and still fully supported, but does not give pithead #597 a programmatic per-worker upgrade producer, which is the point of #308.
 

@@ -4151,9 +4151,10 @@ _control_upgrade_do() { # <ref>
 # rigforge-control-upgrade.path unit when the receiver stages an upgrade intent. Fetches the target
 # RigForge release and applies it, health-gated with rollback to the prior version. Every failure path
 # returns 0 with a recorded status (served by the receiver's GET /status) — a bad request must not
-# wedge the oneshot. The staged version is a CONFIRMATION guard, not a target selector: this verb
-# bounds what it will act on (D4/D10) so a compromised trigger can only ever land a real, reachable,
-# NEWER release — never an arbitrary tag, a downgrade, or a dangling commit.
+# wedge the oneshot. The staged version IS the target (D4) — the dashboard re-derives latest host-side,
+# this verb makes no version check of its own: it bounds what it will act on (D4/D10) so a compromised
+# trigger can only ever land a real, reachable, NEWER release — never an arbitrary tag, a downgrade, or
+# a dangling commit.
 control_upgrade() {
     [ "$OS_TYPE" != "Linux" ] && error "control-upgrade is driven by the rigforge-control-upgrade.path unit and is Linux-only."
     parse_config # need API_PORT etc. so the post-build liveness check can read the miner
