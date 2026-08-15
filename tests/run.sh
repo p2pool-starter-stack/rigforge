@@ -7483,6 +7483,55 @@ rc=$?
 assert_rc "record: first-ever recording needs no judge (#214)" "$rc" "0"
 assert_eq "record: first-ever wrote the baseline (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
 
+# #362: the DynamicUser services (control/api) can't traverse a checkout under a mode-750 $HOME —
+# require_traversable_checkout catches it before any phase runs. Same extraction+eval technique as
+# rig_lock below. `stat` is faked (not a real directory tree) so the result never depends on the REAL
+# host's tmp/HOME permissions, which this exact suite run already showed vary by OS (#362 dev note:
+# mktemp -d is 700 on macOS, and even its TMPDIR parent can be 700) — a real-directory version of this
+# test would be hostage to whatever the CI runner or developer's box happens to have.
+echo "== unit: require_traversable_checkout — DynamicUser traversal pre-flight (#362) =="
+RTC_SRC="$(sed -n '/^require_traversable_checkout()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
+if [ -z "$RTC_SRC" ]; then
+    bad "could not extract require_traversable_checkout from e2e-real.sh (#362)" "sed extraction was empty"
+else
+    RTCD="$(mktemp -d "$SANDBOX/travcheck.XXXXXX")"
+    mkdir -p "$RTCD/bin"
+    # The exact shape #362 found live: the checkout itself (mode 750) blocks; its ancestors don't.
+    cat >"$RTCD/bin/stat" <<'EOF'
+#!/usr/bin/env bash
+case "$3" in
+"/home/vijit/rigforge") echo 750 ;;
+*) echo 755 ;;
+esac
+EOF
+    chmod +x "$RTCD/bin/stat"
+    out="$( (
+        eval "$RTC_SRC"
+        die() {
+            echo "DIE: $1"
+            exit 2
+        }
+        set +e
+        PATH="$RTCD/bin:$PATH" require_traversable_checkout /home/vijit/rigforge/tests
+        echo "rc=$?"
+    ) 2>&1)"
+    assert_contains "a mode-750 ancestor is caught (#362)" "$out" "DIE:"
+    assert_contains "names the exact blocking path and mode (#362)" "$out" "'/home/vijit/rigforge' is mode 750"
+    assert_contains "names the remedy (#362)" "$out" "/opt/rigforge-e2e"
+    out2="$( (
+        eval "$RTC_SRC"
+        die() {
+            echo "DIE: $1"
+            exit 2
+        }
+        set +e
+        PATH="$RTCD/bin:$PATH" require_traversable_checkout /opt/rigforge-e2e
+        echo "rc=$?"
+    ) 2>&1)"
+    assert_absent "a fully-traversable path never dies (#362)" "$out2" "DIE:"
+    assert_contains "a fully-traversable path returns cleanly (#362)" "$out2" "rc=0"
+fi
+
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \

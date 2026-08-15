@@ -45,6 +45,12 @@
 #   E2E_UPGRADE_SKIP_REASON      set (to a reason string) to skip the now-mandatory forward leg — an
 #                                explicit, logged escape hatch, not a silent bypass
 #
+# The checkout itself must be traversable by an unprivileged user too (#362): rigforge-control.service
+# and rigforge-api.service run as systemd DynamicUser, so a checkout under $HOME (typically mode 750)
+# makes them die in a Permission-denied restart loop that reads as a product failure. Every phase
+# pre-flights this and fails immediately with the fix if not — move the checkout somewhere
+# world-traversable, e.g. /opt/rigforge-e2e.
+#
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
 #   sudo bash tests/e2e-real.sh provision
 #   sudo reboot                         # then reconnect
@@ -156,10 +162,31 @@ _set_boot() { # <enable|disable> <enabled|disabled>
     return 1
 }
 
+# #362: rigforge-control.service and rigforge-api.service run as systemd DynamicUser (an
+# unprivileged, ephemeral UID) and must traverse every directory from / down to the checkout to open
+# util/*.py. A checkout under $HOME (typically mode 750) blocks that — the service dies in a restart
+# loop with "Permission denied" and the control/upgrade phases then read as a product failure
+# (receiver down, POST 000, DONATION unchanged) instead of a harness-placement problem. Checks every
+# ancestor directory's o+x bit; root can always stat regardless of permissions, so this never
+# false-fails. Split out from require_linux_root so it's unit-testable without root/Linux/a real rig.
+require_traversable_checkout() { # <path>
+    local _d="$1" _mode
+    while true; do
+        _mode="$(stat -c '%a' "$_d" 2>/dev/null)" || break
+        case "$_mode" in
+        *[1357]) ;; # last digit (others) has the execute bit set — traversable
+        *) die "checkout path is not traversable by an unprivileged user: '$_d' is mode $_mode (others lack +x). rigforge-control.service/rigforge-api.service run as DynamicUser and would fail to open files under $1. Move the checkout to a world-traversable path, e.g. /opt/rigforge-e2e." ;;
+        esac
+        [ "$_d" = / ] && break
+        _d="$(dirname "$_d")"
+    done
+}
+
 require_linux_root() {
     [ "$(uname -s)" = "Linux" ] || die "Linux-only (this host is $(uname -s)) — run on the release rig."
     [ "$(id -u)" -eq 0 ] || die "must run as root (kernel tuning / modprobe / apt): sudo bash tests/e2e-real.sh $*"
     [ -x "$RIGFORGE" ] || die "$RIGFORGE not found or not executable."
+    require_traversable_checkout "$HERE" # #362: called by every phase, not just provision
 }
 
 hugepages_total() { awk '/^HugePages_Total:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0; }
