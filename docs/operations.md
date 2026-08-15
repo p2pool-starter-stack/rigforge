@@ -534,8 +534,9 @@ second read-only HTTP endpoint (default `:8081`, keys `api_port`/`api_bind`) wit
 `:8080` XMRig API has **plus** the data only RigForge knows: applied tune knobs and the last tune
 run (`/tune`), hashrate-per-watt from RAPL, the doctor probes — HugePages, MSR state, governor,
 RAM channels/speeds, memory-profile and SMT state, throttling — the watchdog's armed/thermal state,
-the effective **writable** config (`config`, pool secrets masked; #253), and a config revision +
-last-change provenance (`config_meta`; #254) — as JSON (`/health`, or nested under
+the effective **writable** config (`config`, pool secrets masked; #253), a config revision +
+last-change provenance (`config_meta`; #254), and the last control-path outcome (`control`,
+`{change_id, status, reason}` or `null`; #346) — as JSON (`/health`, or nested under
 `rigforge` in `/1/summary` and `/2/summary`). It follows XMRig's own architecture: one tiny
 persistent server (python3 stdlib, ~10 MB idle) ships pre-computed bytes, so a request costs
 microseconds and cannot touch mining performance; a systemd timer recomputes the state every 15

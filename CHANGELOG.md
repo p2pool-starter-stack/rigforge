@@ -9,6 +9,14 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **The enriched feed mirrors the last control outcome (#346).** Pithead's host runner caps its
+  synchronous `/status` poll after a worker-apply, so a slow auto-rollback outruns it and the change
+  history row froze at `accepted`. The sister API's `rigforge` block now carries `control` —
+  `{change_id, status, reason}` read from the control status file — so the next routine poll of the
+  open read feed catches the terminal outcome without a new authenticated dial to the control port.
+  A rig that never took a control change, or an unreadable/malformed status file, serves
+  `control: null`; the mirror never breaks the feed.
+
 - **`doctor` and `apply` now notice when the rig isn't mining at all (#343).** With `pools[0].url`
   pointed at an unresolvable host, XMRig loops on DNS errors forever — and `doctor` still said "all
   critical checks passed" while `apply` said "Applied config and restarted". Both now ask the miner

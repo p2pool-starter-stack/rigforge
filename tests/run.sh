@@ -6094,6 +6094,20 @@ printf '{broken' >"$APIQ/home/worker/tune-overrides.json"
 run_refresh
 assert_eq "corrupt tune-overrides -> applied null, not a crash" "$(jq -r '.applied' "$APIQ/data/tune.json")" "null"
 rm -f "$APIQ/home/worker/tune-overrides.json"
+# #346: the last control outcome mirrored into the feed as rigforge.control — pithead's poller catches
+# a late terminal outcome on the open read feed instead of a new authenticated dial to the control port.
+# A realistic full status.json (the _control_status shape): the mirror picks exactly the three keys.
+CTL346="$(mktemp -d "$SANDBOX/ctl346.XXXXXX")"
+printf '%s' '{"status":"rolled_back","change_id":"abc0123456789def","source":"control","applied_at":"2026-01-01T00:00:00Z","changed_keys":["DONATION"],"reason":"miner did not return to a live hashrate; rolled back and live","backup":"/b","warnings":[]}' >"$CTL346/status.json"
+run_refresh "RIGFORGE_CONTROL_STATE=$CTL346"
+assert_eq "control mirror: exactly {change_id, status, reason} on the feed (#346)" "$(jq -cS '.rigforge.control' "$APIQ/data/summary.json")" '{"change_id":"abc0123456789def","reason":"miner did not return to a live hashrate; rolled back and live","status":"rolled_back"}'
+# No status.json (a rig that never took a control change, or control disabled) -> null, feed intact.
+run_refresh "RIGFORGE_CONTROL_STATE=$CTL346/absent"
+assert_eq "control mirror: no status.json -> null (#346)" "$(jq -c '.rigforge.control' "$APIQ/data/summary.json")" "null"
+# Malformed status.json -> null, and the refresh still writes the feed.
+printf '{broken' >"$CTL346/status.json"
+run_refresh "RIGFORGE_CONTROL_STATE=$CTL346"
+assert_eq "control mirror: malformed status.json -> null, refresh survives (#346)" "$(jq -c '.rigforge.control' "$APIQ/data/summary.json")" "null"
 # #276 (item 5): each `printf | jq ... && mv` (rigforge.sh:4233-4235) is independently atomic — a jq
 # failure on ONE file must not corrupt or block the others. Break _api_rigforge_block so specifically
 # health.json's own extraction (`.health + {watchdog: .watchdog}`) fails (health is a string, not an
