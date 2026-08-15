@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-08-15
+
 ### Added
 
 - **`doctor` and `apply` now notice when the rig isn't mining at all (#343).** With `pools[0].url`
