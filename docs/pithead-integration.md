@@ -82,7 +82,10 @@ pithead#235):
   config — exactly the control-path allowlist, pool secrets masked; see the prefill note in §3), and
   `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a content hash of the
   writable config that changes iff that config changes, so a poller can detect a change made directly
-  on the rig; `source` is `control`/`local`/`restore`; see §3).
+  on the rig; `source` is `control`/`local`/`restore`; see §3), and `control` (the last control-path
+  outcome, `{change_id, status, reason}` mirrored from the control status file, so a poller that
+  missed a slow rollback catches the terminal outcome here without dialing the control port; `null`
+  when the rig has never taken a control change or the status file is unreadable).
 - `GET /health` and `GET /tune` — the `rigforge.health` / `rigforge.tune` objects bare.
 - When XMRig's own API is unreachable the response is still `200` with
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
