@@ -16,7 +16,7 @@ individual topics once you're up and running.
 | [Configuration](configuration.md) | Every `config.json` key and default, minimal vs. advanced setups, and how the XMRig config is generated. |
 | [Operations & Maintenance](operations.md) | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | [How It Works](how-it-works.md) | What the script actually does: dependencies, compile-from-source, HugePages, MSR, NUMA, the governor, and the systemd service. |
-| [Pithead Integration](pithead-integration.md) | The worker ↔ dashboard contract: discovery via `:3333`, the read-only HTTP API on `:8080`, and the token rules. |
+| [Pithead Integration](pithead-integration.md) | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080` (plus the optional enriched sister API on `:8081`), and the token rules. |
 | [FAQ](faq.md) | Common questions, plus why RigForge vs. setting XMRig up by hand. |
 
 For how RigForge is versioned and released, see [`RELEASING.md`](../RELEASING.md) and
@@ -27,7 +27,7 @@ For how RigForge is versioned and released, see [`RELEASING.md`](../RELEASING.md
 Significant, cross-cutting decisions are recorded as ADRs under [`adr/`](adr/):
 
 - [ADR 0001: Writable worker-config control path](adr/0001-writable-worker-config-control-path.md) — *Accepted.* How the stack applies config changes through RigForge without breaking the read-only sister API.
-- [ADR 0002: Remote worker-upgrade control path](adr/0002-remote-worker-upgrade.md) — *Proposed.* Opt-in remote RigForge upgrade for the stack (#308), extending ADR 0001 from a tuning surface to a code-update one; hash-only trust, no signing.
+- [ADR 0002: Remote worker-upgrade control path](adr/0002-remote-worker-upgrade.md) — *Accepted.* Opt-in remote RigForge upgrade for the stack (#308), extending ADR 0001 from a tuning surface to a code-update one; hash-only trust, no signing.
 
 ## Quick links
 
