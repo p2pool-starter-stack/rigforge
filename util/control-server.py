@@ -212,9 +212,10 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_upgrade(self):
         # #308 (ADR 0002): the remote code-update surface. Gated by control_upgrade — a SECOND opt-in on
         # top of `control`, so enabling remote tuning does not silently grant remote RCE. The version in
-        # the body is a CONFIRMATION guard, not a target selector: the applier re-derives the real latest
-        # release and refuses anything that is not a real, reachable, newer release (D4/D10). We only
-        # stage the intent here; the unprivileged receiver never fetches or runs anything.
+        # the body IS the target (D4): the dashboard re-derives latest host-side, the rig makes no version
+        # check of its own — the applier bounds the supplied target, refusing anything that is not a real,
+        # reachable release newer than the one installed (D4/D10). We only stage the intent here; the
+        # unprivileged receiver never fetches or runs anything.
         if not UPGRADE_ENABLED:
             return self._send(403, "Forbidden", {"error": "remote upgrade is disabled on this rig; set control_upgrade: \"enabled\" locally to allow it"})
         body = self._read_json_body()

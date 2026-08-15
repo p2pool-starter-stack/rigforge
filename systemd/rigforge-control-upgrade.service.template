@@ -11,9 +11,9 @@ Type=oneshot
 # and systemctl), so ProtectSystem / ProtectHome / NoNewPrivileges / an empty CapabilityBoundingSet
 # would each break it — the same reason the control-apply oneshot isn't sandboxed. The security for
 # this path lives in the verb, not in unit flags: it treats the staged file as untrusted (root-owned
-# handoff, strict version whitelist), re-derives the real latest release and refuses any non-latest,
-# unreachable, or older target, and throttles repeat runs (D4/D6/D8/D10). RIGFORGE_OPERATOR (baked at
-# setup) is who the updated checkout and build get handed back to.
+# handoff, strict version whitelist), bounds the staged target — refusing anything that is not a real,
+# reachable release newer than the one installed — and throttles repeat runs (D4/D6/D8/D10).
+# RIGFORGE_OPERATOR (baked at setup) is who the updated checkout and build get handed back to.
 Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
 ExecStart=$SCRIPT_DIR/rigforge.sh control-upgrade
 Nice=19

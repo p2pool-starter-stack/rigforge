@@ -3688,10 +3688,11 @@ _status_api_summary() {
         echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
         return 0
     fi
-    # One jq fork for every field, tab-separated (bash-3.2-safe read into locals).
+    # One jq fork for every field, tab-separated (bash-3.2-safe read into locals). /2/summary reports
+    # hugepages as a [loaded, total] pages array — @tsv rejects nested arrays (exit 5, killing the whole
+    # row on every healthy rig, #341), so serialize it; scalar/absent shapes pass through untouched.
     IFS=$(printf '\t') read -r hs pool up acc rej hp < <(printf '%s' "$body" |
-        jq -r '[(.hashrate.total[0] // 0), (.connection.pool // "?"), (.uptime // 0),
-                (.connection.accepted // 0), (.connection.rejected // 0), (.hugepages // "")] | @tsv' 2>/dev/null) || true
+        jq -r '[(.hashrate.total[0] // 0), (.connection.pool // "?"), (.uptime // 0), (.connection.accepted // 0), (.connection.rejected // 0), (.hugepages // "" | if type == "array" then join("/") else . end)] | @tsv' 2>/dev/null) || true
     [ -n "${hs:-}" ] || return 0 # half-up API / unparseable body: stay quiet, platform block follows
     printf '  %-10s %s H/s\n' "Hashrate:" "$hs"
     printf '  %-10s %s\n' "Pool:" "$pool"
@@ -3904,6 +3905,32 @@ apply() {
     # config actually changed (so tune/autotune restarts, which reuse _apply_runtime not apply(), and
     # a re-apply of the same config, never bump the revision).
     _stamp_config_meta "${RIGFORGE_CONFIG_SOURCE:-local}" "${RIGFORGE_CONFIG_CHANGE_ID:-}"
+    _apply_pool_check
+}
+
+# #343: apply's honesty check. "Applied config and restarted" used to be the last word even when the
+# rig then sat at 0 H/s forever (an unresolvable pools[0].url just loops on DNS errors, silently) —
+# so after the restart + reconcile, ask the miner itself: poll its local API briefly for a live pool
+# connection and WARN when none appears. Warn, never refuse: the pool may be legitimately down at
+# apply time and the config is already applied, so the exit code stays 0 (doctor is the judgmental
+# verb). Only apply() calls this — tune/autotune restart via _apply_runtime and verify liveness
+# their own way (_wait_miner_live). Tries/interval overridable for the suite.
+_apply_pool_check() {
+    [ "$OS_TYPE" = Linux ] || return 0                                  # no restart happened (macOS apply only regenerates)
+    systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0 # stopped service: nothing to verify
+    local tries="${APPLY_POOL_TRIES:-5}" iv="${APPLY_POOL_IVL:-3}" i st="" pool="" n=""
+    for i in $(seq 1 "$tries"); do
+        IFS="$(printf '\t')" read -r st pool n _ <<EOF
+$(_pool_conn_status)
+EOF
+        [ "$st" = connected ] && break
+        [ "$i" -lt "$tries" ] && sleep "$iv"
+    done
+    case "$st" in
+    connected) log "Miner reports a live pool connection to ${pool:-?}." ;;
+    disconnected) warn "Miner restarted, but reports NO live pool connection (pool: ${pool:-?}, ${n:-0} failed attempt(s)) — check pools[0].url in config.json, or the pool may be down. Watch: $0 logs" ;;
+    *) warn "Couldn't reach the worker API (127.0.0.1:8080) to confirm a pool connection — check '$0 status' in a minute." ;;
+    esac
 }
 
 # --- Writable control path applier (#236) ---
@@ -4151,9 +4178,10 @@ _control_upgrade_do() { # <ref>
 # rigforge-control-upgrade.path unit when the receiver stages an upgrade intent. Fetches the target
 # RigForge release and applies it, health-gated with rollback to the prior version. Every failure path
 # returns 0 with a recorded status (served by the receiver's GET /status) — a bad request must not
-# wedge the oneshot. The staged version is a CONFIRMATION guard, not a target selector: this verb
-# bounds what it will act on (D4/D10) so a compromised trigger can only ever land a real, reachable,
-# NEWER release — never an arbitrary tag, a downgrade, or a dangling commit.
+# wedge the oneshot. The staged version IS the target (D4) — the dashboard re-derives latest host-side,
+# this verb makes no version check of its own: it bounds what it will act on (D4/D10) so a compromised
+# trigger can only ever land a real, reachable, NEWER release — never an arbitrary tag, a downgrade, or
+# a dangling commit.
 control_upgrade() {
     [ "$OS_TYPE" != "Linux" ] && error "control-upgrade is driven by the rigforge-control-upgrade.path unit and is Linux-only."
     parse_config # need API_PORT etc. so the post-build liveness check can read the miner
@@ -4758,6 +4786,50 @@ api_refresh() {
 
 # --- Doctor: one-stop health check ---
 
+# --- Pool-connection probe (#343), shared by doctor and apply ---
+
+# The miner's own verdict on its pool connection, read from the local /2/summary (API_CMD test hook
+# + Bearer discipline via _xmrig_summary_json). One TSV line:
+#   connected <pool> <conn_uptime_s> <accepted>   — a stratum connection is live
+#   disconnected <pool> <failures>                — miner answers, but no live connection
+#   api-down                                      — no parseable summary (API unreachable)
+# connection.uptime is XMRig's seconds-since-connect: positive exactly while a pool connection is
+# live, 0 while it retries (DNS failure, refused, pool down) — the signal #343 found missing. We
+# read the miner's view rather than dialing the pool ourselves: a second dial from this script can
+# disagree with the miner's (proxied, TLS) one, and the miner is the party that has to be connected.
+_pool_conn_status() {
+    local body pool cup fails acc
+    body=$(_xmrig_summary_json)
+    if ! printf '%s' "$body" | jq -e '.connection' >/dev/null 2>&1; then
+        echo api-down
+        return 0
+    fi
+    # The "?" placeholder is jq-side, not bash-side: a disconnected xmrig reports pool "", and an
+    # empty FIRST tsv field would be swallowed by read (tab is IFS *whitespace*, so leading tabs
+    # strip) — every later field would shift one left and "failures: 2" would parse as a live
+    # connection. Emitting a non-empty field for every column keeps the read aligned.
+    IFS="$(printf '\t')" read -r pool cup fails acc <<EOF
+$(printf '%s' "$body" | jq -r '[(.connection.pool | if . == null or . == "" then "?" else . end), (.connection.uptime // 0), (.connection.failures // 0), (.connection.accepted // 0)] | @tsv' 2>/dev/null)
+EOF
+    [ -n "${pool:-}" ] || pool="?" # belt (jq guarantees non-empty) and braces (an unparseable body)
+    if [ "${cup:-0}" -gt 0 ] 2>/dev/null; then
+        printf 'connected\t%s\t%s\t%s\n' "$pool" "$cup" "${acc:-0}"
+    else
+        printf 'disconnected\t%s\t%s\n' "$pool" "${fails:-0}"
+    fi
+}
+
+# One guarded TCP dial, rc-only — doctor's fallback when the miner isn't running to testify itself.
+# Host and port ride in as positional args (never interpolated into the -c string, so a hostile
+# config.json can't inject shell), and `timeout` bounds the hang a filtered port would cause.
+_tcp_probe() { # <host> <port>
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$1" "$2" 2>/dev/null
+    else
+        bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$1" "$2" 2>/dev/null
+    fi
+}
+
 doctor() {
     cmd_version
     if [ "$OS_TYPE" != "Linux" ]; then
@@ -4768,11 +4840,54 @@ doctor() {
     local issues=0
 
     # Service active?
+    local svc_up=n
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        svc_up=y
         _ck_ok "service '$SERVICE_NAME' is active"
     else
         _ck_warn "service '$SERVICE_NAME' is not active — start it with: sudo $0 start"
         issues=$((issues + 1))
+    fi
+
+    # Pool connection (#343): the check that says whether the rig is doing its job at all — every
+    # other probe here can pass while a bad pools[0].url loops on DNS errors and mines nothing.
+    # Service running -> ask the miner itself (see _pool_conn_status); API silent -> advisory only
+    # (it may still be starting, and the service check already judges the service); service
+    # stopped -> one guarded TCP dial of pools[0], so a parked rig still learns whether its pool
+    # would even answer.
+    if [ -f "$CONFIG_JSON" ]; then
+        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp
+        pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
+        if [ "$svc_up" = y ]; then
+            IFS="$(printf '\t')" read -r pc_st pc_pool pc_n1 pc_n2 <<EOF
+$(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _pool_conn_status)
+EOF
+            case "$pc_st" in
+            connected)
+                _ck_ok "pool connection live: $pc_pool (up $(_render_duration "${pc_n1:-0}"), ${pc_n2:-0} share(s) accepted)"
+                ;;
+            disconnected)
+                { [ -n "$pc_pool" ] && [ "$pc_pool" != "?" ]; } || pc_pool="${pool0:-?}"
+                _ck_warn "miner is running but has NO live pool connection (pool: $pc_pool, ${pc_n1:-0} failed attempt(s)) — the rig is not mining; check pools[0].url in config.json and '$0 logs'"
+                issues=$((issues + 1))
+                ;;
+            *)
+                _ck_info "worker API not reachable at 127.0.0.1:8080 — can't verify the pool connection (the miner may still be starting; re-run doctor shortly)"
+                ;;
+            esac
+        elif [ -n "$pool0" ]; then
+            ph=${pool0#*://}
+            pp=${ph##*:}
+            ph=${ph%:*}
+            if [[ "$pp" =~ ^[0-9]+$ ]]; then
+                if _tcp_probe "$ph" "$pp"; then
+                    _ck_info "pool $ph:$pp accepts TCP connections (miner stopped — the live check runs once it's started)"
+                else
+                    _ck_warn "pool $ph:$pp is unreachable (TCP connect failed) — the rig cannot mine until pools[0].url points at a reachable pool"
+                    issues=$((issues + 1))
+                fi
+            fi
+        fi
     fi
 
     # HugePages reserved? (the single biggest lever; needs a reboot after setup)
