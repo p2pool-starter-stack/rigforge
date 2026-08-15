@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml/badge.svg)](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-![Platform: Ubuntu 22.04+](https://img.shields.io/badge/Platform-Ubuntu%2022.04%2B-E95420?logo=ubuntu&logoColor=white)
+![Platform: Ubuntu 22.04+ / Debian 12](https://img.shields.io/badge/Platform-Ubuntu%2022.04%2B%20%2F%20Debian%2012-E95420?logo=ubuntu&logoColor=white)
 [![Miner: XMRig](https://img.shields.io/badge/Miner-XMRig-F26822?logo=monero&logoColor=white)](https://github.com/xmrig/xmrig)
 [![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 
@@ -51,8 +51,8 @@ you like to your stack's single endpoint.
   `autotune` in `config.json` re-tunes on a monthly schedule.
 - An opt-in `watchdog` restarts a wedged miner (alive but hashing 0 H/s), and with `max_temp_c` set
   it stops the miner above that temperature and resumes once it cools.
-- `doctor` health-checks HugePages, the MSR mod, the governor, and the service; `status` shows live
-  hashrate, pool, uptime, and shares.
+- `doctor` health-checks HugePages, the MSR mod, the governor, the service, and the pool
+  connection (the miner's own view of it); `status` shows live hashrate, pool, uptime, and shares.
 - `bios` is a guided, resumable walkthrough of the BIOS/UEFI changes RigForge can't make itself
   (XMP/EXPO, SMT, PBO/Eco Mode), and re-verifies what took after the reboot.
 - `backup` and `restore` snapshot your config and tuning; `support-bundle` collects a redacted
@@ -147,7 +147,7 @@ sudo ./rigforge.sh apply        # regenerate config + restart (no rebuild)
 git pull && sudo ./rigforge.sh upgrade   # rebuild + restart if the XMRig pin moved
 
 sudo ./rigforge.sh tune --now   # run a live tune now — keep the best prefetch mode
-sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service
+sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service, pool connection
 ./rigforge.sh logs              # follow live logs, no root needed (also: status; sudo for start / stop / restart)
 sudo ./rigforge.sh              # provision (or re-provision) the worker — idempotent
 ```
