@@ -2166,16 +2166,35 @@ S_y=""
 S_t=""
 S_g=""
 S_pr=""
-S_hj=""             # cpu.huge-pages-jit (off by default; swept only if TUNE_HPJIT lists >1 value)
-S_cq=""             # randomx.cache_qos  (off by default; swept only if TUNE_CACHEQOS lists >1 value)
-S_wr=""             # randomx.wrmsr      (off by default; swept only if TUNE_WRMSR lists >1 value) (#66)
-HILL_BEST=""        # set by _hillclimb (its result is returned via this global, not stdout — see below)
-HP_CAP_THREADS=""   # #65: max thread count whose 2MB-page need fits the reservation (empty = check off)
-_TUNE_SVC_STOPPED=0 # set by tune() when it stops the live service for a --bench run (#2)
+S_hj=""                # cpu.huge-pages-jit (off by default; swept only if TUNE_HPJIT lists >1 value)
+S_cq=""                # randomx.cache_qos  (off by default; swept only if TUNE_CACHEQOS lists >1 value)
+S_wr=""                # randomx.wrmsr      (off by default; swept only if TUNE_WRMSR lists >1 value) (#66)
+HILL_BEST=""           # set by _hillclimb (its result is returned via this global, not stdout — see below)
+HP_CAP_THREADS=""      # #65: max thread count whose 2MB-page need fits the reservation (empty = check off)
+_TUNE_SVC_STOPPED=0    # set by tune() when it stops the live service for a --bench run (#2)
+_TUNE_LIVE_DIRTY=0     # #347: a live sweep is mid-flight — the overrides file holds a candidate, not a decision
+_TUNE_PRE_OVERRIDES="" # #347: the overrides content from before the live sweep ("" = no file existed)
+
+# Put a previous overrides snapshot back — write it (or remove the file when none existed) and re-apply
+# it to the running miner. Shared by the A/B confirm's revert leg (#64) and the aborted-live-sweep trap
+# (#347), so the abort path restores exactly the way a completed run does.
+_restore_overrides() { # <previous_overrides_json>
+    if [ -n "$1" ]; then printf '%s\n' "$1" | sudo tee "$TUNE_OVERRIDES" >/dev/null; else sudo rm -f "$TUNE_OVERRIDES"; fi
+    _apply_runtime >/dev/null 2>&1 || true
+}
 
 # Restart the miner that a --bench run stopped, and clean the temp dir. Installed as an EXIT trap by
 # tune() so the service comes back even if the run errors or is interrupted.
 _tune_bench_cleanup() {
+    # #347: an aborted LIVE sweep would otherwise persist the mid-sweep candidate — _measure_live applies
+    # each one straight into tune-overrides.json and restarts the miner on it. Restore the pre-sweep
+    # overrides FIRST: the restore itself restarts the service, and any restart must re-read the restored
+    # file, never the candidate. tune() clears the flag once the winner deliberately lands in the file.
+    if [ "${_TUNE_LIVE_DIRTY:-0}" = 1 ]; then
+        _TUNE_LIVE_DIRTY=0
+        log "Live sweep interrupted — restoring the pre-tune overrides and restarting the miner on them."
+        _restore_overrides "$_TUNE_PRE_OVERRIDES"
+    fi
     [ -n "${TUNE_TMP:-}" ] && rm -rf "$TUNE_TMP" 2>/dev/null
     if [ "${_TUNE_SVC_STOPPED:-0}" = 1 ]; then
         _TUNE_SVC_STOPPED=0
@@ -3022,6 +3041,11 @@ tune() {
     : >"$RESULTS_FILE"
 
     if [ "$TUNE_MODE" = live ]; then
+        # #347: from here every candidate lands in tune-overrides.json and restarts the miner on it
+        # (_measure_live). Mark the file dirty so the EXIT trap above restores the pre-sweep overrides
+        # if the sweep doesn't reach its deliberate winner write below.
+        _TUNE_PRE_OVERRIDES="$pre_overrides"
+        _TUNE_LIVE_DIRTY=1
         log "Auto-tuning LIVE against the running miner (warmup ${TUNE_LIVE_WARMUP:-60}s, ${TUNE_LIVE_SAMPLES:-3} samples) — search=$TUNE_SEARCH, knobs={$ACTIVE_KNOBS}."
     else
         log "Auto-tuning via 'xmrig --bench=$TUNE_BENCH' (median of $TUNE_ITERS) — search=$TUNE_SEARCH, knobs={$ACTIVE_KNOBS}, min-delta=$TUNE_MIN_DELTA."
@@ -3090,6 +3114,7 @@ tune() {
     case " $ACTIVE_KNOBS " in *" cacheqos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
     case " $ACTIVE_KNOBS " in *" wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
     printf '%s\n' "$ovr" >"$TUNE_TMP/ovr.json" && sudo cp "$TUNE_TMP/ovr.json" "$TUNE_OVERRIDES"
+    _TUNE_LIVE_DIRTY=0 # #347: the winner — a completed decision — now owns the file; the abort-restore stands down
 
     # Assemble the full search log: the winner, the search parameters, and every measured candidate.
     jq -s --argjson p "$G_p" --argjson y "$G_y" --arg t "$G_t" --argjson g "$G_g" --argjson pr "$G_pr" \
@@ -3144,8 +3169,7 @@ _tune_confirm_live() { # <winner_overrides_json> <previous_overrides_json>
     sleep "$warm"
     win_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$win_hr" ] || win_hr=0
-    if [ -n "$pre_ovr" ]; then printf '%s\n' "$pre_ovr" | sudo tee "$TUNE_OVERRIDES" >/dev/null; else sudo rm -f "$TUNE_OVERRIDES"; fi
-    _apply_runtime >/dev/null 2>&1 || true
+    _restore_overrides "$pre_ovr"
     sleep "$warm"
     base_hr=$(_sample_api_median "$n" "$iv")
     [ -n "$base_hr" ] || base_hr=0
@@ -3170,6 +3194,26 @@ _autotune_set_prefetch() { # <overrides_file> <mode>
         sudo cp "$tmp" "$f"
     fi
     rm -f "$tmp"
+}
+
+# #347: autotune's abort protection. Each trial merges a candidate prefetch mode into the overrides file
+# and restarts the miner on it — an abort mid-sweep would otherwise persist that candidate. The EXIT trap
+# restores the pre-sweep mode through the SAME settle step the clean path ends with, so the two cannot
+# diverge. The merge-based restore (_autotune_set_prefetch) preserves any offline-`tune` knobs, exactly
+# like the sweep's own writes.
+_AUTOTUNE_DIRTY=0
+_AUTOTUNE_PRE_MODE=""
+_AUTOTUNE_OVR_FILE=""
+_autotune_settle() { # <mode> — merge the mode into the overrides and leave the miner running on it
+    _autotune_set_prefetch "$_AUTOTUNE_OVR_FILE" "$1"
+    _apply_runtime >/dev/null 2>&1 || true
+}
+_autotune_cleanup() {
+    if [ "${_AUTOTUNE_DIRTY:-0}" = 1 ]; then
+        _AUTOTUNE_DIRTY=0
+        log "autotune: sweep interrupted — restoring prefetch_mode=$_AUTOTUNE_PRE_MODE."
+        _autotune_settle "$_AUTOTUNE_PRE_MODE"
+    fi
 }
 
 # Sample the live miner for one candidate: median H/s over the window and, for the efficiency target,
@@ -3274,6 +3318,12 @@ autotune() {
     last_applied="$cur"
     log "autotune: optimizing for $(_autotune_desc "$target"); live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $(_autotune_fmt "$target" "$base_hr" "$base_w") (median of $n)."
 
+    # #347: arm the abort-restore before the first candidate lands in the overrides file.
+    _AUTOTUNE_PRE_MODE="$cur"
+    _AUTOTUNE_OVR_FILE="$overrides"
+    _AUTOTUNE_DIRTY=1
+    trap '_autotune_cleanup' EXIT
+
     # Try every OTHER mode once, live; track the running best by the target's score.
     for m in $modes; do
         [ "$m" = "$cur" ] && continue
@@ -3302,9 +3352,9 @@ autotune() {
     fi
     # Leave the chosen mode running (the sweep may have ended on a different one).
     if [ "$last_applied" != "$best_mode" ]; then
-        _autotune_set_prefetch "$overrides" "$best_mode"
-        _apply_runtime >/dev/null 2>&1 || true
+        _autotune_settle "$best_mode"
     fi
+    _AUTOTUNE_DIRTY=0 # #347: a deliberate final mode is in place; the abort-restore stands down
 }
 
 # Read the current total hashrate from the worker's HTTP API (empty if unreachable). Overridable for

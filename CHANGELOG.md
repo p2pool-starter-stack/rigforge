@@ -7,6 +7,18 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **An interrupted live sweep no longer persists the mid-sweep candidate (#347).** `tune --live`
+  (and `tune --now --long`) applies every candidate straight into `tune-overrides.json` and restarts
+  the miner on it, but the cleanup trap only restored the temp dir and the service — a Ctrl+C, a
+  dropped SSH session, or an error mid-sweep left an arbitrary half-measured candidate saved and
+  running, silently costing hashrate until the next re-tune. The trap now restores the pre-sweep
+  overrides and restarts the miner on them, through the same restore step the `--confirm` revert leg
+  uses. `autotune` (and `tune --now`) had the same gap with its per-trial prefetch merges; its trap
+  restores the pre-sweep mode via the same merge the sweep uses, so knobs pinned by an offline
+  `tune` survive the abort too.
+
 ## [1.14.0] - 2026-08-02
 
 ### Added
