@@ -7,6 +7,15 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`status` no longer aborts on a healthy rig (#341).** XMRig's `/2/summary` reports
+  `"hugepages"` as an array (`[pages, total]`); the status renderer fed it to jq's `@tsv`,
+  which rejects arrays — so the operator's first command printed an abort line instead of
+  the stats block, on every rig running v1.14.0. The renderer now joins the pair as
+  `HugePages: N/N`, scalars pass through, and the suite's shared fixture carries the real
+  array shape so the class can't return.
+
 ## [1.14.0] - 2026-08-02
 
 ### Added

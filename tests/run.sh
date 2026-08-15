@@ -184,10 +184,12 @@ exit 0
 EOF
     # curl stub for the worker-API probe: record the invocation (so a test can assert whether an
     # Authorization header was passed) and emit an XMRig-style /2/summary body. Exits 0 like a real 200.
+    # hugepages is the real /2/summary shape — a [loaded, total] pages ARRAY, not a bool; the old
+    # bool-shaped fixture is exactly how the @tsv array crash (#341) slipped past this suite.
     cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "[curl] $*" >> "${CURL_LOG:-/dev/null}"
-printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","accepted":42,"rejected":1},"uptime":93780,"hugepages":true}\n' "${STUB_API_HR:-1234.5}"
+printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}\n' "${STUB_API_HR:-1234.5}"
 EOF
 
     chmod +x "$bin"/*
@@ -2439,7 +2441,7 @@ assert_contains "status: hashrate line (#143)" "$out" "Hashrate:  1234.5 H/s"
 assert_contains "status: pool line (#143)" "$out" "Pool:      poolbox.lan:3333"
 assert_contains "status: uptime rendered as d/h/m (#143)" "$out" "Uptime:    1d 2h 3m"
 assert_contains "status: shares line (#143)" "$out" "42 accepted / 1 rejected"
-assert_contains "status: hugepages line when the field exists (#143)" "$out" "HugePages: true"
+assert_contains "status: hugepages line when the field exists (#143)" "$out" "HugePages: 1248/1248"
 assert_contains "status: platform block still follows (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
 : >"$ST/calls.log"
 out="$(run_status fail)"
@@ -2459,6 +2461,34 @@ out="$(
 )"
 assert_contains "status: missing config degrades to the platform block (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
 assert_contains "status: missing config still exits 0 (#143)" "$out" "rc=0"
+
+# #341: XMRig's /2/summary reports hugepages as a [loaded, total] pages ARRAY; @tsv refuses nested
+# arrays (jq exit 5), which killed the whole stats row — and with it every line above — on every
+# healthy rig. The render must serialize the array, and keep the scalar/absent shapes working.
+echo "== unit: status hugepages shapes (#341) =="
+run_status_body() { # <summary-json>: svc_status with curl faked to return exactly this body
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SERVICE_NAME=xmrig
+        CONFIG_JSON="$ST/config.json"
+        unset API_CMD
+        # Distinct name on purpose: _status_api_summary's own `local body` would shadow a `body`
+        # here through bash's dynamic scoping, and the fake would print the empty local instead.
+        STUB_BODY_341="$1"
+        curl() { printf '%s' "$STUB_BODY_341"; }
+        set +e
+        PATH="$STUBS:$PATH" CALL_LOG="$ST/calls.log" svc_status 2>&1
+    )
+}
+out="$(run_status_body '{"hashrate":{"total":[321.0,0,0]},"connection":{"pool":"h:3333","accepted":7,"rejected":0},"uptime":60,"hugepages":[0,1280]}')"
+assert_contains "status: array hugepages render loaded/total (#341)" "$out" "HugePages: 0/1280"
+assert_contains "status: stats row survives the array (#341)" "$out" "Hashrate:  321.0 H/s"
+out="$(run_status_body '{"hashrate":{"total":[321.0,0,0]},"uptime":60,"hugepages":true}')"
+assert_contains "status: scalar hugepages still renders (#341)" "$out" "HugePages: true"
+out="$(run_status_body '{"hashrate":{"total":[321.0,0,0]},"uptime":60}')"
+assert_absent "status: absent hugepages -> no line (#341)" "$out" "HugePages:"
+assert_contains "status: stats row renders without hugepages (#341)" "$out" "Hashrate:  321.0 H/s"
 
 # #reown: REAL_USER is who root-written files are handed back to. The systemd autotune runs as root with
 # no SUDO_USER, so its unit's RIGFORGE_OPERATOR must drive the re-own; interactive SUDO_USER still wins.
