@@ -3692,9 +3692,7 @@ _status_api_summary() {
     # hugepages as a [loaded, total] pages array — @tsv rejects nested arrays (exit 5, killing the whole
     # row on every healthy rig, #341), so serialize it; scalar/absent shapes pass through untouched.
     IFS=$(printf '\t') read -r hs pool up acc rej hp < <(printf '%s' "$body" |
-        jq -r '[(.hashrate.total[0] // 0), (.connection.pool // "?"), (.uptime // 0),
-                (.connection.accepted // 0), (.connection.rejected // 0),
-                (.hugepages // "" | if type == "array" then join("/") else . end)] | @tsv' 2>/dev/null) || true
+        jq -r '[(.hashrate.total[0] // 0), (.connection.pool // "?"), (.uptime // 0), (.connection.accepted // 0), (.connection.rejected // 0), (.hugepages // "" | if type == "array" then join("/") else . end)] | @tsv' 2>/dev/null) || true
     [ -n "${hs:-}" ] || return 0 # half-up API / unparseable body: stay quiet, platform block follows
     printf '  %-10s %s H/s\n' "Hashrate:" "$hs"
     printf '  %-10s %s\n' "Pool:" "$pool"
