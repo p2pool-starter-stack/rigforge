@@ -4976,6 +4976,45 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" 
 assert_rc "tune --live rejected on non-Linux" "$?" "1"
 assert_contains "tune --live non-Linux message" "$out" "only supported on Linux"
 
+# #347: an INTERRUPTED live sweep must not persist the mid-sweep candidate. _measure_live applies every
+# candidate straight into tune-overrides.json and restarts the miner on it; the EXIT trap must restore
+# the pre-sweep overrides and restart the miner on THEM. The fake API touches a flag when a candidate
+# window is in flight and then blocks — the test kills tune there (mid-iteration, candidate in the file)
+# and asserts the file came back byte-identical and the miner saw a post-kill restart. `exec` makes the
+# backgrounded PID the rigforge process itself, so the kill lands on the shell that owns the trap.
+echo "== black-box: aborted tune --live restores the pre-sweep overrides (#347) =="
+cat >"$OVR" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 3 }, "cpu": { "rx": 4 } }
+EOF
+PRE347="$(cat "$OVR")"
+FLAG347="$TN/flag347"
+CL347="$TN/calls347.log"
+rm -f "$FLAG347"
+: >"$CL347"
+(cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CL347" LOGROTATE_DIR="$TN/logrotate" \
+    FLAG347="$FLAG347" API_CMD='touch "$FLAG347"; sleep 60; echo 1500' \
+    TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
+    TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
+    exec bash "$SCRIPT" tune --live </dev/null >"$TN/abort347.out" 2>&1) &
+PID347=$!
+for _ in $(seq 1 100); do
+    [ -f "$FLAG347" ] && break
+    sleep 0.1
+done
+assert_eq "abort test reached a live candidate window (#347)" "$([ -f "$FLAG347" ] && echo y || echo n)" "y"
+# The candidate is in the file RIGHT NOW — prove the pre-state was actually clobbered mid-sweep, so the
+# restore assert below can't pass vacuously.
+assert_eq "mid-sweep: overrides hold the candidate, not the pre-state (#347)" \
+    "$([ "$(cat "$OVR")" = "$PRE347" ] && echo same || echo differs)" "differs"
+RESTARTS_PRE347="$(grep -c '\[systemctl\] restart' "$CL347")"
+kill "$PID347" 2>/dev/null
+wait "$PID347" 2>/dev/null
+assert_contains "aborted live sweep announces the restore (#347)" "$(cat "$TN/abort347.out")" "restoring the pre-tune overrides"
+assert_eq "aborted live sweep: overrides byte-identical to pre-sweep (#347)" "$(cat "$OVR")" "$PRE347"
+RESTARTS_POST347="$(grep -c '\[systemctl\] restart' "$CL347")"
+assert_eq "aborted live sweep: the miner saw a final restart on the restored config (#347)" \
+    "$([ "$RESTARTS_POST347" -gt "$RESTARTS_PRE347" ] && echo y || echo n)" "y"
+
 # #64: --confirm A/B-checks the bench winner against the previous config on the live miner, keeping it
 # only if it genuinely wins live (else reverting). The bench search picks the winner (prefetch=2); a fake
 # API then drives the live A/B — a counter returns the winner window first, the previous-config window
@@ -5622,6 +5661,45 @@ assert_eq "autotune left prefetch at the current mode (#46)" "$(J "$OVR" '.rando
 # autotune is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" autotune </dev/null 2>&1)"
 assert_rc "autotune rejected on non-Linux" "$?" "1"
+
+# #347: an INTERRUPTED autotune sweep must not persist the mid-sweep prefetch candidate. Each trial
+# merges a candidate mode into the overrides and restarts the miner on it; the EXIT trap must restore
+# the pre-sweep mode — via the same MERGE the sweep uses, so offline-`tune` knobs survive the abort too.
+# The fake API serves the baseline read fast, then flags + blocks on the first candidate window; the
+# test kills autotune there and asserts prefetch is back at the pre-sweep mode with the merged knobs
+# intact and a post-kill restart.
+echo "== black-box: aborted autotune restores the pre-sweep prefetch mode (#347) =="
+cat >"$OVR" <<'EOF'
+{ "randomx": { "scratchpad_prefetch_mode": 1 }, "cpu": { "rx": 4, "yield": false } }
+EOF
+FLAGAT347="$TN/flagat347"
+CLAT347="$TN/callsat347.log"
+ACTR347="$TN/actr347"
+rm -f "$FLAGAT347" "$ACTR347"
+: >"$CLAT347"
+(cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CLAT347" LOGROTATE_DIR="$TN/logrotate" \
+    FLAGAT347="$FLAGAT347" ACTR347="$ACTR347" \
+    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then touch "$FLAGAT347"; sleep 60; fi; echo 1200' \
+    AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 \
+    exec bash "$SCRIPT" autotune </dev/null >"$TN/abortat347.out" 2>&1) &
+PIDAT347=$!
+for _ in $(seq 1 100); do
+    [ -f "$FLAGAT347" ] && break
+    sleep 0.1
+done
+assert_eq "autotune abort test reached a candidate window (#347)" "$([ -f "$FLAGAT347" ] && echo y || echo n)" "y"
+assert_eq "mid-sweep: overrides hold the candidate mode, not the baseline (#347)" \
+    "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "0"
+RESTARTS_PREAT347="$(grep -c '\[systemctl\] restart' "$CLAT347")"
+kill "$PIDAT347" 2>/dev/null
+wait "$PIDAT347" 2>/dev/null
+assert_contains "aborted autotune announces the restore (#347)" "$(cat "$TN/abortat347.out")" "sweep interrupted — restoring prefetch_mode=1"
+assert_eq "aborted autotune: prefetch back at the pre-sweep mode (#347)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
+assert_eq "aborted autotune: merged threads survive the abort restore (#347)" "$(J "$OVR" '.cpu.rx')" "4"
+assert_eq "aborted autotune: merged yield survives the abort restore (#347)" "$(J "$OVR" '.cpu.yield')" "false"
+RESTARTS_POSTAT347="$(grep -c '\[systemctl\] restart' "$CLAT347")"
+assert_eq "aborted autotune: the miner saw a final restart on the restored mode (#347)" \
+    "$([ "$RESTARTS_POSTAT347" -gt "$RESTARTS_PREAT347" ] && echo y || echo n)" "y"
 
 # #6: grid search exhaustively tries every knob combination (TUNE_SEARCH=grid). Reset the base + a
 # prefetch-rewarding fake; only prefetch is active (4 values), so grid measures 4 combos and finds 2.

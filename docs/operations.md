@@ -160,6 +160,11 @@ pass that sweeps every knob live (threads, yield, 1G-pages, not just prefetch), 
 a BIOS, RAM, or cooling change. `tune --now` is the friendly name for the `autotune` engine; the
 standalone `autotune` verb still works and is what the scheduled timer below runs.
 
+Live sweeps apply each candidate to the running miner as they measure it. If a sweep is interrupted
+(Ctrl+C, a dropped SSH session) or errors out mid-run, RigForge restores the tuning that was in place
+before the sweep and restarts the miner on it — a half-measured candidate is never left running or
+saved to `tune-overrides.json`.
+
 For a hands-off schedule, set `autotune` in `config.json` to a target and re-run `setup`. RigForge
 installs a systemd timer that periodically optimizes the prefetch mode against your live miner:
 
