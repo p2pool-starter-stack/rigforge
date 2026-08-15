@@ -105,14 +105,19 @@ Pushing the tag triggers the release pipeline
 - creates the GitHub Release as a draft. Review the generated notes and bundles, then click
   Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
 
-After the fleet is re-tagged, record each rig's benchmark for the release
+After a rig is re-tagged, record its benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
 the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
-catch slow drift across releases (see `tests/perf-baselines/README.md`). The recording is also
+catch slow drift across releases (see `tests/perf-baselines/README.md`). In practice that means
+miner-0 every time, since the release gate itself always runs there (see
+[`tests/README.md`](./tests/README.md#the-shared-rig-miner-0)); the rest of the fleet isn't re-tagged
+on every release, so its baselines are only as fresh as the last time each rig was actually
+touched. `tests/perf-baselines/` legitimately carries gaps between releases for rigs that went
+untouched — it is not a promise that every rig has an entry for every tag. The recording is also
 the per-rig perf gate (#214): it judges against the committed baseline and best-ever history
 before writing, refuses to record a regressed number (fix it, or consciously override with
-`E2E_PERF_FORCE=1`), so a failed rig means investigate before calling the fleet healthy. Once the collected
-baselines are merged, reset each rig's copy (`sudo git checkout -- tests/perf-baselines/` in
+`E2E_PERF_FORCE=1`), so a failed rig means investigate before calling it healthy. Once a rig's
+baseline is merged, reset its copy (`sudo git checkout -- tests/perf-baselines/` in
 `/opt/rigforge`): the recording dirties the rig's checkout, and the *next* release's
 `git checkout <tag>` aborts on exactly those files (this bit both the v1.4.0 and v1.5.0 deploys).
 
