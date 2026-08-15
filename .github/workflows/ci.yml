@@ -142,6 +142,9 @@ jobs:
           persist-credentials: false # zizmor: artipacked
       # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
       # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
+      # linux.sh runs TWO passes (a fresh container each): the standard deploy, then
+      # RIGFORGE_APPLIANCE=1 (#348) proving the appliance contracts against a real /etc — units in
+      # /run/systemd/system, no package installs, no fstab/limits/logrotate writes, --runtime enables.
       - name: Run end-to-end suite
         run: make test-e2e
 
