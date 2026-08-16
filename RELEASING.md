@@ -78,12 +78,23 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
      --body "Promote develop to main for the vX.Y.Z release."
    ```
 
-   Review and merge it. Keep `main` linear with a **fast-forward (rebase) merge** so the tag sits on the
-   same commit as `develop`'s release commit:
+   Review and merge it with a **merge commit**, which fast-forwards `main` onto `develop`'s release
+   commit — so the tag sits on that exact commit and `main` stays linear:
 
    ```bash
-   gh pr merge --rebase --admin   # fast-forward main to develop; --admin lets the releaser merge
+   gh pr merge --merge --admin   # fast-forwards main to develop; --admin lets the releaser merge
    ```
+
+   > **Do not promote with `--rebase`.** It *rebases* develop's commits onto `main`, minting new shas —
+   > so `main` ends up carrying **twins** of commits `develop` still holds under their original shas, and
+   > the two branches share no recent ancestry. That defeats the very goal of putting the tag on
+   > develop's release commit (the tag lands on the twin, which only shares the *tree*), and it makes
+   > every later promotion PR come back `CONFLICTING`, needing a hand-built reconcile commit. It drifted
+   > to 37 twin commits over three releases before being healed in `de4e781`; `cfd92fa` and `60aa883` are
+   > the reconcile commits it cost. The invariant to preserve is **`main` is always an ancestor of
+   > `develop`** — verify with `git merge-base --is-ancestor origin/main origin/develop` before promoting.
+   > If a hotfix ever lands directly on `main`, back-merge it (`git merge origin/main` on `develop`) to
+   > restore the invariant before the next release.
 
 7. Tag and push from `main` (annotated tag, matching `VERSION`) once the PR is merged:
 
