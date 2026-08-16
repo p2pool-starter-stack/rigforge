@@ -70,17 +70,17 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    git push origin develop
    ```
 
-6. Promote `develop` to `main` **through a pull request** — `main` is a protected release branch, so the
-   promotion goes through a reviewable PR (its own gate + audit trail), not a direct push:
+6. Promote `develop` to `main`. Open a pull request first — it carries the review, the CI run and the
+   audit trail for the promotion, and `main`'s ruleset requires one:
 
    ```bash
    gh pr create --base main --head develop --title "release: vX.Y.Z" \
      --body "Promote develop to main for the vX.Y.Z release."
    ```
 
-   Review it, then complete the promotion with a **fast-forward push** so `main` lands on `develop`'s
-   release commit *exactly* — same sha, not just the same tree — and stays linear. GitHub closes the PR
-   as merged once its commits are reachable from `main`:
+   Review it, then land it with a **fast-forward push** rather than the merge button, so `main` ends up
+   on `develop`'s release commit *exactly* — same sha, not merely the same tree — and stays linear.
+   GitHub closes the PR as merged once its commits are reachable from `main`:
 
    ```bash
    git fetch origin
@@ -89,29 +89,34 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    git push origin develop:main
    ```
 
-   The `Main Branch` ruleset carries `pull_request`, `non_fast_forward` and `deletion`. This push
-   satisfies `non_fast_forward` — that rule blocks force-pushes, and this is a genuine fast-forward —
-   and bypasses `pull_request` as `OrganizationAdmin` (`bypass_mode: always`), the same bypass the
-   documented direct pushes to `develop` already lean on; expect a "Bypassed rule violations" warning.
-   GitHub closes the PR once its commits are reachable from `main`. **This push shape is unverified —
-   confirm it on the next promotion and correct this step if the bypass does not cover it.**
+   The `Main Branch` ruleset targets `refs/heads/main` only (`develop` carries no rules at all) and has
+   `pull_request`, `non_fast_forward` and `deletion`, with `OrganizationAdmin` bypass at
+   `bypass_mode: always`. The push satisfies `non_fast_forward` — that rule blocks force-pushes, and
+   this is a genuine fast-forward — and needs the bypass for `pull_request`.
+   **Untested: no push has yet relied on that bypass, so confirm it on the next promotion. If it is
+   refused, fall back to `gh pr merge --merge --admin` and then back-merge (`git merge origin/main` on
+   `develop`) to restore the invariant before the next release.**
 
-   > **Don't finish this with the merge button.** GitHub's `--merge` writes a merge commit even when a
-   > fast-forward is available, so the tag would sit on that commit rather than on develop's release
-   > commit — the goal this step exists to serve — and `main` would gain a commit `develop` lacks,
-   > breaking the invariant below by one commit per release. (`--squash` is worse: a fresh sha and a
-   > flattened history.) v1.13.0 and v1.14.0 did land their tags on the release commit; v1.15.0 was
-   > where the rebase promotion broke that, and v1.15.1 inherited it.
+   > **The invariant is the point: `main` must stay an ancestor of `develop`.** Both `gh pr merge`
+   > modes break it, in different ways, and the repo has been broken by each in turn.
    >
-   > **And never promote with `--rebase`.** It *rebases* develop's commits onto `main`, minting new shas —
-   > so `main` ends up carrying **twins** of commits `develop` still holds under their original shas, and
-   > the two branches share no recent ancestry. That defeats the very goal of putting the tag on
-   > develop's release commit (the tag lands on the twin, which only shares the *tree*), and it makes
-   > every later promotion PR come back `CONFLICTING`, needing a hand-built reconcile commit. It drifted
-   > to 37 twin commits over three releases before being healed in `de4e781`; `cfd92fa` and `60aa883` are
-   > the reconcile commits it cost. The invariant to preserve is **`main` is always an ancestor of
-   > `develop`** — verify with `git merge-base --is-ancestor origin/main origin/develop` before promoting.
-   > If a hotfix ever lands directly on `main`, back-merge it (`git merge origin/main` on `develop`) to
+   > `--merge` writes a merge commit onto `main` that `develop` never receives. That is how the last
+   > divergence started: `23fcd27` ("release: v1.12.0 (promote develop to main via merge)",
+   > 2026-07-19) has two parents, and its second parent `3220f57` is the last commit the two branches
+   > shared. Nothing back-merged it, so they never re-converged.
+   >
+   > `--rebase` is worse: it *rebases* develop's commits onto `main`, minting new shas, so `main` ends
+   > up carrying **twins** of commits `develop` still holds under their original shas. Later promotion
+   > PRs then come back `CONFLICTING` and need a hand-built reconcile commit — `cfd92fa` (v1.15.0) and
+   > `60aa883` (v1.15.1) are two of those, and PR #368 is a promotion that could not be merged at all.
+   >
+   > Five releases were cut while diverged (v1.13.0, v1.13.1, v1.14.0, v1.15.0, v1.15.1), drifting to
+   > 37 commits on `main` that `develop` lacked, until `de4e781` healed it. In that whole window **no
+   > tag ever sat on develop's release commit** — every one of v1.12.0…v1.15.1 is unreachable from
+   > develop as it stood before the heal. A fast-forward is what puts them back on the same commit.
+   >
+   > Verify with `git merge-base --is-ancestor origin/main origin/develop` before promoting. If a
+   > hotfix ever lands directly on `main`, back-merge it (`git merge origin/main` on `develop`) to
    > restore the invariant before the next release.
 
 7. Tag and push from `main` (annotated tag, matching `VERSION`) once the PR is merged:
@@ -137,11 +142,13 @@ Pushing the tag triggers the release pipeline
 After a rig is re-tagged, record its benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
 the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
-catch slow drift across releases (see `tests/perf-baselines/README.md`). In practice that means
-miner-0 every time, since the release gate itself always runs there (see
-[`tests/README.md`](./tests/README.md#the-shared-rig-miner-0)); the rest of the fleet isn't re-tagged
-on every release, so its baselines are only as fresh as the last time each rig was actually
-touched. `tests/perf-baselines/` legitimately carries gaps between releases for rigs that went
+catch slow drift across releases (see `tests/perf-baselines/README.md`). It is whichever rig ran the
+gate, which is **not** always miner-0 despite [`tests/README.md`](./tests/README.md#the-shared-rig-miner-0)
+calling it the shared rig: v1.15.0 was gated on miner-2 and v1.15.1 on miner-3, and miner-0 currently
+cannot pass the gate at all — it dual-boots Windows, so Secure Boot is enabled, kernel lockdown
+(`integrity`) denies every MSR write, and `doctor` counts that as an issue and exits non-zero. Pick a
+rig with Secure Boot off. The rest of the fleet isn't re-tagged on every release, so its baselines are
+only as fresh as the last time each rig was actually touched. `tests/perf-baselines/` legitimately carries gaps between releases for rigs that went
 untouched — it is not a promise that every rig has an entry for every tag. The recording is also
 the per-rig perf gate (#214): it judges against the committed baseline and best-ever history
 before writing, refuses to record a regressed number (fix it, or consciously override with
