@@ -78,14 +78,24 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
      --body "Promote develop to main for the vX.Y.Z release."
    ```
 
-   Review and merge it with a **merge commit**, which fast-forwards `main` onto `develop`'s release
-   commit — so the tag sits on that exact commit and `main` stays linear:
+   Review it, then complete the promotion with a **fast-forward push** so `main` lands on `develop`'s
+   release commit *exactly* — same sha, not just the same tree — and stays linear. GitHub closes the PR
+   as merged once its commits are reachable from `main`:
 
    ```bash
-   gh pr merge --merge --admin   # fast-forwards main to develop; --admin lets the releaser merge
+   git fetch origin
+   git merge-base --is-ancestor origin/main origin/develop \
+     || { echo "NOT a fast-forward — main has commits develop lacks; back-merge first (see below)"; exit 1; }
+   git push origin develop:main   # fast-forward; --admin-style bypass applies to the protected branch
    ```
 
-   > **Do not promote with `--rebase`.** It *rebases* develop's commits onto `main`, minting new shas —
+   > **Don't finish this with the merge button.** Neither `gh pr merge` mode gives a fast-forward.
+   > `--merge` always writes a *merge commit* (every past "promote via merge" on `main` — `23fcd27`,
+   > `22dd8f2`, `9b04a37` — has two parents), so the tag would sit on that commit rather than on
+   > develop's release commit, and `main` would gain a commit `develop` lacks, breaking the invariant
+   > below one commit per release.
+   >
+   > **And never promote with `--rebase`.** It *rebases* develop's commits onto `main`, minting new shas —
    > so `main` ends up carrying **twins** of commits `develop` still holds under their original shas, and
    > the two branches share no recent ancestry. That defeats the very goal of putting the tag on
    > develop's release commit (the tag lands on the twin, which only shares the *tree*), and it makes
