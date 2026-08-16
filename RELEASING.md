@@ -148,13 +148,14 @@ calling it the shared rig: v1.15.0 was gated on miner-2 and v1.15.1 on miner-3, 
 cannot pass the gate at all — it dual-boots Windows, so Secure Boot is enabled, kernel lockdown
 (`integrity`) denies every MSR write, and `doctor` counts that as an issue and exits non-zero. Pick a
 rig with Secure Boot off. The rest of the fleet isn't re-tagged on every release, so its baselines are
-only as fresh as the last time each rig was actually touched. `tests/perf-baselines/` legitimately carries gaps between releases for rigs that went
-untouched — it is not a promise that every rig has an entry for every tag. The recording is also
-the per-rig perf gate (#214): it judges against the committed baseline and best-ever history
-before writing, refuses to record a regressed number (fix it, or consciously override with
-`E2E_PERF_FORCE=1`), so a failed rig means investigate before calling it healthy. Once a rig's
-baseline is merged, reset its copy (`sudo git checkout -- tests/perf-baselines/` in
-`/opt/rigforge`): the recording dirties the rig's checkout, and the *next* release's
+only as fresh as the last time each rig was actually touched. `tests/perf-baselines/` legitimately
+carries gaps between releases for rigs that went untouched — it is not a promise that every rig has
+an entry for every tag. The recording is also the per-rig perf gate (#214): it judges against the
+committed baseline and best-ever history before writing, refuses to record a regressed number (fix
+it, or consciously override with `E2E_PERF_FORCE=1`), so a failed rig means investigate before
+calling it healthy. Once a rig's baseline is merged, reset its copy
+(`sudo git checkout -- tests/perf-baselines/` in `/opt/rigforge`): the recording dirties the rig's
+checkout, and the *next* release's
 `git checkout <tag>` aborts on exactly those files (this bit both the v1.4.0 and v1.5.0 deploys).
 
 To verify a downloaded bundle: `sha256sum -c SHA256SUMS` (see
