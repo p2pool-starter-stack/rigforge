@@ -86,14 +86,22 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    git fetch origin
    git merge-base --is-ancestor origin/main origin/develop \
      || { echo "NOT a fast-forward — main has commits develop lacks; back-merge first (see below)"; exit 1; }
-   git push origin develop:main   # fast-forward; --admin-style bypass applies to the protected branch
+   git push origin develop:main
    ```
 
-   > **Don't finish this with the merge button.** Neither `gh pr merge` mode gives a fast-forward.
-   > `--merge` always writes a *merge commit* (every past "promote via merge" on `main` — `23fcd27`,
-   > `22dd8f2`, `9b04a37` — has two parents), so the tag would sit on that commit rather than on
-   > develop's release commit, and `main` would gain a commit `develop` lacks, breaking the invariant
-   > below one commit per release.
+   The `Main Branch` ruleset carries `pull_request`, `non_fast_forward` and `deletion`. This push
+   satisfies `non_fast_forward` — that rule blocks force-pushes, and this is a genuine fast-forward —
+   and bypasses `pull_request` as `OrganizationAdmin` (`bypass_mode: always`), the same bypass the
+   documented direct pushes to `develop` already lean on; expect a "Bypassed rule violations" warning.
+   GitHub closes the PR once its commits are reachable from `main`. **This push shape is unverified —
+   confirm it on the next promotion and correct this step if the bypass does not cover it.**
+
+   > **Don't finish this with the merge button.** GitHub's `--merge` writes a merge commit even when a
+   > fast-forward is available, so the tag would sit on that commit rather than on develop's release
+   > commit — the goal this step exists to serve — and `main` would gain a commit `develop` lacks,
+   > breaking the invariant below by one commit per release. (`--squash` is worse: a fresh sha and a
+   > flattened history.) v1.13.0 and v1.14.0 did land their tags on the release commit; v1.15.0 was
+   > where the rebase promotion broke that, and v1.15.1 inherited it.
    >
    > **And never promote with `--rebase`.** It *rebases* develop's commits onto `main`, minting new shas —
    > so `main` ends up carrying **twins** of commits `develop` still holds under their original shas, and
