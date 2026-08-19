@@ -1,9 +1,22 @@
-# Dependabot for the one dependency ecosystem this repo has: GitHub Actions.
+# Dependabot covers the two ecosystems it can see here: GitHub Actions and pre-commit hooks.
 # Every action is SHA-pinned (zizmor enforces hygiene); this keeps the pins patched —
-# a bump PR lands when a pinned action ships a fix or a CVE.
+# a bump PR lands when a pinned action ships a fix or a CVE. Everything installed by
+# curl-with-checksum, pipx or a docker digest is invisible to Dependabot and is watched by
+# .github/workflows/tool-bump.yml instead; XMRig by xmrig-bump.yml.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "infra"
+  # .pre-commit-config.yaml pins hook repos by `rev:` and nothing watched them (#373):
+  # pre-commit-hooks sat a whole major behind. Dependabot supports this ecosystem natively, which
+  # beats hand-rolling it in tool-bump.yml. It also gives the gitleaks `rev:` a second opinion —
+  # tool-bump.yml keeps that one in lockstep with security.yml by sed, and two mechanisms agreeing
+  # is how you find out when one of them stops.
+  - package-ecosystem: "pre-commit"
     directory: "/"
     schedule:
       interval: "weekly"
