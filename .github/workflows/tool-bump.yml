@@ -1,18 +1,25 @@
-name: CI tool pin bump
+name: CI tool pin watch
 
-# Self-healing pin hygiene, part 2 (#228): the CI tools installed by curl-with-checksum, pipx or a
-# docker digest are the pins Dependabot can't see. Weekly, each stale tool becomes its own bot PR
-# with the version AND the recomputed checksum/digest. The dispatched checks on the branch are the
-# verification: a shellcheck bump is linted BY the new shellcheck, a gitleaks bump scans with the
-# new gitleaks, a kcov bump measures on the new image.
-# Same posture as the xmrig bump (#225): bot proposes, CI gates, a human clicks merge.
+# Self-healing pin hygiene, part 2 (#228, #373): the CI tools installed by curl-with-checksum, pipx
+# or a docker digest are the pins Dependabot can't see. Weekly, compare each against its latest
+# upstream release and keep ONE tracking issue up to date.
+#
+# It REPORTS and never bumps (#376). It used to open a bot PR per stale pin, with the dispatched
+# checks on the branch as the verification — a genuinely better design, and it had never once
+# worked: seven of the nine pins live in `.github/workflows/**`, and GITHUB_TOKEN may not push
+# changes to a workflow file. There is no `permissions:` key that grants it; the `workflow` scope
+# exists only for a PAT or GitHub App. Every run went green on having found nothing to do, which
+# from the outside is indistinguishable from a watcher that works. Buying the PR flow back would
+# mean a long-lived token that can rewrite this repo's CI, which is a poor trade for a repo whose
+# whole posture is SHA-pinned actions and least-privilege tokens.
+#
+# XMRig keeps its PR flow in xmrig-bump.yml: it lives in rigforge.sh, so that push is not blocked,
+# and a build-verified bump is worth having for the one pin that ships to a rig.
 #
 # Watched here: shellcheck, shfmt, gitleaks, actionlint, lychee, jq, zizmor, diff-cover, kcov.
 # Elsewhere: XMRig by xmrig-bump.yml, GitHub Actions and .pre-commit-config.yaml by Dependabot.
-# That is every pin in the repo — which it was not before #373, when five of the six unwatched ones
-# had gone stale (zizmor by four minors, and it is the tool that audits these very workflows). The
-# pins with a watcher were the pins that were current; that is the whole argument for the list above
-# being complete. If you add a pin anywhere, add it to one of those three places in the same change.
+# That is every pin in the repo. If you add one, add it to one of those three places in the same
+# change.
 on:
   schedule:
     - cron: "30 6 * * 1" # Mondays 06:30 UTC, between the xmrig bump and the zizmor re-audit
@@ -22,156 +29,127 @@ permissions:
   contents: read
 
 jobs:
-  bump:
+  watch:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
-      actions: write # dispatch ci.yml/security.yml onto bump branches (token PRs can't self-trigger)
+      contents: read
+      issues: write # the report is the job's one output — it never pushes or publishes
     env:
       GH_TOKEN: ${{ github.token }}
+      TITLE: "CI tool pin currency (weekly report)"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false # zizmor: artipacked; the push authenticates explicitly below
-      - name: Check every pinned tool, open one PR per stale pin
+          persist-credentials: false # zizmor: artipacked
+      - name: Compare every pinned tool against its latest upstream release
+        id: report
         run: |
-          set -Eeuo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -uo pipefail
           failed=0
+          rows=""
 
-          # <branch> <title> <bodyfile>: commit whatever is staged, push, PR, start required checks.
-          open_pr() {
-            local branch="$1" title="$2" bodyfile="$3"
-            git checkout -b "$branch"
-            git commit -am "$title"
-            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
-            gh pr create --base develop --head "$branch" --title "$title" --body-file "$bodyfile"
-            gh workflow run ci.yml --ref "$branch"
-            gh workflow run security.yml --ref "$branch"
-            git checkout -q -
-          }
-
-          # <name> <upstream-repo> <current> [tag-prefix] -> prints the newer bare version, or nothing
+          # <name> <upstream-repo> <current> [tag-prefix]
           #
           # Not every project tags `vX.Y.Z`: lychee tags `lychee-v0.24.2` and jq tags `jq-1.8.2`.
-          # Stripping only a leading "v" leaves those failing the shape check below, which returns 2
-          # and turns the whole run red every week on a repo whose pins are fine. The prefix is a
-          # per-tool fact, so it is a per-tool argument; the default keeps every existing caller
-          # byte-identical. The strict validation still runs AFTER the strip — normalising the
-          # spelling must not mean trusting the value (#373).
-          newer_release() {
+          # Stripping only a leading "v" leaves those failing the shape check, which would report
+          # two healthy pins as broken every week — and a watcher that cries wolf weekly gets muted,
+          # which is exactly as useful as one that never runs. The prefix is a per-tool fact, so it
+          # is a per-tool argument. The strict validation still runs AFTER the strip: normalising
+          # the spelling must not mean trusting the value.
+          #
+          # UNREACHABLE IS NOT CURRENT. A failed lookup or an unparseable tag is counted, named in
+          # the report, and fails the run — it never quietly reads as "pin is current".
+          check() {
             local name="$1" repo="$2" current="$3" prefix="${4:-v}" latest
-            latest=$(gh api "repos/${repo}/releases/latest" --jq .tag_name)
+            if ! latest=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null); then
+              rows="${rows}| ${name} | \`${current}\` | — | **upstream lookup FAILED — not checked** |"$'\n'
+              failed=$((failed + 1))
+              return
+            fi
             latest="${latest#"$prefix"}"
             if ! printf '%s' "$latest" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
-              echo "::error::${name}: upstream tag '${latest}' failed validation" >&2
-              return 2 # distinct from the benign empty-output paths: the caller records a failure
+              rows="${rows}| ${name} | \`${current}\` | — | **upstream tag unparseable — not checked** |"$'\n'
+              failed=$((failed + 1))
+              return
             fi
-            [ "$latest" = "$current" ] && return 0
-            if [ "$(gh pr list --state open --head "bot/${name}-${latest}" --json number --jq length)" != "0" ]; then
-              echo "${name}: PR for ${latest} already open" >&2
-              return 0
-            fi
-            printf '%s' "$latest"
-          }
-
-          # <url> -> prints the artifact's sha256
-          artifact_sha() {
-            curl -fsSL "$1" -o /tmp/artifact
-            sha256sum /tmp/artifact | cut -d' ' -f1
-          }
-
-          # --- shellcheck (ci.yml) ---
-          cur=$(grep -oE 'SHELLCHECK_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
-          if new=$(newer_release shellcheck koalaman/shellcheck "$cur") && [ -n "$new" ]; then
-            sha=$(artifact_sha "https://github.com/koalaman/shellcheck/releases/download/v${new}/shellcheck-v${new}.linux.x86_64.tar.xz")
-            sed -i "s|SHELLCHECK_VERSION: \"${cur}\"|SHELLCHECK_VERSION: \"${new}\"|; s|SHELLCHECK_SHA256: \"[0-9a-f]*\"|SHELLCHECK_SHA256: \"${sha}\"|" .github/workflows/ci.yml
-            printf 'Automated pin bump (#228): shellcheck %s -> %s, checksum recomputed from the release artifact.\n\nThe Lint check on this PR runs the NEW shellcheck — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/shellcheck-${new}" "chore(ci): bump shellcheck to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- shfmt (ci.yml) ---
-          cur=$(grep -oE 'SHFMT_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
-          if new=$(newer_release shfmt mvdan/sh "$cur") && [ -n "$new" ]; then
-            sha=$(artifact_sha "https://github.com/mvdan/sh/releases/download/v${new}/shfmt_v${new}_linux_amd64")
-            sed -i "s|SHFMT_VERSION: \"${cur}\"|SHFMT_VERSION: \"${new}\"|; s|SHFMT_SHA256: \"[0-9a-f]*\"|SHFMT_SHA256: \"${sha}\"|" .github/workflows/ci.yml
-            printf 'Automated pin bump (#228): shfmt %s -> %s, checksum recomputed.\n\nThe Lint check on this PR formats with the NEW shfmt — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/shfmt-${new}" "chore(ci): bump shfmt to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- gitleaks (security.yml + .pre-commit-config.yaml, kept in lockstep) ---
-          cur=$(grep -oE 'GITLEAKS_VERSION: "[0-9.]+"' .github/workflows/security.yml | grep -oE '[0-9.]+')
-          if new=$(newer_release gitleaks gitleaks/gitleaks "$cur") && [ -n "$new" ]; then
-            sha=$(artifact_sha "https://github.com/gitleaks/gitleaks/releases/download/v${new}/gitleaks_${new}_linux_x64.tar.gz")
-            sed -i "s|GITLEAKS_VERSION: \"${cur}\"|GITLEAKS_VERSION: \"${new}\"|; s|GITLEAKS_SHA256: \"[0-9a-f]*\"|GITLEAKS_SHA256: \"${sha}\"|" .github/workflows/security.yml
-            sed -i "s|rev: v${cur}|rev: v${new}|" .pre-commit-config.yaml
-            printf 'Automated pin bump (#228): gitleaks %s -> %s in security.yml AND .pre-commit-config.yaml (lockstep), checksum recomputed.\n\nThe Secret scan on this PR runs the NEW gitleaks over full history — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/gitleaks-${new}" "chore(ci): bump gitleaks to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- actionlint (ci.yml) ---
-          cur=$(grep -oE 'ACTIONLINT_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
-          if new=$(newer_release actionlint rhysd/actionlint "$cur") && [ -n "$new" ]; then
-            sha=$(artifact_sha "https://github.com/rhysd/actionlint/releases/download/v${new}/actionlint_${new}_linux_amd64.tar.gz")
-            sed -i "s|ACTIONLINT_VERSION: \"${cur}\"|ACTIONLINT_VERSION: \"${new}\"|; s|ACTIONLINT_SHA256: \"[0-9a-f]*\"|ACTIONLINT_SHA256: \"${sha}\"|" .github/workflows/ci.yml
-            printf 'Automated pin bump (#373): actionlint %s -> %s, checksum recomputed from the release artifact.\n\nThe Lint check on this PR runs the NEW actionlint over these workflows — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/actionlint-${new}" "chore(ci): bump actionlint to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- lychee (links.yml). Tags as `lychee-vX.Y.Z`, hence the prefix argument. ---
-          cur=$(grep -oE 'LYCHEE_VERSION: "[0-9.]+"' .github/workflows/links.yml | grep -oE '[0-9.]+')
-          if new=$(newer_release lychee lycheeverse/lychee "$cur" "lychee-v") && [ -n "$new" ]; then
-            sha=$(artifact_sha "https://github.com/lycheeverse/lychee/releases/download/lychee-v${new}/lychee-x86_64-unknown-linux-gnu.tar.gz")
-            sed -i "s|LYCHEE_VERSION: \"${cur}\"|LYCHEE_VERSION: \"${new}\"|; s|LYCHEE_SHA256: \"[0-9a-f]*\"|LYCHEE_SHA256: \"${sha}\"|" .github/workflows/links.yml
-            printf 'Automated pin bump (#373): lychee %s -> %s, checksum recomputed.\n\nThe Links check on this PR runs the NEW lychee — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/lychee-${new}" "chore(ci): bump lychee to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- jq (tests/coverage.sh, static binary + checksum). Tags as `jq-X.Y.Z`. ---
-          cur=$(grep -oE 'download/jq-[0-9.]+' tests/coverage.sh | grep -oE '[0-9]+(\.[0-9]+)*')
-          if new=$(newer_release jq jqlang/jq "$cur" "jq-") && [ -n "$new" ]; then
-            sha=$(artifact_sha "https://github.com/jqlang/jq/releases/download/jq-${new}/jq-linux-amd64")
-            sed -i "s|download/jq-${cur}/|download/jq-${new}/|; s|JQ_SHA256=\"[0-9a-f]*\"|JQ_SHA256=\"${sha}\"|" tests/coverage.sh
-            printf 'Automated pin bump (#373): jq %s -> %s in tests/coverage.sh, checksum recomputed.\n\nThe Coverage check on this PR runs the suite with the NEW jq inside the kcov container — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/jq-${new}" "chore(ci): bump the coverage jq to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- zizmor (security.yml). pipx, so there is no artifact checksum to recompute. ---
-          cur=$(grep -oE 'ZIZMOR_VERSION: "[0-9.]+"' .github/workflows/security.yml | grep -oE '[0-9.]+')
-          if new=$(newer_release zizmor zizmorcore/zizmor "$cur") && [ -n "$new" ]; then
-            sed -i "s|ZIZMOR_VERSION: \"${cur}\"|ZIZMOR_VERSION: \"${new}\"|" .github/workflows/security.yml
-            printf 'Automated pin bump (#373): zizmor %s -> %s.\n\nzizmor is the workflow AUDITOR and it gates the merge, so a stale pin means auditing our own supply chain with missing rules. The Workflow audit check on this PR runs the NEW zizmor over these workflows — passing checks are the verification, and a new finding it raises is the point rather than a nuisance.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/zizmor-${new}" "chore(ci): bump zizmor to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- diff-cover (ci.yml). pipx, no checksum. ---
-          cur=$(grep -oE 'DIFF_COVER_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
-          if new=$(newer_release diff-cover Bachmann1234/diff_cover "$cur") && [ -n "$new" ]; then
-            sed -i "s|DIFF_COVER_VERSION: \"${cur}\"|DIFF_COVER_VERSION: \"${new}\"|" .github/workflows/ci.yml
-            printf 'Automated pin bump (#373): diff-cover %s -> %s.\n\nThe Coverage check on this PR measures patch coverage with the NEW diff-cover — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
-            open_pr "bot/diff-cover-${new}" "chore(ci): bump diff-cover to ${new} (bot)" /tmp/body.md
-          else [ $? -gt 1 ] && failed=1; fi
-
-          # --- kcov (tests/coverage.sh, digest-pinned docker image) ---
-          cur=$(grep -oE '# kcov v[0-9]+' tests/coverage.sh | grep -oE '[0-9]+')
-          latest=$(curl -fsS "https://hub.docker.com/v2/repositories/kcov/kcov/tags?page_size=100" | jq -r '.results[].name' | grep -E '^v[0-9]+$' | sort -V | tail -1)
-          if printf '%s' "$latest" | grep -qE '^v[0-9]+$' && [ "v${cur}" != "$latest" ]; then
-            if [ "$(gh pr list --state open --head "bot/kcov-${latest}" --json number --jq length)" = "0" ]; then
-              digest=$(curl -fsS "https://hub.docker.com/v2/repositories/kcov/kcov/tags/${latest}" | jq -r .digest)
-              if printf '%s' "$digest" | grep -qE '^sha256:[0-9a-f]{64}$'; then
-                sed -i "s|kcov/kcov@sha256:[0-9a-f]*|kcov/kcov@${digest}|; s|# kcov v${cur} |# kcov ${latest} |" tests/coverage.sh
-                printf 'Automated pin bump (#228): kcov image v%s -> %s, digest re-pinned from Docker Hub.\n\nThe Coverage check on this PR measures under the NEW image — passing checks are the verification.\n' "$cur" "$latest" >/tmp/body.md
-                open_pr "bot/kcov-${latest}" "chore(ci): bump the kcov image to ${latest} (bot)" /tmp/body.md
-              else
-                echo "::error::kcov: digest for ${latest} failed validation"; failed=1
-              fi
+            if [ "$latest" = "$current" ]; then
+              rows="${rows}| ${name} | \`${current}\` | \`${latest}\` | current |"$'\n'
             else
-              echo "kcov: PR for ${latest} already open"
+              rows="${rows}| ${name} | \`${current}\` | \`${latest}\` | **stale** |"$'\n'
+            fi
+          }
+
+          # Each `cur` is read from the tree, never from a second list.
+          check shellcheck koalaman/shellcheck \
+            "$(grep -oE 'SHELLCHECK_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')"
+          check shfmt mvdan/sh \
+            "$(grep -oE 'SHFMT_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')"
+          check actionlint rhysd/actionlint \
+            "$(grep -oE 'ACTIONLINT_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')"
+          check diff-cover Bachmann1234/diff_cover \
+            "$(grep -oE 'DIFF_COVER_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')"
+          check gitleaks gitleaks/gitleaks \
+            "$(grep -oE 'GITLEAKS_VERSION: "[0-9.]+"' .github/workflows/security.yml | grep -oE '[0-9.]+')"
+          check zizmor zizmorcore/zizmor \
+            "$(grep -oE 'ZIZMOR_VERSION: "[0-9.]+"' .github/workflows/security.yml | grep -oE '[0-9.]+')"
+          check lychee lycheeverse/lychee \
+            "$(grep -oE 'LYCHEE_VERSION: "[0-9.]+"' .github/workflows/links.yml | grep -oE '[0-9.]+')" "lychee-v"
+          check jq jqlang/jq \
+            "$(grep -oE 'download/jq-[0-9.]+' tests/coverage.sh | grep -oE '[0-9]+(\.[0-9]+)*')" "jq-"
+
+          # kcov is a Docker Hub image, not a GitHub release — the one second source type, and so the
+          # one place a failure looks different. An unreachable Docker Hub must not read as current.
+          kcur=$(grep -oE '# kcov v[0-9]+' tests/coverage.sh | grep -oE '[0-9]+')
+          if klatest=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/kcov/kcov/tags?page_size=100" 2>/dev/null |
+            jq -r '.results[].name' | grep -E '^v[0-9]+$' | sort -V | tail -1) && [ -n "$klatest" ]; then
+            if [ "v${kcur}" = "$klatest" ]; then
+              rows="${rows}| kcov (image) | \`v${kcur}\` | \`${klatest}\` | current |"$'\n'
+            else
+              rows="${rows}| kcov (image) | \`v${kcur}\` | \`${klatest}\` | **stale** |"$'\n'
             fi
           else
-            echo "kcov: pin is current (v${cur}) — or Docker Hub was unreachable this run"
+            rows="${rows}| kcov (image) | \`v${kcur}\` | — | **Docker Hub lookup FAILED — not checked** |"$'\n'
+            failed=$((failed + 1))
           fi
 
-          exit "$failed"
+          {
+            printf '%s\n\n' "Weekly currency check of the CI tool pins Dependabot cannot see (\`.github/workflows/tool-bump.yml\`). This never bumps anything — bump a stale pin by hand and let its own check verify it."
+            printf '| tool | pinned | upstream latest | |\n|---|---|---|---|\n%s\n' "$rows"
+            printf '%s\n' "Watched elsewhere: **XMRig** by \`xmrig-bump.yml\` (it still opens a build-verified PR), **GitHub Actions** and **.pre-commit-config.yaml** by Dependabot."
+            if [ "$failed" -gt 0 ]; then
+              printf '\n%s\n' "**${failed} lookup(s) could not run — those rows are UNCHECKED, not current.**"
+            else
+              printf '\n%s\n' "_Last fully successful check: $(date -u '+%Y-%m-%d %H:%M UTC')_"
+            fi
+          } >report.md
+          cat report.md
+          echo "rc=$failed" >>"$GITHUB_OUTPUT"
+      - name: Publish it to the one tracking issue
+        run: |
+          set -Eeuo pipefail
+          body=$(cat report.md)
+          # Exact title match over the open list, NOT `--search`: the search index lags behind issue
+          # creation by minutes, so a search-based dedup files a second issue on the very next run.
+          n=$(gh issue list --state open --limit 200 --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          # A run that could not do its job replaces the report with failure rows, taking the
+          # "last fully successful check" date with it — and that date is the only thing separating
+          # "failed once this morning" from "has been dead for six weeks". Carry it forward.
+          if [ "${{ steps.report.outputs.rc }}" != "0" ] && [ -n "$n" ]; then
+            prev=$(gh issue view "$n" --json body --jq .body | grep -a '^_Last fully successful check:' || true)
+            if [ -n "$prev" ]; then
+              body="$body"$'\n\n'"$prev (this run could not complete)"
+            fi
+          fi
+          if [ -n "$n" ]; then
+            gh issue edit "$n" --body "$body"
+            echo "updated #$n"
+          else
+            gh issue create --title "$TITLE" --label infra --body "$body"
+          fi
+      - name: Fail the run if any lookup could not be made
+        if: steps.report.outputs.rc != '0'
+        run: |
+          echo "::error::one or more upstream lookups could not run — those pins are UNCHECKED, not current"
+          exit 1
