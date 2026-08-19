@@ -125,6 +125,11 @@ jobs:
           cat report.md
           echo "rc=$failed" >>"$GITHUB_OUTPUT"
       - name: Publish it to the one tracking issue
+        env:
+          # Through env, not `${{ }}` inlined into the script: zizmor's template-injection audit
+          # rejects an expression expanded straight into a run block, and it is right to — the
+          # value becomes code rather than data. It caught this one on this very PR.
+          RC: ${{ steps.report.outputs.rc }}
         run: |
           set -Eeuo pipefail
           body=$(cat report.md)
@@ -135,7 +140,7 @@ jobs:
           # A run that could not do its job replaces the report with failure rows, taking the
           # "last fully successful check" date with it — and that date is the only thing separating
           # "failed once this morning" from "has been dead for six weeks". Carry it forward.
-          if [ "${{ steps.report.outputs.rc }}" != "0" ] && [ -n "$n" ]; then
+          if [ "$RC" != "0" ] && [ -n "$n" ]; then
             prev=$(gh issue view "$n" --json body --jq .body | grep -a '^_Last fully successful check:' || true)
             if [ -n "$prev" ]; then
               body="$body"$'\n\n'"$prev (this run could not complete)"
