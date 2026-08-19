@@ -49,6 +49,10 @@ jobs:
           failed=0
           rows=""
 
+          # ONE definition of the table row. It was seven, across check()'s branches and kcov's,
+          # which is seven places for the columns to drift apart.
+          row() { rows="${rows}| $1 | \`$2\` | $3 | $4 |"$'\n'; }
+
           # <name> <upstream-repo> <current> [tag-prefix]
           #
           # Not every project tags `vX.Y.Z`: lychee tags `lychee-v0.24.2` and jq tags `jq-1.8.2`.
@@ -61,23 +65,21 @@ jobs:
           # UNREACHABLE IS NOT CURRENT. A failed lookup or an unparseable tag is counted, named in
           # the report, and fails the run — it never quietly reads as "pin is current".
           check() {
-            local name="$1" repo="$2" current="$3" prefix="${4:-v}" latest
-            if ! latest=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null); then
-              rows="${rows}| ${name} | \`${current}\` | — | **upstream lookup FAILED — not checked** |"$'\n'
+            local name="$1" repo="$2" current="$3" prefix="${4:-v}" raw latest up="—" verdict
+            if ! raw=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null); then
+              verdict="**upstream lookup FAILED — not checked**"
               failed=$((failed + 1))
-              return
-            fi
-            latest="${latest#"$prefix"}"
-            if ! printf '%s' "$latest" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
-              rows="${rows}| ${name} | \`${current}\` | — | **upstream tag unparseable — not checked** |"$'\n'
-              failed=$((failed + 1))
-              return
-            fi
-            if [ "$latest" = "$current" ]; then
-              rows="${rows}| ${name} | \`${current}\` | \`${latest}\` | current |"$'\n'
             else
-              rows="${rows}| ${name} | \`${current}\` | \`${latest}\` | **stale** |"$'\n'
+              latest="${raw#"$prefix"}"
+              if ! printf '%s' "$latest" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+                verdict="**upstream tag unparseable — not checked**"
+                failed=$((failed + 1))
+              else
+                up="\`${latest}\`"
+                if [ "$latest" = "$current" ]; then verdict="current"; else verdict="**stale**"; fi
+              fi
             fi
+            row "$name" "$current" "$up" "$verdict"
           }
 
           # Each `cur` is read from the tree, never from a second list.
@@ -103,13 +105,10 @@ jobs:
           kcur=$(grep -oE '# kcov v[0-9]+' tests/coverage.sh | grep -oE '[0-9]+')
           if klatest=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/kcov/kcov/tags?page_size=100" 2>/dev/null |
             jq -r '.results[].name' | grep -E '^v[0-9]+$' | sort -V | tail -1) && [ -n "$klatest" ]; then
-            if [ "v${kcur}" = "$klatest" ]; then
-              rows="${rows}| kcov (image) | \`v${kcur}\` | \`${klatest}\` | current |"$'\n'
-            else
-              rows="${rows}| kcov (image) | \`v${kcur}\` | \`${klatest}\` | **stale** |"$'\n'
-            fi
+            if [ "v${kcur}" = "$klatest" ]; then kverdict="current"; else kverdict="**stale**"; fi
+            row "kcov (image)" "v${kcur}" "\`${klatest}\`" "$kverdict"
           else
-            rows="${rows}| kcov (image) | \`v${kcur}\` | — | **Docker Hub lookup FAILED — not checked** |"$'\n'
+            row "kcov (image)" "v${kcur}" "—" "**Docker Hub lookup FAILED — not checked**"
             failed=$((failed + 1))
           fi
 
