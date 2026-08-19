@@ -32,8 +32,8 @@ jobs:
       # same discipline as the shellcheck/gitleaks installs.
       - name: Install pinned actionlint
         env:
-          ACTIONLINT_VERSION: "1.7.7"
-          ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         run: |
           set -euo pipefail
           tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
@@ -153,7 +153,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       # Pin diff-cover (the patch-coverage gate); kcov + jq are pinned inside tests/coverage.sh.
-      DIFF_COVER_VERSION: "10.3.0"
+      DIFF_COVER_VERSION: "10.5.1"
       PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
       # Diff the PR against the branch it targets (develop or main). On a push, github.base_ref is empty,
       # so fall back to the pushed branch itself — that's an empty diff that trivially passes.
