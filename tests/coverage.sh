@@ -26,8 +26,8 @@ cd "$ROOT"
 # kcov v42 (linux/amd64), pinned by digest like the e2e image.
 KCOV_IMAGE="kcov/kcov@sha256:30c442617f3d8e040bf0ec2cba19cc2ee517b668f3a3d50b2d3de1c435138a8a"
 # Static jq for use INSIDE the kcov (Debian) container — the suite needs it and the image lacks it.
-JQ_URL="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64"
-JQ_SHA256="5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5"
+JQ_URL="https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64"
+JQ_SHA256="b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
 
 FLOOR_FILE="$ROOT/tests/coverage-floor.txt"
 OUT="$ROOT/coverage"
