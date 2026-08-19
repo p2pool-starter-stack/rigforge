@@ -1,11 +1,18 @@
 name: CI tool pin bump
 
-# Self-healing pin hygiene, part 2 (#228): the CI tools installed by curl-with-checksum or docker
-# digest — shellcheck, shfmt, gitleaks, kcov — are the pins Dependabot can't see. Weekly, each
-# stale tool becomes its own bot PR with the version AND the recomputed checksum/digest. The
-# dispatched checks on the branch are the verification: a shellcheck bump is linted BY the new
-# shellcheck, a gitleaks bump scans with the new gitleaks, a kcov bump measures on the new image.
+# Self-healing pin hygiene, part 2 (#228): the CI tools installed by curl-with-checksum, pipx or a
+# docker digest are the pins Dependabot can't see. Weekly, each stale tool becomes its own bot PR
+# with the version AND the recomputed checksum/digest. The dispatched checks on the branch are the
+# verification: a shellcheck bump is linted BY the new shellcheck, a gitleaks bump scans with the
+# new gitleaks, a kcov bump measures on the new image.
 # Same posture as the xmrig bump (#225): bot proposes, CI gates, a human clicks merge.
+#
+# Watched here: shellcheck, shfmt, gitleaks, actionlint, lychee, jq, zizmor, diff-cover, kcov.
+# Elsewhere: XMRig by xmrig-bump.yml, GitHub Actions and .pre-commit-config.yaml by Dependabot.
+# That is every pin in the repo — which it was not before #373, when five of the six unwatched ones
+# had gone stale (zizmor by four minors, and it is the tool that audits these very workflows). The
+# pins with a watcher were the pins that were current; that is the whole argument for the list above
+# being complete. If you add a pin anywhere, add it to one of those three places in the same change.
 on:
   schedule:
     - cron: "30 6 * * 1" # Mondays 06:30 UTC, between the xmrig bump and the zizmor re-audit
@@ -46,11 +53,18 @@ jobs:
             git checkout -q -
           }
 
-          # <name> <upstream-repo> <current> -> prints the newer bare version, or nothing
+          # <name> <upstream-repo> <current> [tag-prefix] -> prints the newer bare version, or nothing
+          #
+          # Not every project tags `vX.Y.Z`: lychee tags `lychee-v0.24.2` and jq tags `jq-1.8.2`.
+          # Stripping only a leading "v" leaves those failing the shape check below, which returns 2
+          # and turns the whole run red every week on a repo whose pins are fine. The prefix is a
+          # per-tool fact, so it is a per-tool argument; the default keeps every existing caller
+          # byte-identical. The strict validation still runs AFTER the strip — normalising the
+          # spelling must not mean trusting the value (#373).
           newer_release() {
-            local name="$1" repo="$2" current="$3" latest
+            local name="$1" repo="$2" current="$3" prefix="${4:-v}" latest
             latest=$(gh api "repos/${repo}/releases/latest" --jq .tag_name)
-            latest="${latest#v}"
+            latest="${latest#"$prefix"}"
             if ! printf '%s' "$latest" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
               echo "::error::${name}: upstream tag '${latest}' failed validation" >&2
               return 2 # distinct from the benign empty-output paths: the caller records a failure
@@ -95,6 +109,49 @@ jobs:
             sed -i "s|rev: v${cur}|rev: v${new}|" .pre-commit-config.yaml
             printf 'Automated pin bump (#228): gitleaks %s -> %s in security.yml AND .pre-commit-config.yaml (lockstep), checksum recomputed.\n\nThe Secret scan on this PR runs the NEW gitleaks over full history — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
             open_pr "bot/gitleaks-${new}" "chore(ci): bump gitleaks to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- actionlint (ci.yml) ---
+          cur=$(grep -oE 'ACTIONLINT_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
+          if new=$(newer_release actionlint rhysd/actionlint "$cur") && [ -n "$new" ]; then
+            sha=$(artifact_sha "https://github.com/rhysd/actionlint/releases/download/v${new}/actionlint_${new}_linux_amd64.tar.gz")
+            sed -i "s|ACTIONLINT_VERSION: \"${cur}\"|ACTIONLINT_VERSION: \"${new}\"|; s|ACTIONLINT_SHA256: \"[0-9a-f]*\"|ACTIONLINT_SHA256: \"${sha}\"|" .github/workflows/ci.yml
+            printf 'Automated pin bump (#373): actionlint %s -> %s, checksum recomputed from the release artifact.\n\nThe Lint check on this PR runs the NEW actionlint over these workflows — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/actionlint-${new}" "chore(ci): bump actionlint to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- lychee (links.yml). Tags as `lychee-vX.Y.Z`, hence the prefix argument. ---
+          cur=$(grep -oE 'LYCHEE_VERSION: "[0-9.]+"' .github/workflows/links.yml | grep -oE '[0-9.]+')
+          if new=$(newer_release lychee lycheeverse/lychee "$cur" "lychee-v") && [ -n "$new" ]; then
+            sha=$(artifact_sha "https://github.com/lycheeverse/lychee/releases/download/lychee-v${new}/lychee-x86_64-unknown-linux-gnu.tar.gz")
+            sed -i "s|LYCHEE_VERSION: \"${cur}\"|LYCHEE_VERSION: \"${new}\"|; s|LYCHEE_SHA256: \"[0-9a-f]*\"|LYCHEE_SHA256: \"${sha}\"|" .github/workflows/links.yml
+            printf 'Automated pin bump (#373): lychee %s -> %s, checksum recomputed.\n\nThe Links check on this PR runs the NEW lychee — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/lychee-${new}" "chore(ci): bump lychee to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- jq (tests/coverage.sh, static binary + checksum). Tags as `jq-X.Y.Z`. ---
+          cur=$(grep -oE 'download/jq-[0-9.]+' tests/coverage.sh | grep -oE '[0-9]+(\.[0-9]+)*')
+          if new=$(newer_release jq jqlang/jq "$cur" "jq-") && [ -n "$new" ]; then
+            sha=$(artifact_sha "https://github.com/jqlang/jq/releases/download/jq-${new}/jq-linux-amd64")
+            sed -i "s|download/jq-${cur}/|download/jq-${new}/|; s|JQ_SHA256=\"[0-9a-f]*\"|JQ_SHA256=\"${sha}\"|" tests/coverage.sh
+            printf 'Automated pin bump (#373): jq %s -> %s in tests/coverage.sh, checksum recomputed.\n\nThe Coverage check on this PR runs the suite with the NEW jq inside the kcov container — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/jq-${new}" "chore(ci): bump the coverage jq to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- zizmor (security.yml). pipx, so there is no artifact checksum to recompute. ---
+          cur=$(grep -oE 'ZIZMOR_VERSION: "[0-9.]+"' .github/workflows/security.yml | grep -oE '[0-9.]+')
+          if new=$(newer_release zizmor zizmorcore/zizmor "$cur") && [ -n "$new" ]; then
+            sed -i "s|ZIZMOR_VERSION: \"${cur}\"|ZIZMOR_VERSION: \"${new}\"|" .github/workflows/security.yml
+            printf 'Automated pin bump (#373): zizmor %s -> %s.\n\nzizmor is the workflow AUDITOR and it gates the merge, so a stale pin means auditing our own supply chain with missing rules. The Workflow audit check on this PR runs the NEW zizmor over these workflows — passing checks are the verification, and a new finding it raises is the point rather than a nuisance.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/zizmor-${new}" "chore(ci): bump zizmor to ${new} (bot)" /tmp/body.md
+          else [ $? -gt 1 ] && failed=1; fi
+
+          # --- diff-cover (ci.yml). pipx, no checksum. ---
+          cur=$(grep -oE 'DIFF_COVER_VERSION: "[0-9.]+"' .github/workflows/ci.yml | grep -oE '[0-9.]+')
+          if new=$(newer_release diff-cover Bachmann1234/diff_cover "$cur") && [ -n "$new" ]; then
+            sed -i "s|DIFF_COVER_VERSION: \"${cur}\"|DIFF_COVER_VERSION: \"${new}\"|" .github/workflows/ci.yml
+            printf 'Automated pin bump (#373): diff-cover %s -> %s.\n\nThe Coverage check on this PR measures patch coverage with the NEW diff-cover — passing checks are the verification.\n' "$cur" "$new" >/tmp/body.md
+            open_pr "bot/diff-cover-${new}" "chore(ci): bump diff-cover to ${new} (bot)" /tmp/body.md
           else [ $? -gt 1 ] && failed=1; fi
 
           # --- kcov (tests/coverage.sh, digest-pinned docker image) ---
