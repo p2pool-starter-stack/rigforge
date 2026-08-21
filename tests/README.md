@@ -42,6 +42,9 @@ holds it from off-box: `ssh miner-0 'flock -n -x /var/lock/rig-e2e.lock true || 
 - macOS-specific behaviour (BSD tools, launchd, the mac process control) → [`e2e/macos.sh`](e2e/macos.sh).
 - Something only provable on real hardware (it actually hashes, MSRs really applied, HugePages
   really reserved) → [`e2e-real.sh`](e2e-real.sh).
+- A change to the sister-API feed or the control `/status` wire shape (a new field, a new `status`
+  string) → update the fixture in [`contract/v1/`](contract/v1/) in the same PR; `run.sh`'s
+  `== contract guard ==` section byte-compares against it and fails otherwise (#351).
 
 ## Conventions
 
