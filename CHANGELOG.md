@@ -7,6 +7,60 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-08-21
+
+### Added
+
+- **Control API: a `pending` state and an age on every status (#344).** `POST /apply` now records
+  the accepted `change_id` as `pending` (with `accepted_at`) the instant it stages the change, so
+  polling `GET /status?change_id=` during the apply window returns `pending` instead of the same
+  404 an id that never existed gets. Every served `/status` body also carries a derived
+  `age_seconds` next to its own timestamp, computed at serve time, so a days-old record can no
+  longer read as fresh. A crashed or superseded run stays honestly `pending` with visibly growing
+  age rather than being guessed into a fabricated outcome. The remaining walkthrough finding — a
+  fast path for restart-free keys — is deliberately not in this release (#381).
+- **Cross-repo wire-contract fixtures and a drift guard (#351).** `tests/contract/v1/` pins the
+  sister-API feed shape and the full control `/status` vocabulary (including `pending`,
+  `age_seconds`, and the no-history 503 body) as plain-JSON fixtures a sibling repo's CI can
+  byte-compare, and `tests/run.sh` regenerates both through the real code paths — the bash writer
+  AND the served HTTP layer — so a wire-shape change must consciously touch the fixture in the
+  same PR.
+- **e2e-real: a `watchdog` phase (#349).** The thermal-hold path run for real for the first time —
+  the unit suite drives `watchdog()` entirely through stubs. The leg lowers `max_temp_c` below the
+  live reading via the normal `apply` path, runs the verb once, asserts the stop, the hold marker,
+  and an independent journal witness, and restores config + state + the running service on every
+  exit path; skip decisions run before anything is mutated. First live firing on this release's
+  gate: a real 92.5°C reading against a staged 87°C cutoff stopped, held, and restored cleanly.
+  The gate run also widened the control phase's poll budget (150s -> 300s): a control-apply that
+  restarts the miner legitimately takes ~150s on big-page hosts, and the old budget raced it.
+- **The weekly pin report proves the sibling watchers are alive, and raises an issue only when
+  something needs attention (#372, #378).** A scheduled watcher that silently stops firing looks
+  identical to one with nothing to report, so `tool-bump.yml`'s weekly report now carries a
+  watcher-liveness table for `xmrig-bump.yml` and `links.yml` (last schedule-event run, conclusion,
+  age-based dead/stale verdict) under the same "unreachable is not current" doctrine as the pin
+  rows — and the report is an issue only while a row is stale, dead, or unchecked: an all-current
+  week closes the tracker with the final report and raises nothing.
+
+### Fixed
+
+- **doctor: MSR absence and MSR failure are different signals (#367).** When the MSR block's guard
+  fails (no config.json, or no `xmrig.log` at the resolved path), doctor now says "MSR
+  unverifiable" and names which input failed instead of silently skipping the block — the flake
+  that failed both #66 release-gate assertions on a healthy rig. The e2e verify phase asserts the
+  guard's inputs first, so a skipped block can never again read as "MSR not applied". Also cuts
+  `_msr_log_status` from a whole-file awk scan (seen at 122MB) to a grep-led pipeline with the
+  same last-match semantics.
+- **Setup re-prompts on an invalid pool URL (#344).** A typo in the first-run prompt costs three
+  lines, not the whole run — bounded by `SETUP_URL_TRIES` (default 3); EOF/non-interactive stdin
+  still terminates.
+
+### Documentation
+
+- **Quick Start points enriched-coordinator setups at the sister API (#345).** Symptom-first: a
+  rig in Workers Alive without the RigForge chips has its sister API off; the minimal `api` block
+  snippet (Linux rigs — a macOS dev build accepts the config but runs no API) and a cross-link to
+  the full contract close it.
+
 ## [1.15.1] - 2026-08-15
 
 ### Fixed
