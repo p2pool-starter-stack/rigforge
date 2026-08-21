@@ -28,6 +28,16 @@
 #               tag -> current and proves a genuine fetch/build/apply into it, then restores the
 #               checkout — E2E_UPGRADE_TARGET/E2E_UPGRADE_SKIP_REASON override it). Same
 #               snapshot/revert guarantees as control.
+#   watchdog  : the thermal-hold path (#349), for real, for the first time — tests/run.sh drives
+#               watchdog() entirely through stubs (systemctl/curl/_read_temp all faked), so the
+#               over-temp stop has never fired against a real sensor, a real systemd, or a real
+#               miner. Lowers max_temp_c below the live reading (the same reader the verb itself
+#               calls), runs `rigforge.sh watchdog` once, asserts the stop + hold marker + an
+#               independent journal witness, then restores config + state + the running service.
+#               Same snapshot/revert guarantees as control; skips explicitly if no temperature
+#               reading is available (the wedge-restart leg is not exercised here — forcing an
+#               unreachable API on a production-adjacent rig is exactly the "stranded miner" risk
+#               control()'s own skipped rollback leg calls out; see #276 for that path stubbed).
 #   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
 #
 # Env knobs:
@@ -57,6 +67,7 @@
 #   sudo bash tests/e2e-real.sh verify
 #   sudo bash tests/e2e-real.sh control
 #   sudo bash tests/e2e-real.sh upgrade
+#   sudo bash tests/e2e-real.sh watchdog
 #   sudo bash tests/e2e-real.sh teardown
 # Or, when HugePages are already active (no reboot needed), one shot:
 #   sudo bash tests/e2e-real.sh all
@@ -78,6 +89,11 @@ CTL_CLEANUP_DONE=0
 # E2E_UPGRADE_TARGET override, which stays deliberately PERMANENT). Same script-global reasoning as
 # above — _upgrade_cleanup must see it from a late trap fire too.
 UPG_ORIG_REF=""
+# #349: watchdog phase state. Same script-global reasoning as CTL_SAVED_CFG above — a late trap fire
+# (e.g. during perf/teardown in `all` mode, which set no trap of their own) must still see these.
+WD_SAVED_CFG=""
+WD_CLEANUP_DONE=0
+WD_WORKER_ROOT=""
 ok() {
     PASS=$((PASS + 1))
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
@@ -1045,6 +1061,149 @@ upgrade() {
     summary "upgrade"
 }
 
+# --- watchdog (#349): the real thermal-hold path, for real, for the first time -------------------
+#
+# tests/run.sh drives watchdog() (rigforge.sh) entirely through stubs — systemctl, curl, and
+# _read_temp are all faked there — so the over-temp stop has never fired against a real sensor, a
+# real systemd, or a real miner. This phase proves the thermal-hold half of #139: it needs no fault
+# injection to trigger it (unlike the wedge-restart half, which needs an unreachable API — forcing
+# that on a production-adjacent rig is exactly the "stranded miner" risk control()'s own skipped
+# rollback leg calls out above; see #276 for that path against a stubbed apply). Lowering
+# max_temp_c below the live reading is safe and reversible, and fires the SAME code path
+# (rigforge.sh's watchdog(), the `t > MAX_TEMP_C` branch) a genuinely hot rig would hit.
+#
+# Same snapshot-first/trap-immediately shape as control()/upgrade() for the MUTATION half — the
+# skip decisions all run before the snapshot, so a skipped leg arms no trap at all: every step below can fail under
+# `set -Eeuo pipefail`, and this leg must NEVER be able to leave the rig with a lowered thermal
+# limit, a held miner, or a stopped service. _watchdog_cleanup restores config.json from the
+# pre-leg snapshot AND removes the thermal-hold/strike-count state files directly — a config restore
+# alone would leave a stale watchdog.thermal-hold on disk, which (if the operator's own config
+# already carries a real max_temp_c) could hold the miner off until some later real watchdog tick
+# happens to notice the temperature dropped — restoring config.json is not enough by itself.
+_watchdog_cleanup() {
+    [ "$WD_CLEANUP_DONE" = 1 ] && return 0
+    WD_CLEANUP_DONE=1
+    echo ""
+    echo "watchdog: reverting — restoring the snapshotted config.json and lifting any thermal hold..."
+    if [ -n "$WD_SAVED_CFG" ] && [ -f "$WD_SAVED_CFG" ]; then
+        cp "$WD_SAVED_CFG" "$HERE/config.json" 2>/dev/null &&
+            echo "  restored config.json from the pre-leg snapshot" ||
+            echo "  WARNING: could not restore config.json from $WD_SAVED_CFG — check it by hand" >&2
+        rm -f "$WD_SAVED_CFG"
+    else
+        echo "  WARNING: no config.json snapshot on hand to restore — leaving config.json as-is" >&2
+    fi
+    if [ -n "$WD_WORKER_ROOT" ]; then
+        rm -f "$WD_WORKER_ROOT/watchdog.thermal-hold" "$WD_WORKER_ROOT/watchdog.fails" 2>/dev/null || true
+    fi
+    "$RIGFORGE" apply >/tmp/e2e-watchdog-cleanup-apply.log 2>&1 ||
+        echo "  WARNING: the revert 'apply' exited non-zero (see /tmp/e2e-watchdog-cleanup-apply.log)" >&2
+    if systemctl is-active --quiet xmrig 2>/dev/null; then
+        echo "  service 'xmrig' is active"
+    else
+        echo "  WARNING: service 'xmrig' is not active after the revert — check the rig by hand" >&2
+    fi
+}
+
+watchdog() {
+    require_linux_root watchdog
+    [ -f "$HERE/config.json" ] || die "no $HERE/config.json — run 'provision' first (this phase needs an already-provisioned worker)."
+    phase "watchdog — thermal-hold leg: lower max_temp_c below the live reading, run the real verb once (#349)"
+
+    # Resolve every input and decide the skips BEFORE the snapshot/trap install below. A skip must
+    # leave NO armed trap behind: a dangling one fires only at process exit — in `all` mode that is
+    # AFTER teardown() has uninstalled everything, so its deferred cleanup 'apply' would die against
+    # the torn-down system and print warnings right after the gate reported PASS. (rig_lock's own
+    # holder-only EXIT trap stays armed on a skip, exactly as for the phases that set no trap.)
+    WD_WORKER_ROOT="$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_from_config' _ "$RIGFORGE" 2>/dev/null || true)"
+    if [ -z "$WD_WORKER_ROOT" ]; then
+        # Fail, don't skip: the verb's own independent resolution could still succeed and write the
+        # thermal-hold marker, and a cleanup that can't locate the marker can't guarantee lifting it.
+        bad "could not resolve the worker root from $HERE/config.json — refusing to run the mutation half (#349)"
+        summary "watchdog"
+        return
+    fi
+
+    # The SAME reader watchdog() itself calls (rigforge.sh's _read_temp: THERMAL_ZONE/TUNE_TEMP_CMD
+    # override, else thermal_zone0, else the k10temp/coretemp hwmon fallback, #208) — not
+    # re-implemented here, so this leg can never disagree with the verb about "the current reading".
+    local t cutoff
+    t="$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _read_temp' _ "$RIGFORGE" 2>/dev/null || true)"
+    if [ -z "$t" ]; then
+        ok "SKIP watchdog thermal-hold leg — no temperature reading available on this host (_read_temp returned empty: no thermal_zone0/k10temp/coretemp, and no THERMAL_ZONE/TUNE_TEMP_CMD override set)"
+        summary "watchdog"
+        return
+    fi
+    # max_temp_c must stay a whole number 40-110 (rigforge.sh parse_config). A 1°C margin would be
+    # enough to satisfy the `t > MAX_TEMP_C` compare at THIS instant, but 'apply' below restarts the
+    # service (a brief dip while XMRig re-inits its dataset) before the real check re-samples the
+    # temperature — a tight margin is exactly the flake that would produce, so aim for 5°C of
+    # headroom and only proceed on at least 2. A rig too cool for that (e.g. idling near the 40°C
+    # floor) can't get a safely-below cutoff at all — an explicit skip, not a false failure. The
+    # 110 ceiling is clamped too: a misreading sensor (118°C says broken sensor, not fire) must
+    # still stage a schema-legal value, and the margin check below keeps the compare honest.
+    cutoff=$(awk -v t="$t" 'BEGIN { c = int(t) - 5; if (c < 40) c = 40; if (c > 110) c = 110; print c }')
+    if ! awk -v t="$t" -v c="$cutoff" 'BEGIN { exit !(t - c >= 2) }'; then
+        ok "SKIP watchdog thermal-hold leg — live temperature ${t}°C is too close to the 40°C config-schema floor to construct a cutoff with a safe margin below it"
+        summary "watchdog"
+        return
+    fi
+
+    # Snapshot BEFORE any mutation and install the EXIT trap immediately; see the block comment above.
+    WD_SAVED_CFG="$(mktemp)"
+    cp "$HERE/config.json" "$WD_SAVED_CFG"
+    WD_CLEANUP_DONE=0
+    trap '_watchdog_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
+
+    phase "watchdog — set max_temp_c=$cutoff (live temp ${t}°C) through 'apply', the same config-change path control() uses"
+    local tmp
+    tmp="$(mktemp)"
+    if jq --argjson c "$cutoff" '.max_temp_c = $c' "$HERE/config.json" >"$tmp" && [ -s "$tmp" ]; then
+        mv "$tmp" "$HERE/config.json"
+    else
+        rm -f "$tmp"
+        bad "could not stage a lowered max_temp_c in config.json"
+        # Explicit, not left to the EXIT trap: the trap only fires at process exit, which in `all`
+        # mode is after teardown — same reasoning as control()/upgrade()'s explicit calls.
+        _watchdog_cleanup
+        summary "watchdog"
+        return
+    fi
+    "$RIGFORGE" apply >/tmp/e2e-watchdog-enable.log 2>&1 &&
+        ok "apply landed max_temp_c=$cutoff" ||
+        bad "apply failed while lowering max_temp_c (see /tmp/e2e-watchdog-enable.log)"
+    systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
+    sleep 5 # let the restart's dataset-init dip settle back under full load before sampling temp again
+
+    phase "watchdog — run the real verb once and assert the thermal-hold action + journal evidence"
+    local since out
+    since="$(date '+%Y-%m-%d %H:%M:%S')" # local time, to match journalctl --since's default parsing
+    out="$("$RIGFORGE" watchdog 2>&1)"
+    printf '%s\n' "$out"
+    printf '%s' "$out" | grep -q "above max_temp_c=$cutoff" &&
+        ok "watchdog logged the over-temp stop (live ${t}°C > cutoff ${cutoff}°C — rigforge.sh's thermal-cutoff branch)" ||
+        bad "watchdog did not log an over-temp stop against max_temp_c=$cutoff (see output above)"
+    if [ -n "$WD_WORKER_ROOT" ] && [ -f "$WD_WORKER_ROOT/watchdog.thermal-hold" ]; then
+        ok "thermal-hold marker written ($WD_WORKER_ROOT/watchdog.thermal-hold)"
+    else
+        bad "no thermal-hold marker at ${WD_WORKER_ROOT:-<unresolved>}/watchdog.thermal-hold after the over-temp check"
+    fi
+    systemctl is-active --quiet xmrig && bad "miner is still active after the thermal-hold stop" ||
+        ok "service 'xmrig' stopped by the thermal hold (systemctl is-active)"
+    # Journal evidence: an independent witness — not just our own captured stdout — that systemd
+    # actually executed the stop for real, the same bar verify()'s "service journal is readable"
+    # check holds the rest of the gate to.
+    if journalctl -u xmrig --no-pager --since "$since" 2>/dev/null | grep -qiE 'stop|deactivat'; then
+        ok "xmrig's systemd journal records the stop (independent of the watchdog's own stdout)"
+    else
+        bad "no stop/deactivate entry in xmrig's journal since '$since' — see 'journalctl -u xmrig' by hand"
+    fi
+
+    phase "watchdog — restore: config.json snapshot + state files + apply, service comes back live"
+    _watchdog_cleanup
+    summary "watchdog"
+}
+
 teardown() {
     require_linux_root teardown
     phase "teardown — ./rigforge.sh uninstall --yes (a COMPLETE revert)"
@@ -1189,8 +1348,8 @@ perf() {
 }
 
 case "${1:-}" in
-provision | verify | control | upgrade | perf | teardown | all) ;;
-*) die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|perf|teardown|all}" ;;
+provision | verify | control | upgrade | watchdog | perf | teardown | all) ;;
+*) die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|watchdog|perf|teardown|all}" ;;
 esac
 # #183: serialize the shared rig — taken after arg parsing, before the first systemctl/API touch.
 rig_lock rigforge e2e-real
@@ -1200,6 +1359,7 @@ provision) provision ;;
 verify) verify ;;
 control) control ;;
 upgrade) upgrade ;;
+watchdog) watchdog ;;
 perf) perf ;;
 teardown) teardown ;;
 all)
@@ -1208,6 +1368,7 @@ all)
         verify
         control
         upgrade
+        watchdog
         perf
         teardown
     else
@@ -1215,6 +1376,6 @@ all)
     fi
     ;;
 *)
-    die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|perf|teardown|all}"
+    die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|watchdog|perf|teardown|all}"
     ;;
 esac
