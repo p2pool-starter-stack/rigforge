@@ -136,6 +136,26 @@ grep -i msr data/worker/xmrig.log               # MSR mod applied (no errors)
 
 ---
 
+## 6. Connect to Pithead dashboard (optional)
+
+Running a [Pithead](https://github.com/p2pool-starter-stack/pithead) stack? The dashboard discovers workers from the mining connection, but to show enriched stats (RigForge version, health probes, tune state, watchdog status), each rig's **sister API** must be enabled. If your worker appears in **Workers Alive** without these status chips, the sister API is off.
+
+Enable it by adding an `api` block to `config.json`, with `ACCESS_TOKEN` set to your rig's pool `user` (the dashboard label):
+
+```json
+{
+    "pools": [
+        { "url": "your-stack:3333", "user": "garage-rig" }
+    ],
+    "api": "enabled",
+    "ACCESS_TOKEN": "garage-rig"
+}
+```
+
+Then `sudo ./rigforge.sh apply` activates the sister API on `:8081`. Set `ACCESS_TOKEN` to match the rig name so Pithead can use `workers.api_auth: name` mode (the simplest setup). For other token strategies and the full API contract, see [Pithead Integration › Sister API](pithead-integration.md#sister-api-optional-8081).
+
+---
+
 ## Next steps
 
 - [Configuration](configuration.md): every config key, and how the XMRig config is generated.
