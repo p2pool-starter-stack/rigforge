@@ -574,7 +574,10 @@ the same nftables rule as the read API, so only the stack host and loopback can 
 
 How a change flows:
 
-1. The stack `POST`s a JSON object of changed keys to `:8082/apply` with the Bearer token. Only
+1. The stack `POST`s a JSON object of changed keys to `:8082/apply` with the Bearer token. The
+   receiver records the accepted `change_id` as `pending` (with an `accepted_at` stamp) the instant
+   it stages the change — before the oneshot below has even started — so polling it while step 2/3
+   run below returns `pending`, not the 404 an unknown id gets (#344). Only
    `pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`, and `max_temp_c` are
    writable; identity/trust/path keys (`ACCESS_TOKEN`, `miner_user`, `HOME_DIR`, the `api_*` and
    `control_*` keys) are operator-only and rejected. The remote path is a *tuning* channel, not a
@@ -593,10 +596,17 @@ How a change flows:
    itself could not be read back).
 4. `GET :8082/status` returns the last change's outcome (`applied` / `rejected` / `rolled_back` / `failed`, with
    `source: "control"`, the changed keys, the backup path, and a `warnings[]` for any change that
-   touched thermal protection). `GET :8082/status?change_id=<16hex>` returns a **specific** change's
-   outcome (or `404`) so a concurrent change can't steal your confirmation (#255). The new effective
-   config shows up on the read API as `rigforge.config`, with a `rigforge.config_meta.revision` that
-   bumps whenever it changes (#253/#254), on `/1/summary` (= `/2/summary`) once apply completes.
+   touched thermal protection). Every response also carries a derived `age_seconds` next to its own
+   `applied_at`/`accepted_at` stamp, computed fresh on each request (never stored), so a record read
+   long after the fact can't pass for current — the origin case: a rig's first `GET :8082/status` after
+   enabling control surfacing an 11-day-old record with no staleness cue (#344). `GET
+   :8082/status?change_id=<16hex>` returns a **specific** change's outcome (or `404`) so a concurrent
+   change can't steal your confirmation (#255) — while a change is still in flight (steps 2/3 above)
+   it reads `pending` instead (#344); a run that crashes, or gets superseded by a newer change before
+   the oneshot ever reaches it, is left `pending` forever rather than guessed into a fake outcome — its
+   growing `age_seconds` is the signal something didn't finish. The new effective config shows up on
+   the read API as `rigforge.config`, with a `rigforge.config_meta.revision` that bumps whenever it
+   changes (#253/#254), on `/1/summary` (= `/2/summary`) once apply completes.
 
 **Recovery.** Every applied change leaves a timestamped snapshot in `config-backups/` (owner-readable,
 the newest `KEEP_CONFIG_BACKUPS`, default 20, are kept). To inspect or roll back by hand:
