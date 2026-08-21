@@ -7902,20 +7902,38 @@ echo "== contract guard: wire-shape fixtures (#351) =="
 # or run-to-run, and diff against the committed fixture — see tests/contract/v1/README.md for the
 # normalization list and the change rule. This is what makes a wire-shape drift fail HERE instead of
 # only ever surfacing as a manual live run against a real pithead stack.
+#
+# _control_status (rigforge.sh) is only HALF the wire: util/control-server.py's own do_GET serves a
+# 503 no-history body of its own, stage_pending() writes a `pending` record neither rigforge.sh nor
+# _control_status ever produces, and _with_age() injects a derived age_seconds into EVERY served body
+# — none of that exists on disk for _control_status()-side generation to find. Regenerating only
+# through rigforge.sh made the guard structurally blind to anything the Python receiver adds or emits
+# itself. The vocabulary check below is unioned across both sources, and the record-shape check below
+# that drives the REAL util/control-server.py over HTTP (same harness as the "#236 black-box: the
+# control server" section above) for exactly the three things only IT can produce.
 CONTRACT_DIR="$ROOT/tests/contract/v1"
 
-# --- vocabulary: every literal status word rigforge.sh hands to _control_status, read straight off
-# the call sites (not a hand-maintained list) — a new status word can't land without this noticing,
-# fixture update or not.
-live_statuses="$(grep -oE '_control_status "\$status" [a-z_]+' "$SCRIPT" | awk '{print $3}' | sort -u | jq -R . | jq -cs .)"
+# --- vocabulary: every literal status word rigforge.sh hands to _control_status (the call sites, not
+# a hand-maintained list) UNIONED with every `"status": "<word>"` literal control-server.py itself
+# writes to a file GET /status can serve (stage_pending's `pending`; a same-line `_send(202, ...)` is
+# excluded — that's the synchronous POST /apply|/upgrade accept ack, a different value than anything
+# a later GET /status call returns, so it does not belong in this vocabulary). A new status word from
+# EITHER side can't land without this noticing, fixture update or not.
+live_statuses_bash="$(grep -oE '_control_status "\$status" [a-z_]+' "$SCRIPT" | awk '{print $3}')"
+live_statuses_py="$(grep -v '_send(202' "$ROOT/util/control-server.py" | grep -oE '"status": "[a-z_]+"' | sed -E 's/.*"([a-z_]+)"$/\1/')"
+live_statuses="$(printf '%s\n%s\n' "$live_statuses_bash" "$live_statuses_py" | sort -u | jq -R . | jq -cs .)"
 fixture_statuses="$(jq -c '.statuses' "$CONTRACT_DIR/control-status.json")"
-assert_eq "control status vocabulary matches the fixture (#351/#320)" "$live_statuses" "$fixture_statuses"
+assert_eq "control status vocabulary matches the fixture, rigforge.sh + control-server.py union (#351/#320/#344)" "$live_statuses" "$fixture_statuses"
 
-# --- shape: one example record per status, produced by the actual _control_status writer (the
-# single choke point control_apply and control_upgrade both go through) with fixed inputs, so the
-# only volatile field is applied_at (wall-clock; normalized below). Full orchestration through
-# control_apply/control_upgrade is already exercised elsewhere in this file; this re-derives the
-# exact wire record for each status the same way those call sites do.
+# --- shape: one example record per TERMINAL/started status, produced by the actual _control_status
+# writer (the single choke point control_apply and control_upgrade both go through) with fixed
+# inputs, so applied_at is the only volatile field (normalized below). age_seconds is additionally
+# normalized here though _control_status never writes it — it's serve-time-derived by
+# control-server.py's _with_age() on every real GET /status, so it's part of the wire shape a poller
+# actually sees; the server-driven leg below proves _with_age genuinely adds it rather than just
+# asserting the fixture says so. Full orchestration through control_apply/control_upgrade is already
+# exercised elsewhere in this file; this re-derives the exact wire record for each status the same
+# way those call sites do.
 CTLFX="$(mktemp -d "$SANDBOX/ctlfx.XXXXXX")"
 mk_status_record() { # <status> <cid> <keys-csv> <reason> <backup>
     local d f
@@ -7926,19 +7944,75 @@ mk_status_record() { # <status> <cid> <keys-csv> <reason> <backup>
         set +e
         _control_status "$f" "$1" "$2" "$3" "$4" "$5"
     ) >/dev/null 2>&1
-    jq -S '.applied_at = "NORMALIZED"' "$f"
+    jq -S '.applied_at = "NORMALIZED" | .age_seconds = "NORMALIZED"' "$f"
 }
-live_examples="$(jq -Sn \
-    --argjson started "$(mk_status_record started 1111111111111111 version '' '')" \
-    --argjson applied "$(mk_status_record applied 2222222222222222 version 'upgraded to v9.9.9' '')" \
-    --argjson noop "$(mk_status_record noop 3333333333333333 version 'already on v9.9.9 — nothing to upgrade' '')" \
-    --argjson throttled "$(mk_status_record throttled 4444444444444444 version 'throttled — too soon since the last upgrade attempt' '')" \
-    --argjson failed "$(mk_status_record failed 5555555555555555 version 'staged upgrade target malformed (want vX.Y.Z)' '')" \
-    --argjson rejected "$(mk_status_record rejected 6666666666666666 DONATION 'rejected merge-failed' '')" \
-    --argjson rolled_back "$(mk_status_record rolled_back 7777777777777777 watchdog,DONATION 'miner did not return to a live hashrate; rolled back and live' /b)" \
-    '{applied: $applied, failed: $failed, noop: $noop, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
-fixture_examples="$(jq -S '.examples' "$CONTRACT_DIR/control-status.json")"
-assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
+
+# --- server-driven: the `pending` example, the 503 no-history body, and proof that a served terminal
+# record really does carry age_seconds — all three exist only in util/control-server.py, so only the
+# real server (not _control_status) can produce them. Same spin-up/curl/kill harness as "#236
+# black-box: the control server" above, a dedicated instance so this doesn't depend on that section's
+# mutated state.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "  SKIP: python3 not present (kcov container) — the server-driven contract legs run in the other CI jobs"
+else
+    CGSRV="$(mktemp -d "$SANDBOX/cgsrv.XXXXXX")"
+    mkdir -p "$CGSRV/state"
+    CGTOK="tok-cg1"
+    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s" }\n' "$CGTOK" >"$CGSRV/config.json"
+    CGPORT=$((20000 + RANDOM % 20000))
+    python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CGPORT" "$CGSRV/state" "$CGSRV/config.json" &
+    CGSRV_PID=$!
+    CGU="http://127.0.0.1:$CGPORT"
+    cgup=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        curl -s -o /dev/null --max-time 2 -H "Authorization: Bearer $CGTOK" "$CGU/status" 2>/dev/null && {
+            cgup=1
+            break
+        }
+        sleep 0.3
+    done
+    assert_eq "contract-guard control server comes up (#351)" "$cgup" "1"
+
+    # 503 no-history: do_GET's OWN fallback when state/status.json has never been written — invisible
+    # to _control_status()-side generation by construction (that function is never called with "no
+    # history yet"; only a fresh do_GET can produce this body).
+    live_no_history="$(jq -Sn --argjson code "$(hc "$CGU/status" -H "Authorization: Bearer $CGTOK")" \
+        --argjson body "$(curl -sS --max-time 5 -H "Authorization: Bearer $CGTOK" "$CGU/status" 2>/dev/null)" \
+        '{body: $body, http_status: $code}')"
+    fixture_no_history="$(jq -S '.no_history' "$CONTRACT_DIR/control-status.json")"
+
+    # pending: staged by the REAL /apply accept path (stage_pending()) — the only source for this
+    # status word; _control_status never writes it. change_id is server-random
+    # (os.urandom(8).hex() in stage_change), unlike the fixed cid's mk_status_record supplies above,
+    # so it's normalized here same as accepted_at/age_seconds — see contract/v1/README.md.
+    pcid="$(curl -sS --max-time 5 -X POST "$CGU/apply" -H "Authorization: Bearer $CGTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null | jq -r .change_id)"
+    live_pending="$(curl -sS --max-time 5 -H "Authorization: Bearer $CGTOK" "$CGU/status?change_id=$pcid" 2>/dev/null |
+        jq -S '.accepted_at = "NORMALIZED" | .age_seconds = "NORMALIZED" | .change_id = "NORMALIZED"')"
+
+    # age_seconds on a served TERMINAL record: _with_age derives it from applied_at for status.json
+    # too, not just the pending path — assert this against the real serving code, not just the fixture.
+    printf '{"status":"applied","change_id":"9999999999999999","applied_at":"2020-01-01T00:00:00Z"}' >"$CGSRV/state/status.json"
+    tbody="$(curl -sS --max-time 5 -H "Authorization: Bearer $CGTOK" "$CGU/status" 2>/dev/null)"
+    assert_eq "age_seconds present on a served terminal record (#351/#344)" "$(printf '%s' "$tbody" | jq 'has("age_seconds")')" "true"
+
+    kill "$CGSRV_PID" 2>/dev/null || true
+    wait "$CGSRV_PID" 2>/dev/null || true
+
+    assert_eq "control server's no-history 503 matches the fixture (#351)" "$live_no_history" "$fixture_no_history"
+
+    live_examples="$(jq -Sn \
+        --argjson started "$(mk_status_record started 1111111111111111 version '' '')" \
+        --argjson applied "$(mk_status_record applied 2222222222222222 version 'upgraded to v9.9.9' '')" \
+        --argjson noop "$(mk_status_record noop 3333333333333333 version 'already on v9.9.9 — nothing to upgrade' '')" \
+        --argjson throttled "$(mk_status_record throttled 4444444444444444 version 'throttled — too soon since the last upgrade attempt' '')" \
+        --argjson failed "$(mk_status_record failed 5555555555555555 version 'staged upgrade target malformed (want vX.Y.Z)' '')" \
+        --argjson rejected "$(mk_status_record rejected 6666666666666666 DONATION 'rejected merge-failed' '')" \
+        --argjson rolled_back "$(mk_status_record rolled_back 7777777777777777 watchdog,DONATION 'miner did not return to a live hashrate; rolled back and live' /b)" \
+        --argjson pending "$live_pending" \
+        '{applied: $applied, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
+    fixture_examples="$(jq -S '.examples' "$CONTRACT_DIR/control-status.json")"
+    assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
+fi
 
 # --- feed: the rigforge block's shape, produced by the real api_refresh path. This file's own
 # HARDWARE INDEPENDENCE exports (top of file: MEMINFO/GOVERNOR_FILE/RAPL_DIR/...) already make
@@ -7962,11 +8036,17 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     RIGFORGE_API_DATA="$FEEDFX/data"
     RIGFORGE_CONTROL_STATE="$FEEDFX/control"
     API_CMD="cat '$FEEDFX/xmrig-body.json'"
+    # _health_json shells out to the REAL `systemctl is-active` for service_active — API_CMD only
+    # replaces the worker-API curl, not that. On any Linux box genuinely running the xmrig unit (i.e.
+    # every fleet rig) the untouched default SERVICE_NAME=xmrig would read "active" there and byte-
+    # diff this fixture on rigs while passing everywhere else. Point it at a unit name no rig will
+    # ever have instead of putting $STUBS on PATH: the generic systemctl stub there always exits 0
+    # (fine for the tests that use it, which never assert exact service_active/autotune values), which
+    # would make this read "active" unconditionally instead of fixing anything. Pins service_active:
+    # false and, since both are gated on it, clock_pct_of_boost/throttling: null too — see
+    # contract/v1/README.md.
+    SERVICE_NAME="rigforge-contract-fixture-nonexistent"
     set +e
-    # Deliberately NOT $STUBS on PATH: its systemctl stub always exits 0 (fine for the tests that use
-    # it, which never assert exact service_active/autotune values) — that would make this SERVICE_NAME
-    # read "active" unconditionally and drift the fixture. No stub is needed here: API_CMD replaces
-    # the only external command api_refresh would otherwise shell out to.
     api_refresh 2>/dev/null
 )
 live_feed="$(jq -S '.rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"

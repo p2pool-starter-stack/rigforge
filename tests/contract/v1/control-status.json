@@ -1,6 +1,7 @@
 {
   "examples": {
     "applied": {
+      "age_seconds": "NORMALIZED",
       "applied_at": "NORMALIZED",
       "backup": null,
       "change_id": "2222222222222222",
@@ -13,6 +14,7 @@
       "warnings": []
     },
     "failed": {
+      "age_seconds": "NORMALIZED",
       "applied_at": "NORMALIZED",
       "backup": null,
       "change_id": "5555555555555555",
@@ -25,6 +27,7 @@
       "warnings": []
     },
     "noop": {
+      "age_seconds": "NORMALIZED",
       "applied_at": "NORMALIZED",
       "backup": null,
       "change_id": "3333333333333333",
@@ -36,7 +39,14 @@
       "status": "noop",
       "warnings": []
     },
+    "pending": {
+      "accepted_at": "NORMALIZED",
+      "age_seconds": "NORMALIZED",
+      "change_id": "NORMALIZED",
+      "status": "pending"
+    },
     "rejected": {
+      "age_seconds": "NORMALIZED",
       "applied_at": "NORMALIZED",
       "backup": null,
       "change_id": "6666666666666666",
@@ -49,6 +59,7 @@
       "warnings": []
     },
     "rolled_back": {
+      "age_seconds": "NORMALIZED",
       "applied_at": "NORMALIZED",
       "backup": "/b",
       "change_id": "7777777777777777",
@@ -64,6 +75,7 @@
       ]
     },
     "started": {
+      "age_seconds": "NORMALIZED",
       "applied_at": "NORMALIZED",
       "backup": null,
       "change_id": "1111111111111111",
@@ -76,6 +88,7 @@
       "warnings": []
     },
     "throttled": {
+      "age_seconds": "NORMALIZED",
       "applied_at": "NORMALIZED",
       "backup": null,
       "change_id": "4444444444444444",
@@ -88,10 +101,17 @@
       "warnings": []
     }
   },
+  "no_history": {
+    "body": {
+      "status": "no change applied yet"
+    },
+    "http_status": 503
+  },
   "statuses": [
     "applied",
     "failed",
     "noop",
+    "pending",
     "rejected",
     "rolled_back",
     "started",
