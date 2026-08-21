@@ -2,7 +2,9 @@ name: CI tool pin watch
 
 # Self-healing pin hygiene, part 2 (#228, #373): the CI tools installed by curl-with-checksum, pipx
 # or a docker digest are the pins Dependabot can't see. Weekly, compare each against its latest
-# upstream release and keep ONE tracking issue up to date.
+# upstream release. An issue exists only while something needs attention (#378): stale/dead/
+# unchecked rows open (or refresh) the one tracking issue; an all-current week closes it with the
+# final report as the closing comment, and raises nothing when nothing is wrong.
 #
 # It REPORTS and never bumps (#376). It used to open a bot PR per stale pin, with the dispatched
 # checks on the branch as the verification — a genuinely better design, and it had never once
@@ -167,7 +169,7 @@ jobs:
           } >report.md
           cat report.md
           echo "rc=$failed" >>"$GITHUB_OUTPUT"
-      - name: Publish it to the one tracking issue
+      - name: Publish — an issue only when something needs attention (#378)
         env:
           # Through env, not `${{ }}` inlined into the script: zizmor's template-injection audit
           # rejects an expression expanded straight into a run block, and it is right to — the
@@ -180,6 +182,22 @@ jobs:
           # creation by minutes, so a search-based dedup files a second issue on the very next run.
           n=$(gh issue list --state open --limit 200 --json number,title \
             --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          # Healthy = every lookup ran AND no row is stale/dead. The bold markers are the report's
+          # own verdict vocabulary (check() and watcher() both), so the report is the one source of
+          # truth here too — no second health computation to drift from it.
+          if [ "$RC" = "0" ] && ! grep -qE '\*\*(stale|dead)' report.md; then
+            # All current: an open report issue is RESOLVED, not refreshed — a standing "everything
+            # is fine" issue costs a weekly glance and trains people to skim past the tracker that
+            # one day says something real (#378). Nothing open + nothing wrong = say nothing.
+            if [ -n "$n" ]; then
+              gh issue close "$n" --comment "$body"
+              echo "all current — closed #$n"
+            else
+              echo "all current — no issue to raise"
+            fi
+            exit 0
+          fi
+          # Something needs attention: keep exactly one open issue carrying the latest report.
           # A run that could not do its job replaces the report with failure rows, taking the
           # "last fully successful check" date with it — and that date is the only thing separating
           # "failed once this morning" from "has been dead for six weeks". Carry it forward.
