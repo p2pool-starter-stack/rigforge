@@ -734,9 +734,14 @@ control() {
 
     st=""
     if [ -n "${cid:-}" ]; then
-        # Bounded by control_apply()'s own CONTROL_LIVE_TRIES*sleep (default 20*3s=60s) plus the
-        # path-unit trigger (near-instant, inotify) and commit/backup overhead — 150s leaves margin.
-        local waited=0 poll_to=150 body
+        # Bounded by control_apply()'s real wall-clock, which is dominated by the miner restart the
+        # apply performs: HugePages dataset re-init plus the return-to-live-hashrate wait before the
+        # terminal record is written. Measured on the v1.15.2 gate (EPYC 7642, 12x1G pages): the
+        # record landed ~150s after the POST — the old 150s budget missed it by seconds and failed
+        # the phase on a change that applied cleanly (visible as an honest 'pending' since #344).
+        # 300s bounds the same failure it always did (a genuinely wedged apply) without racing the
+        # dataset init on big-page hosts.
+        local waited=0 poll_to=300 body
         while [ "$waited" -lt "$poll_to" ]; do
             body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" \
                 "http://127.0.0.1:$control_port/status?change_id=$cid" 2>/dev/null || true)
