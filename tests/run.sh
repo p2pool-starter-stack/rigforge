@@ -7776,6 +7776,85 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+echo "== contract guard: wire-shape fixtures (#351) =="
+# Cross-repo tripwire: pithead's fakes fetch and byte-compare tests/contract/v1/*.json against a
+# live worker. Regenerate the SAME shapes here through the real code (api_refresh / _control_status,
+# not hand-written JSON), normalize the couple of fields that legitimately vary release-to-release
+# or run-to-run, and diff against the committed fixture — see tests/contract/v1/README.md for the
+# normalization list and the change rule. This is what makes a wire-shape drift fail HERE instead of
+# only ever surfacing as a manual live run against a real pithead stack.
+CONTRACT_DIR="$ROOT/tests/contract/v1"
+
+# --- vocabulary: every literal status word rigforge.sh hands to _control_status, read straight off
+# the call sites (not a hand-maintained list) — a new status word can't land without this noticing,
+# fixture update or not.
+live_statuses="$(grep -oE '_control_status "\$status" [a-z_]+' "$SCRIPT" | awk '{print $3}' | sort -u | jq -R . | jq -cs .)"
+fixture_statuses="$(jq -c '.statuses' "$CONTRACT_DIR/control-status.json")"
+assert_eq "control status vocabulary matches the fixture (#351/#320)" "$live_statuses" "$fixture_statuses"
+
+# --- shape: one example record per status, produced by the actual _control_status writer (the
+# single choke point control_apply and control_upgrade both go through) with fixed inputs, so the
+# only volatile field is applied_at (wall-clock; normalized below). Full orchestration through
+# control_apply/control_upgrade is already exercised elsewhere in this file; this re-derives the
+# exact wire record for each status the same way those call sites do.
+CTLFX="$(mktemp -d "$SANDBOX/ctlfx.XXXXXX")"
+mk_status_record() { # <status> <cid> <keys-csv> <reason> <backup>
+    local d f
+    d=$(mktemp -d "$CTLFX/s.XXXXXX")
+    f="$d/status.json"
+    (
+        source "$SCRIPT"
+        set +e
+        _control_status "$f" "$1" "$2" "$3" "$4" "$5"
+    ) >/dev/null 2>&1
+    jq -S '.applied_at = "NORMALIZED"' "$f"
+}
+live_examples="$(jq -Sn \
+    --argjson started "$(mk_status_record started 1111111111111111 version '' '')" \
+    --argjson applied "$(mk_status_record applied 2222222222222222 version 'upgraded to v9.9.9' '')" \
+    --argjson noop "$(mk_status_record noop 3333333333333333 version 'already on v9.9.9 — nothing to upgrade' '')" \
+    --argjson throttled "$(mk_status_record throttled 4444444444444444 version 'throttled — too soon since the last upgrade attempt' '')" \
+    --argjson failed "$(mk_status_record failed 5555555555555555 version 'staged upgrade target malformed (want vX.Y.Z)' '')" \
+    --argjson rejected "$(mk_status_record rejected 6666666666666666 DONATION 'rejected merge-failed' '')" \
+    --argjson rolled_back "$(mk_status_record rolled_back 7777777777777777 watchdog,DONATION 'miner did not return to a live hashrate; rolled back and live' /b)" \
+    '{applied: $applied, failed: $failed, noop: $noop, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
+fixture_examples="$(jq -S '.examples' "$CONTRACT_DIR/control-status.json")"
+assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
+
+# --- feed: the rigforge block's shape, produced by the real api_refresh path. This file's own
+# HARDWARE INDEPENDENCE exports (top of file: MEMINFO/GOVERNOR_FILE/RAPL_DIR/...) already make
+# health/tune/watchdog fully deterministic on any machine; only installed-software provenance
+# varies release to release, so that's all that needs normalizing.
+FEEDFX="$(mktemp -d "$SANDBOX/feedfx.XXXXXX")"
+mkdir -p "$FEEDFX/home" "$FEEDFX/data" "$FEEDFX/control"
+printf 'v0.0.0-fixture\n' >"$FEEDFX/VERSION"
+printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333", "pass": "secret"}], "watchdog": "enabled", "max_temp_c": 85 }\n' "$FEEDFX" >"$FEEDFX/config.json"
+printf '%s' '{"status":"rolled_back","change_id":"7777777777777777","source":"control","applied_at":"2026-01-01T00:00:00Z","changed_keys":["watchdog","DONATION"],"reason":"miner did not return to a live hashrate; rolled back and live","backup":"/b","warnings":["thermal protection changed: watchdog"]}' >"$FEEDFX/control/status.json"
+printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}' >"$FEEDFX/xmrig-body.json"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    SCRIPT_DIR="$FEEDFX"
+    CONFIG_JSON="$FEEDFX/config.json"
+    # source-time CONFIG_META_FILE was derived from the REAL $SCRIPT_DIR (above), not this sandbox —
+    # override it explicitly (same reason the #253/#254 contract-pin test above does) or this reads
+    # whatever `apply()` left at the real repo root from an earlier test in this same run.
+    CONFIG_META_FILE="$FEEDFX/meta.json"
+    RIGFORGE_API_DATA="$FEEDFX/data"
+    RIGFORGE_CONTROL_STATE="$FEEDFX/control"
+    API_CMD="cat '$FEEDFX/xmrig-body.json'"
+    set +e
+    # Deliberately NOT $STUBS on PATH: its systemctl stub always exits 0 (fine for the tests that use
+    # it, which never assert exact service_active/autotune values) — that would make this SERVICE_NAME
+    # read "active" unconditionally and drift the fixture. No stub is needed here: API_CMD replaces
+    # the only external command api_refresh would otherwise shell out to.
+    api_refresh 2>/dev/null
+)
+live_feed="$(jq -S '.rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"
+fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
+assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
+
+# ---------------------------------------------------------------------------
 echo ""
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then

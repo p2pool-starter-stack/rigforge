@@ -1,0 +1,101 @@
+{
+  "examples": {
+    "applied": {
+      "applied_at": "NORMALIZED",
+      "backup": null,
+      "change_id": "2222222222222222",
+      "changed_keys": [
+        "version"
+      ],
+      "reason": "upgraded to v9.9.9",
+      "source": "control",
+      "status": "applied",
+      "warnings": []
+    },
+    "failed": {
+      "applied_at": "NORMALIZED",
+      "backup": null,
+      "change_id": "5555555555555555",
+      "changed_keys": [
+        "version"
+      ],
+      "reason": "staged upgrade target malformed (want vX.Y.Z)",
+      "source": "control",
+      "status": "failed",
+      "warnings": []
+    },
+    "noop": {
+      "applied_at": "NORMALIZED",
+      "backup": null,
+      "change_id": "3333333333333333",
+      "changed_keys": [
+        "version"
+      ],
+      "reason": "already on v9.9.9 — nothing to upgrade",
+      "source": "control",
+      "status": "noop",
+      "warnings": []
+    },
+    "rejected": {
+      "applied_at": "NORMALIZED",
+      "backup": null,
+      "change_id": "6666666666666666",
+      "changed_keys": [
+        "DONATION"
+      ],
+      "reason": "rejected merge-failed",
+      "source": "control",
+      "status": "rejected",
+      "warnings": []
+    },
+    "rolled_back": {
+      "applied_at": "NORMALIZED",
+      "backup": "/b",
+      "change_id": "7777777777777777",
+      "changed_keys": [
+        "watchdog",
+        "DONATION"
+      ],
+      "reason": "miner did not return to a live hashrate; rolled back and live",
+      "source": "control",
+      "status": "rolled_back",
+      "warnings": [
+        "thermal protection changed: watchdog"
+      ]
+    },
+    "started": {
+      "applied_at": "NORMALIZED",
+      "backup": null,
+      "change_id": "1111111111111111",
+      "changed_keys": [
+        "version"
+      ],
+      "reason": null,
+      "source": "control",
+      "status": "started",
+      "warnings": []
+    },
+    "throttled": {
+      "applied_at": "NORMALIZED",
+      "backup": null,
+      "change_id": "4444444444444444",
+      "changed_keys": [
+        "version"
+      ],
+      "reason": "throttled — too soon since the last upgrade attempt",
+      "source": "control",
+      "status": "throttled",
+      "warnings": []
+    }
+  },
+  "statuses": [
+    "applied",
+    "failed",
+    "noop",
+    "rejected",
+    "rolled_back",
+    "started",
+    "throttled"
+  ],
+  "version": 1
+}
