@@ -152,7 +152,7 @@ Enable it by adding an `api` block to `config.json`, with `ACCESS_TOKEN` set to 
 }
 ```
 
-Then `sudo ./rigforge.sh apply` activates the sister API on `:8081`. Set `ACCESS_TOKEN` to match the rig name so Pithead can use `workers.api_auth: name` mode (the simplest setup). For other token strategies and the full API contract, see [Pithead Integration › Sister API](pithead-integration.md#sister-api-optional-8081).
+Then, on the Linux rig, `sudo ./rigforge.sh apply` activates the sister API on `:8081` (the sister API is part of the Linux service install — a macOS dev build accepts the config but runs no API). Set `ACCESS_TOKEN` to match the rig name so Pithead can use `workers.api_auth: name` mode (the simplest setup). For other token strategies and the full API contract, see [Pithead Integration › Sister API](pithead-integration.md#sister-api-optional-8081).
 
 ---
 
