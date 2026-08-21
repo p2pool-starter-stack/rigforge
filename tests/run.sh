@@ -548,6 +548,49 @@ for bad in '' 'stack.lan' ':3333' '[zz]:3333'; do
     assert_eq "invalid URL '$bad' writes no config" "$([ -f "$ecd2/config.json" ] && echo yes || echo no)" "no"
 done
 
+# #344 (item 4): a bad pool URL now re-prompts (bounded, SETUP_URL_TRIES, default 3) instead of
+# exiting the whole script — nothing above wrote a config on a bad first try, so a retry costs the
+# operator three lines, not a restart.
+ecr="$(mktemp -d "$SANDBOX/ecr.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ecr/config.json"
+    set +eu
+    printf 'y\n\nstack.lan\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "#344: re-prompts past a blank then a portless URL to a valid one" "$(jq -c '.pools' "$ecr/config.json" 2>/dev/null)" '[{"url":"stack.lan:3333"}]'
+ecr6="$(mktemp -d "$SANDBOX/ecr6.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ecr6/config.json"
+    set +eu
+    printf 'y\n[zz]:3333\n[::1]:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "#344: re-prompts past an invalid IPv6 literal to a valid one" "$(jq -c '.pools' "$ecr6/config.json" 2>/dev/null)" '[{"url":"[::1]:3333"}]'
+# Bounded, not until-valid: SETUP_URL_TRIES genuinely invalid entries (not an EOF short-circuit) still
+# give up and write nothing, with a message naming the bound.
+ece="$(mktemp -d "$SANDBOX/ece.XXXXXX")"
+ece_err="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$ece/config.json"
+    set +eu
+    printf 'y\nbad1\nbad2\nbad3\n' | PATH="$STUBS:$PATH" ensure_config_exists 2>&1 >/dev/null
+))"
+assert_eq "#344: exhausting every retry with real bad input still writes no config" "$([ -f "$ece/config.json" ] && echo yes || echo no)" "no"
+assert_contains "#344: the give-up message names the attempt bound" "$ece_err" "giving up after 3 attempt(s)"
+# SETUP_URL_TRIES overrides the bound (matches this file's APPLY_POOL_TRIES/CONTROL_LIVE_TRIES idiom):
+# with only 1 try allowed, a single bad entry exhausts it even though a valid URL was queued right
+# behind it — proves the retry is genuinely bounded, not incidentally working via EOF.
+ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
+(
+    source "$SCRIPT"
+    CONFIG_JSON="$ec1/config.json"
+    SETUP_URL_TRIES=1
+    set +eu
+    printf 'y\nbad\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
+)
+assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
+
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
     c="$(mkconf "don$d" "{ \"DONATION\": $d, $POOL }")"
@@ -4252,6 +4295,45 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
+# #367: the MSR guard's inputs — config resolution, then the log path — must be distinguishable when
+# either one comes up empty, so a skipped block never reads the same as a failed check (the flake that
+# broke both #66 e2e assertions on a healthy rig).
+echo "== unit: doctor MSR unverifiable — guard-input failures named (#367) =="
+UNV="$DOC/unv"
+mkdir -p "$UNV/home" # HOME_DIR resolves; worker/xmrig.log is deliberately never created
+cat >"$UNV/config.json" <<EOF
+{ "HOME_DIR": "$UNV/home", "pools": [{"url": "h:3333"}] }
+EOF
+run_doctor_cfg() { # <config.json path, possibly nonexistent>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$1"
+        MEMINFO="$DOC/meminfo_ok"
+        MSR_MODULE_DIR="$DOC/msrmod"
+        GOVERNOR_FILE="$DOC/gov_perf"
+        HUGEPAGES_1G_NR="$DOC/nr1g"
+        set +e
+        PATH="$DOC/asroot:$STUBS:$PATH" doctor 2>&1
+    )
+}
+# (a) unresolved config: no config.json at all -> the worker root never resolves.
+out="$(run_doctor_cfg "$DOC/nonexistent-config-367.json")"
+assert_contains "doctor: MSR unverifiable names an unresolved config (#367)" "$out" \
+    "MSR unverifiable — no config.json, so the worker root couldn't be resolved"
+assert_absent "doctor: unresolved-config is advisory, not a counted issue (#367)" "$out" "issue(s) found"
+# (b) resolved root, log absent: config parses fine, but nothing is logged at the resolved path yet
+# (fresh install, or a copytruncate rotation window on an otherwise healthy rig).
+out="$(run_doctor_cfg "$UNV/config.json")"
+assert_contains "doctor: MSR unverifiable names the missing log path (#367)" "$out" \
+    "MSR unverifiable — no xmrig.log at $UNV/home/worker/xmrig.log"
+assert_absent "doctor: resolved-root-no-log is advisory, not a counted issue (#367)" "$out" "issue(s) found"
+# (c) line present: once the log resolves and holds an msr line, neither unverifiable wording appears.
+msr_log ryzen_19h_zen4
+assert_absent "doctor: MSR unverifiable does not leak once the log has a line (#367)" \
+    "$(run_doctor_msr "$DOC/rdmsr_ok")" "MSR unverifiable"
+
 # #140: with miner_user set, doctor (a) compares config against the unit's actual User= and (b)
 # verifies the root-side preset recorded by msr-apply via the same rdmsr read-back.
 echo "== unit: doctor miner_user + root-side MSR preset (#140) =="
@@ -7047,6 +7129,18 @@ printf '%s' '{"DONATION":8}' >"$CA/state/spool/pending-new.json"
 CA_APPLY_OK=1 ca_exec
 assert_eq "apply: newest staged change wins (donation 8)" "$(jq -r .DONATION "$CA/config.json")" "8"
 assert_eq "apply: superseded staged changes all drained" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+# #344: a terminal write clears the receiver's own pending/<cid>.json (stage_pending() in
+# control-server.py) now that the real outcome has landed. Needs a genuine 16-hex cid — every ca_run
+# case above uses "abc123", too short to ever hit the change_id index's hex-16 guard at all.
+rm -rf "$CA"
+mkdir -p "$CA/state/spool" "$CA/state/pending"
+printf '%s\n' "$CFG_236" >"$CA/config.json"
+CID344="1234567890abcdef"
+printf '%s' '{"DONATION":9}' >"$CA/state/spool/pending-$CID344.json"
+printf '%s' '{"status":"pending","change_id":"'"$CID344"'","accepted_at":"2020-01-01T00:00:00Z"}' >"$CA/state/pending/$CID344.json"
+CA_APPLY_OK=1 ca_exec
+assert_eq "control_apply writes the terminal changes/<cid>.json (#344)" "$([ -f "$CA/state/changes/$CID344.json" ] && echo y || echo n)" "y"
+assert_eq "control_apply clears the now-superseded pending/<cid>.json (#344)" "$([ -f "$CA/state/pending/$CID344.json" ] && echo y || echo n)" "n"
 # prune: KEEP_CONFIG_BACKUPS caps the history
 PB="$(mktemp -d "$SANDBOX/pb.XXXXXX")"
 mkdir -p "$PB/bk"
@@ -7368,6 +7462,24 @@ else
     assert_contains "accepted returns a change_id" "$body" '"change_id"'
     assert_eq "one change staged as pending-*.json" "$(ls "$CSRV/state/spool"/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "1"
     assert_eq "no temp file left in the spool (atomic stage)" "$(ls "$CSRV/state/spool"/.tmp-* 2>/dev/null | wc -l | tr -d ' ')" "0"
+    # #344 item 2: the accepted change_id resolves to a pending record IMMEDIATELY — no oneshot has
+    # run yet (nothing has touched state/changes) — instead of the unknown-id 404 during the whole
+    # window before control-apply's terminal write lands.
+    acid="$(printf '%s' "$body" | jq -r .change_id)"
+    assert_eq "receiver writes its own pending/<cid>.json at accept time (#344)" "$([ -f "$CSRV/state/pending/$acid.json" ] && echo y || echo n)" "y"
+    assert_eq "no temp file left in state/pending (atomic write, #344)" "$(ls "$CSRV/state/pending"/.tmp-* 2>/dev/null | wc -l | tr -d ' ')" "0"
+    assert_eq "GET /status?change_id=<in-flight, no terminal record yet> -> 200, not 404 (#344 item 2)" "$(hc "$U/status?change_id=$acid" -H "Authorization: Bearer $CTOK")" "200"
+    pbody="$(curl -sS --max-time 5 -H "Authorization: Bearer $CTOK" "$U/status?change_id=$acid" 2>/dev/null)"
+    assert_eq "in-flight change_id reads as 'pending', not a fabricated outcome (#344 item 2)" "$(printf '%s' "$pbody" | jq -r .status)" "pending"
+    assert_contains "pending record carries an accepted-at stamp (#344 item 2)" "$pbody" '"accepted_at"'
+    assert_contains "pending record's age is visible too (#344 items 2+3)" "$pbody" '"age_seconds"'
+    # A terminal write (control-apply landing the real outcome) supersedes the pending marker for the
+    # SAME change_id — proves changes/ is checked before the pending/ fallback.
+    mkdir -p "$CSRV/state/changes"
+    printf '{"status":"applied","change_id":"%s","applied_at":"2020-01-01T00:00:00Z"}' "$acid" >"$CSRV/state/changes/$acid.json"
+    tbody="$(curl -sS --max-time 5 -H "Authorization: Bearer $CTOK" "$U/status?change_id=$acid" 2>/dev/null)"
+    assert_eq "a terminal record wins over a same-id pending leftover (#344)" "$(printf '%s' "$tbody" | jq -r .status)" "applied"
+    assert_eq "the terminal record's own age derives from applied_at, not accepted_at (#344 item 3)" "$(printf '%s' "$tbody" | jq -r '(.age_seconds // 0) > 100000000')" "true"
     body="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"ACCESS_TOKEN":"x"}' 2>/dev/null)"
     assert_contains "POST non-writable key -> 400 naming it" "$body" "ACCESS_TOKEN"
     assert_eq "POST non-writable key -> 400" "$(hc -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"HOME_DIR":"/x"}')" "400"
@@ -7391,8 +7503,15 @@ else
     assert_eq "POST unknown route -> 404" "$(hc -X POST "$U/nope" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "404"
     assert_eq "PUT -> 405 (writes only via /apply)" "$(hc -X PUT "$U/apply" -H "Authorization: Bearer $CTOK")" "405"
     assert_eq "GET /status before any apply -> 503" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "503"
-    printf '{"status":"applied","change_id":"z"}' >"$CSRV/state/status.json"
+    printf '{"status":"applied","change_id":"z","applied_at":"2020-01-01T00:00:00Z"}' >"$CSRV/state/status.json"
     assert_eq "GET /status after an apply -> 200" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "200"
+    # #344 item 3: the walkthrough that reported this — an 11-day-old record with no staleness cue,
+    # indistinguishable from a fresh one — reading the no-arg endpoint directly. age_seconds is
+    # ADDITIVE (applied_at itself is untouched) and computed at serve time, never persisted to disk.
+    nbody="$(curl -sS --max-time 5 -H "Authorization: Bearer $CTOK" "$U/status" 2>/dev/null)"
+    assert_contains "no-arg /status keeps its recorded-at stamp (#344 item 3)" "$nbody" '"applied_at": "2020-01-01T00:00:00Z"'
+    assert_contains "no-arg /status gains a derived age signal (#344 item 3)" "$nbody" '"age_seconds"'
+    assert_eq "the age signal reflects a genuinely stale record (#344 item 3)" "$(printf '%s' "$nbody" | jq -r '(.age_seconds // 0) > 100000000')" "true"
     # #255: query a SPECIFIC change_id, unaffected by a later change (index written by the applier).
     mkdir -p "$CSRV/state/changes"
     printf '{"status":"applied","change_id":"1111222233334444","changed_keys":["DONATION"]}' >"$CSRV/state/changes/1111222233334444.json"

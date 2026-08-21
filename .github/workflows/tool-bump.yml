@@ -20,6 +20,10 @@ name: CI tool pin watch
 # Elsewhere: XMRig by xmrig-bump.yml, GitHub Actions and .pre-commit-config.yaml by Dependabot.
 # That is every pin in the repo. If you add one, add it to one of those three places in the same
 # change.
+#
+# It also proves the sibling scheduled watchers (xmrig-bump.yml, links.yml) are still firing (#372):
+# a workflow whose cron silently stopped looks, from the tracking issue, exactly like one with
+# nothing to report. The run history is the only place that tells the two apart.
 on:
   schedule:
     - cron: "30 6 * * 1" # Mondays 06:30 UTC, between the xmrig bump and the zizmor re-audit
@@ -35,6 +39,7 @@ jobs:
     permissions:
       contents: read
       issues: write # the report is the job's one output — it never pushes or publishes
+      actions: read # the workflow-runs API used for watcher liveness needs it on the scoped token
     env:
       GH_TOKEN: ${{ github.token }}
       TITLE: "CI tool pin currency (weekly report)"
@@ -48,10 +53,15 @@ jobs:
           set -uo pipefail
           failed=0
           rows=""
+          wrows=""
 
-          # ONE definition of the table row. It was seven, across check()'s branches and kcov's,
-          # which is seven places for the columns to drift apart.
-          row() { rows="${rows}| $1 | \`$2\` | $3 | $4 |"$'\n'; }
+          # ONE definition of the table row, shared by the pin table and the watcher-liveness
+          # table below via the sink var name in $1 — two tables, still one place the columns
+          # could drift apart, not two.
+          row() {
+            local -n _sink="$1"
+            _sink="${_sink}| $2 | \`$3\` | $4 | $5 |"$'\n'
+          }
 
           # <name> <upstream-repo> <current> [tag-prefix]
           #
@@ -79,7 +89,7 @@ jobs:
                 if [ "$latest" = "$current" ]; then verdict="current"; else verdict="**stale**"; fi
               fi
             fi
-            row "$name" "$current" "$up" "$verdict"
+            row rows "$name" "$current" "$up" "$verdict"
           }
 
           # Each `cur` is read from the tree, never from a second list.
@@ -106,16 +116,49 @@ jobs:
           if klatest=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/kcov/kcov/tags?page_size=100" 2>/dev/null |
             jq -r '.results[].name' | grep -E '^v[0-9]+$' | sort -V | tail -1) && [ -n "$klatest" ]; then
             if [ "v${kcur}" = "$klatest" ]; then kverdict="current"; else kverdict="**stale**"; fi
-            row "kcov (image)" "v${kcur}" "\`${klatest}\`" "$kverdict"
+            row rows "kcov (image)" "v${kcur}" "\`${klatest}\`" "$kverdict"
           else
-            row "kcov (image)" "v${kcur}" "—" "**Docker Hub lookup FAILED — not checked**"
+            row rows "kcov (image)" "v${kcur}" "—" "**Docker Hub lookup FAILED — not checked**"
             failed=$((failed + 1))
           fi
+
+          # <workflow file>
+          #
+          # Only event=schedule counts: a workflow_dispatch run proves someone can trigger it by
+          # hand, not that cron still fires. Same UNREACHABLE IS NOT CURRENT doctrine as check()
+          # above — a lookup that found nothing is UNCHECKED, never a silent pass.
+          watcher() {
+            local file="$1" line started conclusion age verdict
+            if ! line=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/runs" \
+              --method GET -f event=schedule -f status=completed -f per_page=1 \
+              --jq '.workflow_runs[0] | select(.) | [.run_started_at, .conclusion] | @tsv' \
+              2>/dev/null) || [ -z "$line" ]; then
+              row wrows "$file" "—" "—" "**no completed scheduled run found — UNCHECKED**"
+              failed=$((failed + 1))
+              return
+            fi
+            IFS=$'\t' read -r started conclusion <<<"$line"
+            age=$((($(date -u +%s) - $(date -u -d "$started" +%s)) / 86400))
+            if [ "$conclusion" != "success" ]; then
+              verdict="**dead — last scheduled run did not succeed**"
+            elif [ "$age" -gt 16 ]; then
+              verdict="**stale — ${age}d since last scheduled run**"
+            else
+              verdict="alive"
+            fi
+            row wrows "$file" "${started%T*}" "$conclusion" "$verdict"
+          }
+
+          watcher xmrig-bump.yml
+          watcher links.yml
 
           {
             printf '%s\n\n' "Weekly currency check of the CI tool pins Dependabot cannot see (\`.github/workflows/tool-bump.yml\`). This never bumps anything — bump a stale pin by hand and let its own check verify it."
             printf '| tool | pinned | upstream latest | |\n|---|---|---|---|\n%s\n' "$rows"
             printf '%s\n' "Watched elsewhere: **XMRig** by \`xmrig-bump.yml\` (it still opens a build-verified PR), **GitHub Actions** and **.pre-commit-config.yaml** by Dependabot."
+            printf '\n%s\n\n' "### Watcher liveness"
+            printf '%s\n\n' "A watcher that silently stops firing looks identical from outside to one with nothing to report. This confirms the sibling scheduled workflows actually ran on their last Monday, not just that they exist in the tree."
+            printf '| watcher | last scheduled run | conclusion | status |\n|---|---|---|---|\n%s\n' "$wrows"
             if [ "$failed" -gt 0 ]; then
               printf '\n%s\n' "**${failed} lookup(s) could not run — those rows are UNCHECKED, not current.**"
             else
