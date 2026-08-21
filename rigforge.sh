@@ -4546,12 +4546,18 @@ _lockdown_blocks_msr() { # <level> -> 0 when MSR writes are denied
 # Parse the worker's xmrig.log for XMRig's MSR-write confirmation. Per (re)start XMRig logs
 # 'msr register values for "<preset>" preset have been set successfully' (or a failure). Echoes
 # "<ok|fail|none>\t<preset>" for the LAST msr line. One-line awk so kcov attributes it correctly.
+# #367: the line is written at miner START, so on a long-lived worker it sits near the BEGINNING of a
+# log that can reach 100MB+ — `awk` scanning the whole file on every `doctor` got expensive. `grep`
+# (C-speed) finds every match and `tail -1` keeps the same last-match semantics; a naive `tail`-first
+# approach would miss the line entirely on a big file, so don't "optimize" this into one.
 _msr_log_status() { # <logfile>
     if [ ! -f "$1" ]; then
         printf 'none\t'
         return 0
     fi
-    awk '/msr +register values for/{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}} END{if(st=="")printf "none\t";else printf "%s\t%s",st,pr}' "$1" 2>/dev/null
+    # `|| true`: under pipefail, grep finding zero matches (no msr line yet — a healthy, common state)
+    # would otherwise make the whole pipeline — and this function — exit non-zero.
+    grep -E 'msr +register values for' "$1" 2>/dev/null | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
 }
 
 # The (register, value, mask) triples XMRig writes per MSR preset — verified against XMRig v6.26.0
@@ -5176,8 +5182,18 @@ EOF
             fi
             issues=$((issues + 1))
             ;;
-        *) : ;; # no msr line yet (the miner may not have started a RandomX job) — stay quiet
+        # not-found is not proof of not-applied (miner hasn't started a RandomX job yet, or a
+        # copytruncate rotation just cleared the live log) — stay quiet.
+        *) : ;;
         esac
+    elif [ -z "$log_file" ]; then
+        # #367: no config.json, so the worker root above never resolved. Distinct wording from the
+        # "resolved but no log" case below — an absent block must not read as a failed check.
+        _ck_info "MSR unverifiable — no config.json, so the worker root couldn't be resolved"
+    else
+        # #367: the worker root DID resolve, but nothing is logged at that path yet — a miner that
+        # hasn't started, or a copytruncate rotation window, both look like this on a healthy rig.
+        _ck_info "MSR unverifiable — no xmrig.log at $log_file"
     fi
 
     # CPU governor
