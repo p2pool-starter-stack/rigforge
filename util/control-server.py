@@ -16,9 +16,12 @@ Posture, deliberately paranoid because this one accepts writes:
   - Body size is capped; the staged file is written atomically (temp + rename + fsync) so the
     path unit never sees a half-written request.
 
-Python3 stdlib only. GET /status returns the last recorded change record — a terminal outcome, or
-control-upgrade's non-terminal `started` while the oneshot runs (#320). POST /apply stages a config
-change; POST /upgrade stages a release upgrade (#308, gated by control_upgrade).
+Python3 stdlib only. GET /status returns the last recorded change record — a terminal outcome,
+control-upgrade's non-terminal `started` while the oneshot runs (#320), or POST /apply's own
+non-terminal `pending` from the instant it's accepted (#344, see stage_pending()). Every record
+served carries a derived `age_seconds` next to its own timestamp, so a poller (or a human reading a
+stale record days later) can tell fresh from stale without doing its own clock math (#344). POST
+/apply stages a config change; POST /upgrade stages a release upgrade (#308, gated by control_upgrade).
 """
 import hmac
 import json
@@ -27,6 +30,7 @@ import re
 import socket
 import sys
 import urllib.parse
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # The keys the control path may change. Operationally-mutable only — identity, trust, filesystem
@@ -118,6 +122,77 @@ def stage_change(spool, body_bytes, prefix="pending"):
     return cid
 
 
+def _utcnow():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+PENDING_KEEP = 20  # matches _control_status's cap on kept per-change records in rigforge.sh
+
+
+def stage_pending(state_dir, cid):
+    """#344 (item 2): record <cid> as pending in its OWN dir the instant /apply accepts it — not
+    when control-apply gets around to running it, which can be tens of seconds away (see #344 item
+    1, the fast-path-apply issue this deliberately does not fix). This closes the "in progress vs.
+    never existed" gap: GET /status?change_id=<cid> now resolves here instead of falling through to
+    the unknown-id 404 for the whole window before control-apply's terminal write lands.
+
+    A SEPARATE directory (not state/changes, where the terminal record ends up) is deliberate: this
+    process is unprivileged and DynamicUser-owned, while state/changes is created and written by the
+    root control-apply oneshot — writing into a dir root created first would hit a permission wall on
+    any rig that already has control-path history. state/pending is exclusively this process's own,
+    so there's no ownership race; do_GET checks state/changes first and falls back here, and
+    control_apply's _control_status deletes the matching state/pending/<cid>.json once it writes the
+    real outcome (best-effort — see there).
+
+    If control-apply crashes, or a newer change supersedes this one before control-apply ever reads
+    it (only the newest staged spool file survives — see control_apply() in rigforge.sh), no terminal
+    record is ever written and this pending one is what's left FOREVER. That is deliberate, not a bug
+    to fix later: a dead/lost run must read as honestly "pending", with a growing age_seconds a
+    poller can judge for itself, never guessed into a fabricated applied/failed/rolled_back outcome
+    it never actually reached.
+    """
+    pdir = os.path.join(state_dir, "pending")
+    os.makedirs(pdir, exist_ok=True)
+    body = json.dumps({"status": "pending", "change_id": cid, "accepted_at": _utcnow()}).encode()
+    tmp = os.path.join(pdir, ".tmp-" + cid)
+    with open(tmp, "wb") as f:
+        f.write(body)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, os.path.join(pdir, cid + ".json"))
+    # Prune to the newest PENDING_KEEP: normally control-apply clears these as it lands terminal
+    # outcomes, but a run of crashes/supersessions (see above) would otherwise grow this dir forever.
+    try:
+        stale = sorted(
+            (e for e in os.scandir(pdir) if e.name.endswith(".json") and not e.name.startswith(".")),
+            key=lambda e: e.stat().st_mtime, reverse=True,
+        )[PENDING_KEEP:]
+        for e in stale:
+            os.unlink(e.path)
+    except OSError:
+        pass
+
+
+def _with_age(body_bytes):
+    """Inject a derived `age_seconds` next to a served record's own timestamp (`applied_at` for a
+    terminal/started outcome, `accepted_at` for a pending one — #344 items 2 & 3) so a poller, or a
+    human reading a days-old record, can tell fresh from stale without its own clock math. Computed
+    at SERVE time, never stored: the file on disk keeps just the one timestamp it was written with.
+    Additive only, and best-effort — a body without a recognized timestamp (or a parse hiccup) is
+    served unchanged rather than risking turning a good response into a 500.
+    """
+    try:
+        obj = json.loads(body_bytes)
+        ts = obj.get("applied_at") or obj.get("accepted_at")
+        if isinstance(ts, str):
+            when = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            obj["age_seconds"] = max(0, int((datetime.now(timezone.utc) - when).total_seconds()))
+            return json.dumps(obj).encode()
+    except Exception:
+        pass
+    return body_bytes
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -159,16 +234,26 @@ class Handler(BaseHTTPRequestHandler):
         if cid:
             if not re.fullmatch(r"[0-9a-f]{16}", cid):
                 return self._send(400, "Bad Request", {"error": "change_id must be 16 lowercase hex chars"})
-            target = os.path.join(STATE_DIR, "changes", cid + ".json")
+            # #344 (item 2): a terminal outcome (written by the root control-apply oneshot) always
+            # wins if one exists; state/pending/<cid>.json (written by THIS process at accept time,
+            # see stage_pending()) is the fallback for a change still in flight — or one that never
+            # got a terminal record at all (crashed / superseded run, deliberately left pending).
+            try:
+                with open(os.path.join(STATE_DIR, "changes", cid + ".json"), "rb") as f:
+                    body = f.read()
+            except OSError:
+                try:
+                    with open(os.path.join(STATE_DIR, "pending", cid + ".json"), "rb") as f:
+                        body = f.read()
+                except OSError:
+                    return self._send(404, "Not Found", {"error": "no recorded outcome for that change_id"})
         else:
-            target = os.path.join(STATE_DIR, "status.json")
-        try:
-            with open(target, "rb") as f:
-                body = f.read()
-        except OSError:
-            if cid:
-                return self._send(404, "Not Found", {"error": "no recorded outcome for that change_id"})
-            return self._send(503, "Service Unavailable", {"status": "no change applied yet"})
+            try:
+                with open(os.path.join(STATE_DIR, "status.json"), "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self._send(503, "Service Unavailable", {"status": "no change applied yet"})
+        body = _with_age(body)  # #344 (item 3): a recorded-at stamp alone can read as fresh for days
         self.send_response_only(200, "OK")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -253,6 +338,14 @@ class Handler(BaseHTTPRequestHandler):
             cid = stage_change(os.path.join(STATE_DIR, "spool"), staged)
         except OSError as e:
             return self._send(500, "Internal Server Error", {"error": "could not stage change: %s" % e})
+        # #344 (item 2): record it pending now, not when control-apply eventually gets to it (see
+        # stage_pending()) — best-effort: the spool file above is the thing control-apply actually
+        # reads, so a pending-marker write failure shouldn't fail an otherwise-accepted change, just
+        # cost the poller a 404 instead of "pending" until the terminal outcome lands.
+        try:
+            stage_pending(STATE_DIR, cid)
+        except OSError:
+            pass
         self._send(202, "Accepted", {"status": "accepted", "change_id": cid,
                                      "note": "queued for apply; poll GET /status and GET :%s/2/summary for the effective config" % os.environ.get("RIGFORGE_API_PORT", "8081")})
 

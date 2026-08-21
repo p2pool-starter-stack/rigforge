@@ -287,6 +287,18 @@ verify() {
     # msr can be a loadable module OR built into the kernel; either way it shows under /sys/module
     # (lsmod only lists loadable modules, so a built-in msr would be a false negative) — match doctor.
     [ -d /sys/module/msr ] && ok "msr available (/sys/module/msr)" || bad "msr not available"
+    # #367: assert the MSR guard's INPUTS first — resolve the same worker root + log path doctor's MSR
+    # block requires (mirrors the #reown resolver below) — so a run where doctor SKIPPED the block
+    # (guard failed) fails HERE as "could not resolve xmrig.log", not as "MSR not applied" below. The
+    # #66 flake that broke both assertions on a healthy rig was exactly this: an absent block reading
+    # identically to a failed check.
+    local msr_wr msr_raw_home msr_log
+    msr_raw_home="$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$HERE/config.json" 2>/dev/null)"
+    msr_wr="$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_for_home "$2"' _ "$RIGFORGE" "$msr_raw_home" 2>/dev/null || true)"
+    msr_log="${msr_wr:+$msr_wr/xmrig.log}"
+    [ -n "$msr_log" ] && [ -f "$msr_log" ] &&
+        ok "resolved the worker's xmrig.log for doctor's MSR checks ($msr_log) (#367)" ||
+        bad "could not resolve xmrig.log for doctor's MSR checks (worker root '${msr_wr:-<unresolved>}', HOME_DIR='$msr_raw_home') (#367) — doctor's MSR block would have been SKIPPED, not failed"
     # #66: doctor must confirm the MSR mod actually APPLIED (from XMRig's log) and — since setup installs
     # msr-tools — verify the prefetcher registers hold the preset's values via rdmsr. Hardware-agnostic:
     # it asserts on doctor's output (whatever per-family preset this CPU uses — e.g. ryzen_19h_zen4 on
