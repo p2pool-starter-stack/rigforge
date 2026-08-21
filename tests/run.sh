@@ -4252,6 +4252,45 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
+# #367: the MSR guard's inputs — config resolution, then the log path — must be distinguishable when
+# either one comes up empty, so a skipped block never reads the same as a failed check (the flake that
+# broke both #66 e2e assertions on a healthy rig).
+echo "== unit: doctor MSR unverifiable — guard-input failures named (#367) =="
+UNV="$DOC/unv"
+mkdir -p "$UNV/home" # HOME_DIR resolves; worker/xmrig.log is deliberately never created
+cat >"$UNV/config.json" <<EOF
+{ "HOME_DIR": "$UNV/home", "pools": [{"url": "h:3333"}] }
+EOF
+run_doctor_cfg() { # <config.json path, possibly nonexistent>
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$ROOT"
+        CONFIG_JSON="$1"
+        MEMINFO="$DOC/meminfo_ok"
+        MSR_MODULE_DIR="$DOC/msrmod"
+        GOVERNOR_FILE="$DOC/gov_perf"
+        HUGEPAGES_1G_NR="$DOC/nr1g"
+        set +e
+        PATH="$DOC/asroot:$STUBS:$PATH" doctor 2>&1
+    )
+}
+# (a) unresolved config: no config.json at all -> the worker root never resolves.
+out="$(run_doctor_cfg "$DOC/nonexistent-config-367.json")"
+assert_contains "doctor: MSR unverifiable names an unresolved config (#367)" "$out" \
+    "MSR unverifiable — no config.json, so the worker root couldn't be resolved"
+assert_absent "doctor: unresolved-config is advisory, not a counted issue (#367)" "$out" "issue(s) found"
+# (b) resolved root, log absent: config parses fine, but nothing is logged at the resolved path yet
+# (fresh install, or a copytruncate rotation window on an otherwise healthy rig).
+out="$(run_doctor_cfg "$UNV/config.json")"
+assert_contains "doctor: MSR unverifiable names the missing log path (#367)" "$out" \
+    "MSR unverifiable — no xmrig.log at $UNV/home/worker/xmrig.log"
+assert_absent "doctor: resolved-root-no-log is advisory, not a counted issue (#367)" "$out" "issue(s) found"
+# (c) line present: once the log resolves and holds an msr line, neither unverifiable wording appears.
+msr_log ryzen_19h_zen4
+assert_absent "doctor: MSR unverifiable does not leak once the log has a line (#367)" \
+    "$(run_doctor_msr "$DOC/rdmsr_ok")" "MSR unverifiable"
+
 # #140: with miner_user set, doctor (a) compares config against the unit's actual User= and (b)
 # verifies the root-side preset recorded by msr-apply via the same rdmsr read-back.
 echo "== unit: doctor miner_user + root-side MSR preset (#140) =="
