@@ -1060,7 +1060,8 @@ upgrade() {
 # max_temp_c below the live reading is safe and reversible, and fires the SAME code path
 # (rigforge.sh's watchdog(), the `t > MAX_TEMP_C` branch) a genuinely hot rig would hit.
 #
-# Same snapshot-first/trap-immediately shape as control()/upgrade(): every step below can fail under
+# Same snapshot-first/trap-immediately shape as control()/upgrade() for the MUTATION half — the
+# skip decisions all run before the snapshot, so a skipped leg arms no trap at all: every step below can fail under
 # `set -Eeuo pipefail`, and this leg must NEVER be able to leave the rig with a lowered thermal
 # limit, a held miner, or a stopped service. _watchdog_cleanup restores config.json from the
 # pre-leg snapshot AND removes the thermal-hold/strike-count state files directly — a config restore
@@ -1097,12 +1098,19 @@ watchdog() {
     [ -f "$HERE/config.json" ] || die "no $HERE/config.json — run 'provision' first (this phase needs an already-provisioned worker)."
     phase "watchdog — thermal-hold leg: lower max_temp_c below the live reading, run the real verb once (#349)"
 
-    # Snapshot BEFORE any mutation and install the EXIT trap immediately; see the block comment above.
-    WD_SAVED_CFG="$(mktemp)"
-    cp "$HERE/config.json" "$WD_SAVED_CFG"
-    WD_CLEANUP_DONE=0
+    # Resolve every input and decide the skips BEFORE the snapshot/trap install below. A skip must
+    # leave NO armed trap behind: a dangling one fires only at process exit — in `all` mode that is
+    # AFTER teardown() has uninstalled everything, so its deferred cleanup 'apply' would die against
+    # the torn-down system and print warnings right after the gate reported PASS. (rig_lock's own
+    # holder-only EXIT trap stays armed on a skip, exactly as for the phases that set no trap.)
     WD_WORKER_ROOT="$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_from_config' _ "$RIGFORGE" 2>/dev/null || true)"
-    trap '_watchdog_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
+    if [ -z "$WD_WORKER_ROOT" ]; then
+        # Fail, don't skip: the verb's own independent resolution could still succeed and write the
+        # thermal-hold marker, and a cleanup that can't locate the marker can't guarantee lifting it.
+        bad "could not resolve the worker root from $HERE/config.json — refusing to run the mutation half (#349)"
+        summary "watchdog"
+        return
+    fi
 
     # The SAME reader watchdog() itself calls (rigforge.sh's _read_temp: THERMAL_ZONE/TUNE_TEMP_CMD
     # override, else thermal_zone0, else the k10temp/coretemp hwmon fallback, #208) — not
@@ -1119,13 +1127,21 @@ watchdog() {
     # service (a brief dip while XMRig re-inits its dataset) before the real check re-samples the
     # temperature — a tight margin is exactly the flake that would produce, so aim for 5°C of
     # headroom and only proceed on at least 2. A rig too cool for that (e.g. idling near the 40°C
-    # floor) can't get a safely-below cutoff at all — an explicit skip, not a false failure.
-    cutoff=$(awk -v t="$t" 'BEGIN { c = int(t) - 5; if (c < 40) c = 40; print c }')
+    # floor) can't get a safely-below cutoff at all — an explicit skip, not a false failure. The
+    # 110 ceiling is clamped too: a misreading sensor (118°C says broken sensor, not fire) must
+    # still stage a schema-legal value, and the margin check below keeps the compare honest.
+    cutoff=$(awk -v t="$t" 'BEGIN { c = int(t) - 5; if (c < 40) c = 40; if (c > 110) c = 110; print c }')
     if ! awk -v t="$t" -v c="$cutoff" 'BEGIN { exit !(t - c >= 2) }'; then
         ok "SKIP watchdog thermal-hold leg — live temperature ${t}°C is too close to the 40°C config-schema floor to construct a cutoff with a safe margin below it"
         summary "watchdog"
         return
     fi
+
+    # Snapshot BEFORE any mutation and install the EXIT trap immediately; see the block comment above.
+    WD_SAVED_CFG="$(mktemp)"
+    cp "$HERE/config.json" "$WD_SAVED_CFG"
+    WD_CLEANUP_DONE=0
+    trap '_watchdog_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
 
     phase "watchdog — set max_temp_c=$cutoff (live temp ${t}°C) through 'apply', the same config-change path control() uses"
     local tmp
@@ -1135,6 +1151,9 @@ watchdog() {
     else
         rm -f "$tmp"
         bad "could not stage a lowered max_temp_c in config.json"
+        # Explicit, not left to the EXIT trap: the trap only fires at process exit, which in `all`
+        # mode is after teardown — same reasoning as control()/upgrade()'s explicit calls.
+        _watchdog_cleanup
         summary "watchdog"
         return
     fi
