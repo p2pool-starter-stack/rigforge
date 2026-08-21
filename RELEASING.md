@@ -30,6 +30,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh verify      # doctor (HugePages/MSR/governor/service) + bench (real H/s) + a short tune + a live auto-tune pass
    sudo bash tests/e2e-real.sh control     # the writable control path (#236) against real systemd: enable, POST a change, poll to applied, revert
    sudo bash tests/e2e-real.sh upgrade     # the remote-upgrade chain (#308/#322) with REAL git: noop + refused-tag rollback legs, plus a mandatory forward leg that auto-derives the previous real release tag -> current and proves it, then reverts (skip with a reason: E2E_UPGRADE_SKIP_REASON="...")
+   sudo bash tests/e2e-real.sh watchdog    # the thermal-hold path (#349) against the real sensor and real systemd: lowers max_temp_c below the live reading, runs the verb once, asserts the stop + hold marker + journal evidence, restores on every exit path (skips explicitly when no temperature reading is available)
    sudo bash tests/e2e-real.sh perf        # offline bench vs the committed per-host baseline + best-ever history (the release perf gate)
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
@@ -40,7 +41,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    visibility (`E2E_DASH_URL`), and that the sister API does not shave hashrate under polling load:
 
    ```bash
-   PITHEAD_URL=gouda.lan:3333 sudo -E make e2e-pithead
+   PITHEAD_URL=<stack-host>:3333 sudo -E make e2e-pithead
    ```
 
    Both gates carry the standardized performance checks (see `tests/README.md` › Performance
