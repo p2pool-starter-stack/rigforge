@@ -309,23 +309,45 @@ ensure_config_exists() {
             # We only need the pool URL — every other key has a sensible default (see
             # config.reference.json for the full list). The URL is host:port (Pithead's proxy
             # listens on 3333).
-            read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL || true
-
+            # #344: re-prompt on an invalid entry instead of exiting the whole script — nothing is
+            # persisted at this point (the write is below, after validation), so a typo should cost
+            # three lines, not a restart. Bounded, not until-valid: a non-interactive/EOF stdin (tests,
+            # a piped install) must still terminate instead of spinning. SETUP_URL_TRIES follows this
+            # file's existing env-overridable-retry-count idiom (APPLY_POOL_TRIES, CONTROL_LIVE_TRIES).
+            url_tries="${SETUP_URL_TRIES:-3}"
+            IN_URL=""
+            for i in $(seq 1 "$url_tries"); do
+                read -r -p "Enter your pool URL (host:port, e.g. your-stack:3333): " IN_URL || break
+                if [ -z "$IN_URL" ]; then
+                    warn "A pool URL is required."
+                    IN_URL=""
+                    continue
+                fi
+                if ! [[ "$IN_URL" =~ :[0-9]+$ ]]; then
+                    warn "Pool URL must include a port, e.g. $IN_URL:3333."
+                    IN_URL=""
+                    continue
+                fi
+                # Validate the host now, the same way parse_config will in a moment — otherwise a
+                # host-less URL like ":3333" passes the port check, gets written, and then parse_config
+                # hard-errors on it, leaving a broken config.json on disk that suppresses this prompt on
+                # the re-run (the file now exists). Failing before the write keeps the user re-promptable.
+                _host="${IN_URL%:*}"
+                case "$_host" in
+                \[*\])
+                    if [[ "$_host" =~ ^\[[0-9A-Fa-f:]+\]$ ]]; then break; fi
+                    warn "Pool URL '$IN_URL' has an invalid IPv6 literal (use [addr]:port)."
+                    ;;
+                *)
+                    if [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then break; fi
+                    warn "Pool URL host '$_host' is not a valid hostname or IP."
+                    ;;
+                esac
+                IN_URL=""
+            done
             if [ -z "$IN_URL" ]; then
-                error "A pool URL is required."
+                error "A valid pool URL (host:port) is required — giving up after $url_tries attempt(s)."
             fi
-            if ! [[ "$IN_URL" =~ :[0-9]+$ ]]; then
-                error "Pool URL must include a port, e.g. $IN_URL:3333."
-            fi
-            # Validate the host now, the same way parse_config will in a moment — otherwise a host-less URL
-            # like ":3333" passes the port check, gets written, and then parse_config hard-errors on it,
-            # leaving a broken config.json on disk that suppresses this prompt on the re-run (the file now
-            # exists). Failing before the write keeps the user re-promptable.
-            _host="${IN_URL%:*}"
-            case "$_host" in
-            \[*\]) [[ "$_host" =~ ^\[[0-9A-Fa-f:]+\]$ ]] || error "Pool URL '$IN_URL' has an invalid IPv6 literal (use [addr]:port)." ;;
-            *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool URL host '$_host' is not a valid hostname or IP." ;;
-            esac
 
             # Pithead stratum auth (#113): if the stack sets p2pool.stratum_password, every rig's pool
             # `pass` must match or the proxy rejects the login. The secret is shown by `pithead status`.
@@ -4131,6 +4153,13 @@ _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
         printf '%s' "$body" >"$cdir/$cid.json.tmp.$$" 2>/dev/null && mv -f "$cdir/$cid.json.tmp.$$" "$cdir/$cid.json" && chmod 644 "$cdir/$cid.json" 2>/dev/null || true
         # shellcheck disable=SC2012  # names are controlled 16-hex; ls -t orders by recency
         ls -t "$cdir"/*.json 2>/dev/null | tail -n +21 | while IFS= read -r old; do [ -n "$old" ] && rm -f "$old"; done
+        # #344: this terminal record supersedes the receiver's own pending/<cid>.json (written the
+        # instant POST /apply accepted the change, before this run even started — see stage_pending()
+        # in control-server.py). Clear it so state/pending doesn't keep one stale file per change
+        # forever; root can unlink here regardless of that dir's ownership, so this is never a
+        # permission problem, only a "nothing to remove" no-op on a run that never had one (e.g. a
+        # control-upgrade cid, which doesn't stage a pending/ record).
+        rm -f "$(dirname "$f")/pending/$cid.json" 2>/dev/null || true
     fi
 }
 
@@ -4546,12 +4575,18 @@ _lockdown_blocks_msr() { # <level> -> 0 when MSR writes are denied
 # Parse the worker's xmrig.log for XMRig's MSR-write confirmation. Per (re)start XMRig logs
 # 'msr register values for "<preset>" preset have been set successfully' (or a failure). Echoes
 # "<ok|fail|none>\t<preset>" for the LAST msr line. One-line awk so kcov attributes it correctly.
+# #367: the line is written at miner START, so on a long-lived worker it sits near the BEGINNING of a
+# log that can reach 100MB+ — `awk` scanning the whole file on every `doctor` got expensive. `grep`
+# (C-speed) finds every match and `tail -1` keeps the same last-match semantics; a naive `tail`-first
+# approach would miss the line entirely on a big file, so don't "optimize" this into one.
 _msr_log_status() { # <logfile>
     if [ ! -f "$1" ]; then
         printf 'none\t'
         return 0
     fi
-    awk '/msr +register values for/{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}} END{if(st=="")printf "none\t";else printf "%s\t%s",st,pr}' "$1" 2>/dev/null
+    # `|| true`: under pipefail, grep finding zero matches (no msr line yet — a healthy, common state)
+    # would otherwise make the whole pipeline — and this function — exit non-zero.
+    grep -E 'msr +register values for' "$1" 2>/dev/null | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
 }
 
 # The (register, value, mask) triples XMRig writes per MSR preset — verified against XMRig v6.26.0
@@ -5176,8 +5211,18 @@ EOF
             fi
             issues=$((issues + 1))
             ;;
-        *) : ;; # no msr line yet (the miner may not have started a RandomX job) — stay quiet
+        # not-found is not proof of not-applied (miner hasn't started a RandomX job yet, or a
+        # copytruncate rotation just cleared the live log) — stay quiet.
+        *) : ;;
         esac
+    elif [ -z "$log_file" ]; then
+        # #367: no config.json, so the worker root above never resolved. Distinct wording from the
+        # "resolved but no log" case below — an absent block must not read as a failed check.
+        _ck_info "MSR unverifiable — no config.json, so the worker root couldn't be resolved"
+    else
+        # #367: the worker root DID resolve, but nothing is logged at that path yet — a miner that
+        # hasn't started, or a copytruncate rotation window, both look like this on a healthy rig.
+        _ck_info "MSR unverifiable — no xmrig.log at $log_file"
     fi
 
     # CPU governor
