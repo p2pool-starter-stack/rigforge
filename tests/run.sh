@@ -3126,6 +3126,9 @@ out="$(
 assert_rc "msr-apply: unknown family exits 0 (never wedges Restart=always) (#140)" "$?" "0"
 assert_contains "msr-apply: unknown family says so (#140)" "$out" "no MSR preset for this CPU family"
 # wrmsr (msr-tools) missing: warn + exit 0 — the miner still starts, just without the boost.
+# PATH here must NOT inherit the host's: on a bench box with msr-tools installed the real
+# /usr/sbin/wrmsr leaks through and msr_apply finds it (then dies on a real MSR write), so the
+# "missing" branch under test never runs. Pin the tail to bin dirs that carry no wrmsr.
 mkdir -p "$MSRT/nowr"
 cp "$MSRT/bin/lscpu" "$MSRT/bin/modprobe" "$MSRT/bin/id" "$MSRT/nowr/"
 out="$(
@@ -3134,7 +3137,7 @@ out="$(
         OS_TYPE=Linux
         parse_config() { WORKER_ROOT="$MSRT"; }
         set +e
-        T_VENDOR=AuthenticAMD T_FAMILY=25 T_MODEL=97 PATH="$MSRT/nowr:$STUBS:$PATH" msr_apply 2>&1
+        T_VENDOR=AuthenticAMD T_FAMILY=25 T_MODEL=97 PATH="$MSRT/nowr:$STUBS:/usr/bin:/bin" msr_apply 2>&1
         echo "rc=$?"
     )
 )"
