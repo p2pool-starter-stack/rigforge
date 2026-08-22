@@ -157,15 +157,13 @@ EXCL_TESTS_DOCS=(
     ':(exclude)config.reference.json'
 )
 # The RFC1918 rule additionally clears build/*/entrypoint scripts and config templates (they
-# render the product's own network config) and three repo-root files that use illustrative
-# addresses in prose: the compose file itself (the documented default's home), CHANGELOG.md
-# (release notes narrate past examples the same way docs/ does), and the Makefile (a dev-tooling
-# comment). The CLI (`pithead`) is deliberately NOT path-exempt here — it's the file most likely
+# render the product's own network config) and two repo-root files that use illustrative
+# addresses in prose: CHANGELOG.md (release notes narrate past examples the same way docs/
+# does) and the Makefile (a dev-tooling comment). The CLI (`rigforge.sh`) is deliberately NOT path-exempt here — it's the file most likely
 # to grow a real leaked address — so every private literal it carries clears ipv4_allow() by
 # value instead (see the 192.168.1.0/24 entry above).
 EXCL_IPV4_EXTRA=(
-    ':(exclude,glob)build/*/*entrypoint*' ':(exclude,glob)build/*/*.template'
-    ':(exclude)docker-compose.yml' ':(exclude)CHANGELOG.md' ':(exclude)Makefile'
+    ':(exclude)CHANGELOG.md' ':(exclude)Makefile'
 )
 
 run() {
@@ -246,7 +244,7 @@ if [ "${1:-}" = "--self-test" ]; then
 
     printf 'reach jsmith@homebox42 for access\n' >"$tmp/email-hit.txt"
     expect "a real-looking user@host string is flagged" hit "$(scan "$EMAIL_RE" email_allow "$tmp/email-hit.txt")"
-    printf 'ssh as user@10.0.0.5, or root@, mail admin@example.com, pin actions/checkout@%s, biome@2.5.0, /status@PitheadBot, go get X@v Y@v\n' \
+    printf 'ssh as user@10.0.0.5, or root@, mail admin@example.com, pin actions/checkout@%s, biome@2.5.0, /status@RigforgeBot, go get X@v Y@v\n' \
         "$(printf 'a%.0s' $(seq 1 40))" >"$tmp/email-clean.txt"
     expect "placeholders, example.com, a SHA pin, a package pin, a bot mention, and Go's bare @v syntax are not flagged" clean \
         "$(scan "$EMAIL_RE" email_allow "$tmp/email-clean.txt")"
