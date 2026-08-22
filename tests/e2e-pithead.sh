@@ -460,7 +460,7 @@ dash_curl() { # -> the dashboard payload (empty on failure). A live stack fronts
     # with Caddy: HTTP 308s to HTTPS, the certificate is self-signed, and the API sits behind
     # basic auth (#390) — so follow redirects, accept the stack's own cert, and present
     # E2E_DASH_AUTH when the operator supplied it.
-    curl -kLsS --max-time 10 ${E2E_DASH_AUTH:+-u "$E2E_DASH_AUTH"} "$E2E_DASH_URL" 2>/dev/null || true
+    curl -kLfsS --max-time 10 ${E2E_DASH_AUTH:+-u "$E2E_DASH_AUTH"} "$E2E_DASH_URL" 2>/dev/null || true
 }
 
 phase_dashboard() {

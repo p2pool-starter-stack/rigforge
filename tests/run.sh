@@ -7721,7 +7721,7 @@ DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PD_SRC="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 DDIR="$(mktemp -d "$SANDBOX/dash390.XXXXXX")"
 # dash_curl behavior: a stub curl records its argv; the helper must follow redirects through the
-# self-signed cert (-kLsS) and present E2E_DASH_AUTH via -u only when set.
+# self-signed cert (-kLfsS; -f keeps an HTTP-error payload empty instead of an error page) and present E2E_DASH_AUTH via -u only when set.
 mkdir -p "$DDIR/bin"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$DC_ARGS"\n' >"$DDIR/bin/curl"
 chmod +x "$DDIR/bin/curl"
@@ -7732,7 +7732,7 @@ out="$( (
     export DC_ARGS="$DDIR/args.without"
     E2E_DASH_URL="http://stack-host/api/state" E2E_DASH_AUTH="" PATH="$DDIR/bin:$PATH" dash_curl >/dev/null
 ) 2>&1)"
-assert_contains "dash_curl follows redirects + accepts the stack cert (#390)" "$(cat "$DDIR/args.with")" "-kLsS"
+assert_contains "dash_curl follows redirects + accepts the stack cert (#390)" "$(cat "$DDIR/args.with")" "-kLfsS"
 assert_contains "dash_curl presents basic-auth creds when E2E_DASH_AUTH is set (#390)" "$(cat "$DDIR/args.with")" "probe:pw"
 assert_absent "dash_curl sends no -u when E2E_DASH_AUTH is empty (#390)" "$(cat "$DDIR/args.without")" "probe:pw"
 # Never-visible worker: the leg must report the failure and SKIP the drop-off check — before #390
