@@ -103,7 +103,7 @@ require_preflight() {
     [ "$(uname -s)" = "Linux" ] || die "Linux-only (this host is $(uname -s)) — run on a real rig."
     [ "$(id -u)" -eq 0 ] || die "must run as root (service control / apply): sudo bash tests/e2e-pithead.sh $*"
     [ -x "$RIGFORGE" ] || die "$RIGFORGE not found or not executable."
-    [ -n "${PITHEAD_URL:-}" ] || die "PITHEAD_URL is required (the stack's stratum host:port, e.g. gouda.lan:3333)."
+    [ -n "${PITHEAD_URL:-}" ] || die "PITHEAD_URL is required (the stack's stratum host:port, e.g. stack-host:3333)."
     [ -f "$CFG" ] || die "no $CFG — run setup first (this gate needs a provisioned worker)."
     WLOG="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
     GEN_CFG="$(find "$HERE" -path '*worker*/xmrig/build/config.json' 2>/dev/null | head -1)"
