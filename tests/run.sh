@@ -6233,7 +6233,7 @@ for good in "192.168.1.10" "10.0.0.0/8"; do
     assert_eq "api_allow_from '$good' -> family ip (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip"
 done
 # incl. the all-zeros address (::) and the v6 default route (::/0 — permissive but valid) as edges.
-for good6 in "fd00::/64" "2605:59c8::5" "fe80::1" "::1" "::" "::/0"; do
+for good6 in "fd00::/64" "2001:db8::5" "fe80::1" "::1" "::" "::/0"; do
     c="$(mkconf "af6_ok_$RANDOM" "{ $POOL, \"api_allow_from\": \"$good6\" }")"
     assert_eq "api_allow_from '$good6' parses IPv6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good6"
     assert_eq "api_allow_from '$good6' -> family ip6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip6"
@@ -6263,7 +6263,7 @@ w6b="$( (
     PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
 ))"
 assert_absent "IPv6 allow_from + :: bind: no warn (#243)" "$w6b" "aren't reachable over IPv6"
-for bad in "256.1.1.1" "1.2.3.4/33" "fd00::/200" "xyz::1" "gouda.lan" "1.2.3.4; rm -rf /" "fd00::/64 accept; drop"; do
+for bad in "256.1.1.1" "1.2.3.4/33" "fd00::/200" "xyz::1" "stack-host.lan" "1.2.3.4; rm -rf /" "fd00::/64 accept; drop"; do
     c="$(mkconf "af_bad_$RANDOM" "{ $POOL, \"api_allow_from\": \"$bad\" }")"
     parse_rc "$c" "$ROOT"
     assert_rc "api_allow_from '$bad' rejected (#142/#243)" "$?" "1"
@@ -6868,11 +6868,11 @@ cfgblk() { # <config-json> -> the rigforge.config JSON
         _api_config_json
     ) 2>/dev/null
 }
-C253='{ "pools":[{"url":"gouda:3333","user":"wallet.rig","pass":"SECRET","keepalive":true,"tls":true,"tls-fingerprint":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}], "DONATION":2, "autotune":"perf", "watchdog":"on", "watchdog_interval_min":10, "max_temp_c":85 }'
+C253='{ "pools":[{"url":"stack-host:3333","user":"wallet.rig","pass":"SECRET","keepalive":true,"tls":true,"tls-fingerprint":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}], "DONATION":2, "autotune":"perf", "watchdog":"on", "watchdog_interval_min":10, "max_temp_c":85 }'
 blk="$(cfgblk "$C253")"
 assert_eq "config: pool pass masked — no secret on the open read (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].pass // "ABSENT"')" "ABSENT"
 assert_eq "config: pool tls-fingerprint masked (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0]."tls-fingerprint" // "ABSENT"')" "ABSENT"
-assert_eq "config: pool url + user preserved (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].url + " " + .pools[0].user')" "gouda:3333 wallet.rig"
+assert_eq "config: pool url + user preserved (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].url + " " + .pools[0].user')" "stack-host:3333 wallet.rig"
 assert_eq "config: autotune canonical perf->performance (#253)" "$(printf '%s' "$blk" | jq -r '.autotune')" "performance"
 assert_eq "config: watchdog canonical on->enabled (#253)" "$(printf '%s' "$blk" | jq -r '.watchdog')" "enabled"
 assert_eq "config: max_temp_c is a plain int (#253)" "$(printf '%s' "$blk" | jq -r '.max_temp_c')" "85"
@@ -7684,7 +7684,7 @@ else
     cat >"$RTCD/bin/stat" <<'EOF'
 #!/usr/bin/env bash
 case "$3" in
-"/home/vijit/rigforge") echo 750 ;;
+"/home/miner/rigforge") echo 750 ;;
 *) echo 755 ;;
 esac
 EOF
@@ -7696,11 +7696,11 @@ EOF
             exit 2
         }
         set +e
-        PATH="$RTCD/bin:$PATH" require_traversable_checkout /home/vijit/rigforge/tests
+        PATH="$RTCD/bin:$PATH" require_traversable_checkout /home/miner/rigforge/tests
         echo "rc=$?"
     ) 2>&1)"
     assert_contains "a mode-750 ancestor is caught (#362)" "$out" "DIE:"
-    assert_contains "names the exact blocking path and mode (#362)" "$out" "'/home/vijit/rigforge' is mode 750"
+    assert_contains "names the exact blocking path and mode (#362)" "$out" "'/home/miner/rigforge' is mode 750"
     assert_contains "names the remedy (#362)" "$out" "/opt/rigforge-e2e"
     out2="$( (
         eval "$RTC_SRC"
