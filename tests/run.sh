@@ -7118,6 +7118,83 @@ assert_contains "install_watchdog re-renders the timer with the NEW interval (#3
 assert_eq "config_meta stamped source=control, parity with apply()'s own _stamp_config_meta call (#381)" "$(jq -r .source "$FPA/meta.json" 2>/dev/null)" "control"
 assert_eq "config_meta records the change_id, same parity (#381)" "$(jq -r .last_change_id "$FPA/meta.json" 2>/dev/null)" "fedcba9876543210"
 
+echo "== unit: control_apply + REAL _control_do_apply_fast — run-state criterion, not is-active alone (#381 security review) =="
+# The generic systemctl stub always exits 0, so the fpa_run tests above only ever exercise the
+# active-before/active-after case. A rig can be LEGITIMATELY stopped when a restart-free change
+# lands — a watchdog thermal hold, or an operator's manual stop — and the fast path must not read
+# that pre-existing stop as its own failure and roll the change back. This exercises control_apply
+# end to end with the REAL _control_do_apply_fast (unlike the marker-stubbed one in ca_exec below) and
+# a STATEFUL systemctl stub that answers `is-active` differently across the two calls the function
+# makes (before the watchdog reconcile, and after), so the run-state comparison is genuinely tested.
+CAF="$(mktemp -d "$SANDBOX/caf.XXXXXX")"
+caf_systemctl_stub() { # <rc for the 1st is-active call> <rc for the 2nd+> -> writes $CAF/bin/systemctl
+    mkdir -p "$CAF/bin"
+    cat >"$CAF/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "[systemctl] \$*" >> "\${CALL_LOG:-/dev/null}"
+case "\$*" in
+*"is-active"*)
+    n=\$(( \$(cat "$CAF/systemctl-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "\$n" >"$CAF/systemctl-calls"
+    if [ "\$n" -eq 1 ]; then exit $1; else exit $2; fi
+    ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$CAF/bin/systemctl"
+}
+caf_exec() {
+    (
+        source "$SCRIPT"
+        parse_config() { :; } # the live config is already valid; don't re-validate it (matches ca_exec)
+        # apply()/_wait_miner_live only matter for the ROLLBACK leg here — already covered in depth by
+        # the #236/#276 tests below — so they stay simple stubs; the marker proves whether a rollback
+        # (i.e. a restart attempt) was ever reached, which is exactly what a wrongly-tripped fast-path
+        # failure would cause.
+        apply() {
+            echo called >"$CAF/full-apply-called" 2>/dev/null || true
+            return 0
+        }
+        _wait_miner_live() { return 0; }
+        OS_TYPE=Linux
+        SCRIPT_DIR="$CAF"
+        SYSTEMD_DIR="$CAF/systemd"
+        CONFIG_JSON="$CAF/config.json"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        WATCHDOG_MODE=enabled
+        RIGFORGE_CONTROL_STATE="$CAF/state"
+        set +e
+        PATH="$CAF/bin:$STUBS:$PATH" control_apply >/dev/null 2>&1
+    )
+}
+caf_run() { # <staged-json> <is-active rc BEFORE> <is-active rc AFTER>
+    rm -rf "$CAF"
+    mkdir -p "$CAF/systemd" "$CAF/state/spool"
+    cp "$ROOT/systemd/rigforge-watchdog.service.template" "$ROOT/systemd/rigforge-watchdog.timer.template" "$CAF/systemd/"
+    printf '%s\n' "$CFG_236" >"$CAF/config.json"
+    printf '%s' "$1" >"$CAF/state/spool/pending-abc123.json"
+    caf_systemctl_stub "$2" "$3"
+    caf_exec
+}
+cfst() { jq -r ".$1" "$CAF/state/status.json" 2>/dev/null; }
+
+# (a) inactive-before, inactive-after (rc 1, 1): a rig thermally held or manually stopped before the
+# change. Mutation this catches: reverting the run-state comparison to a naive "is it active NOW"
+# check — that mutant reports rc=1 here (not active) and would wrongly roll the change back.
+caf_run '{"max_temp_c":90}' 1 1
+assert_eq "inactive-before/inactive-after -> status applied, not rolled back (#381)" "$(cfst status)" "applied"
+assert_eq "inactive-before/inactive-after -> the new value lands in config.json (#381)" "$(jq -r .max_temp_c "$CAF/config.json")" "90"
+assert_eq "inactive-before/inactive-after -> no restart/rollback ever attempted (#381)" "$([ -f "$CAF/full-apply-called" ] && echo called || echo not-called)" "not-called"
+
+# (b) active-before, inactive-after (rc 0, 1): the miner really did go down across this change.
+# Guards against the run-state criterion being dropped entirely (e.g. _control_do_apply_fast reverted
+# to always returning 0) — a real regression here must still trip the existing rollback.
+caf_run '{"max_temp_c":90}' 0 1
+assert_eq "active-before/inactive-after -> status rolled_back (#381)" "$(cfst status)" "rolled_back"
+assert_eq "active-before/inactive-after -> config restored, max_temp_c unset again (#381)" "$(jq -r .max_temp_c "$CAF/config.json")" "null"
+assert_eq "active-before/inactive-after -> rollback re-apply invoked (#381)" "$([ -f "$CAF/full-apply-called" ] && echo called || echo not-called)" "called"
+
 echo "== unit: control_apply orchestration + rollback (#236) =="
 CA="$(mktemp -d "$SANDBOX/ca.XXXXXX")"
 ca_exec() {

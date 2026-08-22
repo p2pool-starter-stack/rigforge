@@ -4194,15 +4194,27 @@ _control_fast_path_eligible() { # <keys-csv>
 # rendering, so the fast and full paths cannot drift on what "restart-free" actually renders. It
 # still stamps provenance exactly like apply() does, via the same RIGFORGE_CONFIG_SOURCE /
 # RIGFORGE_CONFIG_CHANGE_ID dynamic-scope contract, so config_meta on the read feed does not depend on
-# which path served the change. Returns 0 iff the (untouched) miner service is still active
-# afterward — a cheap single check, not a liveness wait, since by construction nothing here can have
-# taken it down; a non-zero return here means something ELSE was already wrong, and the caller's
-# existing rollback (full apply() + _wait_miner_live) is the correct way to try to recover it.
+# which path served the change.
+#
+# Success is "the run-state did not DEGRADE", not "is currently active" (security review finding on
+# the original version of this function, which gated on is-active alone): a rig can be LEGITIMATELY
+# stopped before this change lands — a watchdog thermal hold, or an operator's manual stop — and by
+# construction the fast path never touches the xmrig unit or service, so a stopped rig staying
+# stopped (or even coming back up on its own) is correct, not a failure; the new value takes effect
+# on its own schedule (the watchdog's next tick). Only a transition from active to inactive is a real
+# regression worth the caller's rollback. No thermal-hold-marker special-casing needed: the
+# before/after comparison covers every "was already down" case with less machinery.
 _control_do_apply_fast() {
+    local was_active is_active
+    was_active=1
+    systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && was_active=0
     parse_config
     install_watchdog >/dev/null 2>&1 || true
     _stamp_config_meta "${RIGFORGE_CONFIG_SOURCE:-local}" "${RIGFORGE_CONFIG_CHANGE_ID:-}"
-    systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null
+    is_active=1
+    systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && is_active=0
+    [ "$was_active" -eq 1 ] && return 0
+    [ "$is_active" -eq 0 ]
 }
 
 # Record a status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it
