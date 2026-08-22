@@ -4134,6 +4134,77 @@ _control_do_apply() {
     _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"
 }
 
+# #381 (from #344 item 1): a live walkthrough measured a single restart-free key
+# (watchdog_interval_min) taking ~62s round-trip through POST /apply, because _control_do_apply
+# above re-runs the ENTIRE apply() pipeline — regenerate xmrig's config, re-render its unit, restart
+# the service, then wait out _wait_miner_live's pool-liveness retries — for every change, even one
+# that never touches xmrig at all.
+#
+# CONTROL_FAST_PATH_KEYS is a CLOSED allowlist, checked as a SUBSET match (never a "not on the slow
+# list" complement) by _control_fast_path_eligible below: a changed-keys set takes the fast path only
+# when EVERY key in it is in this list, so an unrecognised key — including any future addition to
+# CONTROL_WRITABLE_KEYS that nobody has re-proven restart-free here — falls through to the full,
+# restart-safe path by construction. Evidence per key (grep rigforge.sh for both to re-check):
+#
+#   watchdog_interval_min — bakes into ONLY rigforge-watchdog.timer's OnUnitActiveSec, rendered by
+#     install_watchdog. It never reaches generate_xmrig_config or the xmrig unit template, so xmrig
+#     itself has nothing to reload; install_watchdog (the SAME function the full path already calls
+#     unconditionally on every apply, see apply() above) is sufficient — it re-renders the timer and
+#     daemon-reloads it.
+#   max_temp_c — never rendered into ANY unit. install_watchdog's own comment records why: "only the
+#     cadence is baked into the units — the verb re-reads config.json every run, so an apply after a
+#     max_temp_c ... edit needs no unit rewrite". The watchdog verb picks it up on its next scheduled
+#     run; nothing beyond the config.json write _control_commit already did is needed here.
+#
+# pools/DONATION change xmrig's OWN generated config — restarting it is the only way xmrig serves the
+# new values — and autotune/watchdog (the enable/disable flag, not the interval) govern install_*
+# paths this issue has not audited for restart-freedom. All four stay on the full path. Never widen
+# this list without the same kind of evidence trail (a grep proving the key never reaches
+# generate_xmrig_config or a unit template); the closed-set-subset design means an unaudited key's
+# safe default is already "restart", not "skip".
+CONTROL_FAST_PATH_KEYS="watchdog_interval_min max_temp_c"
+
+# True (rc 0) iff <keys-csv> is non-empty and every key in it is in CONTROL_FAST_PATH_KEYS. A single
+# key outside the list — or an empty/malformed keys-csv (e.g. control_apply's "?" sentinel when jq
+# couldn't read the staged file's keys) — fails CLOSED to "not eligible", so the caller takes the
+# full apply() path. Subset match, never complement: this can only be talked into "eligible" by a key
+# that is actually named on the allowlist above, so the allowlist growing is the only way this
+# function's answer changes for a given input.
+_control_fast_path_eligible() { # <keys-csv>
+    local keys="$1" k found=0
+    [ -n "$keys" ] || return 1
+    local IFS=','
+    for k in $keys; do
+        [ -n "$k" ] || continue
+        found=1
+        case " $CONTROL_FAST_PATH_KEYS " in
+        *" $k "*) ;;
+        *) return 1 ;;
+        esac
+    done
+    [ "$found" -eq 1 ]
+}
+
+# The restart-free counterpart to _control_do_apply (#381). Only reached when
+# _control_fast_path_eligible says every changed key is provably restart-free (see
+# CONTROL_FAST_PATH_KEYS above), so this DELIBERATELY skips apply()/_apply_runtime entirely: no
+# generate_xmrig_config, no xmrig unit re-render, no `systemctl restart` of the miner, no
+# _wait_miner_live retry loop, no _apply_pool_check. It reuses install_watchdog verbatim — the same
+# call the full apply() makes unconditionally on every run — rather than re-implementing unit
+# rendering, so the fast and full paths cannot drift on what "restart-free" actually renders. It
+# still stamps provenance exactly like apply() does, via the same RIGFORGE_CONFIG_SOURCE /
+# RIGFORGE_CONFIG_CHANGE_ID dynamic-scope contract, so config_meta on the read feed does not depend on
+# which path served the change. Returns 0 iff the (untouched) miner service is still active
+# afterward — a cheap single check, not a liveness wait, since by construction nothing here can have
+# taken it down; a non-zero return here means something ELSE was already wrong, and the caller's
+# existing rollback (full apply() + _wait_miner_live) is the correct way to try to recover it.
+_control_do_apply_fast() {
+    parse_config
+    install_watchdog >/dev/null 2>&1 || true
+    _stamp_config_meta "${RIGFORGE_CONFIG_SOURCE:-local}" "${RIGFORGE_CONFIG_CHANGE_ID:-}"
+    systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null
+}
+
 # Record a status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it
 # back) — a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
 _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
@@ -4198,13 +4269,29 @@ control_apply() {
     fi
     backup="${result#committed }"
     _reown_config_backups "$backups"
-    log "control-apply: committed change $cid (keys: $change_keys); applying..."
     # #254: attribute this (and the rollback re-apply) to the control path with its change_id — the
     # nested apply()'s _stamp_config_meta reads these via dynamic scope.
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
-    if _control_do_apply; then
+    # #381: dispatch on the closed fast-path allowlist. Only the CLASSIFICATION differs between the
+    # two branches below — a success writes the same "applied" status either way, and a failure of
+    # EITHER path falls through to the same full-pipeline rollback, so a wrong "eligible" verdict (or
+    # the fast path failing for an unrelated reason) still ends up restart-safe, never silently stuck.
+    local fast=0 apply_ok=0
+    if _control_fast_path_eligible "$change_keys"; then
+        fast=1
+        log "control-apply: committed change $cid (keys: $change_keys); applying (fast path — xmrig untouched)..."
+        _control_do_apply_fast && apply_ok=1
+    else
+        log "control-apply: committed change $cid (keys: $change_keys); applying..."
+        _control_do_apply && apply_ok=1
+    fi
+    if [ "$apply_ok" -eq 1 ]; then
         _control_status "$status" applied "$cid" "$change_keys" "" "$backup"
-        log "control-apply: change $cid applied."
+        if [ "$fast" -eq 1 ]; then
+            log "control-apply: change $cid applied (fast path)."
+        else
+            log "control-apply: change $cid applied."
+        fi
     else
         warn "control-apply: change $cid did not come back live — rolling back to $backup."
         # #276: the backup must be readable to restore it — guard the cp explicitly (not just -e/ERR)
