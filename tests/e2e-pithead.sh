@@ -3,12 +3,21 @@
 # Pithead stack and assert the integration contract documented in docs/pithead-integration.md.
 # Release-gated and manual, like e2e-real.sh — GitHub runners can't reach a LAN stack.
 #
-#   PITHEAD_URL=gouda.lan:3333 sudo bash tests/e2e-pithead.sh all
+#   PITHEAD_URL=stack-host:3333 sudo bash tests/e2e-pithead.sh all
 #
 # Env knobs:
 #   PITHEAD_URL                  (required) the stack's stratum host:port
-#   E2E_STRATUM_PASS             opt-in: run the stratum-auth phases with this stack secret
-#   E2E_DASH_URL                 opt-in: dashboard workers payload URL (worker must appear in it)
+#   E2E_STRATUM_PASS             opt-in: run the stratum-auth phases. Set it ONLY to the stack's
+#                                actual enforced stratum password — on a stack with password auth
+#                                off, any value here makes the auth phases run and honestly report
+#                                that a wrong pass still mined, which reads as a product failure
+#                                when it is a harness misconfiguration (#390).
+#   E2E_DASH_URL                 opt-in: dashboard workers payload URL — the stack's /api/state
+#                                (worker must appear in it). The dashboard sits behind Caddy:
+#                                HTTPS with the stack's self-signed cert and basic auth; the leg
+#                                follows redirects and skips cert verification for it (#390).
+#   E2E_DASH_AUTH                user:pass for the dashboard's basic auth (curl -u form); without
+#                                it a hardened dashboard answers 401 and the leg cannot pass.
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
 #   E2E_DROPOFF_TIMEOUT          seconds for the dashboard to drop a stopped worker (default 300)
 #   E2E_API_IMPACT_TOLERANCE_PCT max hashrate loss under sister-API load (default 3)
@@ -447,6 +456,13 @@ phase_stratum_auth() {
     fi
 }
 
+dash_curl() { # -> the dashboard payload (empty on failure). A live stack fronts the dashboard
+    # with Caddy: HTTP 308s to HTTPS, the certificate is self-signed, and the API sits behind
+    # basic auth (#390) — so follow redirects, accept the stack's own cert, and present
+    # E2E_DASH_AUTH when the operator supplied it.
+    curl -kLsS --max-time 10 ${E2E_DASH_AUTH:+-u "$E2E_DASH_AUTH"} "$E2E_DASH_URL" 2>/dev/null || true
+}
+
 phase_dashboard() {
     phase "dashboard — workers-alive shows this rig; a stopped rig drops off"
     if [ -z "${E2E_DASH_URL:-}" ]; then
@@ -455,16 +471,20 @@ phase_dashboard() {
     fi
     local me payload
     me=$(hostname)
-    payload=$(curl -fsS --max-time 10 "$E2E_DASH_URL" 2>/dev/null || true)
+    payload=$(dash_curl)
     if printf '%s' "$payload" | grep -q "$me"; then
         ok "worker '$me' visible in the dashboard payload"
     else
         bad "worker '$me' not in the dashboard payload"
+        # Without the worker visible first, the drop-off loop below would break on its very
+        # first probe and report "dropped off within 0s" — a pass that measured nothing (#390).
+        skip "drop-off check skipped: the worker was never visible, so its disappearance proves nothing"
+        return 0
     fi
     "$RIGFORGE" stop >/dev/null 2>&1 || true
     local to="${E2E_DROPOFF_TIMEOUT:-300}" waited=0
     while [ "$waited" -lt "$to" ]; do
-        payload=$(curl -fsS --max-time 10 "$E2E_DASH_URL" 2>/dev/null || true)
+        payload=$(dash_curl)
         printf '%s' "$payload" | grep -q "$me" || break
         sleep 15
         waited=$((waited + 15))
