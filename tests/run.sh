@@ -7041,6 +7041,160 @@ bkf_out="$( (
 assert_contains "commit: unwritable backup dir -> rejected" "$bkf_out" "rejected backup-failed"
 assert_eq "commit: backup failure leaves config.json untouched (donation 1)" "$(jq -r .DONATION "$bkfail/config.json")" "1"
 
+echo "== unit: _control_fast_path_eligible — closed allowlist classification (#381) =="
+fpe() { # <keys-csv> -> eligible|not
+    (
+        source "$SCRIPT"
+        set +e
+        if _control_fast_path_eligible "$1"; then echo eligible; else echo not; fi
+    )
+}
+assert_eq "single restart-free key: watchdog_interval_min -> eligible" "$(fpe "watchdog_interval_min")" "eligible"
+assert_eq "single restart-free key: max_temp_c -> eligible" "$(fpe "max_temp_c")" "eligible"
+assert_eq "both restart-free keys together -> eligible" "$(fpe "max_temp_c,watchdog_interval_min")" "eligible"
+assert_eq "pools alone (own xmrig config) -> not eligible" "$(fpe "pools")" "not"
+assert_eq "DONATION alone (own xmrig config) -> not eligible" "$(fpe "DONATION")" "not"
+assert_eq "autotune alone (unaudited install_* path) -> not eligible" "$(fpe "autotune")" "not"
+assert_eq "watchdog alone (unaudited install_* path) -> not eligible" "$(fpe "watchdog")" "not"
+# Mutation this catches: the ALL-keys-must-qualify subset check loosened to an ANY-key check — a
+# restart-free key riding alongside DONATION would wrongly clear the whole change for the fast path.
+assert_eq "mixed restart-free + non-restart-free -> not eligible" "$(fpe "DONATION,max_temp_c")" "not"
+# Mutation this catches: the closed-allowlist subset check inverted into a "not on the slow list"
+# complement — an unrecognised/future CONTROL_WRITABLE_KEYS addition would then wrongly pass.
+assert_eq "unrecognised/future key alone -> not eligible (closed set, not a complement)" "$(fpe "some_future_key")" "not"
+assert_eq "empty keys-csv -> not eligible (fail closed)" "$(fpe "")" "not"
+assert_eq "control_apply's jq-failure sentinel '?' -> not eligible (fail closed)" "$(fpe "?")" "not"
+
+# Pin the allowlist's exact membership (mirrors the CONTROL_WRITABLE_KEYS drift guard further below).
+# Mutation this catches: the allowlist silently growing (or shrinking) without a matching
+# evidence-trail/test update.
+fp_keys="$(grep -oE 'CONTROL_FAST_PATH_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
+assert_eq "fast-path allowlist is EXACTLY {max_temp_c, watchdog_interval_min} (#381)" "$fp_keys" "max_temp_c watchdog_interval_min "
+# Drift guard: the fast-path allowlist must stay a SUBSET of the control-writable allowlist — a
+# fast-path key control_apply couldn't even accept as writable in the first place would be dead code.
+ck_keys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
+fp_subset_ok=y
+for k in $fp_keys; do
+    case " $ck_keys " in *" $k "*) ;; *) fp_subset_ok=n ;; esac
+done
+assert_eq "fast-path allowlist is a subset of the control-writable allowlist (#381)" "$fp_subset_ok" "y"
+
+echo "== unit: _control_do_apply_fast — reuses install_watchdog, skips apply()/xmrig restart (#381) =="
+FPA="$(mktemp -d "$SANDBOX/fpa.XXXXXX")"
+mkdir -p "$FPA/systemd"
+cp "$ROOT/systemd/rigforge-watchdog.service.template" "$ROOT/systemd/rigforge-watchdog.timer.template" "$FPA/systemd/"
+fpa_run() { # <watchdog_interval_min> -> "rc=<n>"; side effects: $FPA/apply-called, $FPA/meta.json
+    rm -f "$FPA/apply-called" "$FPA/meta.json"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$FPA"
+        SYSTEMD_DIR="$FPA/systemd"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        CONFIG_JSON="$FPA/config.json"
+        CONFIG_META_FILE="$FPA/meta.json"
+        WATCHDOG_MODE=enabled
+        WATCHDOG_INTERVAL_MIN="$1"
+        # Isolate: parse_config would normally derive the globals above from CONFIG_JSON; stub it so
+        # this test pins _control_do_apply_fast's OWN behaviour, not parse_config's (covered elsewhere).
+        parse_config() { :; }
+        apply() {
+            echo called >"$FPA/apply-called" 2>/dev/null
+            return 0
+        }
+        RIGFORGE_CONFIG_SOURCE=control
+        RIGFORGE_CONFIG_CHANGE_ID=fedcba9876543210
+        set +e
+        PATH="$STUBS:$PATH" _control_do_apply_fast
+        echo "rc=$?"
+    )
+}
+printf '{"pools":[{"url":"h:3333"}],"watchdog":"enabled","watchdog_interval_min":9}\n' >"$FPA/config.json"
+out="$(fpa_run 9)"
+assert_contains "_control_do_apply_fast returns 0 when the miner service is active" "$out" "rc=0"
+assert_eq "_control_do_apply_fast NEVER calls apply() — xmrig is not restarted (#381)" "$([ -f "$FPA/apply-called" ] && echo called || echo not-called)" "not-called"
+assert_contains "install_watchdog re-renders the timer with the NEW interval (#381)" "$(cat "$FPA/systemd/rigforge-watchdog.timer")" "OnUnitActiveSec=9min"
+assert_eq "config_meta stamped source=control, parity with apply()'s own _stamp_config_meta call (#381)" "$(jq -r .source "$FPA/meta.json" 2>/dev/null)" "control"
+assert_eq "config_meta records the change_id, same parity (#381)" "$(jq -r .last_change_id "$FPA/meta.json" 2>/dev/null)" "fedcba9876543210"
+
+echo "== unit: control_apply + REAL _control_do_apply_fast — run-state criterion, not is-active alone (#381 security review) =="
+# The generic systemctl stub always exits 0, so the fpa_run tests above only ever exercise the
+# active-before/active-after case. A rig can be LEGITIMATELY stopped when a restart-free change
+# lands — a watchdog thermal hold, or an operator's manual stop — and the fast path must not read
+# that pre-existing stop as its own failure and roll the change back. This exercises control_apply
+# end to end with the REAL _control_do_apply_fast (unlike the marker-stubbed one in ca_exec below) and
+# a STATEFUL systemctl stub that answers `is-active` differently across the two calls the function
+# makes (before the watchdog reconcile, and after), so the run-state comparison is genuinely tested.
+CAF="$(mktemp -d "$SANDBOX/caf.XXXXXX")"
+caf_systemctl_stub() { # <rc for the 1st is-active call> <rc for the 2nd+> -> writes $CAF/bin/systemctl
+    mkdir -p "$CAF/bin"
+    cat >"$CAF/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "[systemctl] \$*" >> "\${CALL_LOG:-/dev/null}"
+case "\$*" in
+*"is-active"*)
+    n=\$(( \$(cat "$CAF/systemctl-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "\$n" >"$CAF/systemctl-calls"
+    if [ "\$n" -eq 1 ]; then exit $1; else exit $2; fi
+    ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$CAF/bin/systemctl"
+}
+caf_exec() {
+    (
+        source "$SCRIPT"
+        parse_config() { :; } # the live config is already valid; don't re-validate it (matches ca_exec)
+        # apply()/_wait_miner_live only matter for the ROLLBACK leg here — already covered in depth by
+        # the #236/#276 tests below — so they stay simple stubs; the marker proves whether a rollback
+        # (i.e. a restart attempt) was ever reached, which is exactly what a wrongly-tripped fast-path
+        # failure would cause.
+        apply() {
+            echo called >"$CAF/full-apply-called" 2>/dev/null || true
+            return 0
+        }
+        _wait_miner_live() { return 0; }
+        OS_TYPE=Linux
+        SCRIPT_DIR="$CAF"
+        SYSTEMD_DIR="$CAF/systemd"
+        CONFIG_JSON="$CAF/config.json"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        WATCHDOG_MODE=enabled
+        RIGFORGE_CONTROL_STATE="$CAF/state"
+        set +e
+        PATH="$CAF/bin:$STUBS:$PATH" control_apply >/dev/null 2>&1
+    )
+}
+caf_run() { # <staged-json> <is-active rc BEFORE> <is-active rc AFTER>
+    rm -rf "$CAF"
+    mkdir -p "$CAF/systemd" "$CAF/state/spool"
+    cp "$ROOT/systemd/rigforge-watchdog.service.template" "$ROOT/systemd/rigforge-watchdog.timer.template" "$CAF/systemd/"
+    printf '%s\n' "$CFG_236" >"$CAF/config.json"
+    printf '%s' "$1" >"$CAF/state/spool/pending-abc123.json"
+    caf_systemctl_stub "$2" "$3"
+    caf_exec
+}
+cfst() { jq -r ".$1" "$CAF/state/status.json" 2>/dev/null; }
+
+# (a) inactive-before, inactive-after (rc 1, 1): a rig thermally held or manually stopped before the
+# change. Mutation this catches: reverting the run-state comparison to a naive "is it active NOW"
+# check — that mutant reports rc=1 here (not active) and would wrongly roll the change back.
+caf_run '{"max_temp_c":90}' 1 1
+assert_eq "inactive-before/inactive-after -> status applied, not rolled back (#381)" "$(cfst status)" "applied"
+assert_eq "inactive-before/inactive-after -> the new value lands in config.json (#381)" "$(jq -r .max_temp_c "$CAF/config.json")" "90"
+assert_eq "inactive-before/inactive-after -> no restart/rollback ever attempted (#381)" "$([ -f "$CAF/full-apply-called" ] && echo called || echo not-called)" "not-called"
+
+# (b) active-before, inactive-after (rc 0, 1): the miner really did go down across this change.
+# Guards against the run-state criterion being dropped entirely (e.g. _control_do_apply_fast reverted
+# to always returning 0) — a real regression here must still trip the existing rollback.
+caf_run '{"max_temp_c":90}' 0 1
+assert_eq "active-before/inactive-after -> status rolled_back (#381)" "$(cfst status)" "rolled_back"
+assert_eq "active-before/inactive-after -> config restored, max_temp_c unset again (#381)" "$(jq -r .max_temp_c "$CAF/config.json")" "null"
+assert_eq "active-before/inactive-after -> rollback re-apply invoked (#381)" "$([ -f "$CAF/full-apply-called" ] && echo called || echo not-called)" "called"
+
 echo "== unit: control_apply orchestration + rollback (#236) =="
 CA="$(mktemp -d "$SANDBOX/ca.XXXXXX")"
 ca_exec() {
@@ -7048,8 +7202,21 @@ ca_exec() {
         source "$SCRIPT"
         parse_config() { :; } # the live config is already valid; don't re-validate it
         # Stub apply + liveness (not _control_do_apply itself) so its real body runs: apply is a
-        # no-op, CA_APPLY_OK drives whether the miner "comes back" (0 -> the rollback path).
-        apply() { return 0; }
+        # no-op, CA_APPLY_OK drives whether the miner "comes back" (0 -> the rollback path). The
+        # marker file lets an assertion OUTSIDE this subshell prove apply() — the pipeline that
+        # regenerates xmrig's config and restarts it — was (or, #381, was deliberately NOT) reached.
+        apply() {
+            echo called >"$CA/full-apply-called" 2>/dev/null || true
+            return 0
+        }
+        # #381: the fast-path counterpart, stubbed the same way — not _control_fast_path_eligible
+        # (its real body runs, since the routing decision IS what these tests exercise).
+        # CA_FAST_APPLY_OK drives whether it "succeeds" (default 1); on failure control_apply must
+        # fall through to the SAME full-pipeline rollback a failed full apply already takes.
+        _control_do_apply_fast() {
+            echo called >"$CA/fast-apply-called" 2>/dev/null || true
+            [ "${CA_FAST_APPLY_OK:-1}" = 1 ]
+        }
         # _wait_miner_live is called once for the initial apply and (on the rollback path) again for the
         # rollback re-apply. CA_APPLY_OK drives the 1st call; CA_ROLLBACK_OK drives the 2nd, defaulting to
         # CA_APPLY_OK so every pre-#276 test (which only ever sets CA_APPLY_OK) is unaffected — #276 pins
@@ -7141,6 +7308,45 @@ printf '%s' '{"status":"pending","change_id":"'"$CID344"'","accepted_at":"2020-0
 CA_APPLY_OK=1 ca_exec
 assert_eq "control_apply writes the terminal changes/<cid>.json (#344)" "$([ -f "$CA/state/changes/$CID344.json" ] && echo y || echo n)" "y"
 assert_eq "control_apply clears the now-superseded pending/<cid>.json (#344)" "$([ -f "$CA/state/pending/$CID344.json" ] && echo y || echo n)" "n"
+
+# #381 (from #344 item 1): control_apply must route a change through _control_do_apply_fast instead
+# of the full, xmrig-restarting apply() IFF every changed key is on the closed CONTROL_FAST_PATH_KEYS
+# allowlist — proven here via the full-apply-called/fast-apply-called markers ca_exec's stubs write,
+# not just by the reported status (which is "applied" either way and so can't tell the paths apart).
+ca_run "$CFG_236" '{"watchdog_interval_min":9}' 1
+assert_eq "watchdog_interval_min-only change -> status applied (#381)" "$(cst status)" "applied"
+assert_eq "watchdog_interval_min-only change -> config committed" "$(jq -r .watchdog_interval_min "$CA/config.json")" "9"
+assert_eq "watchdog_interval_min-only change takes the fast path" "$([ -f "$CA/fast-apply-called" ] && echo called || echo not-called)" "called"
+assert_eq "watchdog_interval_min-only change NEVER calls apply() (xmrig untouched, #381)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "not-called"
+ca_run "$CFG_236" '{"max_temp_c":90}' 1
+assert_eq "max_temp_c-only change also takes the fast path (#381)" "$([ -f "$CA/fast-apply-called" ] && echo called || echo not-called)" "called"
+assert_eq "max_temp_c-only change never calls apply() (#381)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "not-called"
+ca_run "$CFG_236" '{"watchdog_interval_min":9,"max_temp_c":90}' 1
+assert_eq "both restart-free keys together still take the fast path (#381)" "$([ -f "$CA/fast-apply-called" ] && echo called || echo not-called)" "called"
+assert_eq "both-keys change reports applied (#381)" "$(cst status)" "applied"
+
+# Mutation this catches: if the ALL-keys-must-qualify subset check were loosened to an ANY-key (or a
+# "not explicitly on the slow list") check, this mixed change would wrongly take the fast path and
+# skip the restart DONATION needs to actually reach xmrig.
+ca_run "$CFG_236" '{"DONATION":5,"max_temp_c":90}' 1
+assert_eq "mixed restart-free + full-path key -> takes the FULL path (#381)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "called"
+assert_eq "mixed change never takes the fast path (#381)" "$([ -f "$CA/fast-apply-called" ] && echo called || echo not-called)" "not-called"
+assert_eq "mixed change still reports applied" "$(cst status)" "applied"
+# A pure DONATION change (already covered under #236 above) stays on the full path too — restated
+# here under #381 naming so the fast/full boundary is asserted with the marker files in one place.
+ca_run "$CFG_236" '{"DONATION":6}' 1
+assert_eq "DONATION-only change takes the full path, not fast (#381)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "called"
+assert_eq "DONATION-only change never takes the fast path (#381)" "$([ -f "$CA/fast-apply-called" ] && echo called || echo not-called)" "not-called"
+
+# A failed fast-path apply must fall back to the SAME full, restart-safe rollback a failed full apply
+# already takes — never report "applied" on a fast-path failure, and never leave the change stuck.
+# Mutation this catches: the fast branch skipping the rollback on failure, or reporting "applied"
+# regardless of _control_do_apply_fast's return code.
+CA_FAST_APPLY_OK=0 ca_run "$CFG_236" '{"max_temp_c":90}' 1
+assert_eq "failed fast-path apply -> status rolled_back, not applied (#381)" "$(cst status)" "rolled_back"
+assert_eq "failed fast-path apply -> config restored to pre-change (max_temp_c unset again)" "$(jq -r .max_temp_c "$CA/config.json")" "null"
+assert_eq "the rollback re-apply after a fast-path failure uses the FULL path (#381)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "called"
+
 # prune: KEEP_CONFIG_BACKUPS caps the history
 PB="$(mktemp -d "$SANDBOX/pb.XXXXXX")"
 mkdir -p "$PB/bk"

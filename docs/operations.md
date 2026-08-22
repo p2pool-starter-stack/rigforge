@@ -590,10 +590,16 @@ How a change flows:
 2. A path-triggered root oneshot picks up the staged change, snapshots the current `config.json` to
    `config-backups/config-<UTC-stamp>.json`, merges only the allowlisted keys, and re-validates the
    result with the same rules `apply` uses. An invalid change is rejected and **nothing is written**.
-3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied through the
-   normal `apply` path. If the miner does not come back to a live hashrate, the snapshot is restored
-   and re-applied, and the outcome is recorded as `rolled_back` (or `failed`, if the rollback snapshot
-   itself could not be read back).
+3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied. Changing only
+   `watchdog_interval_min` and/or `max_temp_c` takes a **restart-free fast path** (#381): neither key
+   ever reaches XMRig's generated config or its unit, so only the watchdog timer is reconciled and
+   XMRig itself is left running — round-trip in about a second instead of the ~60s a full restart
+   costs on a big-page host. Any other key (alone or mixed with those two) applies through the normal
+   `apply` path, which restarts XMRig. Either way, if the miner does not come back to a live hashrate
+   (full path) or the miner service is not found still running (fast path — a signal something else
+   was already wrong, since neither key can cause that), the snapshot is restored and re-applied
+   through the full path, and the outcome is recorded as `rolled_back` (or `failed`, if the rollback
+   snapshot itself could not be read back).
 4. `GET :8082/status` returns the last change's outcome (`applied` / `rejected` / `rolled_back` / `failed`, with
    `source: "control"`, the changed keys, the backup path, and a `warnings[]` for any change that
    touched thermal protection). Every response also carries a derived `age_seconds` next to its own

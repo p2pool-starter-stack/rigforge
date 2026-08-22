@@ -7,6 +7,18 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Control API: a restart-free fast path for `watchdog_interval_min` and `max_temp_c` (#381, from
+  #344 item 1).** `control-apply` used to re-run the entire `apply` pipeline for every accepted
+  change — regenerate XMRig's config, re-render its unit, restart the service, then poll for a live
+  pool connection — even for a change that never touches XMRig at all. A change whose keys are
+  *only* `watchdog_interval_min` and/or `max_temp_c` now reconciles just the watchdog timer and
+  leaves XMRig running, closing the ~62s gap the original walkthrough measured for a single-key
+  change. The allowlist is closed and checked as a subset match (a key not on it, including any
+  future addition to the control-writable set, still takes the full path), and a fast-path failure
+  falls back to the same full-pipeline rollback a failed restart already uses.
+
 ## [1.15.2] - 2026-08-21
 
 ### Added

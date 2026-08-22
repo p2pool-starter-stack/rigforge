@@ -191,7 +191,11 @@ apply config changes through RigForge — the RigForge-side producer for pithead
 (pithead #185). It is deliberately independent of the read API: a `POST :8082/apply` of an
 allowlisted change (`pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`,
 `max_temp_c`) returns `202 Accepted`; RigForge validates, snapshots the old config, applies it, and
-rolls back anything that doesn't come back live. The stack reads the new effective config back from
+rolls back anything that doesn't come back live. Changing only `watchdog_interval_min` and/or
+`max_temp_c` never restarts XMRig (#381) — those two are proven not to reach XMRig's config or unit,
+so RigForge reconciles just the watchdog timer instead of running the full apply pipeline, landing in
+about a second instead of the ~60s a restart costs. Any other key, alone or mixed with those two,
+takes the full, XMRig-restarting path. The stack reads the new effective config back from
 `:8081/2/summary` and polls `:8082/status` for the outcome. The write path is pinned to the stack
 host by `api_allow_from` (mandatory) — the miner never accepts a config from anywhere else. Full
 mechanics and the security model: [Operations › Writable control path](operations.md#writable-control-path-opt-in)
