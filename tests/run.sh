@@ -3151,6 +3151,9 @@ out="$(
 assert_rc "msr-apply: unknown family exits 0 (never wedges Restart=always) (#140)" "$?" "0"
 assert_contains "msr-apply: unknown family says so (#140)" "$out" "no MSR preset for this CPU family"
 # wrmsr (msr-tools) missing: warn + exit 0 — the miner still starts, just without the boost.
+# PATH here must NOT inherit the host's: on a bench box with msr-tools installed the real
+# /usr/sbin/wrmsr leaks through and msr_apply finds it (then dies on a real MSR write), so the
+# "missing" branch under test never runs. Pin the tail to bin dirs that carry no wrmsr.
 mkdir -p "$MSRT/nowr"
 cp "$MSRT/bin/lscpu" "$MSRT/bin/modprobe" "$MSRT/bin/id" "$MSRT/nowr/"
 out="$(
@@ -3159,7 +3162,7 @@ out="$(
         OS_TYPE=Linux
         parse_config() { WORKER_ROOT="$MSRT"; }
         set +e
-        T_VENDOR=AuthenticAMD T_FAMILY=25 T_MODEL=97 PATH="$MSRT/nowr:$STUBS:$PATH" msr_apply 2>&1
+        T_VENDOR=AuthenticAMD T_FAMILY=25 T_MODEL=97 PATH="$MSRT/nowr:$STUBS:/usr/bin:/bin" msr_apply 2>&1
         echo "rc=$?"
     )
 )"
@@ -6345,7 +6348,7 @@ for good in "192.168.1.10" "10.0.0.0/8"; do
     assert_eq "api_allow_from '$good' -> family ip (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip"
 done
 # incl. the all-zeros address (::) and the v6 default route (::/0 — permissive but valid) as edges.
-for good6 in "fd00::/64" "2605:59c8::5" "fe80::1" "::1" "::" "::/0"; do
+for good6 in "fd00::/64" "2001:db8::5" "fe80::1" "::1" "::" "::/0"; do
     c="$(mkconf "af6_ok_$RANDOM" "{ $POOL, \"api_allow_from\": \"$good6\" }")"
     assert_eq "api_allow_from '$good6' parses IPv6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FROM)" "$good6"
     assert_eq "api_allow_from '$good6' -> family ip6 (#243)" "$(parse_and_print "$c" "$ROOT" API_ALLOW_FAMILY)" "ip6"
@@ -6375,7 +6378,7 @@ w6b="$( (
     PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
 ))"
 assert_absent "IPv6 allow_from + :: bind: no warn (#243)" "$w6b" "aren't reachable over IPv6"
-for bad in "256.1.1.1" "1.2.3.4/33" "fd00::/200" "xyz::1" "gouda.lan" "1.2.3.4; rm -rf /" "fd00::/64 accept; drop"; do
+for bad in "256.1.1.1" "1.2.3.4/33" "fd00::/200" "xyz::1" "stack-host.lan" "1.2.3.4; rm -rf /" "fd00::/64 accept; drop"; do
     c="$(mkconf "af_bad_$RANDOM" "{ $POOL, \"api_allow_from\": \"$bad\" }")"
     parse_rc "$c" "$ROOT"
     assert_rc "api_allow_from '$bad' rejected (#142/#243)" "$?" "1"
@@ -6980,11 +6983,11 @@ cfgblk() { # <config-json> -> the rigforge.config JSON
         _api_config_json
     ) 2>/dev/null
 }
-C253='{ "pools":[{"url":"gouda:3333","user":"wallet.rig","pass":"SECRET","keepalive":true,"tls":true,"tls-fingerprint":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}], "DONATION":2, "autotune":"perf", "watchdog":"on", "watchdog_interval_min":10, "max_temp_c":85 }'
+C253='{ "pools":[{"url":"stack-host:3333","user":"wallet.rig","pass":"SECRET","keepalive":true,"tls":true,"tls-fingerprint":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}], "DONATION":2, "autotune":"perf", "watchdog":"on", "watchdog_interval_min":10, "max_temp_c":85 }'
 blk="$(cfgblk "$C253")"
 assert_eq "config: pool pass masked — no secret on the open read (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].pass // "ABSENT"')" "ABSENT"
 assert_eq "config: pool tls-fingerprint masked (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0]."tls-fingerprint" // "ABSENT"')" "ABSENT"
-assert_eq "config: pool url + user preserved (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].url + " " + .pools[0].user')" "gouda:3333 wallet.rig"
+assert_eq "config: pool url + user preserved (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].url + " " + .pools[0].user')" "stack-host:3333 wallet.rig"
 assert_eq "config: autotune canonical perf->performance (#253)" "$(printf '%s' "$blk" | jq -r '.autotune')" "performance"
 assert_eq "config: watchdog canonical on->enabled (#253)" "$(printf '%s' "$blk" | jq -r '.watchdog')" "enabled"
 assert_eq "config: max_temp_c is a plain int (#253)" "$(printf '%s' "$blk" | jq -r '.max_temp_c')" "85"
@@ -8002,7 +8005,7 @@ else
     cat >"$RTCD/bin/stat" <<'EOF'
 #!/usr/bin/env bash
 case "$3" in
-"/home/vijit/rigforge") echo 750 ;;
+"/home/miner/rigforge") echo 750 ;;
 *) echo 755 ;;
 esac
 EOF
@@ -8014,11 +8017,11 @@ EOF
             exit 2
         }
         set +e
-        PATH="$RTCD/bin:$PATH" require_traversable_checkout /home/vijit/rigforge/tests
+        PATH="$RTCD/bin:$PATH" require_traversable_checkout /home/miner/rigforge/tests
         echo "rc=$?"
     ) 2>&1)"
     assert_contains "a mode-750 ancestor is caught (#362)" "$out" "DIE:"
-    assert_contains "names the exact blocking path and mode (#362)" "$out" "'/home/vijit/rigforge' is mode 750"
+    assert_contains "names the exact blocking path and mode (#362)" "$out" "'/home/miner/rigforge' is mode 750"
     assert_contains "names the remedy (#362)" "$out" "/opt/rigforge-e2e"
     out2="$( (
         eval "$RTC_SRC"
@@ -8033,6 +8036,50 @@ EOF
     assert_absent "a fully-traversable path never dies (#362)" "$out2" "DIE:"
     assert_contains "a fully-traversable path returns cleanly (#362)" "$out2" "rc=0"
 fi
+
+echo "== unit: e2e-pithead dashboard leg — hardened-dashboard curl + no vacuous drop-off (#390) =="
+DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+PD_SRC="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+DDIR="$(mktemp -d "$SANDBOX/dash390.XXXXXX")"
+# dash_curl behavior: a stub curl records its argv; the helper must follow redirects through the
+# self-signed cert (-kLfsS; -f keeps an HTTP-error payload empty instead of an error page) and present E2E_DASH_AUTH via -u only when set.
+mkdir -p "$DDIR/bin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$DC_ARGS"\n' >"$DDIR/bin/curl"
+chmod +x "$DDIR/bin/curl"
+out="$( (
+    eval "$DC_SRC"
+    export DC_ARGS="$DDIR/args.with"
+    E2E_DASH_URL="http://stack-host/api/state" E2E_DASH_AUTH="probe:pw" PATH="$DDIR/bin:$PATH" dash_curl >/dev/null
+    export DC_ARGS="$DDIR/args.without"
+    E2E_DASH_URL="http://stack-host/api/state" E2E_DASH_AUTH="" PATH="$DDIR/bin:$PATH" dash_curl >/dev/null
+) 2>&1)"
+assert_contains "dash_curl follows redirects + accepts the stack cert (#390)" "$(cat "$DDIR/args.with")" "-kLfsS"
+assert_contains "dash_curl presents basic-auth creds when E2E_DASH_AUTH is set (#390)" "$(cat "$DDIR/args.with")" "probe:pw"
+assert_absent "dash_curl sends no -u when E2E_DASH_AUTH is empty (#390)" "$(cat "$DDIR/args.without")" "probe:pw"
+# Never-visible worker: the leg must report the failure and SKIP the drop-off check — before #390
+# the loop broke on its first probe and reported "dropped off within 0s", a pass that measured
+# nothing. Mutation (run during review): restoring the pre-#390 body (no skip/return) makes the
+# assert_absent below go red.
+pd_run() { # <dash_curl-body> -> phase_dashboard transcript with stubbed collaborators
+    (
+        eval "$PD_SRC"
+        eval "dash_curl() { $1; }"
+        phase() { :; }
+        skip() { printf 'SKIP %s\n' "$1"; }
+        ok() { printf 'OK %s\n' "$1"; }
+        bad() { printf 'BAD %s\n' "$1"; }
+        RIGFORGE=true E2E_DASH_URL="http://stack-host/api/state" E2E_DROPOFF_TIMEOUT=1 phase_dashboard
+    ) 2>&1
+}
+out="$(pd_run 'printf no-workers-here')"
+assert_contains "never-visible worker reads as a failure (#390)" "$out" "BAD worker"
+assert_contains "drop-off is skipped when visibility never held (#390)" "$out" "SKIP drop-off check skipped"
+assert_absent "no vacuous dropped-off pass on a never-visible worker (#390)" "$out" "dropped off within"
+# Visible-then-stopped worker: the drop-off pass must still function (first probe sees the rig,
+# later probes do not).
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; hostname; fi')"
+assert_contains "visible worker passes the visibility check (#390)" "$out" "OK worker"
+assert_contains "stopped worker still measured dropping off (#390)" "$out" "OK stopped worker dropped off"
 
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
