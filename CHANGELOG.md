@@ -28,8 +28,9 @@ All notable changes to RigForge are documented here. The format is based on
   into a double count no value of `hugepages_reserve_extra_mb` can correct — traced to an ~12 GiB
   pool request on an 8 GiB box (pithead#1103). `hugepages_pool_ceiling_mb` (default `0`, no
   ceiling) caps the write itself instead: when declared, `vm.nr_hugepages` is never grown past the
-  ceiling regardless of how the requirement/availability arithmetic comes out. Inert unless a
-  caller sets it — every existing config computes exactly as before.
+  ceiling regardless of how the requirement/availability arithmetic comes out — an odd declared MB
+  value floors to the 2MB page below rather than rounding up past it. Inert unless a caller sets
+  it — every existing config computes exactly as before.
 
 ## [1.15.2] - 2026-08-21
 

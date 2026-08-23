@@ -5710,6 +5710,21 @@ out="$(run_ensure_hp398 "$SC" 3782 224 2560 5120)"
 assert_absent "ceiling already met -> no write at all (#398)" "$(cat "$SC")" "vm.nr_hugepages"
 assert_contains "ceiling-already-met is a WARN naming the ceiling (#398)" "$out" "already at its declared ceiling"
 
+# An ODD declared ceiling must FLOOR to the 2MB page below, never round up past itself (security
+# review finding on the first version of this fix: `(HUGEPAGES_POOL_CEILING_MB + 1) / 2` rounds an
+# odd MB value UP, so 5121MB became 2561 pages = 5122MB — one page past the declared ceiling,
+# violating "never grown past the ceiling"). 5121 floors to the SAME 2560 pages as the even 5120MB
+# case above, so with current already at 2560 the pool is already at-or-past the (floored) ceiling
+# and the write is skipped, exactly like calls3. Mutation kill: restoring the `+ 1` rounds 5121MB
+# up to 2561 pages instead, which is > current(2560) — the code takes the CAP branch instead of the
+# already-met branch and WRITES `vm.nr_hugepages=2561` (5122MB, over the declared 5121MB), flipping
+# both assertions below red.
+SC="$HPC/calls_odd"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 3782 224 2560 5121)"
+assert_absent "odd ceiling (5121MB) floors to 2560 pages -> no write, not 2561 (#398 mutation kill)" "$(cat "$SC")" "vm.nr_hugepages"
+assert_contains "odd-ceiling floor is a WARN naming the ceiling (#398)" "$out" "already at its declared ceiling"
+
 # Regression: no headroom and no ceiling at all still behaves like plain #328 grow-only sizing,
 # through the SAME direct-call path used above — proves #398 didn't reshape the ceiling-absent
 # code path.

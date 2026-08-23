@@ -583,7 +583,9 @@ parse_config() {
     # are simultaneously excluded from "available," so the shortfall the grow-only write computes counts
     # the same pages twice. A ceiling stops the WRITE from ever exceeding the box's declared honest
     # capacity, regardless of how that upstream arithmetic comes out. Default 0 = no ceiling (today's
-    # behavior, unchanged) — only a caller that declares this key opts into the cap.
+    # behavior, unchanged) — only a caller that declares this key opts into the cap. An odd MB value
+    # FLOORS to the 2MB page below (e.g. 5121 -> 2560 pages, 5120MB effective) — a cap must round
+    # toward less memory, never more.
     HUGEPAGES_POOL_CEILING_MB=$(jq -r '.hugepages_pool_ceiling_mb // 0' "$CONFIG_JSON")
     if ! [[ "$HUGEPAGES_POOL_CEILING_MB" =~ ^[0-9]+$ ]] || [ "$HUGEPAGES_POOL_CEILING_MB" -gt 65536 ]; then
         error "hugepages_pool_ceiling_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_POOL_CEILING_MB)."
@@ -1520,8 +1522,12 @@ _ensure_hugepages() { # <required 2MB pages>
     # count a co-resident consumer's already-held pages (rigforge#398), and no declared value of
     # hugepages_reserve_extra_mb can fix that from the requirement side. Absent (0, the default) this
     # whole block is skipped and the write below is byte-for-byte the pre-#398 arithmetic (#328).
+    # FLOORED to whole 2MB pages (not rounded up like EXTRA_2MB_PAGES elsewhere): a cap must round
+    # toward less memory, never more — an odd declared MB value (e.g. 5121) floors to the page below
+    # (2560, 5120MB) rather than overshooting the declared ceiling by a page (security review finding
+    # on the first version of this fix: ceil(MB/2) let an odd ceiling write one page past itself).
     if [ "${HUGEPAGES_POOL_CEILING_MB:-0}" -gt 0 ] 2>/dev/null; then
-        ceiling_pages=$(((HUGEPAGES_POOL_CEILING_MB + 1) / 2))
+        ceiling_pages=$((HUGEPAGES_POOL_CEILING_MB / 2))
         if [ "$target" -gt "$ceiling_pages" ]; then
             if [ "$ceiling_pages" -le "$current" ]; then
                 warn "HugePages pool is already at its declared ceiling ($current pages, ${HUGEPAGES_POOL_CEILING_MB}MB) — the computed requirement ($target pages) exceeds it, so the pool is left as-is; the miner may run without a full HugePages share (#398)."
