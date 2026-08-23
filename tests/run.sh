@@ -1034,6 +1034,31 @@ out="$(
 )"
 assert_contains "threads 0 rejected (min 1)" "$out" "threads must be"
 
+# parse_config: hugepages_pool_ceiling_mb (#398) — parses, defaults to 0 (no ceiling), rejects bad
+# values the same way hugepages_reserve_extra_mb does.
+echo "== unit: parse_config hugepages_pool_ceiling_mb (#398) =="
+c398="$SANDBOX/c398.json"
+printf '{"pools":[{"url":"h:3333"}],"hugepages_pool_ceiling_mb":5120}\n' >"$c398"
+assert_eq "hugepages_pool_ceiling_mb parsed" "$(parse_and_print "$c398" "$ROOT" HUGEPAGES_POOL_CEILING_MB)" "5120"
+printf '{"pools":[{"url":"h:3333"}]}\n' >"$c398"
+assert_eq "hugepages_pool_ceiling_mb defaults to 0 (no ceiling, #398)" "$(parse_and_print "$c398" "$ROOT" HUGEPAGES_POOL_CEILING_MB)" "0"
+printf '{"pools":[{"url":"h:3333"}],"hugepages_pool_ceiling_mb":-5}\n' >"$c398"
+out="$(
+    source "$SCRIPT"
+    CONFIG_JSON="$c398"
+    SCRIPT_DIR="$ROOT"
+    PATH="$STUBS:$PATH" parse_config 2>&1
+)"
+assert_contains "negative ceiling rejected (#398)" "$out" "hugepages_pool_ceiling_mb must be"
+printf '{"pools":[{"url":"h:3333"}],"hugepages_pool_ceiling_mb":99999999}\n' >"$c398"
+out="$(
+    source "$SCRIPT"
+    CONFIG_JSON="$c398"
+    SCRIPT_DIR="$ROOT"
+    PATH="$STUBS:$PATH" parse_config 2>&1
+)"
+assert_contains "oversized ceiling rejected (#398)" "$out" "hugepages_pool_ceiling_mb must be"
+
 # generate_xmrig_config: the thread cap clamps cpu.rx AFTER any tune overlay (a stale tuned count can't
 # exceed the operator's headroom); a valid count at/under the cap is left alone.
 echo "== config-gen: threads cap clamps cpu.rx (#305) =="
@@ -5617,6 +5642,96 @@ SC="$HP/calls6"
 : >"$SC"
 out="$(run_tk328_nopg "$SC")"
 assert_contains "fallback (no proposed-grub.sh) is grow-only too (#328)" "$(cat "$SC")" "vm.nr_hugepages=3072"
+
+# ---------------------------------------------------------------------------
+# #398: hugepages_pool_ceiling_mb bounds the grow-only write to a declared ceiling instead of
+# letting a co-resident stack's declared headroom double-count into the write (rigforge#398). The
+# fixture below is the worked example from rigforge#398 / pithead#1103: an 8 GB reduced-tier
+# appliance box with NUMA_NODES=1, THREADS=4, hugepages_reserve_extra_mb=5120 (the tier's own 5 GiB
+# reservation, declared as the co-located miner's headroom), a pool already at 2560 pages (5 GiB)
+# of which the stack holds ~2336 (HugePages_Free=224), and no miner running yet (held=0).
+# util/proposed-grub.sh's real fallback formula (1168*NUMA + THREADS + 50 + ceil(extra_mb/2)) gives
+# required=3782 2MB pages for these inputs (re-derived independently in rigforge#398 — NOT the 3870
+# both pithead#1103 and pithead#1306 quote, which conflates proposed-grub.sh's two formula branches
+# into one call that never actually happens). `_ensure_hugepages` is exercised directly (not
+# through tune_kernel) so the ceiling logic is pinned in isolation from proposed-grub.sh's own
+# math, already covered by the #65/#305 suites above.
+echo "== unit: hugepages pool ceiling bounds the grow-only write (#398) =="
+HPC="$(mktemp -d "$SANDBOX/hpc398.XXXXXX")"
+mkdir -p "$HPC/bin"
+cat >"$HPC/bin/sysctl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$SYSCTL_CALLS"
+EOF
+chmod +x "$HPC/bin/sysctl"
+run_ensure_hp398() { # <sysctl_calls_file> <required> <HugePages_Free> <pool_total> [ceiling_mb]
+    (
+        source "$SCRIPT"
+        printf 'HugePages_Free:    %s\n' "$3" >"$HPC/meminfo"
+        printf '%s\n' "$4" >"$HPC/nr_hugepages"
+        MEMINFO="$HPC/meminfo"
+        NR_HUGEPAGES_FILE="$HPC/nr_hugepages"
+        _miner_held_hugepages() { echo 0; } # out of scope here — #328 above covers the held-pages credit
+        HUGEPAGES_POOL_CEILING_MB="${5:-0}"
+        export SYSCTL_CALLS="$1"
+        set +e
+        PATH="$HPC/bin:$STUBS:$PATH" _ensure_hugepages "$2" 2>&1
+    )
+}
+
+# No ceiling declared: the 8 GB fixture's required/avail math is BYTE-FOR-BYTE the pre-#398
+# arithmetic — the conservative "no declaration, no behavior change" pin. (This unavoidably also
+# reproduces the double count itself: fixing that is what declaring the ceiling below does, not a
+# change to this arithmetic.)
+SC="$HPC/calls1"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 3782 224 2560)"
+assert_contains "no ceiling declared -> unchanged pre-#398 arithmetic (8 GB fixture, #398)" "$(cat "$SC")" "vm.nr_hugepages=6118"
+
+# Ceiling declared, above current but below the uncapped target: the write is CAPPED at the
+# ceiling instead of the double-counted 6118. Mutation kill: respelling _ensure_hugepages back to
+# its pre-#398 body (`sudo sysctl -w vm.nr_hugepages=$((current + required - avail))`, no ceiling
+# clamp) turns both assertions below red — the write goes back to 6118 regardless of the declared
+# ceiling. Confirmed by hand against that exact reverted body before this test was written.
+SC="$HPC/calls2"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 3782 224 2560 6400)"
+assert_contains "ceiling above current caps the write, not the double count (#398)" "$(cat "$SC")" "vm.nr_hugepages=3200"
+assert_absent "capped write is no longer the double-counted 6118 (#398 mutation kill)" "$(cat "$SC")" "6118"
+assert_contains "capping is logged with the ceiling reason (#398)" "$out" "capping the write"
+
+# Ceiling declared AT the tier's own already-committed reservation (2560 pages / 5120 MB, the real
+# reduced-tier number from pithead#1103): the pool is already at the ceiling, so the write is
+# skipped entirely rather than growing it — the miner gets zero extra pages, but the box is never
+# pushed past its declared honest capacity.
+SC="$HPC/calls3"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 3782 224 2560 5120)"
+assert_absent "ceiling already met -> no write at all (#398)" "$(cat "$SC")" "vm.nr_hugepages"
+assert_contains "ceiling-already-met is a WARN naming the ceiling (#398)" "$out" "already at its declared ceiling"
+
+# An ODD declared ceiling must FLOOR to the 2MB page below, never round up past itself (security
+# review finding on the first version of this fix: `(HUGEPAGES_POOL_CEILING_MB + 1) / 2` rounds an
+# odd MB value UP, so 5121MB became 2561 pages = 5122MB — one page past the declared ceiling,
+# violating "never grown past the ceiling"). 5121 floors to the SAME 2560 pages as the even 5120MB
+# case above, so with current already at 2560 the pool is already at-or-past the (floored) ceiling
+# and the write is skipped, exactly like calls3. Mutation kill: restoring the `+ 1` rounds 5121MB
+# up to 2561 pages instead, which is > current(2560) — the code takes the CAP branch instead of the
+# already-met branch and WRITES `vm.nr_hugepages=2561` (5122MB, over the declared 5121MB), flipping
+# both assertions below red.
+SC="$HPC/calls_odd"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 3782 224 2560 5121)"
+assert_absent "odd ceiling (5121MB) floors to 2560 pages -> no write, not 2561 (#398 mutation kill)" "$(cat "$SC")" "vm.nr_hugepages"
+assert_contains "odd-ceiling floor is a WARN naming the ceiling (#398)" "$out" "already at its declared ceiling"
+
+# Regression: no headroom and no ceiling at all still behaves like plain #328 grow-only sizing,
+# through the SAME direct-call path used above — proves #398 didn't reshape the ceiling-absent
+# code path.
+SC="$HPC/calls4"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 200 0 0)"
+assert_contains "no headroom, no ceiling -> plain requirement, unchanged (#328 x #398)" "$(cat "$SC")" "vm.nr_hugepages=200"
 
 # ---------------------------------------------------------------------------
 # Appliance mode (pithead#797 R1): RIGFORGE_APPLIANCE=1 runs setup on the Pithead appliance image —

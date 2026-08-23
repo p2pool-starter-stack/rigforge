@@ -575,6 +575,21 @@ parse_config() {
     if ! [[ "$HUGEPAGES_RESERVE_EXTRA_MB" =~ ^[0-9]+$ ]] || [ "$HUGEPAGES_RESERVE_EXTRA_MB" -gt 65536 ]; then
         error "hugepages_reserve_extra_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_RESERVE_EXTRA_MB)."
     fi
+    # Total-pool ceiling (#398): a HARD CAP on the runtime pool RigForge will grow to, expressed in MB —
+    # unlike hugepages_reserve_extra_mb (which ADDS declared headroom into the computed requirement),
+    # this bounds the WRITE itself. It exists because no value of hugepages_reserve_extra_mb can fix a
+    # double-count between that requirement and the grow-only write's availability check (rigforge#398):
+    # a co-resident consumer's already-held pages land inside the requirement (as declared headroom) and
+    # are simultaneously excluded from "available," so the shortfall the grow-only write computes counts
+    # the same pages twice. A ceiling stops the WRITE from ever exceeding the box's declared honest
+    # capacity, regardless of how that upstream arithmetic comes out. Default 0 = no ceiling (today's
+    # behavior, unchanged) — only a caller that declares this key opts into the cap. An odd MB value
+    # FLOORS to the 2MB page below (e.g. 5121 -> 2560 pages, 5120MB effective) — a cap must round
+    # toward less memory, never more.
+    HUGEPAGES_POOL_CEILING_MB=$(jq -r '.hugepages_pool_ceiling_mb // 0' "$CONFIG_JSON")
+    if ! [[ "$HUGEPAGES_POOL_CEILING_MB" =~ ^[0-9]+$ ]] || [ "$HUGEPAGES_POOL_CEILING_MB" -gt 65536 ]; then
+        error "hugepages_pool_ceiling_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_POOL_CEILING_MB)."
+    fi
     # First-class thread cap (#305): a CEILING on the RandomX thread count — min(auto-detected, threads).
     # Empty (default) = let XMRig/L3 sizing pick. A co-located miner sets this (e.g. nproc-2) to leave
     # the stack cores free. Sizing and the generated cpu.rx both honour it; it never raises the count.
@@ -673,7 +688,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb threads"
+    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -1482,8 +1497,10 @@ _miner_held_hugepages() {
 # now, or already held by the running miner) and grow the pool by the shortfall only; never shrink
 # a reservation someone else made. Idempotent: a re-run that finds enough available writes nothing.
 # ponytail: with headroom configured AND the co-resident already running, its live pages and the
-# headroom both count toward the target — a bounded over-reserve in the safe direction; tighten to
-# max(headroom, live use) if a real box ever needs the difference.
+# headroom both count toward the target — a bounded over-reserve in the safe direction, UNLESS the
+# box is too small to absorb it (rigforge#398 / pithead#1103: ~12 GiB requested on an 8 GiB box).
+# hugepages_pool_ceiling_mb (see _ensure_hugepages) is the bound for a box that needs one; tighten
+# this function itself to max(headroom, live use) only if a real box needs the difference instead.
 _hugepages_avail() { # -> 2MB pages the miner could draw on right now (free + already held)
     local free held
     free=$(awk '/^HugePages_Free:/ { print $2; exit }' "$MEMINFO" 2>/dev/null) || free=""
@@ -1492,14 +1509,35 @@ _hugepages_avail() { # -> 2MB pages the miner could draw on right now (free + al
 }
 
 _ensure_hugepages() { # <required 2MB pages>
-    local required=$1 current avail
+    local required=$1 current avail target ceiling_pages
     current=$(cat "$NR_HUGEPAGES_FILE" 2>/dev/null) || current=0
     avail=$(_hugepages_avail)
-    if [ "$avail" -lt "$required" ]; then
-        sudo sysctl -w vm.nr_hugepages=$((current + required - avail))
-    else
+    if [ "$avail" -ge "$required" ]; then
         log "HugePages pool already covers the miner ($avail of $required pages available; pool: $current) — leaving it as-is (#328)."
+        return
     fi
+    target=$((current + required - avail))
+    # Total-pool ceiling (#398): hugepages_pool_ceiling_mb caps the WRITE itself rather than feeding
+    # more headroom into the requirement above — the requirement/availability arithmetic can double-
+    # count a co-resident consumer's already-held pages (rigforge#398), and no declared value of
+    # hugepages_reserve_extra_mb can fix that from the requirement side. Absent (0, the default) this
+    # whole block is skipped and the write below is byte-for-byte the pre-#398 arithmetic (#328).
+    # FLOORED to whole 2MB pages (not rounded up like EXTRA_2MB_PAGES elsewhere): a cap must round
+    # toward less memory, never more — an odd declared MB value (e.g. 5121) floors to the page below
+    # (2560, 5120MB) rather than overshooting the declared ceiling by a page (security review finding
+    # on the first version of this fix: ceil(MB/2) let an odd ceiling write one page past itself).
+    if [ "${HUGEPAGES_POOL_CEILING_MB:-0}" -gt 0 ] 2>/dev/null; then
+        ceiling_pages=$((HUGEPAGES_POOL_CEILING_MB / 2))
+        if [ "$target" -gt "$ceiling_pages" ]; then
+            if [ "$ceiling_pages" -le "$current" ]; then
+                warn "HugePages pool is already at its declared ceiling ($current pages, ${HUGEPAGES_POOL_CEILING_MB}MB) — the computed requirement ($target pages) exceeds it, so the pool is left as-is; the miner may run without a full HugePages share (#398)."
+                return
+            fi
+            log "HugePages requirement ($target pages) exceeds the declared pool ceiling — capping the write at $ceiling_pages pages (${HUGEPAGES_POOL_CEILING_MB}MB) instead of growing further (#398)."
+            target=$ceiling_pages
+        fi
+    fi
+    sudo sysctl -w vm.nr_hugepages=$target
 }
 
 tune_kernel() {
