@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-08-23
+
 ### Added
 
 - **Control API: a restart-free fast path for `watchdog_interval_min` and `max_temp_c` (#381, from
