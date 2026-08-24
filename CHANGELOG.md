@@ -28,7 +28,10 @@ All notable changes to RigForge are documented here. The format is based on
   The `tls-fingerprint` half is the one that mattered. An empty pin is **not** the same as no pin:
   XMRig skips certificate verification only when the pin is unset, and an empty string is not
   unset — it is compared against every certificate and matches none, so a pool configured that way
-  never connects and nothing says why. RigForge rejects the value rather than dropping the key,
+  never connects. XMRig does say why: it logs `Failed to verify server certificate fingerprint`,
+  followed by the fingerprint it computed and the empty one configured. What it cannot do is tell
+  the operator that the empty value was never a pin in the first place, which is the confusion this
+  rejects at validation time. RigForge rejects the value rather than dropping the key,
   because dropping it would silently convert that refusal into a pool that connects with no
   certificate verification at all.
 
