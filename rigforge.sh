@@ -499,6 +499,14 @@ parse_config() {
         # v3 .onion stratum work with no `socks5h` variant to ask for. Same host:port rules as the
         # pool url, via the shared validator, so an onion pool and its proxy cannot be judged by two
         # different standards.
+        # #408: `""` is not "unset", and the two predicates used to disagree about that. The emit
+        # step above keys on jq truthiness, so an empty string IS written into the generated
+        # config; `// empty` here makes it indistinguishable from absent, so it skipped validation
+        # entirely. Reject it rather than dropping the key — dropping is a silent downgrade for
+        # tls-fingerprint (see below), and one rule for both keys stops them drifting apart again.
+        if [ "$(jq -r 'has("socks5") and .socks5 == ""' <<<"$_pool")" = "true" ]; then
+            error "Pool socks5 is an empty string — remove the key, or give it a host:port such as 127.0.0.1:9050."
+        fi
         _s5=$(jq -r '.socks5 // empty' <<<"$_pool")
         if [ -n "$_s5" ]; then
             _validate_host_port "$_s5" "Pool socks5" 9050
@@ -510,10 +518,20 @@ parse_config() {
             error "Pool pass must be non-empty with no spaces or control characters."
         fi
         # TLS fingerprint pin (#115): xmrig does NO cert verification for stratum without a pin
-        # (v6.26.0 Tls.cpp verifyFingerprint returns true when unset), so the fingerprint is the
+        # (v6.26.0 Tls.cpp:186 verifyFingerprint returns true when the pin is a NULL pointer), so
+        # the fingerprint is the
         # ONLY server authentication stratum-TLS has. 64 hex chars, either case (xmrig compares
         # case-insensitively); passed verbatim, never normalized. A pin without tls:true is a hard
         # error — a silently-ignored pin would leave the operator believing they're protected.
+        # #408: an EMPTY pin is not an absent one, and the difference is security-relevant. XMRig
+        # v6.26.0 skips verification only when the pin is a null pointer; `""` parses to a non-null
+        # empty String (Pool.cpp:129 -> String::operator=(const char *)), so Tls.cpp:186 falls
+        # through to strncasecmp against every certificate and matches none — the pool never
+        # connects. That is why this rejects rather than dropping the key: dropping it would turn
+        # "refuse every cert" into "verify nothing", a silent downgrade introduced by the fix.
+        if [ "$(jq -r 'has("tls-fingerprint") and ."tls-fingerprint" == ""' <<<"$_pool")" = "true" ]; then
+            error "Pool tls-fingerprint is an empty string. Remove the key to connect without a pin, or set the cert's SHA-256 as 64 hex chars. An empty pin is not the same as no pin: xmrig compares it against every certificate and matches none, so the pool never connects."
+        fi
         _fp=$(jq -r '."tls-fingerprint" // empty' <<<"$_pool")
         if [ -n "$_fp" ]; then
             if ! [[ "$_fp" =~ ^[0-9A-Fa-f]{64}$ ]]; then

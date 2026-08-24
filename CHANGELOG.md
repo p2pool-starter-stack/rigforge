@@ -19,6 +19,22 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **An empty-string `socks5` or `tls-fingerprint` no longer skips validation (#408).** Two
+  predicates decided whether a pool key was set and they disagreed about `""`: the emit step keys
+  on jq truthiness, so an empty string was written into the generated config, while validation read
+  it through `// empty` and could not tell it from a key that was absent — so it was checked by
+  nothing. Both keys now reject an empty string with a message naming what to do instead.
+  `null` and an absent key are unchanged: still accepted, still kept out of the generated config.
+  The `tls-fingerprint` half is the one that mattered. An empty pin is **not** the same as no pin:
+  XMRig skips certificate verification only when the pin is unset, and an empty string is not
+  unset — it is compared against every certificate and matches none, so a pool configured that way
+  never connects. XMRig does say why: it logs `Failed to verify server certificate fingerprint`,
+  followed by the fingerprint it computed and the empty one configured. What it cannot do is tell
+  the operator that the empty value was never a pin in the first place, which is the confusion this
+  rejects at validation time. RigForge rejects the value rather than dropping the key,
+  because dropping it would silently convert that refusal into a pool that connects with no
+  certificate verification at all.
+
 - **A pool port too large to be a number no longer slips past validation (#405).** The range check
   read `[ "$port" -lt 1 ]`, and on a value bash cannot evaluate as an integer that returns an error
   rather than false — so the check fell through, an unusable port reached the generated config, and

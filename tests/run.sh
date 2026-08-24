@@ -379,6 +379,29 @@ assert_rc "socks5 with an invalid IPv6 literal rejected (#400)" "$?" "1"
 c="$(mkconf p_s6ok "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"[::1]:9050\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "socks5 as a bracketed IPv6 literal accepted (#400)" "$?" "0"
+# #408: an empty string is not "unset". The emit predicate is jq truthiness, so `""` WAS written
+# into the generated config, while the validator's `// empty` read it as absent and skipped every
+# check. Both keys now reject it. The tls-fingerprint case is the security-relevant one: xmrig
+# v6.26.0 skips verification only for a NULL pin, and `""` is a non-null empty String, so
+# Tls.cpp:186 compares it against every cert and matches none — the pool silently never connects.
+# Rejecting is therefore correct where DROPPING the key would be a downgrade to "verify nothing".
+c="$(mkconf p_s5empty "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "empty-string socks5 rejected, not silently emitted (#408)" "$?" "1"
+c="$(mkconf p_fpempty "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "empty-string tls-fingerprint rejected, not silently emitted (#408)" "$?" "1"
+# Rejected on its own merits, before the pin-without-tls guard can reach it — so deleting either
+# guard cannot leave the other silently covering for it.
+c="$(mkconf p_fpemptynotls "{ \"pools\": [{\"url\":\"h:3333\",\"tls-fingerprint\":\"\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "empty-string tls-fingerprint rejected without tls:true too (#408)" "$?" "1"
+# The controls that must NOT move: absent and null stay accepted and stay out of the config, so
+# the new guards cannot be passing by rejecting everything.
+c="$(mkconf p_s5nullok "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":null,\"tls-fingerprint\":null}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "null socks5 + null tls-fingerprint still accepted (#408)" "$?" "0"
+assert_eq "neither null key reaches the config (#408)" "$(PJ "$c" | jq -c '[(.[0]|has("socks5")),(.[0]|has("tls-fingerprint"))]')" "[false,false]"
 # #405: a port with more digits than bash can evaluate as an integer used to PASS. `[ "$_p" -lt 1 ]`
 # returns 2 — not false — on such a value, so the `if` took its else branch, no error fired, and an
 # unusable port reached the generated config behind a raw `[: integer expression expected` on stderr.
