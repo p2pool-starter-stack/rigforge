@@ -1934,6 +1934,70 @@ out="$(run_install_watchdog disabled)"
 assert_eq "watchdog disable removes the .timer" "$([ -f "$WDI/systemd/rigforge-watchdog.timer" ] && echo y || echo n)" "n"
 assert_eq "watchdog disable removes the .service" "$([ -f "$WDI/systemd/rigforge-watchdog.service" ] && echo y || echo n)" "n"
 
+# #395: install_watchdog used to end on `systemctl enable ... || true`, so it returned 0 whatever had
+# happened above it — and both apply-path callers run it under `|| true`, which suppresses `set -e`
+# for the whole dynamic extent of the call, so an earlier failure neither aborted nor showed. A
+# caller therefore could not distinguish "watchdog re-rendered" from "watchdog untouched". These pin
+# the honest return value at the source, which is what every other #395 assertion below builds on.
+# Mutation each case catches: turning that step's `|| rc=1` back into a bare call, or dropping the
+# closing `return "$rc"` — either restores always-0 and reddens the rc assertion here.
+echo "== unit: install_watchdog returns non-zero when it could not render (#395) =="
+WDF="$(mktemp -d "$SANDBOX/wdf.XXXXXX")"
+mkdir -p "$WDF/systemd" "$WDF/bin"
+cp "$ROOT/systemd/rigforge-watchdog.service.template" "$ROOT/systemd/rigforge-watchdog.timer.template" "$WDF/systemd/"
+wdf_stub() { # <daemon-reload rc> <rm rc>
+    cat >"$WDF/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = daemon-reload ] && exit $1
+exit 0
+EOF
+    cat >"$WDF/bin/rm" <<EOF
+#!/usr/bin/env bash
+[ $2 -eq 0 ] && exec /bin/rm "\$@"
+exit $2
+EOF
+    # Fail ONE named unit write, so each write's guard is asserted on a failure only it can see. An
+    # unwritable SYSTEMD_DIR breaks both writes at once, which would let either guard alibi the other:
+    # revert one and the second still sets rc, and the suite stays green over a real deletion.
+    cat >"$WDF/bin/tee" <<'TEOF'
+#!/usr/bin/env bash
+if [ -n "${WDF_TEE_FAIL:-}" ] && [ "${*/$WDF_TEE_FAIL/}" != "$*" ]; then
+    cat >/dev/null
+    exit 1
+fi
+exec /usr/bin/tee "$@"
+TEOF
+    chmod +x "$WDF/bin/systemctl" "$WDF/bin/rm" "$WDF/bin/tee"
+}
+wdf_run() { # <systemd-dir> <enabled|disabled> <daemon-reload rc> <rm rc> -> "rc=<n>"
+    wdf_stub "$3" "$4"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$WDF"
+        SYSTEMD_DIR="$1"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        WATCHDOG_MODE="$2"
+        WATCHDOG_INTERVAL_MIN=7
+        set +e
+        PATH="$WDF/bin:$STUBS:$PATH" install_watchdog >/dev/null 2>&1
+        echo "rc=$?"
+    )
+}
+# The healthy case first — without it the failure assertions below would also pass on a function that
+# simply always returns 1, which proves nothing about honesty.
+assert_eq "install_watchdog returns 0 when every step succeeds (#395)" "$(wdf_run "$WDF/systemd" enabled 0 0)" "rc=0"
+assert_eq "a unit write that cannot land -> non-zero (#395)" "$(wdf_run "$WDF/absent/systemd" enabled 0 0)" "rc=1"
+assert_eq "the .service write alone failing -> non-zero (#395)" "$(WDF_TEE_FAIL=rigforge-watchdog.service wdf_run "$WDF/systemd" enabled 0 0)" "rc=1"
+assert_eq "the .timer write alone failing -> non-zero (#395)" "$(WDF_TEE_FAIL=rigforge-watchdog.timer wdf_run "$WDF/systemd" enabled 0 0)" "rc=1"
+assert_eq "a failed daemon-reload -> non-zero (#395)" "$(wdf_run "$WDF/systemd" enabled 1 0)" "rc=1"
+# The disabled branch is the same lie in the other direction: a timer that could not be REMOVED is
+# still firing on the old cadence while config.json says the watchdog is off.
+assert_eq "disable returns 0 when the units are actually removed (#395)" "$(wdf_run "$WDF/systemd" disabled 0 0)" "rc=0"
+wdf_run "$WDF/systemd" enabled 0 0 >/dev/null # re-render so there is something to fail to remove
+assert_eq "a unit that cannot be removed -> non-zero (#395)" "$(wdf_run "$WDF/systemd" disabled 0 1)" "rc=1"
+
 # #139: the watchdog config keys. Typo hard-errors (a recovery mechanism must not be silently
 # disabled); the interval and cutoff validate as bounded integers; max_temp_c empty = cutoff off.
 echo "== unit: parse_config — watchdog keys (#139) =="
@@ -7236,6 +7300,41 @@ assert_contains "install_watchdog re-renders the timer with the NEW interval (#3
 assert_eq "config_meta stamped source=control, parity with apply()'s own _stamp_config_meta call (#381)" "$(jq -r .source "$FPA/meta.json" 2>/dev/null)" "control"
 assert_eq "config_meta records the change_id, same parity (#381)" "$(jq -r .last_change_id "$FPA/meta.json" 2>/dev/null)" "fedcba9876543210"
 
+# #395: install_watchdog IS this path's entire effect — both fast-path keys reach the rig only
+# through it — so swallowing its failure recorded a change as applied that never landed. Two things
+# must hold when it fails: a non-zero return (so the caller can roll back), and NO provenance stamp
+# (a change that did not take effect must not be recorded as the config in force).
+# Mutation this catches: restoring `install_watchdog >/dev/null 2>&1 || true` here — the mutant
+# returns rc=0 AND stamps meta.json, reddening both assertions.
+fpa_run_unwritable() { # -> "rc=<n>"; templates still readable, units unwritable
+    rm -f "$FPA/apply-called" "$FPA/meta.json"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$FPA"
+        SYSTEMD_DIR="$FPA/absent/systemd"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        CONFIG_JSON="$FPA/config.json"
+        CONFIG_META_FILE="$FPA/meta.json"
+        WATCHDOG_MODE=enabled
+        WATCHDOG_INTERVAL_MIN=9
+        parse_config() { :; }
+        apply() {
+            echo called >"$FPA/apply-called" 2>/dev/null
+            return 0
+        }
+        RIGFORGE_CONFIG_SOURCE=control
+        RIGFORGE_CONFIG_CHANGE_ID=fedcba9876543210
+        set +e
+        PATH="$STUBS:$PATH" _control_do_apply_fast
+        echo "rc=$?"
+    )
+}
+out="$(fpa_run_unwritable)"
+assert_contains "_control_do_apply_fast fails when the watchdog units cannot be written (#395)" "$out" "rc=1"
+assert_eq "a fast path that failed does NOT stamp the change as in force (#395)" "$([ -f "$FPA/meta.json" ] && echo stamped || echo not-stamped)" "not-stamped"
+
 echo "== unit: control_apply + REAL _control_do_apply_fast — run-state criterion, not is-active alone (#381 security review) =="
 # The generic systemctl stub always exits 0, so the fpa_run tests above only ever exercise the
 # active-before/active-after case. A rig can be LEGITIMATELY stopped when a restart-free change
@@ -7271,12 +7370,12 @@ caf_exec() {
         # failure would cause.
         apply() {
             echo called >"$CAF/full-apply-called" 2>/dev/null || true
-            return 0
+            return "${CAF_APPLY_OK:-0}"
         }
         _wait_miner_live() { return 0; }
         OS_TYPE=Linux
         SCRIPT_DIR="$CAF"
-        SYSTEMD_DIR="$CAF/systemd"
+        SYSTEMD_DIR="${CAF_SYSTEMD_DIR:-$CAF/systemd}"
         CONFIG_JSON="$CAF/config.json"
         REAL_USER=rfop
         SERVICE_NAME=xmrig
@@ -7312,6 +7411,100 @@ caf_run '{"max_temp_c":90}' 0 1
 assert_eq "active-before/inactive-after -> status rolled_back (#381)" "$(cfst status)" "rolled_back"
 assert_eq "active-before/inactive-after -> config restored, max_temp_c unset again (#381)" "$(jq -r .max_temp_c "$CAF/config.json")" "null"
 assert_eq "active-before/inactive-after -> rollback re-apply invoked (#381)" "$([ -f "$CAF/full-apply-called" ] && echo called || echo not-called)" "called"
+
+# (c) #395, and the reason this issue exists: the miner is up before AND after (rc 0, 0), so every
+# liveness-shaped check this path has says success — but the watchdog units could not be written, so
+# the cadence the operator just accepted is NOT the cadence the rig is running. The old code recorded
+# "applied" here. This is the end-to-end assertion that the status record stopped lying; it runs the
+# REAL _control_do_apply_fast and the REAL install_watchdog, with only the rollback leg stubbed.
+# Mutation this catches: any single revert in the #395 chain — install_watchdog returning 0 again, or
+# the fast path swallowing it — puts status back to "applied" and reddens the first assertion.
+caf_run '{"max_temp_c":90}' 0 0
+assert_eq "healthy watchdog render, miner up throughout -> applied (#395 control)" "$(cfst status)" "applied"
+CAF_SYSTEMD_DIR="$CAF/absent/systemd" caf_run '{"max_temp_c":90}' 0 0
+assert_eq "watchdog units unwritable, miner never down -> rolled_back, NOT applied (#395)" "$(cfst status)" "rolled_back"
+# The reason string must name the actual cause. Falling back to the liveness wording here would be a
+# fresh lie of the same kind: the miner never left the pool.
+assert_contains "the recorded reason names the watchdog, not a liveness failure (#395)" "$(cfst reason)" "watchdog"
+assert_absent "the recorded reason does NOT blame the hashrate (#395)" "$(cfst reason)" "live hashrate"
+assert_eq "watchdog-failed change -> config restored to pre-change (#395)" "$(jq -r .max_temp_c "$CAF/config.json")" "null"
+assert_eq "watchdog-failed change -> the full restart-safe rollback ran (#395)" "$([ -f "$CAF/full-apply-called" ] && echo called || echo not-called)" "called"
+# And when the ROLLBACK's own re-apply fails for that same reason, the record must not fall back to
+# the liveness wording: a failed apply short-circuits before the liveness wait, so nobody checked it.
+# Mutation this catches: dropping the `elif [ -n "$fail_reason" ]` arm — the mutant reports "failed
+# to restore liveness" about a miner this test never took down.
+CAF_SYSTEMD_DIR="$CAF/absent/systemd" CAF_APPLY_OK=1 caf_run '{"max_temp_c":90}' 0 0
+assert_eq "watchdog failure + failed rollback re-apply -> still rolled_back (#395)" "$(cfst status)" "rolled_back"
+assert_contains "the reason names the watchdog cause (#395)" "$(cfst reason)" "watchdog"
+assert_contains "the reason says the re-apply hit the same failure (#395)" "$(cfst reason)" "re-apply hit the same failure"
+assert_absent "it does NOT claim a liveness failure nobody checked (#395)" "$(cfst reason)" "restore liveness"
+
+# #395: the two seams between install_watchdog and the status record. apply() swallowed the failure
+# outright, and _control_do_apply then DISCARDED apply's exit status — the liveness wait's verdict
+# became the whole answer, so an apply that failed for a reason the miner's hashrate cannot show
+# still reported success. Both are covered here rather than through control_apply, because the
+# control_apply harnesses stub apply() and so cannot see either seam.
+echo "== unit: apply() and _control_do_apply propagate a watchdog render failure (#395) =="
+AWD="$(mktemp -d "$SANDBOX/awd.XXXXXX")"
+mkdir -p "$AWD/systemd"
+cp "$ROOT/systemd/rigforge-watchdog.service.template" "$ROOT/systemd/rigforge-watchdog.timer.template" "$AWD/systemd/"
+awd_apply() { # <systemd-dir> -> "rc=<n>"; side effect: $AWD/reached-later-steps
+    rm -f "$AWD/reached-later-steps"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$AWD"
+        SYSTEMD_DIR="$1"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        WATCHDOG_MODE=enabled
+        WATCHDOG_INTERVAL_MIN=7
+        # Everything apply() does EXCEPT install_watchdog is out of scope here and covered elsewhere,
+        # so it is stubbed away; install_watchdog stays REAL and fails (or not) on the dir passed in.
+        parse_config() { :; }
+        _apply_runtime() { :; }
+        install_autotune() { :; }
+        install_api() { echo later >"$AWD/reached-later-steps" 2>/dev/null || true; }
+        install_control() { :; }
+        install_api_firewall() { :; }
+        _autotune_apply_notice() { :; }
+        _stamp_config_meta() { :; }
+        _apply_pool_check() { :; }
+        set +e
+        PATH="$STUBS:$PATH" apply >/dev/null 2>&1
+        echo "rc=$?"
+    )
+}
+assert_eq "apply() returns 0 when the watchdog renders (#395)" "$(awd_apply "$AWD/systemd")" "rc=0"
+assert_eq "apply() returns non-zero when the watchdog could not render (#395)" "$(awd_apply "$AWD/absent/systemd")" "rc=1"
+# The reconcile must not be abandoned mid-way: stranding install_api/control/firewall as well would
+# leave MORE units stale than the one that failed. This pins that the failure is recorded, not raised.
+assert_eq "a failed watchdog render does not abort the rest of the reconcile (#395)" "$([ -f "$AWD/reached-later-steps" ] && echo ran || echo skipped)" "ran"
+
+# Mutation this catches: restoring `apply >/dev/null 2>&1` as its own statement (status discarded).
+# That mutant runs the liveness wait anyway, so the marker appears and rc drops to 0.
+cda_run() { # <apply rc> -> "rc=<n>"; side effect: $AWD/waited
+    rm -f "$AWD/waited"
+    (
+        source "$SCRIPT"
+        # Capture the helper's argument BEFORE defining apply: inside apply's own body, "$1" would be
+        # apply's parameter, not this one — and unset under `set -u` it fails for the wrong reason,
+        # which made the short-circuit assertion below pass vacuously until this was caught.
+        _cda_rc="$1"
+        apply() { return "$_cda_rc"; }
+        _wait_miner_live() {
+            echo waited >"$AWD/waited" 2>/dev/null || true
+            return 0
+        }
+        set +e
+        _control_do_apply
+        echo "rc=$?"
+    )
+}
+assert_eq "_control_do_apply still waits for liveness when apply succeeds (#395)" "$(cda_run 0)" "rc=0"
+assert_eq "apply succeeded -> the liveness wait really ran (#395)" "$([ -f "$AWD/waited" ] && echo waited || echo skipped)" "waited"
+assert_eq "_control_do_apply fails when apply fails (#395)" "$(cda_run 1)" "rc=1"
+assert_eq "a failed apply short-circuits the liveness wait (#395)" "$([ -f "$AWD/waited" ] && echo waited || echo skipped)" "skipped"
 
 echo "== unit: control_apply orchestration + rollback (#236) =="
 CA="$(mktemp -d "$SANDBOX/ca.XXXXXX")"

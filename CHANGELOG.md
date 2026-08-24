@@ -7,6 +7,17 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed watchdog re-render no longer reports the change as applied (#395).** `install_watchdog`
+  ended on `systemctl enable ... || true`, so it returned success whatever had happened above it, and
+  both apply paths called it under `|| true` — which also suppresses `set -e` for the whole call, so
+  a unit write that could not land aborted nothing and surfaced nowhere. A control `/apply` changing
+  `watchdog_interval_min` therefore recorded `applied` while the rig kept its old cadence, and nothing
+  detected the divergence. The function now returns an honest status, `apply` and the restart-free
+  fast path both act on it, and the outcome is recorded as `rolled_back` with a `reason` naming the
+  watchdog instead of blaming a hashrate that never dropped.
+
 ## [1.16.0] - 2026-08-23
 
 ### Added

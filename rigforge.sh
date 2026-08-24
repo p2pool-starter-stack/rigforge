@@ -1272,26 +1272,39 @@ install_autotune() {
 install_watchdog() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-watchdog.service" tmr="$SYSTEMD_DIR/rigforge-watchdog.timer"
+    # #395: this function used to end on `systemctl enable ... || true`, so it returned 0 no matter
+    # what happened above it — and its callers run it under `|| true`, which suppresses `set -e` for
+    # the whole dynamic extent of the call. A failed unit write therefore aborted nothing, surfaced
+    # nowhere, and left the caller free to record the change as applied. Each step that can GENUINELY
+    # fail now records into rc and the function returns it, so a caller that looks gets the truth and
+    # a caller that does not is no worse off than before. The `|| true` on enable/disable of a
+    # possibly-absent timer stays deliberate: those are tolerated, the unit writes are not.
+    local rc=0
     if [ "${WATCHDOG_MODE:-disabled}" = "disabled" ]; then
         if [ -f "$tmr" ]; then
             sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-watchdog.timer 2>/dev/null || true
-            sudo rm -f "$svc" "$tmr"
+            sudo rm -f "$svc" "$tmr" || rc=1
             sudo systemctl daemon-reload 2>/dev/null || true
-            log "Miner watchdog disabled."
+            if [ "$rc" -eq 0 ]; then
+                log "Miner watchdog disabled."
+            else
+                warn "Could not remove the watchdog units ($svc, $tmr) — the old timer may still be running."
+            fi
         fi
-        return 0
+        return "$rc"
     fi
     log "Enabling the miner watchdog: a health check every ${WATCHDOG_INTERVAL_MIN:-5} min${MAX_TEMP_C:+, thermal cutoff ${MAX_TEMP_C}°C}..."
     # Only the cadence is baked into the units — the verb re-reads config.json every run, so an
     # `apply` after a max_temp_c or ACCESS_TOKEN edit needs no unit rewrite (and no token on disk).
     SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
         envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR' \
-        <"$SCRIPT_DIR/systemd/rigforge-watchdog.service.template" | sudo tee "$svc" >/dev/null
+        <"$SCRIPT_DIR/systemd/rigforge-watchdog.service.template" | sudo tee "$svc" >/dev/null || rc=1
     WATCHDOG_INTERVAL_MIN="${WATCHDOG_INTERVAL_MIN:-5}" \
         envsubst '$WATCHDOG_INTERVAL_MIN' \
-        <"$SCRIPT_DIR/systemd/rigforge-watchdog.timer.template" | sudo tee "$tmr" >/dev/null
-    sudo systemctl daemon-reload
+        <"$SCRIPT_DIR/systemd/rigforge-watchdog.timer.template" | sudo tee "$tmr" >/dev/null || rc=1
+    sudo systemctl daemon-reload || rc=1
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-watchdog.timer 2>/dev/null || true
+    return "$rc"
 }
 
 # Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
@@ -4029,9 +4042,15 @@ apply() {
         sudo systemctl daemon-reload 2>/dev/null || true
     fi
     _apply_runtime
+    local _wd_rc=0
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
-        install_watchdog >/dev/null 2>&1 || true
+        # #395: of the install_* steps here, a failed watchdog re-render is the one that leaves the
+        # RUNNING cadence silently diverged from the config we are about to stamp as in effect, so it
+        # is captured instead of discarded. The remaining steps still run — abandoning the reconcile
+        # would strand more units than the one that failed — but apply() returns non-zero at the end,
+        # which is what lets control_apply reach its rollback branch instead of recording "applied".
+        install_watchdog >/dev/null 2>&1 || _wd_rc=1
         install_api >/dev/null 2>&1 || true
         install_control >/dev/null 2>&1 || true
         install_api_firewall || true
@@ -4043,6 +4062,11 @@ apply() {
     # a re-apply of the same config, never bump the revision).
     _stamp_config_meta "${RIGFORGE_CONFIG_SOURCE:-local}" "${RIGFORGE_CONFIG_CHANGE_ID:-}"
     _apply_pool_check
+    if [ "$_wd_rc" -ne 0 ]; then
+        RIGFORGE_APPLY_FAIL_REASON="could not re-render the watchdog units"
+        warn "The miner watchdog units could NOT be re-rendered ($SYSTEMD_DIR/rigforge-watchdog.{service,timer}) — the watchdog is still on its PREVIOUS schedule, whatever config.json now says. Check free disk space and sudo rights, then re-run 'sudo $0 apply'."
+    fi
+    return "$_wd_rc"
 }
 
 # #343: apply's honesty check. "Applied config and restarted" used to be the last word even when the
@@ -4167,10 +4191,19 @@ _reown_config_backups() { # <backups-dir>
 }
 
 # The apply + liveness check control-apply gates its rollback on. Split out so tests can stub it.
+# #395: apply's exit status was discarded here — the liveness wait ran regardless and its verdict
+# became the whole answer, so an apply that failed for a reason the miner's hashrate cannot show
+# (a watchdog unit that would not write) still reported success. Gate on it: a failed apply is a
+# failed apply, and control_apply's rollback branch is the designed response to one.
 _control_do_apply() {
-    apply >/dev/null 2>&1
+    apply >/dev/null 2>&1 || return 1
     _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"
 }
+
+# #395: the specific cause of the most recent apply failure, when the failing path knows one the
+# liveness wait could not have observed. Set by that path, read and cleared by control_apply, which
+# falls back to its existing wording when this is empty — so no pre-existing reason string changes.
+RIGFORGE_APPLY_FAIL_REASON=""
 
 # #381 (from #344 item 1): a live walkthrough measured a single restart-free key
 # (watchdog_interval_min) taking ~62s round-trip through POST /apply, because _control_do_apply
@@ -4247,7 +4280,15 @@ _control_do_apply_fast() {
     was_active=1
     systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && was_active=0
     parse_config
-    install_watchdog >/dev/null 2>&1 || true
+    # #395: install_watchdog IS this path's entire effect — both fast-path keys reach the rig only
+    # through it. Swallowing its failure recorded "applied" for a change that never landed, which is
+    # the precise lie the status contract exists to prevent. Bail before stamping provenance: a
+    # change that did not take effect must not be stamped as the config in force. The caller then
+    # routes to the same full-pipeline rollback the comment above already promises for this case.
+    if ! install_watchdog >/dev/null 2>&1; then
+        RIGFORGE_APPLY_FAIL_REASON="could not re-render the watchdog units"
+        return 1
+    fi
     _stamp_config_meta "${RIGFORGE_CONFIG_SOURCE:-local}" "${RIGFORGE_CONFIG_CHANGE_ID:-}"
     is_active=1
     systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && is_active=0
@@ -4326,7 +4367,11 @@ control_apply() {
     # two branches below — a success writes the same "applied" status either way, and a failure of
     # EITHER path falls through to the same full-pipeline rollback, so a wrong "eligible" verdict (or
     # the fast path failing for an unrelated reason) still ends up restart-safe, never silently stuck.
-    local fast=0 apply_ok=0
+    local fast=0 apply_ok=0 fail_reason=""
+    # #395: clear before the attempt so a stale cause from an earlier change can never be attributed
+    # to this one, and snapshot it straight after so the ROLLBACK's own apply cannot overwrite the
+    # reason the change failed in the first place.
+    RIGFORGE_APPLY_FAIL_REASON=""
     if _control_fast_path_eligible "$change_keys"; then
         fast=1
         log "control-apply: committed change $cid (keys: $change_keys); applying (fast path — xmrig untouched)..."
@@ -4335,6 +4380,7 @@ control_apply() {
         log "control-apply: committed change $cid (keys: $change_keys); applying..."
         _control_do_apply && apply_ok=1
     fi
+    fail_reason="$RIGFORGE_APPLY_FAIL_REASON"
     if [ "$apply_ok" -eq 1 ]; then
         _control_status "$status" applied "$cid" "$change_keys" "" "$backup"
         if [ "$fast" -eq 1 ]; then
@@ -4343,7 +4389,7 @@ control_apply() {
             log "control-apply: change $cid applied."
         fi
     else
-        warn "control-apply: change $cid did not come back live — rolling back to $backup."
+        warn "control-apply: change $cid ${fail_reason:-did not come back live} — rolling back to $backup."
         # #276: the backup must be readable to restore it — guard the cp explicitly (not just -e/ERR)
         # so an unreadable backup still writes a terminal status instead of ERR-trapping the oneshot
         # out silently, which would leave the receiver serving the stale previous outcome forever.
@@ -4353,10 +4399,18 @@ control_apply() {
         fi
         # #276: distinguish "rolled back and live" from "rolled back, rig still down" — both restore
         # config.json, but only one leaves the miner hashing; the reason string pins which happened.
+        local why="${fail_reason:-miner did not return to a live hashrate}"
         if _control_do_apply; then
-            _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate; rolled back and live" "$backup"
+            _control_status "$status" rolled_back "$cid" "$change_keys" "$why; rolled back and live" "$backup"
+        elif [ -n "$fail_reason" ]; then
+            # #395: the re-apply failed for the SAME reason the change did (units that still will not
+            # write), so the liveness wording below would assert something nobody checked — a failed
+            # apply short-circuits before _wait_miner_live runs, and the miner may be hashing fine
+            # throughout. Say what is known instead. The wording below is untouched for every
+            # pre-existing case, where the liveness wait genuinely is what returned the verdict.
+            _control_status "$status" rolled_back "$cid" "$change_keys" "$why; config rolled back, but the re-apply hit the same failure" "$backup"
         else
-            _control_status "$status" rolled_back "$cid" "$change_keys" "miner did not return to a live hashrate; rollback re-apply also failed to restore liveness" "$backup"
+            _control_status "$status" rolled_back "$cid" "$change_keys" "$why; rollback re-apply also failed to restore liveness" "$backup"
         fi
     fi
     return 0
