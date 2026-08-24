@@ -379,6 +379,42 @@ assert_rc "socks5 with an invalid IPv6 literal rejected (#400)" "$?" "1"
 c="$(mkconf p_s6ok "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"[::1]:9050\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "socks5 as a bracketed IPv6 literal accepted (#400)" "$?" "0"
+# #405: a port with more digits than bash can evaluate as an integer used to PASS. `[ "$_p" -lt 1 ]`
+# returns 2 — not false — on such a value, so the `if` took its else branch, no error fired, and an
+# unusable port reached the generated config behind a raw `[: integer expression expected` on stderr.
+# The digit-count guard short-circuits before the arithmetic, so the comparison only ever sees a
+# value bash can evaluate. Assert it on BOTH keys the shared validator serves.
+c="$(mkconf p_hugeport "{ \"pools\": [{\"url\":\"h:99999999999999999999\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "url port too large for bash to evaluate rejected (#405)" "$?" "1"
+c="$(mkconf p_s5hugeport "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1:99999999999999999999\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "socks5 port too large for bash to evaluate rejected (#405)" "$?" "1"
+# The guard must not over-tighten: 65535 is the largest legal port and is five digits, so it sits
+# directly against the digit-count cut. Without this, a fix that rejected anything long would pass.
+c="$(mkconf p_65535 "{ \"pools\": [{\"url\":\"h:65535\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "url port 65535 still accepted (#405)" "$?" "0"
+c="$(mkconf p_s565535 "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1:65535\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "socks5 port 65535 still accepted (#405)" "$?" "0"
+# The digit-count guard is a real tightening on exactly one input: a zero-padded port. `[ 065535 -lt
+# 1 ]` evaluates as decimal, so the old range test kept it. Pinned here because the CHANGELOG tells
+# operators about it — an undocumented incidental rejection is how a fix becomes a surprise.
+c="$(mkconf p_zeropad "{ \"pools\": [{\"url\":\"h:065535\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "zero-padded port rejected by the digit-count guard (#405)" "$?" "1"
+# Two guards, two messages: assert each on the sentence ONLY it writes, and that it does NOT emit the
+# other's. Sharing one string is how deleting a guard outright leaves a suite green.
+out="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    parse_config 2>&1
+))"
+assert_contains "zero-padded port names the padding (#405)" "$out" "without padding"
+assert_absent "zero-padded port does not borrow the range guard's wording (#405)" "$out" "must be between 1 and 65535"
 c="$(mkconf p_nopools "{ }")"
 parse_rc "$c" "$ROOT"
 assert_rc "no pools rejected" "$?" "1"
