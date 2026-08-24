@@ -113,6 +113,7 @@ you care about:
 | `keepalive` | `true` |
 | `tls` | `false` — set `true` when you connect on the pool's TLS/SSL port. |
 | `tls-fingerprint` | `null` (no pin) — the pool cert's SHA-256 as 64 hex chars. XMRig does no CA validation on stratum TLS, so the pin is the only server authentication; without it, TLS encrypts but doesn't authenticate. Requires `"tls": true`. See [Pithead Integration › Stratum over TLS](pithead-integration.md#stratum-over-tls-optional). |
+| `socks5` | `null` (direct connection) — dial this pool through a SOCKS5 proxy at `host:port`, e.g. `"127.0.0.1:9050"` for a local Tor client. Same address rules as `url`. XMRig sends the pool's **hostname** to the proxy rather than resolving it first, so a v3 `.onion` stratum works with no extra setting. RigForge points the miner at a proxy; running one is yours to arrange. |
 | `enabled` | `true` |
 
 Two common setups follow; pick the one that matches where you're mining.
