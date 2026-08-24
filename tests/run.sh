@@ -345,6 +345,40 @@ assert_rc "fingerprint without tls:true rejected (#115)" "$?" "1"
 c="$(mkconf p_fpok "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "valid fingerprint + tls accepted (#115)" "$?" "0"
+# #400: socks5 passes through as host:port and the key is absent when unset/null, so a pre-#400
+# config keeps producing byte-identical POOLS_JSON.
+c="$(mkconf p_s5 "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1:9050\"}] }")"
+assert_eq "socks5 passed through (#400)" "$(PJ "$c" | jq -r '.[0].socks5')" "127.0.0.1:9050"
+c="$(mkconf p_nos5 "{ \"pools\": [{\"url\":\"h:3333\"}] }")"
+assert_eq "no socks5 key when unset (#400)" "$(PJ "$c" | jq -c '.[0] | has("socks5")')" "false"
+c="$(mkconf p_nulls5 "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":null}] }")"
+assert_eq "null socks5 = absent (#400)" "$(PJ "$c" | jq -c '.[0] | has("socks5")')" "false"
+# The point of the issue: an onion stratum reached through a local Tor SOCKS port.
+c="$(mkconf p_s5onion "{ \"pools\": [{\"url\":\"vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion:3333\",\"socks5\":\"127.0.0.1:9050\"}] }")"
+assert_eq "onion pool + socks5 parses (#400)" "$(PJ "$c" | jq -r '[.[0].url, .[0].socks5] | join(" ")')" "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion:3333 127.0.0.1:9050"
+# Index alignment: a proxy on the SECOND pool must land on the second pool, not the first.
+c="$(mkconf p_s52 "{ \"pools\": [{\"url\":\"plain:3333\"}, {\"url\":\"onion:3333\",\"socks5\":\"127.0.0.1:9050\"}] }")"
+assert_eq "second-pool socks5 stays on the second pool (#400)" "$(PJ "$c" | jq -c '[(.[0] | has("socks5")), (.[1].socks5 == "127.0.0.1:9050")]')" "[false,true]"
+# A pool may carry BOTH a pin and a proxy — the two re-attach passes must not clobber each other.
+c="$(mkconf p_s5fp "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"socks5\":\"127.0.0.1:9050\"}] }")"
+assert_eq "socks5 and tls-fingerprint coexist (#400)" "$(PJ "$c" | jq -c '[(.[0]."tls-fingerprint" != null), (.[0].socks5 == "127.0.0.1:9050")]')" "[true,true]"
+# #400 validation: the socks5 address gets the SAME host:port rules as the pool url. Each of these
+# is rejected for the pool url already; assert the proxy is judged by the same standard.
+c="$(mkconf p_s5noport "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "socks5 without a port rejected (#400)" "$?" "1"
+c="$(mkconf p_s5badhost "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"evil;rm:9050\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "socks5 with a bad host rejected (#400)" "$?" "1"
+c="$(mkconf p_s5badport "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1:70000\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "socks5 port above 65535 rejected (#400)" "$?" "1"
+c="$(mkconf p_s5bad6 "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"[not:hex:zz]:9050\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "socks5 with an invalid IPv6 literal rejected (#400)" "$?" "1"
+c="$(mkconf p_s6ok "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"[::1]:9050\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "socks5 as a bracketed IPv6 literal accepted (#400)" "$?" "0"
 c="$(mkconf p_nopools "{ }")"
 parse_rc "$c" "$ROOT"
 assert_rc "no pools rejected" "$?" "1"
@@ -461,6 +495,11 @@ assert_contains "pool-field typo warns with a did-you-mean (#138)" "$out" 'unkno
 c="$(mkconf lint_quiet "{ $POOL, \"_note\": \"comment\", \"RIG_NAME\": \"rig9\", \"api\": \"enabled\" }")"
 out="$(lint_out "$c")"
 assert_absent "underscore keys, RIG_NAME, and known keys stay quiet (#138)" "$out" "unknown key"
+# #400: socks5 is a KNOWN pool field now — the warning that used to tell operators it was ignored
+# was the visible half of the defect, so assert it is gone rather than only that the value survives.
+c="$(mkconf lint_s5 "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1:9050\"}] }")"
+out="$(lint_out "$c")"
+assert_absent "socks5 no longer warns as an unknown pool field (#400)" "$out" 'unknown pool field "socks5"'
 c="$(mkconf lint_novel "{ $POOL, \"frobnicate\": 1 }")"
 out="$(lint_out "$c")"
 assert_contains "novel key warns without a hint (#138)" "$out" 'unknown key "frobnicate" is ignored.'
@@ -821,6 +860,17 @@ d="$(gen_config)"
 cfg="$d/config.json"
 unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
 assert_eq "tls-fingerprint survives generation (#115)" "$(J "$cfg" '.pools[0]."tls-fingerprint"')" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+# #400: the proxy has to reach the GENERATED xmrig config, not just POOLS_JSON — that is the file
+# the miner actually reads, and a key that stops at the mapper would mine direct while looking set.
+echo "== config-gen: socks5 passthrough (#400) =="
+export STUB_CPU_MODEL="Intel(R) Xeon" STUB_NPROC=8 STUB_HOSTNAME=rigbox
+SIM_OS=Linux SIM_DON=1 SIM_POOLS='[{"url":"vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion:3333","user":"","pass":"x","keepalive":true,"tls":false,"enabled":true,"socks5":"127.0.0.1:9050"}]'
+d="$(gen_config)"
+cfg="$d/config.json"
+unset SIM_POOLS STUB_CPU_MODEL STUB_NPROC STUB_HOSTNAME
+assert_eq "socks5 survives generation (#400)" "$(J "$cfg" '.pools[0].socks5')" "127.0.0.1:9050"
+assert_eq "the onion pool url survives generation (#400)" "$(J "$cfg" '.pools[0].url')" "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion:3333"
 
 echo "== config-gen: miner_user disables in-process MSR writes (#140) =="
 export STUB_CPU_MODEL="AMD Ryzen 9 7950X" STUB_NPROC=8 STUB_HOSTNAME=rigbox

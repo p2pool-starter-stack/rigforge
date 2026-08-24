@@ -383,6 +383,31 @@ ensure_config_exists() {
     fi
 }
 
+# #400: ONE host:port validator, shared by a pool's `url` and its `socks5` proxy. The issue asks for
+# the socks5 value to get "the same rules the pool URL gets" — a second copy of these four checks
+# would satisfy that on the day it was written and drift the first time either side is touched, so
+# the rules live in one place instead. <value> <label> <example-port>: the label leads the operator
+# -facing message, and the example port makes the hint fit its key (a pool is :3333, a SOCKS5 proxy
+# is :9050). Every check and every regex below is verbatim from the pool-url path it replaces.
+_validate_host_port() { # <value> <label> <example-port>
+    local _v="$1" _label="$2" _eg="$3" _h _p
+    if ! [[ "$_v" =~ :[0-9]+$ ]]; then
+        error "$_label '$_v' must include a port, e.g. $_v:$_eg."
+    fi
+    _h="${_v%:*}"
+    _p="${_v##*:}"
+    if [ "$_p" -lt 1 ] || [ "$_p" -gt 65535 ]; then
+        error "$_label port must be between 1 and 65535 (got '$_p' in '$_v')."
+    fi
+    # The host must be a valid hostname / FQDN / IPv4, or a bracketed IPv6 literal. This also
+    # rejects the unfilled template placeholder (<...>), whitespace, and shell/URL metacharacters.
+    # A v3 .onion is an ordinary hostname to this pattern, which is what makes #400 work at all.
+    case "$_h" in
+    \[*\]) [[ "$_h" =~ ^\[[0-9A-Fa-f:]+\]$ ]] || error "$_label '$_v' has an invalid IPv6 literal (use [addr]:port)." ;;
+    *) [[ "$_h" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "$_label host '$_h' is not a valid hostname or IP." ;;
+    esac
+}
+
 parse_config() {
     log "Parsing configuration..."
     # A missing config (e.g. `apply`/`tune` before `setup`) is a different, clearer error than bad JSON.
@@ -430,6 +455,14 @@ parse_config() {
     # attribute in-string program lines, and the patch-coverage gate needs every new line hittable.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
+    # socks5 (#400): re-attach the per-pool proxy from the raw config, emitted ONLY when set — the map
+    # above rebuilds each pool from a fixed key set, which is what dropped this key. Same shape and
+    # the same reasons as the #115 pass directly above: emitting it unconditionally (null) would
+    # change the generated config's shape for every existing rig on its next apply, and it is a
+    # single-line pass rather than lines inside the map because kcov cannot attribute in-string
+    # program lines and the patch-coverage gate needs every new line hittable.
+    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+
     # #265: jq's `//` treats an explicit false like null/missing, so the map above rewrites an
     # operator's "keepalive": false / "enabled": false to the true default. Restore explicit falses
     # from the raw config in another single-line pass (same kcov rationale as #115 above). Only a
@@ -447,20 +480,17 @@ parse_config() {
         _user=$(jq -r '.user' <<<"$_pool")
         _pass=$(jq -r '.pass' <<<"$_pool")
         [ -n "$_u" ] || error "A pool entry has no url — set 'pools[].url' (host:port) in $CONFIG_JSON."
-        if ! [[ "$_u" =~ :[0-9]+$ ]]; then
-            error "Pool url '$_u' must include a port, e.g. $_u:3333."
+        _validate_host_port "$_u" "Pool url" 3333
+        # SOCKS5 proxy (#400), per pool, emitted only when set. XMRig dials the pool through it and
+        # sends the HOSTNAME in the CONNECT request (Client::Socks5::connect uses ATYP 0x03 for
+        # anything that is not an IP literal), so the proxy resolves the name — which is what lets a
+        # v3 .onion stratum work with no `socks5h` variant to ask for. Same host:port rules as the
+        # pool url, via the shared validator, so an onion pool and its proxy cannot be judged by two
+        # different standards.
+        _s5=$(jq -r '.socks5 // empty' <<<"$_pool")
+        if [ -n "$_s5" ]; then
+            _validate_host_port "$_s5" "Pool socks5" 9050
         fi
-        _host="${_u%:*}"
-        _port="${_u##*:}"
-        if [ "$_port" -lt 1 ] || [ "$_port" -gt 65535 ]; then
-            error "Pool port must be between 1 and 65535 (got '$_port' in '$_u')."
-        fi
-        # The host must be a valid hostname / FQDN / IPv4, or a bracketed IPv6 literal. This also
-        # rejects the unfilled template placeholder (<...>), whitespace, and shell/URL metacharacters.
-        case "$_host" in
-        \[*\]) [[ "$_host" =~ ^\[[0-9A-Fa-f:]+\]$ ]] || error "Pool url '$_u' has an invalid IPv6 literal (use [addr]:port)." ;;
-        *) [[ "$_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || error "Pool url host '$_host' is not a valid hostname or IP." ;;
-        esac
         if [ -n "$_user" ] && ! [[ "$_user" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
             error "Pool user '$_user' has invalid characters (allowed: letters, digits, . _ - : @ +)."
         fi
@@ -689,7 +719,7 @@ parse_config() {
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
     local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads"
-    local known_pool="url user pass keepalive tls enabled tls-fingerprint"
+    local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
         case "$k" in _*) continue ;; esac

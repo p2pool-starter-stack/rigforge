@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **A pool can be dialled through a SOCKS5 proxy (#400).** XMRig has always supported a per-pool
+  `socks5`, but RigForge rebuilt each pool from a fixed key set, so the key was dropped and the
+  operator got a warning that it was ignored — leaving a rig no way to reach a stratum published as
+  an onion service. `socks5` now passes through as `host:port`, emitted only when set, so no existing
+  rig's generated config changes shape on its next apply. Its address is checked by the same
+  validator as the pool `url`, which is now shared between the two rather than copied. RigForge
+  points the miner at a proxy; running one is still the operator's to arrange.
+
 ### Fixed
 
 - **A failed watchdog re-render no longer reports the change as applied (#395).** `install_watchdog`
