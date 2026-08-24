@@ -398,6 +398,23 @@ assert_rc "url port 65535 still accepted (#405)" "$?" "0"
 c="$(mkconf p_s565535 "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1:65535\"}] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "socks5 port 65535 still accepted (#405)" "$?" "0"
+# The digit-count guard is a real tightening on exactly one input: a zero-padded port. `[ 065535 -lt
+# 1 ]` evaluates as decimal, so the old range test kept it. Pinned here because the CHANGELOG tells
+# operators about it — an undocumented incidental rejection is how a fix becomes a surprise.
+c="$(mkconf p_zeropad "{ \"pools\": [{\"url\":\"h:065535\"}] }")"
+parse_rc "$c" "$ROOT"
+assert_rc "zero-padded port rejected by the digit-count guard (#405)" "$?" "1"
+# Two guards, two messages: assert each on the sentence ONLY it writes, and that it does NOT emit the
+# other's. Sharing one string is how deleting a guard outright leaves a suite green.
+out="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$c"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    parse_config 2>&1
+))"
+assert_contains "zero-padded port names the padding (#405)" "$out" "without padding"
+assert_absent "zero-padded port does not borrow the range guard's wording (#405)" "$out" "must be between 1 and 65535"
 c="$(mkconf p_nopools "{ }")"
 parse_rc "$c" "$ROOT"
 assert_rc "no pools rejected" "$?" "1"
