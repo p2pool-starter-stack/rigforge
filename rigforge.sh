@@ -398,12 +398,15 @@ _validate_host_port() { # <value> <label> <example-port>
     _p="${_v##*:}"
     # #405: the digit-count guard runs FIRST and short-circuits. On a value bash cannot evaluate as
     # an integer, `[ "$_p" -lt 1 ]` returns 2 rather than false, so the range check fell through and
-    # let it pass. Any legal port is at most five digits, so nothing in range is rejected — with one
-    # exception: a zero-padded port (`065535`), which the range test evaluated as decimal and kept.
-    # It gets its OWN message, because the range wording would quote a value that IS in range and
-    # tell the operator nothing about what to change. Both cases asserted in tests/run.sh.
+    # let it pass. This keys on DIGIT COUNT and nothing else. Any legal port is at most five digits,
+    # so nothing in range is rejected — except a value padded PAST five digits (`065535`), which the
+    # range test evaluated as decimal and kept. Padding within five digits (`08080`) is untouched,
+    # accepted exactly as before, and pinned in tests/run.sh so that stays deliberate.
+    # It gets its OWN message: the range wording would quote a value that IS in range and tell the
+    # operator nothing. The message names the digit count, because the likeliest input to land here
+    # is a fat-fingered extra digit (`999999`) with no padding to remove.
     if [ "${#_p}" -gt 5 ]; then
-        error "$_label port '$_p' in '$_v' must be 1-65535 written as plain digits, without padding."
+        error "$_label port '$_p' in '$_v' has more than five digits; a port is 1-65535."
     fi
     if [ "$_p" -lt 1 ] || [ "$_p" -gt 65535 ]; then
         error "$_label port must be between 1 and 65535 (got '$_p' in '$_v')."
