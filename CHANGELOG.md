@@ -23,9 +23,10 @@ All notable changes to RigForge are documented here. The format is based on
   read `[ "$port" -lt 1 ]`, and on a value bash cannot evaluate as an integer that returns an error
   rather than false — so the check fell through, an unusable port reached the generated config, and
   the operator got a raw shell diagnostic instead of the clear message the check exists to give. A
-  digit-count guard now runs first. The largest legal port is five digits, so nothing in range is
-  affected — with one exception worth knowing: a zero-padded port such as `:065535` used to be
-  accepted and is now rejected, and must be written without the padding.
+  digit-count guard now runs first. It keys on digit count and nothing else: the largest legal port
+  is five digits, so nothing in range is affected — except a port padded PAST five digits, such as
+  `:065535`, which used to be accepted and is now rejected. Padding that stays within five digits
+  (`:08080`) is unaffected and still accepted, as before.
 
 - **A failed watchdog re-render no longer reports the change as applied (#395).** `install_watchdog`
   ended on `systemctl enable ... || true`, so it returned success whatever had happened above it, and
