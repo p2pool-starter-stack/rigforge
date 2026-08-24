@@ -396,7 +396,10 @@ _validate_host_port() { # <value> <label> <example-port>
     fi
     _h="${_v%:*}"
     _p="${_v##*:}"
-    if [ "$_p" -lt 1 ] || [ "$_p" -gt 65535 ]; then
+    # #405: the digit-count guard runs FIRST and short-circuits. On a value bash cannot evaluate as
+    # an integer, `[ "$_p" -lt 1 ]` returns 2 rather than false, so the range check fell through and
+    # let it pass. Any legal port is at most five digits, so this rejects nothing it would have kept.
+    if [ "${#_p}" -gt 5 ] || [ "$_p" -lt 1 ] || [ "$_p" -gt 65535 ]; then
         error "$_label port must be between 1 and 65535 (got '$_p' in '$_v')."
     fi
     # The host must be a valid hostname / FQDN / IPv4, or a bracketed IPv6 literal. This also
