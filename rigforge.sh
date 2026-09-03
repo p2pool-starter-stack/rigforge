@@ -4106,18 +4106,56 @@ _autotune_apply_notice() {
     log "Periodic autotune: $(_autotune_desc "${AUTOTUNE_MODE:-disabled}")."
 }
 
+# #396: is the miner stopped ON PURPOSE right now? "On purpose" is deliberately mechanical — the unit
+# is INSTALLED and systemd reports it exactly `inactive` — because the two ways a rig is legitimately
+# offline both land there and neither leaves anything else to read: the watchdog's thermal cutoff runs
+# `systemctl stop` (and drops watchdog.thermal-hold), and an operator's manual stop leaves no marker at
+# all. Reading the run-state instead of the marker is what covers the second case, and it needs no
+# knowledge of WHY the rig is down.
+#
+# Every other answer means "restart", which is the pre-#396 behaviour, so this can only ever narrow:
+#   * unit file absent  — `is-active` says `inactive` for an unknown unit too, so without this check an
+#     `apply` before `setup` would report "left stopped" instead of failing on the restart as it does
+#     today. A quiet success in place of a loud failure is the regression this half prevents.
+#   * `failed`          — systemd gave up restarting a crashed miner. Nobody chose that; `apply` should
+#     still revive it, exactly as it did before.
+#   * `activating` / `deactivating` / anything else — mid-transition, not a decision.
+_miner_deliberately_stopped() {
+    [ "$OS_TYPE" = Linux ] || return 1
+    [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ] || return 1
+    [ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" = inactive ]
+}
+
 # The config-regen + restart core of `apply`, WITHOUT touching the autotune timer. Used directly by
 # tune/autotune — which call it in a loop and own the timer themselves — so they don't re-render the unit
 # on every prefetch trial.
-_apply_runtime() {
+#
+# `preserve-run-state` (#396) is passed by `apply` and by nothing else. With it, a rig that is
+# deliberately stopped is left stopped: the regenerated config sits on disk and takes effect at the next
+# deliberate start (the operator's, or the watchdog's own tick once the temperature is back under the
+# cutoff). Without it the unconditional restart stands — and `tune`/`autotune`/`_restore_overrides` MUST
+# keep it: they call this in a loop and measure the running miner between trials, and tune's --bench leg
+# stops the service itself and relies on the re-apply to bring it back, so a blanket preserve would
+# strand a tune run instead of a held rig. Opt-in per call site, not a global.
+_apply_runtime() { # [preserve-run-state]
     parse_config
     local build="$WORKER_ROOT/xmrig/build"
     [ -d "$build" ] || error "No built worker at $build. Run 'setup' first."
+    # Sampled BEFORE the regen, so the decision is about the state the operator or the watchdog left the
+    # rig in — nothing between here and the restart below changes it.
+    local held=no
+    [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
     (cd "$build" && generate_xmrig_config)
-    if [ "$OS_TYPE" == "Linux" ]; then
-        sudo systemctl restart "$SERVICE_NAME" && log "Applied config and restarted $SERVICE_NAME."
-    else
+    if [ "$OS_TYPE" != "Linux" ]; then
         log "Config regenerated. Restart the miner to apply."
+    elif [ "$held" = yes ]; then
+        # The thermal hold is named only when it is there, and only to explain the stop — the decision
+        # above never reads the marker, so a manual stop with no marker takes the same branch.
+        local why=""
+        [ -f "$WORKER_ROOT/watchdog.thermal-hold" ] && why=" (the watchdog is holding it below max_temp_c)"
+        log "Applied config. $SERVICE_NAME was stopped$why, so it was left stopped — the new config takes effect at the next 'sudo $0 start'."
+    else
+        sudo systemctl restart "$SERVICE_NAME" && log "Applied config and restarted $SERVICE_NAME."
     fi
     _reown_worker
 }
@@ -4132,7 +4170,11 @@ _apply_plan() {
     parse_config >/dev/null
     echo "apply --dry-run — the plan:"
     echo " 1. regenerate $WORKER_ROOT/xmrig/build/config.json$([ -f "$WORKER_ROOT/tune-overrides.json" ] && echo ' (+ overlay tune-overrides.json)')"
-    if [ "$OS_TYPE" = Linux ]; then
+    if [ "$OS_TYPE" = Linux ] && _miner_deliberately_stopped; then
+        # #396: the plan states the decision apply will actually make. Saying "restart" here while the
+        # run leaves the rig held is the same class of lie as reporting a skipped step as applied.
+        echo " 2. re-render the unit (User=${MINER_USER:-root}); $SERVICE_NAME is stopped and stays stopped — the config takes effect at the next 'sudo $0 start'"
+    elif [ "$OS_TYPE" = Linux ]; then
         echo " 2. re-render the unit (User=${MINER_USER:-root}) and restart $SERVICE_NAME"
     else
         echo " 2. restart the miner manually ('$0 restart') — no service on $OS_TYPE"
@@ -4165,7 +4207,7 @@ apply() {
         _render_xmrig_unit
         sudo systemctl daemon-reload 2>/dev/null || true
     fi
-    _apply_runtime
+    _apply_runtime preserve-run-state # #396: an apply must not start a rig that is deliberately stopped
     local _wd_rc=0
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
@@ -4320,7 +4362,19 @@ _reown_config_backups() { # <backups-dir>
 # (a watchdog unit that would not write) still reported success. Gate on it: a failed apply is a
 # failed apply, and control_apply's rollback branch is the designed response to one.
 _control_do_apply() {
+    # #396: sampled BEFORE the apply, for the same reason _control_do_apply_fast samples its own — a rig
+    # can be LEGITIMATELY stopped when a change lands (a watchdog thermal hold, an operator's manual
+    # stop), and `apply` now leaves it that way. Without this the liveness wait below would read the
+    # operator's own decision as this change's failure and roll a perfectly good change back — and the
+    # rollback's re-apply would leave the rig held too, so the record would then blame a "liveness
+    # failure" nobody could have observed. Success is "the run-state did not DEGRADE", the same
+    # criterion and the same wording as the fast path; only a rig that WAS live must come back live.
+    # Sampled here rather than read back out of _apply_runtime so this function stays checkable on its
+    # own, exactly like its fast-path sibling.
+    local was_held=no
+    _miner_deliberately_stopped && was_held=yes
     apply >/dev/null 2>&1 || return 1
+    [ "$was_held" = no ] || return 0
     _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"
 }
 
@@ -4525,7 +4579,13 @@ control_apply() {
         # config.json, but only one leaves the miner hashing; the reason string pins which happened.
         local why="${fail_reason:-miner did not return to a live hashrate}"
         if _control_do_apply; then
-            _control_status "$status" rolled_back "$cid" "$change_keys" "$why; rolled back and live" "$backup"
+            # #396: "and live" is only true when the rig actually came back to a hashrate. Since the
+            # re-apply now leaves a deliberately stopped rig stopped — and _control_do_apply succeeds
+            # on that outcome by design — the unconditional wording would assert a liveness nobody
+            # checked, the same lie #395 removed from the arm below.
+            local back="rolled back and live"
+            _miner_deliberately_stopped && back="rolled back; the rig was already stopped and stays stopped"
+            _control_status "$status" rolled_back "$cid" "$change_keys" "$why; $back" "$backup"
         elif [ -n "$fail_reason" ]; then
             # #395: the re-apply failed for the SAME reason the change did (units that still will not
             # write), so the liveness wording below would assert something nobody checked — a failed

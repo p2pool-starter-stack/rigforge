@@ -12,7 +12,7 @@ reference](#commands) is below.
 
 | I want to… | Command | What happens |
 |---|---|---|
-| Change a setting (pool, rig name, TLS, failover) | edit `config.json`, then `sudo ./rigforge.sh apply` | Regenerates the live config and restarts. No rebuild. |
+| Change a setting (pool, rig name, TLS, failover) | edit `config.json`, then `sudo ./rigforge.sh apply` | Regenerates the live config and restarts. No rebuild. A miner that is deliberately stopped stays stopped. |
 | Redeploy after a `git pull` | `git pull && sudo ./rigforge.sh upgrade` | Regenerates the live config, reinstalls the units and restarts (and re-tunes); rebuilds XMRig only if the pin moved. See [the note below](#upgrading-xmrig-redeploy-after-a-git-pull). |
 | Run a live tune now | `sudo ./rigforge.sh tune --now` | One live pass against the running miner; keeps the best prefetch mode if it wins. Linux only. |
 | Check the worker is healthy | `sudo ./rigforge.sh doctor` | HugePages, MSR, governor, service, pool connection, with a fix hint for anything off. |
@@ -54,7 +54,7 @@ Not every verb needs root — the design, in four lines:
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
 | `upgrade` | Redeploy this RigForge release onto the rig: regenerate the live XMRig config, reinstall the systemd units, restart so both are in effect, re-tune if periodic autotune is enabled (the fastest knobs can shift between versions), and hand the files back to you. The **compile** is the conditional part — XMRig is rebuilt only when the pinned version/commit changed. A miner you had deliberately stopped is left stopped, and the regenerated config and unit take effect at your next `start` (#413). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
-| `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled), then asks the running miner whether a live pool connection came up — and warns when none did (a bad `pools[0].url` otherwise mines nothing while looking applied, #343). Warn only, never a failure: the pool may be legitimately down at apply time. `apply` does exit non-zero if the watchdog units could not be re-rendered (#395) — that one is a real failure, because the cadence the rig is running would otherwise diverge from `config.json` silently. |
+| `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. A miner that is deliberately stopped — a watchdog thermal hold, or your own `stop` — is left stopped, and picks up the new config at its next start. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled), then asks the running miner whether a live pool connection came up — and warns when none did (a bad `pools[0].url` otherwise mines nothing while looking applied, #343). Warn only, never a failure: the pool may be legitimately down at apply time. `apply` does exit non-zero if the watchdog units could not be re-rendered (#395) — that one is a real failure, because the cadence the rig is running would otherwise diverge from `config.json` silently. |
 | `uninstall` | Remove the service and revert all system changes (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, the miner has a live pool connection (read from the miner's own local API — a running miner with no connection is not mining, #343; with the service stopped, one TCP dial of `pools[0]` stands in), HugePages are reserved, kernel lockdown isn't blocking MSR writes (read from `/sys/kernel/security/lockdown` — active lockdown means the MSR mod cannot apply, and `msr.allow_writes=on` can't override it), the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. When the [writable control path](#writable-control-path-opt-in) is enabled, it's also a counted issue: `doctor` checks `rigforge-control` is active and its `/status` endpoint answers (#278), staying silent when control is disabled. Exits non-zero when critical issues are found (cron-friendly, matching Pithead's `status`). |
 | `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
@@ -257,7 +257,9 @@ Each timer tick runs one check (`journalctl -u rigforge-watchdog.service` shows 
   marker written; later checks start it again exactly once the temperature drops below
   `max_temp_c - 5` (the 5 °C hysteresis is fixed — enough to outlast the post-restart heat-up
   without stranding the miner). An unreadable sensor skips the thermal check entirely: a missing
-  sensor must not stop a healthy miner. The sensor is `thermal_zone0` when the board exposes one,
+  sensor must not stop a healthy miner. A local `apply`, or a config change arriving over the control
+path, does not break the hold — it regenerates the config and leaves the miner stopped for the
+watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
   else the CPU hwmon (`k10temp`/`coretemp`). Before setting a cutoff, check the live reading on
   *your* board (`THERMAL_ZONE` overrides the path) — k10temp reports **Tctl**, which runs high by
   design (a loaded EPYC sits near 90 °C Tctl in perfectly normal operation), so a damage-avoidance
@@ -414,6 +416,15 @@ A full `setup` re-run also regenerates the config, but it's meant for re-provisi
 won't interrupt a running miner, does not restart an already-built worker on its own. When you want
 an edit to take effect, use `apply`. (On macOS, `apply` regenerates the config but you restart the
 miner yourself; see [Running on macOS](#running-on-macos).)
+
+`apply` restarts a miner that is **running**. A miner that is deliberately stopped is left stopped:
+the regenerated config and the re-rendered unit sit on disk and take effect the next time the miner
+starts — your own `sudo ./rigforge.sh start`, or the watchdog's own tick once the temperature is back
+under the cutoff. That covers both ways a rig is legitimately offline, the [thermal
+hold](#watchdog-opt-in) and a plain `stop`, and it needs no knowledge of which one you are in: `apply`
+reads whether the miner is running, not why it isn't. Raising `max_temp_c` on a rig that is currently
+held therefore does what you would expect — it changes the ceiling, and the watchdog decides when the
+rig comes back, against the new one.
 
 ---
 
@@ -601,11 +612,14 @@ How a change flows:
    ever reaches XMRig's generated config or its unit, so only the watchdog timer is reconciled and
    XMRig itself is left running — round-trip in about a second instead of the ~60s a full restart
    costs on a big-page host. Any other key (alone or mixed with those two) applies through the normal
-   `apply` path, which restarts XMRig. Either way, if the miner does not come back to a live hashrate
-   (full path) or the miner service is not found still running (fast path — a signal something else
-   was already wrong, since neither key can cause that), the snapshot is restored and re-applied
-   through the full path, and the outcome is recorded as `rolled_back` (or `failed`, if the rollback
-   snapshot itself could not be read back). A watchdog timer that could not be re-rendered — the unit
+   `apply` path, which restarts XMRig — unless the rig is deliberately stopped, in which case it stays
+   stopped and takes the change at its next start (#396), exactly as a local `apply` does. Both paths
+   judge the result the same way: only a rig that **was** live and did not come back is a failure, so
+   a thermal hold or a manual stop that predates the change is never mistaken for one it caused. If
+   the miner does not come back to a live hashrate (full path) or the miner service is not found still
+   running (fast path — a signal something else was already wrong, since neither key can cause that),
+   the snapshot is restored and re-applied through the full path, and the outcome is recorded as
+   `rolled_back` (or `failed`, if the rollback snapshot itself could not be read back). A watchdog timer that could not be re-rendered — the unit
    files are unwritable, or `daemon-reload` fails — rolls the change back the same way (#395). The
    fast path's whole effect *is* that re-render, so recording the change as applied would leave the
    rig on a cadence the operator never chose, with nothing to detect it. The recorded `reason` names
