@@ -19,6 +19,15 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **A test stub's broken-pipe noise no longer reds the #410 controls (#419).** Every real consumer of
+  `lscpu` closes the pipe at its first match, so the suite's `lscpu` stub is mid-write when the reader
+  goes away. At SIGPIPE's default disposition it dies silently — which is why this never reproduced
+  locally — but a harness that passes SIGPIPE down as ignored, as CI's does, turns the same write into
+  an EPIPE that bash reports as `echo: write error: Broken pipe` on stderr. That landed on the stderr
+  of the script under test, and three #410 controls assert that stderr is empty, so a fixture's noise
+  read as the subject's output and invalidated the block reading against it. The stub's writes now
+  drop their own write errors; its stdout is byte-identical. Test-only.
+
 - **An empty-string `socks5` or `tls-fingerprint` no longer skips validation (#408).** Two
   predicates decided whether a pool key was set and they disagreed about `""`: the emit step keys
   on jq truthiness, so an empty string was written into the generated config, while validation read

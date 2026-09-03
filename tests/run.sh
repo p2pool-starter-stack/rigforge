@@ -95,8 +95,19 @@ make_stubs() {
 #!/usr/bin/env bash
 exec "$@"
 EOF
+    # The `{ } 2>/dev/null` is load-bearing (#419), not tidiness: every real consumer of lscpu here
+    # closes the pipe at its FIRST match (`lscpu | awk '/L3 cache/{print $3$4; exit}'` in
+    # util/proposed-grub.sh, `lscpu | sed -n ... | head -1` in rigforge.sh), so this stub is mid-write
+    # when the reader goes away. At SIGPIPE's default disposition it dies silently — which is why the
+    # problem never reproduces locally — but a harness that passes SIGPIPE down as IGNORED, as CI's
+    # does, turns the same write into an EPIPE that bash reports as `echo: write error: Broken pipe`
+    # on stderr, one line per failed write. That lands on the stderr of the script under test, and
+    # three #410 controls assert that stderr is EMPTY: a fixture's noise read as the subject's output,
+    # timing-dependent, and a red control invalidates the block that reads against it. Any stub that
+    # writes more than one line to stdout needs the same guard. Pinned by the #419 test below.
     cat >"$bin/lscpu" <<'EOF'
 #!/usr/bin/env bash
+{
 echo "Model name:            ${STUB_CPU_MODEL:-Generic CPU}"
 echo "L3 cache:              ${STUB_L3:-8 MiB}"
 echo "Socket(s):             ${STUB_SOCKETS:-1}"
@@ -105,6 +116,7 @@ echo "Socket(s):             ${STUB_SOCKETS:-1}"
 echo "NUMA node(s):          ${STUB_NUMA_NODES:-${STUB_SOCKETS:-1}}"
 # Modern lscpu (as root) also prints a DMI-derived BIOS line; the model parse must NOT pick this up.
 echo "BIOS Model name:       ${STUB_CPU_MODEL:-Generic CPU}            Unknown CPU @ 4.2GHz"
+} 2>/dev/null
 EOF
     cat >"$bin/sysctl" <<'EOF'
 #!/usr/bin/env bash
@@ -1134,6 +1146,50 @@ r="$(
     _cmdline_reserved_2mb "quiet splash nomodeset"
 )"
 assert_eq "reserved: nothing reserved -> 0" "$r" "0"
+
+# #419: the fixture's own EPIPE noise must not land on the stderr the #410 controls below assert is
+# EMPTY. See the guard on the lscpu stub in make_stubs for the mechanism; this pins it, because the
+# failure it prevents shows up as a #410 control going red for a reason that has nothing to do with
+# #410 — which is exactly the shape that gets "fixed" in the wrong file.
+#
+# The instrument is deterministic in BOTH directions, which the CI failure was not: `trap '' PIPE`
+# reproduces the ignored-SIGPIPE disposition CI hands down, and the reader is made to exit BEFORE the
+# writer starts, so the 64K pipe buffer cannot absorb the writes the way it does when the two race.
+echo "== fixture: the lscpu stub stays silent when its reader closes early (#419) =="
+stub_epipe_stderr() { # <stub path> -> only what the stub wrote to STDERR
+    # Written as `{ (…) >/dev/null; } 2>&1` rather than the shorter `(…) 2>&1 1>/dev/null`: both
+    # capture stderr and discard stdout, but shellcheck flags the second as SC2069 because the order
+    # reads like a stdout+stderr merge that has been written backwards. The two forms were measured
+    # byte-identical here, on a stub that writes to stderr and one that does not.
+    { (
+        trap '' PIPE
+        {
+            command sleep 0.3
+            bash "$1"
+        } | awk 'BEGIN { exit }'
+    ) >/dev/null; } 2>&1
+}
+assert_eq "the lscpu stub writes nothing to stderr when its reader closes early (#419)" \
+    "$(stub_epipe_stderr "$STUBS/lscpu")" ""
+# Control: the same instrument against the pre-#419 stub body MUST fire, or the assertion above is
+# green because the instrument sees nothing rather than because the guard works.
+EPS="$(mktemp -d "$SANDBOX/eps.XXXXXX")"
+cat >"$EPS/lscpu" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "Model name:            ${STUB_CPU_MODEL:-Generic CPU}"
+echo "L3 cache:              ${STUB_L3:-8 MiB}"
+STUBEOF
+chmod +x "$EPS/lscpu"
+assert_contains "control: an UNGUARDED stub does report the broken pipe (#419)" \
+    "$(stub_epipe_stderr "$EPS/lscpu")" "write error: Broken pipe"
+# And the guard must not change what the stub says — asserted through the exact parse
+# util/proposed-grub.sh performs, rather than through the stub's own spacing.
+assert_eq "the guarded stub still parses as proposed-grub.sh reads it (#419)" \
+    "$(STUB_L3='32 MiB' bash "$STUBS/lscpu" | awk '/L3 cache/{print $3$4; exit}')" "32MiB"
+assert_eq "the guarded stub still reports its socket count (#419)" \
+    "$(STUB_SOCKETS=2 bash "$STUBS/lscpu" | awk '/Socket\(s\):/{print $2; exit}')" "2"
+assert_contains "the guarded stub still prints the BIOS line the model parse must skip (#419)" \
+    "$(bash "$STUBS/lscpu")" "BIOS Model name:"
 
 # ---------------------------------------------------------------------------
 # #410: hugepages_pool_ceiling_mb has to reach the PERSISTED reservation, not only the runtime write.
