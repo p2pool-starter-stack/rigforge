@@ -1516,8 +1516,16 @@ _rx_setup_threads() {
 # Read-only GRUB computation shared by tune_kernel (the mutation half) and the setup --dry-run plan
 # (#146): sets MANAGED (params we manage), CURRENT (the live cmdline), MERGED (#19 merge — never
 # clobbers params the user/distro set). Callers guard on proposed-grub.sh + $GRUB_DEFAULT existing.
+#
+# POOL_CEILING_MB (#410): the declared hugepages_pool_ceiling_mb reaches the PERSISTED reservation
+# here, not only the runtime write in _ensure_hugepages. Without it the boot pool comes up above the
+# ceiling and the grow-only runtime guard can never bring it back down — a declared ceiling that
+# holds until the next reboot and then silently stops holding. Passed to the cmdline-generating call
+# ONLY: the two --runtime calls below and in tune_kernel ask for the miner's REQUIREMENT, which
+# _ensure_hugepages weighs against availability before clamping the write, so clamping it there
+# would move that decision instead of bounding the pool.
 _grub_proposed() {
-    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
+    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")

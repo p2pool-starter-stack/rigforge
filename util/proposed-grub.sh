@@ -115,14 +115,58 @@ if [ "$RUNTIME" -eq 1 ]; then
     exit 0
 fi
 
+# --- 2b. Declared pool ceiling (#410) ---
+
+# hugepages_pool_ceiling_mb bounds the runtime `vm.nr_hugepages` write (#398); the PERSISTED
+# reservation has to obey the same bound, or the ceiling is only half a ceiling. Left out of the GRUB
+# path, a boot brings the 2MB pool up ABOVE the declared ceiling and `_ensure_hugepages` — grow-only —
+# can never bring it back down: with `current` past `ceiling_pages` it takes the already-at-ceiling
+# branch and returns without writing, so the box stays over the ceiling permanently while the runtime
+# guard reports that everything is fine (#410).
+#
+# Passed as POOL_CEILING_MB by rigforge.sh's _grub_proposed. Unset or 0 (the default) skips the clamp
+# entirely, so a config that declares no ceiling renders a byte-for-byte unchanged cmdline.
+#
+# NOT applied to --runtime above, deliberately: that output is the miner's REQUIREMENT, which
+# `_ensure_hugepages` weighs against availability before clamping the WRITE. Clamping the requirement
+# would move the "pool already covers the miner" decision rather than bound the pool, and would
+# suppress the warning that fires when the requirement genuinely exceeds the ceiling.
+#
+# FLOORED to whole 2MB pages, matching `_ensure_hugepages`: a cap rounds toward LESS memory, never
+# more, so 5121MB gives 2560 pages (5120MB) and never 2561 (5122MB, a page past what was declared).
+CEILING_2MB_PAGES=""
+if [ -n "${POOL_CEILING_MB:-}" ] && [ "$POOL_CEILING_MB" -gt 0 ] 2>/dev/null; then
+    CEILING_2MB_PAGES=$((POOL_CEILING_MB / 2))
+fi
+
+# Clamp a 2MB page total to the declared ceiling, noting on stderr when the clamp actually binds — a
+# silent cap is how an operator learns about it from a hashrate instead of from a message. Echoes the
+# (possibly clamped) count on stdout; the note goes to stderr so it never lands in that value.
+_cap_2mb() { # <2MB pages> -> pages, clamped to CEILING_2MB_PAGES
+    local pages=$1
+    if [ -n "$CEILING_2MB_PAGES" ] && [ "$pages" -gt "$CEILING_2MB_PAGES" ] 2>/dev/null; then
+        echo "NOTE: capping the persisted 2MB HugePages reservation at $CEILING_2MB_PAGES pages (${POOL_CEILING_MB}MB, hugepages_pool_ceiling_mb) instead of $pages — the boot-time pool obeys the same ceiling as the runtime write (#410)." >&2
+        pages=$CEILING_2MB_PAGES
+    fi
+    echo "$pages"
+}
+
 # --- 3. Configuration Generation ---
 
 # Check for 1GB HugePage support (pdpe1gb flag)
 if grep -q "pdpe1gb" "$CPUINFO" 2>/dev/null; then
     # Strategy: Use 1GB pages for dataset, 2MB for JIT
+    # SCOPE of the #410 clamp, deliberately the 2MB entry only: hugepages_pool_ceiling_mb has always
+    # described the pool `vm.nr_hugepages` names — the 2MB pool — and that is the quantity
+    # `_ensure_hugepages` measures its ceiling against. The 1GB dataset reservation is a DIFFERENT
+    # pool the key has never bounded, and clamping it here would silently cost RandomX fast mode. So
+    # a box whose ceiling is smaller than its 1GB reservation still boots holding more hugepage
+    # memory than the ceiling names — a documented limit of the key, not something this fix changes.
+    TOTAL_2MB_PAGES=$(_cap_2mb "$TOTAL_2MB_PAGES")
     NEW_GRUB="quiet splash hugepagesz=1G hugepages=$TOTAL_GB_PAGES hugepagesz=2M hugepages=$TOTAL_2MB_PAGES default_hugepagesz=2M msr.allow_writes=on"
 else
-    # Fallback Strategy: Use only 2MB pages
+    # Fallback Strategy: Use only 2MB pages — here the clamp bounds the entire reservation.
+    TOTAL_2MB_FALLBACK=$(_cap_2mb "$TOTAL_2MB_FALLBACK")
     NEW_GRUB="quiet splash default_hugepagesz=2M hugepages=$TOTAL_2MB_FALLBACK msr.allow_writes=on"
 fi
 
