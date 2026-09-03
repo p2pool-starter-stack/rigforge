@@ -1389,6 +1389,80 @@ out="$(
 )"
 assert_contains "oversized ceiling rejected (#398)" "$out" "hugepages_pool_ceiling_mb must be"
 
+# #412: the SAME defect as #405, in every numeric key parse_config validates. Each guard was written
+# `! [[ $v =~ ^[0-9]+$ ]] || [ "$v" -gt MAX ]`; on a value with more digits than bash can evaluate `[`
+# returns 2 — an ERROR, not "false" — the `if` reads any non-zero as false, and the value is ACCEPTED.
+# For hugepages_pool_ceiling_mb the cost is the key's whole purpose: `_ensure_hugepages` then skipped
+# its ceiling block (its own comparison failed the same way, behind a `2>/dev/null`) and grew the pool
+# uncapped while the config declared a cap. `_uint_in_range` short-circuits on digit count first, so
+# the arithmetic only ever sees a value bash can evaluate.
+#
+# Every key gets THREE assertions, and the third is the one that makes the first mean anything: an
+# out-of-range value one past the maximum must be REJECTED. Without it a fixture that never reaches
+# the guard at all — rejected upstream for an unrelated missing key — reads exactly like a working
+# guard. That is not hypothetical: the control_port fixture below needs ACCESS_TOKEN *and*
+# api_allow_from before the port guard is reachable, and the first draft of this test had neither and
+# "passed".
+echo "== unit: parse_config rejects a bash-inevaluable value in every numeric key (#412) =="
+BIG412=99999999999999999999
+uint412() { # <extra-config-json-body> -> ACCEPTED|REJECTED
+    local f="$SANDBOX/u412.json"
+    printf '{"pools":[{"url":"h:3333"}],%s}\n' "$1" >"$f"
+    if parse_rc "$f" "$ROOT"; then echo ACCEPTED; else echo REJECTED; fi
+}
+# The armed prefix for control_port: `control: enabled` is refused outright without both of these, so
+# without them the port guard below is never reached and every verdict here would be a false pass.
+CTL412='"ACCESS_TOKEN":"tok","api_allow_from":"10.0.0.5","control":"enabled"'
+# key | the too-long value | the maximum (must stay accepted) | one past it (must be rejected)
+assert_eq "hugepages_pool_ceiling_mb: inevaluable rejected (#412)" "$(uint412 "\"hugepages_pool_ceiling_mb\":$BIG412")" "REJECTED"
+assert_eq "hugepages_pool_ceiling_mb: 65536 max still accepted (#412 over-tightening control)" "$(uint412 '"hugepages_pool_ceiling_mb":65536')" "ACCEPTED"
+assert_eq "hugepages_pool_ceiling_mb: 65537 rejected — the guard is reached (#412 arming control)" "$(uint412 '"hugepages_pool_ceiling_mb":65537')" "REJECTED"
+assert_eq "hugepages_reserve_extra_mb: inevaluable rejected (#412)" "$(uint412 "\"hugepages_reserve_extra_mb\":$BIG412")" "REJECTED"
+assert_eq "hugepages_reserve_extra_mb: 65536 max still accepted (#412)" "$(uint412 '"hugepages_reserve_extra_mb":65536')" "ACCEPTED"
+assert_eq "hugepages_reserve_extra_mb: 65537 rejected — the guard is reached (#412)" "$(uint412 '"hugepages_reserve_extra_mb":65537')" "REJECTED"
+assert_eq "DONATION: inevaluable rejected (#412)" "$(uint412 "\"DONATION\":$BIG412")" "REJECTED"
+assert_eq "DONATION: 100 max still accepted (#412)" "$(uint412 '"DONATION":100')" "ACCEPTED"
+assert_eq "DONATION: 101 rejected — the guard is reached (#412)" "$(uint412 '"DONATION":101')" "REJECTED"
+assert_eq "watchdog_interval_min: inevaluable rejected (#412)" "$(uint412 "\"watchdog_interval_min\":$BIG412")" "REJECTED"
+assert_eq "watchdog_interval_min: 1440 max still accepted (#412)" "$(uint412 '"watchdog_interval_min":1440')" "ACCEPTED"
+assert_eq "watchdog_interval_min: 1441 rejected — the guard is reached (#412)" "$(uint412 '"watchdog_interval_min":1441')" "REJECTED"
+assert_eq "max_temp_c: inevaluable rejected (#412)" "$(uint412 "\"max_temp_c\":$BIG412")" "REJECTED"
+assert_eq "max_temp_c: 110 max still accepted (#412)" "$(uint412 '"max_temp_c":110')" "ACCEPTED"
+assert_eq "max_temp_c: 111 rejected — the guard is reached (#412)" "$(uint412 '"max_temp_c":111')" "REJECTED"
+assert_eq "threads: inevaluable rejected (#412)" "$(uint412 "\"threads\":$BIG412")" "REJECTED"
+assert_eq "threads: 1024 max still accepted (#412)" "$(uint412 '"threads":1024')" "ACCEPTED"
+assert_eq "threads: 1025 rejected — the guard is reached (#412)" "$(uint412 '"threads":1025')" "REJECTED"
+assert_eq "api_port: inevaluable rejected (#412)" "$(uint412 "\"api\":\"enabled\",\"api_port\":$BIG412")" "REJECTED"
+assert_eq "api_port: 65535 max still accepted (#412)" "$(uint412 '"api":"enabled","api_port":65535')" "ACCEPTED"
+assert_eq "api_port: 65536 rejected — the guard is reached (#412)" "$(uint412 '"api":"enabled","api_port":65536')" "REJECTED"
+assert_eq "control_port: inevaluable rejected (#412)" "$(uint412 "$CTL412,\"control_port\":$BIG412")" "REJECTED"
+assert_eq "control_port: 65535 max still accepted (#412)" "$(uint412 "$CTL412,\"control_port\":65535")" "ACCEPTED"
+assert_eq "control_port: 65536 rejected — the guard is reached (#412)" "$(uint412 "$CTL412,\"control_port\":65536")" "REJECTED"
+# The guard keys on LENGTH, exactly as #405's does, so it tightens on precisely one further shape: a
+# value zero-padded PAST the maximum's digit width, which the old range test evaluated as decimal and
+# kept. Padding WITHIN the width is untouched and still accepted.
+#
+# That shape is only reachable when the value is given as a JSON STRING. As a JSON number, jq
+# normalises the padding away before bash ever sees it (`065536` -> `65536`), so the guard is handed
+# an unpadded value and nothing changes — asserted below rather than reasoned about, because the
+# first draft of this test used the number form, expected a rejection, and went red for that reason.
+# All three are pinned so the CHANGELOG's scope is TESTED rather than asserted in prose.
+assert_eq "ceiling padded past five digits as a STRING rejected — same trade as #405 (#412)" "$(uint412 '"hugepages_pool_ceiling_mb":"065536"')" "REJECTED"
+assert_eq "ceiling padded within five digits as a string still accepted — length, not padding (#412)" "$(uint412 '"hugepages_pool_ceiling_mb":"05120"')" "ACCEPTED"
+assert_eq "ceiling padded past five digits as a NUMBER is unaffected — jq normalises it (#412)" "$(uint412 '"hugepages_pool_ceiling_mb":065536')" "ACCEPTED"
+# The message must still be the key's OWN. A shared guard that also shared one message would name
+# neither the key nor its units, and would go green here while telling an operator nothing.
+printf '{"pools":[{"url":"h:3333"}],"hugepages_pool_ceiling_mb":%s}\n' "$BIG412" >"$SANDBOX/u412msg.json"
+out="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$SANDBOX/u412msg.json"
+    SCRIPT_DIR="$ROOT"
+    set +e
+    PATH="$STUBS:$PATH" parse_config 2>&1
+))"
+assert_contains "inevaluable ceiling names its own key and range (#412)" "$out" "hugepages_pool_ceiling_mb must be"
+assert_absent "inevaluable ceiling no longer leaks bash's raw complaint (#412)" "$out" "integer expression expected"
+
 # generate_xmrig_config: the thread cap clamps cpu.rx AFTER any tune overlay (a stale tuned count can't
 # exceed the operator's headroom); a valid count at/under the cap is left alone.
 echo "== config-gen: threads cap clamps cpu.rx (#305) =="
@@ -6333,6 +6407,27 @@ assert_contains "ceiling above current caps the write, not the double count (#39
 assert_absent "capped write is no longer the double-counted 6118 (#398 mutation kill)" "$(cat "$SC")" "6118"
 assert_contains "capping is logged with the ceiling reason (#398)" "$out" "capping the write"
 
+# #412, the write side. Fed a ceiling bash cannot evaluate, `[ "$CEILING" -gt 0 ] 2>/dev/null` returned
+# 2, the `if` read that as false, and the ENTIRE ceiling block was skipped — with the redirect eating
+# the only tell, so the pool grew to the uncapped 6118 in total silence while config.json declared a
+# cap. parse_config now rejects such a value, so this backstop should be unreachable in practice; it
+# is asserted anyway because "unreachable" is a claim about the caller, and a cap that can be dropped
+# silently is not a cap. The discriminating assertion is the sysctl call log being EMPTY: a revert to
+# the silent-skip body leaves `vm.nr_hugepages=6118` in it and reddens on that line alone, whether or
+# not the message ever changes.
+SC="$HPC/calls412"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 3782 224 2560 99999999999999999999)"
+assert_eq "inevaluable ceiling writes NOTHING — no silent uncapped grow (#412)" "$(cat "$SC")" ""
+assert_absent "inevaluable ceiling does not reach the uncapped 6118 write (#412 mutation kill)" "$(cat "$SC")" "6118"
+assert_contains "inevaluable ceiling is refused out loud, not skipped (#412)" "$out" "unenforceable ceiling"
+# The control that keeps the assertion above honest: a VALID ceiling must still reach the write and
+# still cap. Without it, a change that made _ensure_hugepages refuse everything would pass all three.
+SC="$HPC/calls412ok"
+: >"$SC"
+out="$(run_ensure_hp398 "$SC" 3782 224 2560 6400)"
+assert_contains "a valid ceiling still caps the write (#412 over-tightening control)" "$(cat "$SC")" "vm.nr_hugepages=3200"
+
 # Ceiling declared AT the tier's own already-committed reservation (2560 pages / 5120 MB, the real
 # reduced-tier number from pithead#1103): the pool is already at the ceiling, so the write is
 # skipped entirely rather than growing it — the miner gets zero extra pages, but the box is never
@@ -7532,6 +7627,11 @@ assert_eq "commit: max_temp_c band floor 40 commits (#257)" "$(commit_case "$CFG
 assert_eq "commit: max_temp_c band ceiling 110 commits (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":110}')" "committed|don=1|pool=h:3333|bk=1|tmp=0"
 assert_eq "commit: max_temp_c 111 just-over refused (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":111}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 assert_eq "commit: max_temp_c non-integer 40.5 refused (#257)" "$(commit_case "$CFG_236" '{"max_temp_c":40.5}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
+# #412: the same inevaluable-value defect reached this applier-side SAFETY backstop. `[ "$mt_new" -gt
+# 110 ]` returned 2 on a 20-digit value, the `if` read it as false, and a staged max_temp_c that the
+# Python receiver rejects outright was COMMITTED here — the one path #257 exists to close. Asserted
+# both directly and, below, as a receiver/applier lockstep case, because the two must never disagree.
+assert_eq "commit: max_temp_c too large for bash to evaluate refused (safety #412)" "$(commit_case "$CFG_236" '{"max_temp_c":99999999999999999999}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 assert_eq "commit: watchdog invalid 0 rejected — not a silent disable (#257)" "$(commit_case "$CFG_236" '{"watchdog":0}')" "rejected|don=1|pool=h:3333|bk=0|tmp=0"
 # #257: the receiver (control-server.py unsafe_reasons) and the applier (_control_commit) must reach
 # the SAME safety verdict on every input — the "behavioural drift test" the control-server comment cites.
@@ -7539,7 +7639,7 @@ if command -v python3 >/dev/null 2>&1; then
     recv_verdict() { # <json> -> reject|allow, from the Python receiver's unsafe_reasons()
         python3 -c 'import sys,types,json; s=open(sys.argv[2]).read().split("if __name__")[0]; m=types.ModuleType("cs"); exec(s, m.__dict__); print("reject" if m.unsafe_reasons(json.loads(sys.argv[1])) else "allow")' "$1" "$ROOT/util/control-server.py"
     }
-    for scase in '{"watchdog":"disabled"}' '{"watchdog":false}' '{"watchdog":"off"}' '{"max_temp_c":999}' '{"max_temp_c":null}' '{"max_temp_c":39}' '{"max_temp_c":40.5}' '{"watchdog":"enabled"}' '{"max_temp_c":80}' '{"DONATION":2}'; do
+    for scase in '{"watchdog":"disabled"}' '{"watchdog":false}' '{"watchdog":"off"}' '{"max_temp_c":999}' '{"max_temp_c":null}' '{"max_temp_c":39}' '{"max_temp_c":40.5}' '{"max_temp_c":99999999999999999999}' '{"watchdog":"enabled"}' '{"max_temp_c":80}' '{"DONATION":2}'; do
         rv="$(recv_verdict "$scase")"
         av="$(commit_case "$CFG_236" "$scase")"
         av="${av%%|*}"
