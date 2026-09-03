@@ -8028,7 +8028,7 @@ cdh_exec() {
         apply() {
             echo called >>"$CDH/apply-calls"
             local n rcs
-            n=$(wc -l <"$CDH/apply-calls")
+            n=$(wc -l <"$CDH/apply-calls" | tr -d ' ')
             read -ra rcs <<<"${CDH_APPLY_RCS:-0 0}"
             return "${rcs[$((n - 1))]:-0}"
         }
@@ -8067,7 +8067,16 @@ EOF
     cdh_exec
 }
 cdhst() { jq -r ".$1" "$CDH/state/status.json" 2>/dev/null; }
-cdh_calls() { printf '%s' "$(wc -l <"$CDH/$1-calls" 2>/dev/null || echo 0)"; }
+# BSD `wc -l` right-pads its count ("       1"), GNU's does not, so the raw output is a string that
+# compares equal to the expected count on Linux and not on macOS. `tr -d ' '` is the idiom the rest of
+# this file uses for exactly that. The `|| echo 0` fallback cannot live on the pipeline — a missing
+# file fails the redirect, `tr` still exits 0, and the fallback would never fire — so the default is
+# applied to the captured value instead.
+cdh_calls() { # <name> -> how many calls were recorded, 0 when the file was never written
+    local n
+    n=$(wc -l <"$CDH/$1-calls" 2>/dev/null | tr -d ' ')
+    printf '%s' "${n:-0}"
+}
 
 # (a) the held rig. Mutation this catches: dropping the run-state guard from _control_do_apply — the
 # mutant runs the (failing) liveness wait, records rolled_back, and puts DONATION back to 1.
