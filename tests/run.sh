@@ -1157,13 +1157,17 @@ assert_eq "reserved: nothing reserved -> 0" "$r" "0"
 # writer starts, so the 64K pipe buffer cannot absorb the writes the way it does when the two race.
 echo "== fixture: the lscpu stub stays silent when its reader closes early (#419) =="
 stub_epipe_stderr() { # <stub path> -> only what the stub wrote to STDERR
-    (
+    # Written as `{ (…) >/dev/null; } 2>&1` rather than the shorter `(…) 2>&1 1>/dev/null`: both
+    # capture stderr and discard stdout, but shellcheck flags the second as SC2069 because the order
+    # reads like a stdout+stderr merge that has been written backwards. The two forms were measured
+    # byte-identical here, on a stub that writes to stderr and one that does not.
+    { (
         trap '' PIPE
         {
             command sleep 0.3
             bash "$1"
         } | awk 'BEGIN { exit }'
-    ) 2>&1 1>/dev/null
+    ) >/dev/null; } 2>&1
 }
 assert_eq "the lscpu stub writes nothing to stderr when its reader closes early (#419)" \
     "$(stub_epipe_stderr "$STUBS/lscpu")" ""
