@@ -2074,6 +2074,158 @@ out="$(cd "$U" && PATH="$APDEAD:$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" APPLY
 assert_rc "apply exits 0 when the API can't confirm (#343)" "$?" "0"
 assert_contains "apply warns when the API can't confirm the connection (#343)" "$out" "confirm a pool connection"
 
+# #396: an `apply` must not START a rig that is deliberately stopped. Two ways a rig is legitimately
+# offline — the watchdog's thermal cutoff (`systemctl stop` plus a watchdog.thermal-hold marker) and an
+# operator's manual stop (no marker at all) — and _apply_runtime's unconditional `systemctl restart`
+# overrode both, bypassing the hold's cool-down entirely. The decision reads the RUN-STATE, not the
+# marker, which is what covers the manual stop too.
+echo "== unit: _miner_deliberately_stopped — the predicate the #396 decision turns on =="
+MDS="$(mktemp -d "$SANDBOX/mds.XXXXXX")"
+mds() { # <word `is-active` prints> <unit installed: y|n> [OS_TYPE]
+    mkdir -p "$MDS/bin"
+    cat >"$MDS/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+*"is-active"*)
+    echo "$1"
+    [ "$1" = active ] && exit 0 || exit 3
+    ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$MDS/bin/systemctl"
+    rm -rf "$MDS/systemd"
+    mkdir -p "$MDS/systemd"
+    if [ "$2" = y ]; then : >"$MDS/systemd/xmrig.service"; fi
+    (
+        source "$SCRIPT"
+        OS_TYPE="${3:-Linux}"
+        SYSTEMD_DIR="$MDS/systemd"
+        SERVICE_NAME=xmrig
+        set +e
+        PATH="$MDS/bin:$STUBS:$PATH" _miner_deliberately_stopped
+        echo "rc=$?"
+    )
+}
+assert_eq "an installed unit reporting 'inactive' IS a deliberate stop (#396)" "$(mds inactive y)" "rc=0"
+assert_eq "a running miner is not a deliberate stop (#396)" "$(mds active y)" "rc=1"
+# A crashed unit systemd has given up on is nobody's decision — `apply` must still revive it, exactly as
+# it did before #396. Mutation this catches: reading `is-active` by EXIT STATUS instead of by the word,
+# which lumps `failed` in with `inactive`.
+assert_eq "a FAILED unit is not a deliberate stop (#396)" "$(mds failed y)" "rc=1"
+# `systemctl is-active` prints `inactive` for a unit that does not exist either, so without the
+# unit-file half an `apply` before `setup` would report "left stopped" instead of failing loudly on the
+# restart the way it does today — a quiet success in place of a loud failure.
+assert_eq "no installed unit -> not a deliberate stop, whatever is-active says (#396)" "$(mds inactive n)" "rc=1"
+assert_eq "macOS has no systemd run-state to preserve (#396)" "$(mds inactive y Darwin)" "rc=1"
+
+echo "== unit: _apply_runtime preserve-run-state — the held rig stays stopped, tune's bare call does not (#396) =="
+ARS="$(mktemp -d "$SANDBOX/ars.XXXXXX")"
+ars_run() { # <preserve|bare> <word `is-active` prints> [thermal-hold marker: y|n]
+    rm -rf "$ARS"
+    mkdir -p "$ARS/bin" "$ARS/systemd" "$ARS/worker/xmrig/build"
+    : >"$ARS/systemd/xmrig.service"
+    cat >"$ARS/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "[systemctl] \$*" >>"$ARS/calls.log"
+case "\$*" in
+*"is-active"*)
+    echo "$2"
+    [ "$2" = active ] && exit 0 || exit 3
+    ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$ARS/bin/systemctl"
+    if [ "${3:-n}" = y ]; then : >"$ARS/worker/watchdog.thermal-hold"; fi
+    (
+        source "$SCRIPT"
+        # The regen and the re-own are covered by the black-box apply tests; what is under test here is
+        # purely which service action this function takes, so both are stubbed out.
+        parse_config() { :; }
+        generate_xmrig_config() { :; }
+        _reown_worker() { :; }
+        OS_TYPE=Linux
+        SYSTEMD_DIR="$ARS/systemd"
+        SERVICE_NAME=xmrig
+        WORKER_ROOT="$ARS/worker"
+        set +e
+        export PATH="$ARS/bin:$STUBS:$PATH"
+        if [ "$1" = preserve ]; then _apply_runtime preserve-run-state 2>&1; else _apply_runtime 2>&1; fi
+    )
+}
+out="$(ars_run preserve inactive)"
+assert_contains "apply's _apply_runtime says it left the stopped miner stopped (#396)" "$out" "was stopped, so it was left stopped"
+assert_absent "apply's _apply_runtime does NOT restart a deliberately stopped miner (#396)" "$(cat "$ARS/calls.log")" "] restart"
+assert_absent "apply's _apply_runtime does NOT start it either (#396)" "$(cat "$ARS/calls.log")" "] start"
+# The marker is named only to explain the stop; the DECISION above never reads it, which is why the
+# no-marker (manual stop) case one assertion up takes the very same branch.
+out="$(ars_run preserve inactive y)"
+assert_contains "a thermal hold is named in the message when the marker is there (#396)" "$out" "watchdog is holding it"
+out="$(ars_run preserve active)"
+assert_contains "a RUNNING miner is still restarted by apply (#396)" "$out" "Applied config and restarted"
+assert_contains "and the restart really is issued (#396)" "$(cat "$ARS/calls.log")" "] restart xmrig"
+# The negative control that scopes the fix: tune/autotune/_restore_overrides call _apply_runtime with no
+# argument and MUST keep the unconditional restart — tune's --bench leg stops the service itself and
+# relies on the re-apply to bring it back, so a blanket preserve would strand a tune run, not a held rig.
+out="$(ars_run bare inactive)"
+assert_contains "a BARE _apply_runtime still restarts a stopped miner — tune/autotune depend on it (#396)" "$(cat "$ARS/calls.log")" "] restart xmrig"
+assert_absent "a bare _apply_runtime never claims it left anything stopped (#396)" "$out" "left stopped"
+
+echo "== black-box: apply on a deliberately stopped rig regenerates and holds (#396) =="
+AST="$(mktemp -d "$SANDBOX/apply-stopped.XXXXXX")"
+cp "$ROOT/VERSION" "$AST/"
+cp -R "$ROOT/systemd" "$AST/"
+mkdir -p "$AST/home/worker/xmrig/build" "$AST/logrotate" "$AST/etc-systemd" "$AST/bin"
+: >"$AST/home/worker/xmrig/build/xmrig"
+chmod +x "$AST/home/worker/xmrig/build/xmrig"
+printf 'ABC\n' >"$AST/home/worker/xmrig/.rigforge-commit"
+: >"$AST/etc-systemd/xmrig.service" # the unit IS installed — the miner is simply stopped
+cat >"$AST/config.json" <<EOF
+{ "HOME_DIR": "$AST/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+ast_systemctl() { # <word `is-active` prints>
+    cat >"$AST/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "[systemctl] \$*" >>"\${CALL_LOG:-/dev/null}"
+case "\$*" in
+*"is-active"*)
+    echo "$1"
+    [ "$1" = active ] && exit 0 || exit 3
+    ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$AST/bin/systemctl"
+}
+ast_apply() { # <extra args...>
+    : >"$AST/calls.log"
+    (cd "$AST" && PATH="$AST/bin:$STUBS:$PATH" LOGROTATE_DIR="$AST/logrotate" SYSTEMD_DIR="$AST/etc-systemd" \
+        CALL_LOG="$AST/calls.log" APPLY_POOL_IVL=0 RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply "$@" </dev/null 2>&1)
+}
+ast_systemctl inactive
+out="$(ast_apply)"
+rc=$?
+assert_rc "apply on a stopped rig exits 0 (#396)" "$rc" "0"
+assert_eq "apply still regenerates the config on a stopped rig (#396)" \
+    "$(J "$AST/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
+assert_contains "apply says it left the stopped miner stopped (#396)" "$out" "so it was left stopped"
+assert_absent "apply does not restart a rig the operator or the watchdog stopped (#396)" "$(cat "$AST/calls.log")" "] restart"
+assert_absent "apply does not start it either (#396)" "$(cat "$AST/calls.log")" "] start"
+# The rest of the reconcile is unchanged — the unit is still re-rendered and reloaded, so the held rig
+# comes up on the new config at its next deliberate start.
+assert_contains "apply still reloads the re-rendered unit on a stopped rig (#396)" "$(cat "$AST/calls.log")" "daemon-reload"
+assert_eq "apply still stamps the config-meta sidecar on a stopped rig (#396)" \
+    "$(J "$AST/.rigforge-config-meta.json" '.source')" "local"
+# #146's plan must state the decision the run will actually make — "and restart" while the run holds the
+# rig is the same class of lie as reporting a skipped step as applied. Both arms are exercised.
+out="$(ast_apply --dry-run)"
+assert_contains "apply --dry-run says a stopped rig stays stopped (#396)" "$out" "stays stopped"
+assert_absent "apply --dry-run on a stopped rig does not promise a restart (#396)" "$out" "and restart xmrig"
+ast_systemctl active
+out="$(ast_apply --dry-run)"
+assert_contains "apply --dry-run still promises the restart on a running rig (#396)" "$out" "and restart xmrig"
+
 # #95: a top-level `apply` reports the configured periodic-autotune target so the operator can see what
 # the nightly run optimizes for. Linux-only (the timer is Linux-only). Drive the notice directly with
 # OS_TYPE forced so the assertion is host-independent (the macOS suite runs this same file).
@@ -7852,6 +8004,118 @@ assert_eq "watchdog failure + failed rollback re-apply -> still rolled_back (#39
 assert_contains "the reason names the watchdog cause (#395)" "$(cfst reason)" "watchdog"
 assert_contains "the reason says the re-apply hit the same failure (#395)" "$(cfst reason)" "re-apply hit the same failure"
 assert_absent "it does NOT claim a liveness failure nobody checked (#395)" "$(cfst reason)" "restore liveness"
+
+echo "== unit: control_apply FULL path — a deliberately stopped rig is not rolled back (#396) =="
+# The worst case named in #396: an operator raises max_temp_c while the rig is in a thermal hold. Bundle
+# it with any non-fast-path key (DONATION here) and the change takes the FULL path, where `apply` — since
+# #396 — leaves the held rig stopped. _control_do_apply's old success criterion was the liveness wait
+# alone, so it would have read the operator's own hold as THIS change's failure and rolled a perfectly
+# good change back; the rollback re-apply would have held the rig too, and the record would then have
+# blamed a liveness failure nobody could have observed. Success is "the run-state did not DEGRADE", the
+# same criterion _control_do_apply_fast already uses.
+#
+# The REAL _control_do_apply runs here. apply() is stubbed to a recorder — what is under test is the
+# criterion applied to its outcome, not apply's own internals (covered by the black-box tests above) —
+# and _wait_miner_live defaults to FAILING, so any mutant that still consults it on a held rig reddens
+# the status assertion, not just the call-count one.
+CDH="$(mktemp -d "$SANDBOX/cdh.XXXXXX")"
+cdh_exec() {
+    (
+        source "$SCRIPT"
+        parse_config() { :; } # the live config is already valid; don't re-validate it (matches caf_exec)
+        # CDH_APPLY_RCS is the rc for each successive apply — the change's own, then the rollback
+        # re-apply's — so a change that fails on a HELD rig can still have a rollback that succeeds.
+        apply() {
+            echo called >>"$CDH/apply-calls"
+            local n rcs
+            n=$(wc -l <"$CDH/apply-calls" | tr -d ' ')
+            read -ra rcs <<<"${CDH_APPLY_RCS:-0 0}"
+            return "${rcs[$((n - 1))]:-0}"
+        }
+        _wait_miner_live() {
+            echo checked >>"$CDH/live-calls"
+            return "${CDH_LIVE_RC:-1}"
+        }
+        OS_TYPE=Linux
+        SCRIPT_DIR="$CDH"
+        SYSTEMD_DIR="$CDH/systemd"
+        CONFIG_JSON="$CDH/config.json"
+        REAL_USER=rfop
+        SERVICE_NAME=xmrig
+        RIGFORGE_CONTROL_STATE="$CDH/state"
+        set +e
+        PATH="$CDH/bin:$STUBS:$PATH" control_apply >/dev/null 2>&1
+    )
+}
+cdh_run() { # <word `is-active` prints> <unit installed: y|n>
+    rm -rf "$CDH"
+    mkdir -p "$CDH/systemd" "$CDH/state/spool" "$CDH/bin"
+    printf '%s\n' "$CFG_236" >"$CDH/config.json"
+    printf '{"DONATION":2}' >"$CDH/state/spool/pending-abc396.json" # not a fast-path key -> full path
+    if [ "$2" = y ]; then : >"$CDH/systemd/xmrig.service"; fi
+    cat >"$CDH/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+*"is-active"*)
+    echo "$1"
+    [ "$1" = active ] && exit 0 || exit 3
+    ;;
+*) exit 0 ;;
+esac
+EOF
+    chmod +x "$CDH/bin/systemctl"
+    cdh_exec
+}
+cdhst() { jq -r ".$1" "$CDH/state/status.json" 2>/dev/null; }
+# BSD `wc -l` right-pads its count ("       1"), GNU's does not, so the raw output is a string that
+# compares equal to the expected count on Linux and not on macOS. `tr -d ' '` is the idiom the rest of
+# this file uses for exactly that. The `|| echo 0` fallback cannot live on the pipeline — a missing
+# file fails the redirect, `tr` still exits 0, and the fallback would never fire — so the default is
+# applied to the captured value instead.
+cdh_calls() { # <name> -> how many calls were recorded, 0 when the file was never written
+    local n
+    n=$(wc -l <"$CDH/$1-calls" 2>/dev/null | tr -d ' ')
+    printf '%s' "${n:-0}"
+}
+
+# (a) the held rig. Mutation this catches: dropping the run-state guard from _control_do_apply — the
+# mutant runs the (failing) liveness wait, records rolled_back, and puts DONATION back to 1.
+cdh_run inactive y
+assert_eq "held rig -> the change is APPLIED, not rolled back (#396)" "$(cdhst status)" "applied"
+assert_eq "held rig -> the new value stays in config.json (#396)" "$(jq -r .DONATION "$CDH/config.json")" "2"
+assert_eq "held rig -> the liveness wait is never consulted (#396)" "$(cdh_calls live)" "0"
+assert_eq "held rig -> exactly one apply, no rollback re-apply (#396)" "$(cdh_calls apply)" "1"
+
+# (b) the rig really did go down across the change: the pre-existing rollback must still fire. Guards
+# against the criterion being widened into "always succeed".
+cdh_run active y
+assert_eq "a rig that was live and did not come back -> rolled_back (#396 control)" "$(cdhst status)" "rolled_back"
+assert_eq "and its config is restored to pre-change (#396 control)" "$(jq -r .DONATION "$CDH/config.json")" "1"
+assert_eq "and the liveness wait WAS consulted (#396 control)" "$(cdh_calls live)" "2"
+
+# (c) and (d): the two states that look like a stop and are not. Each must still be judged on liveness.
+cdh_run failed y
+assert_eq "a FAILED unit is not a hold — still judged on liveness (#396)" "$(cdhst status)" "rolled_back"
+cdh_run inactive n
+assert_eq "no installed unit is not a hold — still judged on liveness (#396)" "$(cdhst status)" "rolled_back"
+
+# (e) the guard must not swallow a genuinely failed apply on a held rig — `apply || return 1` still runs
+# first. Mutation this catches: returning 0 on a held rig BEFORE the apply's exit status is read.
+CDH_APPLY_RCS="1 1" cdh_run inactive y
+assert_eq "held rig + a failed apply -> still rolled_back (#396)" "$(cdhst status)" "rolled_back"
+
+# (f) the change failed for its own reason on a held rig and the rollback re-apply then succeeded. That
+# re-apply leaves the rig stopped, on purpose, and _control_do_apply now calls that success — so the
+# unconditional "rolled back and live" would assert a hashrate on a rig nobody started, which is the
+# same lie #395 removed from the neighbouring arm.
+CDH_APPLY_RCS="1 0" cdh_run inactive y
+assert_eq "held rig + failed change + successful rollback -> rolled_back (#396)" "$(cdhst status)" "rolled_back"
+assert_contains "the record says the rig stays stopped (#396)" "$(cdhst reason)" "stays stopped"
+assert_absent "and it does NOT claim a liveness nobody checked (#396)" "$(cdhst reason)" "and live"
+# The pre-existing wording is untouched for the case it was written for: a rig that WAS live, went
+# down, and came back on the restored config.
+CDH_APPLY_RCS="1 0" CDH_LIVE_RC=0 cdh_run active y
+assert_contains "a rig that really did come back is still reported live (#396 control)" "$(cdhst reason)" "rolled back and live"
 
 # #395: the two seams between install_watchdog and the status record. apply() swallowed the failure
 # outright, and _control_do_apply then DISCARDED apply's exit status — the liveness wait's verdict

@@ -44,6 +44,39 @@ All notable changes to RigForge are documented here. The format is based on
   call site promised "regenerate config, reinstall units" throughout — it is now true rather than
   aspirational.
 
+- **`apply` no longer force-starts a miner that is deliberately stopped (#396).** `_apply_runtime`
+  ran `systemctl restart` unconditionally, and a restart on a stopped unit *starts* it — so any full
+  `apply` reaching that line overrode the two ways a rig is legitimately offline: the watchdog's
+  thermal hold (it stops the miner above `max_temp_c` and leaves it stopped until the temperature is
+  5 °C back under the cutoff) and an operator's own `stop`. Raising `max_temp_c` on a rig that was
+  currently held — the change the control path's #257 design exists to allow — brought the miner
+  straight back up, still hot, with the cool-down skipped entirely. This reached the rig by three
+  routes: a local `apply`, a control-apply carrying any key outside #381's restart-free allowlist,
+  and the rollback re-apply that runs on *any* control-apply failure, fast path included.
+
+  `apply` now preserves the run state it found: a running miner is restarted exactly as before, and a
+  stopped one is left stopped with the regenerated config and re-rendered unit on disk, in force at
+  its next deliberate start — the operator's, or the watchdog's own tick. The decision reads the
+  run state rather than the watchdog's hold marker, which is what makes it cover a plain manual stop
+  too, with no knowledge of *why* the rig is down. "Deliberately stopped" is narrow on purpose: the
+  unit must be installed and systemd must report it exactly `inactive`. A `failed` unit — a crashed
+  miner systemd gave up on — and a missing unit are not decisions anybody made, and both still take
+  the restart, so `apply` keeps reviving a dead miner and still fails loudly when run before `setup`.
+
+  `control-apply`'s full path was changed with it, for a reason that only shows up in combination:
+  its success criterion was the liveness wait alone, so a held rig staying held would have been read
+  as *this change's* failure and the change rolled back — and since the rollback's own re-apply holds
+  the rig too, the recorded reason would then have blamed a liveness failure nobody could observe.
+  It now applies the same "the run state did not degrade" criterion the #381 fast path already used:
+  only a rig that was live and did not come back is a failure.
+
+  `tune`, `autotune` and the tuning-abort restore are deliberately unchanged — they call
+  `_apply_runtime` in a loop and measure the running miner between trials, and `tune --bench` stops
+  the service itself and relies on the re-apply to bring it back, so preserving the run state there
+  would strand a tune run rather than protect a hold. The preservation is opt-in per call site, and
+  `apply` is the only caller that opts in. `apply --dry-run` reports whichever decision the real run
+  would make.
+
 - **A test stub's broken-pipe noise no longer reds the #410 controls (#419).** Every real consumer of
   `lscpu` closes the pipe at its first match, so the suite's `lscpu` stub is mid-write when the reader
   goes away. At SIGPIPE's default disposition it dies silently — which is why this never reproduced
