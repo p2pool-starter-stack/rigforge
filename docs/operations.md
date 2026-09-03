@@ -13,7 +13,7 @@ reference](#commands) is below.
 | I want to… | Command | What happens |
 |---|---|---|
 | Change a setting (pool, rig name, TLS, failover) | edit `config.json`, then `sudo ./rigforge.sh apply` | Regenerates the live config and restarts. No rebuild. |
-| Redeploy after a `git pull` | `git pull && sudo ./rigforge.sh upgrade` | Rebuilds + restarts (and re-tunes) if the XMRig pin moved; otherwise a no-op. See [the note below](#upgrading-xmrig-redeploy-after-a-git-pull). |
+| Redeploy after a `git pull` | `git pull && sudo ./rigforge.sh upgrade` | Regenerates the live config, reinstalls the units and restarts (and re-tunes); rebuilds XMRig only if the pin moved. See [the note below](#upgrading-xmrig-redeploy-after-a-git-pull). |
 | Run a live tune now | `sudo ./rigforge.sh tune --now` | One live pass against the running miner; keeps the best prefetch mode if it wins. Linux only. |
 | Check the worker is healthy | `sudo ./rigforge.sh doctor` | HugePages, MSR, governor, service, pool connection, with a fix hint for anything off. |
 | Watch it mining | `./rigforge.sh logs` | Live logs, no root needed; `Ctrl-C` stops following (the miner keeps running). |
@@ -53,7 +53,7 @@ Not every verb needs root — the design, in four lines:
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
-| `upgrade` | Rebuild and restart only if the pinned XMRig version/commit changed. A no-op when you're already on the pinned build. If periodic autotune is enabled, it also re-tunes the new build (the fastest knobs can shift between versions). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
+| `upgrade` | Redeploy this RigForge release onto the rig: regenerate the live XMRig config, reinstall the systemd units, restart so both are in effect, re-tune if periodic autotune is enabled (the fastest knobs can shift between versions), and hand the files back to you. The **compile** is the conditional part — XMRig is rebuilt only when the pinned version/commit changed. A miner you had deliberately stopped is left stopped, and the regenerated config and unit take effect at your next `start` (#413). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled), then asks the running miner whether a live pool connection came up — and warns when none did (a bad `pools[0].url` otherwise mines nothing while looking applied, #343). Warn only, never a failure: the pool may be legitimately down at apply time. `apply` does exit non-zero if the watchdog units could not be re-rendered (#395) — that one is a real failure, because the cadence the rig is running would otherwise diverge from `config.json` silently. |
 | `uninstall` | Remove the service and revert all system changes (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, the miner has a live pool connection (read from the miner's own local API — a running miner with no connection is not mining, #343; with the service stopped, one TCP dial of `pools[0]` stands in), HugePages are reserved, kernel lockdown isn't blocking MSR writes (read from `/sys/kernel/security/lockdown` — active lockdown means the MSR mod cannot apply, and `msr.allow_writes=on` can't override it), the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. When the [writable control path](#writable-control-path-opt-in) is enabled, it's also a counted issue: `doctor` checks `rigforge-control` is active and its `/status` endpoint answers (#278), staying silent when control is disabled. Exits non-zero when critical issues are found (cron-friendly, matching Pithead's `status`). |
@@ -424,7 +424,7 @@ RigForge pins XMRig to a known version/commit. To move to a newer pinned build:
 ```bash
 ./rigforge.sh upgrade --check   # optional: is there a newer RigForge release? (on-demand, no sudo)
 git pull                        # get the new pin (and any RigForge changes)
-sudo ./rigforge.sh upgrade      # rebuild + restart only if the pin changed
+sudo ./rigforge.sh upgrade      # regenerate config, reinstall units, restart; rebuild only if the pin changed
 ```
 
 `upgrade --check` compares your `VERSION` against the latest GitHub release and prints the upgrade
@@ -432,17 +432,22 @@ recipe if you're behind. It's the only command that queries GitHub's API, it run
 type it (nothing is scheduled — see [SECURITY.md](../SECURITY.md)), and it always exits 0, so it's
 safe to call from your own scripts.
 
-`upgrade` is a no-op when the pinned XMRig is already built, so it's cheap to run. A plain
+`upgrade` skips the recompile when the pinned XMRig is already built, so it's cheap to run — but it is
+not a no-op: it regenerates the live config, reinstalls the systemd units and restarts, because a
+RigForge release can change either of those without moving the XMRig pin. A plain
 `sudo ./rigforge.sh` (setup) also picks up a changed pin, but `upgrade` is the explicit, restart-aware
 path. If you've enabled periodic [autotune](#live-auto-tuning-opt-in), `upgrade` re-tunes the new build
 automatically once it's live. The optimal prefetch mode can change between XMRig versions, so the upgrade
 is the moment that actually warrants a re-tune (the monthly timer is just a slow safety net).
 
-> Pulled RigForge changes but not a new XMRig pin? Then `upgrade` is a no-op, since the build is
-> unchanged. To pick up RigForge's own changes, run `sudo ./rigforge.sh apply` (regenerate the live
-> config + restart); if the pull also changed kernel tuning or the service unit, run a full
-> `sudo ./rigforge.sh setup`, then `restart`. When unsure, `upgrade` followed by `apply` covers the
-> common cases.
+> Pulled RigForge changes but not a new XMRig pin? `upgrade` is still the command — regenerating the
+> config and reinstalling the units is where RigForge's own changes land, and it restarts so they take
+> effect. Kernel and hardware tuning is the one thing it does not touch (that never changes on a
+> release); if a pull did change it, run a full `sudo ./rigforge.sh setup`.
+>
+> Earlier releases returned early here whenever the XMRig pin was unchanged — which was every
+> published release pair — so an `upgrade` regenerated nothing, reinstalled nothing and still reported
+> success; `apply` was the workaround. Fixed in #413.
 
 > Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk.
 

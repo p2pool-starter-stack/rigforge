@@ -1752,10 +1752,88 @@ printf 'ABC\n' >"$U/home/worker/xmrig/.rigforge-commit"
 cat >"$U/config.json" <<EOF
 { "HOME_DIR": "$U/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
-out="$(cd "$U" && PATH="$STUBS:$PATH" XMRIG_COMMIT=ABC RIGFORGE_HOME="$PWD" bash "$SCRIPT" upgrade </dev/null 2>&1)"
+# #413: the NO-REBUILD upgrade — the only kind any published release pair has ever produced, the
+# XMRig pin being byte-identical at all 25 tags v1.0.0..v1.16.0. `upgrade` used to return early here,
+# so it regenerated no config, reinstalled no unit, re-tuned nothing, restarted nothing, and exited 0.
+# Each of the four steps is asserted by its EFFECT on the rig rather than by a log line, because this
+# repo's own e2e has already found that a "changed" report and a changed rig are different things.
+mk_upgrade_rig() { # <dir> <commit marker> — a rig at the pinned commit, with a STALE generated config
+    local d="$1"
+    mkdir -p "$d/home/worker/xmrig/build" "$d/logrotate" "$d/etc-systemd"
+    cp "$ROOT/VERSION" "$d/"
+    cp -R "$ROOT/systemd" "$d/"
+    : >"$d/home/worker/xmrig/build/xmrig"
+    chmod +x "$d/home/worker/xmrig/build/xmrig"
+    printf '%s\n' "$2" >"$d/home/worker/xmrig/.rigforge-commit"
+    printf '{ "pools": [{ "url": "stale.invalid:1111" }] }\n' >"$d/home/worker/xmrig/build/config.json"
+    cat >"$d/config.json" <<EOF
+{ "HOME_DIR": "$d/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+}
+run_upgrade_rig() { # <dir> [PATH prefix, to override a stub]
+    (
+        cd "$1" || exit 1
+        PATH="${2:+$2:}$STUBS:$PATH" LOGROTATE_DIR="$1/logrotate" SYSTEMD_DIR="$1/etc-systemd" \
+            CALL_LOG="$1/calls.log" STUB_UNAME_S=Linux XMRIG_COMMIT=ABC \
+            RIGFORGE_HOME="$PWD" bash "$SCRIPT" upgrade </dev/null 2>&1
+    )
+}
+UPN="$(mktemp -d "$SANDBOX/upg-norebuild.XXXXXX")"
+mk_upgrade_rig "$UPN" ABC
+out="$(run_upgrade_rig "$UPN")"
 rc=$?
-assert_rc "upgrade exits 0 when up-to-date" "$rc" "0"
-assert_contains "upgrade no-op when version unchanged" "$out" "nothing to upgrade"
+assert_rc "upgrade exits 0 when the pin is unchanged" "$rc" "0"
+assert_absent "upgrade no longer returns early on an unchanged pin (#413)" "$out" "nothing to upgrade"
+assert_contains "upgrade reports the build was reused (#413)" "$out" "was already built"
+assert_absent "upgrade claims no XMRig upgrade it did not perform (#413)" "$out" "Upgraded to XMRig"
+assert_eq "no-rebuild upgrade regenerates the live config (#413)" \
+    "$(J "$UPN/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
+# The trap compile_xmrig's cd exists to prevent: generate_xmrig_config writes a RELATIVE config.json,
+# so a wrong cwd drops it in WORKER_ROOT where nothing reads it — the same silent drift, one layer down.
+assert_eq "no-rebuild upgrade writes the config where the unit reads it (#413)" \
+    "$([ -f "$UPN/home/worker/config.json" ] && echo stray || echo ok)" "ok"
+assert_eq "no-rebuild upgrade reinstalls the systemd unit (#413)" \
+    "$([ -f "$UPN/etc-systemd/xmrig.service" ] && echo installed || echo missing)" "installed"
+assert_contains "no-rebuild upgrade reloads systemd (#413)" "$(cat "$UPN/calls.log")" "[systemctl] daemon-reload"
+assert_contains "no-rebuild upgrade restarts so the new config takes effect (#413)" \
+    "$(cat "$UPN/calls.log")" "[systemctl] restart xmrig.service"
+assert_eq "no-rebuild upgrade restarts exactly once (#413)" \
+    "$(grep -c 'systemctl\] restart' "$UPN/calls.log")" "1"
+assert_absent "no-rebuild upgrade does not also 'start' the unit (#413)" "$(cat "$UPN/calls.log")" "[systemctl] start"
+
+# A miner the operator stopped — or the watchdog's thermal cutoff stopped — must come out of an upgrade
+# still stopped, with the new config and unit on disk for its next deliberate start (#413, #396's class).
+echo "== black-box: upgrade leaves a stopped miner stopped (#413) =="
+UPS="$(mktemp -d "$SANDBOX/upg-stopped.XXXXXX")"
+mk_upgrade_rig "$UPS" ABC
+mkdir -p "$UPS/bin"
+cat >"$UPS/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "[systemctl] $*" >>"${CALL_LOG:-/dev/null}"
+case "$*" in *is-active*) exit 3 ;; esac
+exit 0
+EOF
+chmod +x "$UPS/bin/systemctl"
+out="$(run_upgrade_rig "$UPS" "$UPS/bin")"
+rc=$?
+assert_rc "upgrade on a stopped rig exits 0 (#413)" "$rc" "0"
+assert_contains "upgrade says it left the stopped miner stopped (#413)" "$out" "left stopped"
+assert_eq "upgrade still reinstalls the unit on a stopped rig (#413)" \
+    "$([ -f "$UPS/etc-systemd/xmrig.service" ] && echo installed || echo missing)" "installed"
+assert_eq "upgrade still regenerates the config on a stopped rig (#413)" \
+    "$(J "$UPS/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
+assert_absent "upgrade does not restart a miner the operator stopped (#413)" "$(cat "$UPS/calls.log")" "] restart"
+assert_absent "upgrade does not start a miner the operator stopped (#413)" "$(cat "$UPS/calls.log")" "] start"
+# The macOS branch of the same decision: no systemd, so it can only tell the operator.
+o="$(
+    source "$SCRIPT"
+    OS_TYPE=Darwin
+    set +e
+    _upgrade_restart yes 2>&1
+)"
+assert_contains "upgrade on macOS points at a manual restart (#413)" "$o" "Restart the miner to apply"
+
+echo "== black-box: upgrade / help / unknown command (#4), rebuild path =="
 # #10: a rebuild (pinned commit changed) nudges to re-tune when saved tuning exists. compile_xmrig's
 # `sed` differs by OS, so we run the host's real OS path (like the compile-verification + e2e tests). We
 # derive the host OS from bash's built-in $OSTYPE — immune to the stubbed `uname` on PATH.
@@ -1770,7 +1848,7 @@ cat >"$UPG/config.json" <<EOF
 { "HOME_DIR": "$UPG/home", "DONATION": 1, "pools": [{"url": "h:3333"}] }
 EOF
 out="$(cd "$UPG" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$UPG/logrotate" SYSTEMD_DIR="$UPG/etc-systemd" \
-    STUB_UNAME_S="$UPG_OS" XMRIG_VERSION=vNEW XMRIG_COMMIT=NEWCOMMIT \
+    CALL_LOG="$UPG/calls.log" STUB_UNAME_S="$UPG_OS" XMRIG_VERSION=vNEW XMRIG_COMMIT=NEWCOMMIT \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" upgrade </dev/null 2>&1)"
 rc=$?
 assert_rc "upgrade rebuild exits 0" "$rc" "0"
@@ -1782,6 +1860,12 @@ assert_eq "upgrade keeps tune-overrides.json (tuning carried over) (#10)" \
     "$([ -f "$UPG/home/worker/tune-overrides.json" ] && echo kept || echo lost)" "kept"
 assert_eq "upgrade re-merges the tuned prefetch into the live config (#10)" \
     "$(J "$UPG/home/worker/xmrig/build/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
+# #413 moved the restart decision out of install_service and into upgrade(); a restart left behind in
+# install_service would show up here as TWO on the rebuild path, which is the regression this pins.
+if [ "$UPG_OS" = Linux ]; then
+    assert_eq "upgrade rebuild restarts exactly once (#413)" \
+        "$(grep -c 'systemctl\] restart' "$UPG/calls.log")" "1"
+fi
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" help 2>&1)"
 rc=$?
 assert_rc "help exits 0" "$rc" "0"
