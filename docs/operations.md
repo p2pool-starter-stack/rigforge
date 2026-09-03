@@ -442,8 +442,9 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 
 > Pulled RigForge changes but not a new XMRig pin? `upgrade` is still the command — regenerating the
 > config and reinstalling the units is where RigForge's own changes land, and it restarts so they take
-> effect. Kernel and hardware tuning is the one thing it does not touch (that never changes on a
-> release); if a pull did change it, run a full `sudo ./rigforge.sh setup`.
+> effect. Kernel and hardware tuning is the one thing it does not touch. A release rarely changes it,
+> but it does happen — #410 moved what RigForge proposes for the HugePages GRUB line — so if a pull
+> did change it, run a full `sudo ./rigforge.sh setup`.
 >
 > Earlier releases returned early here whenever the XMRig pin was unchanged — which was every
 > published release pair — so an `upgrade` regenerated nothing, reinstalled nothing and still reported
