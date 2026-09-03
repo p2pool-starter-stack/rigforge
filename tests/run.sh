@@ -7639,6 +7639,8 @@ blk="$(cfgblk "$C253")"
 # "leave blank to keep it" instead of wiping the credential on every pools edit.
 assert_eq "config: pool pass masked to the sentinel (#415)" "$(printf '%s' "$blk" | jq -c '.pools[0].pass // "ABSENT"')" '{"__secret__":true}'
 assert_eq "config: pool tls-fingerprint masked to the sentinel (#415)" "$(printf '%s' "$blk" | jq -c '.pools[0]."tls-fingerprint" // "ABSENT"')" '{"__secret__":true}'
+# The needle's CASE is load-bearing: the mask this feed now emits is the lowercase `__secret__`
+# sentinel, so a lowercase needle would match the mask and report a leak that is not one.
 assert_absent "config: no pool password anywhere in the served block (#253)" "$blk" "SECRET"
 assert_absent "config: no fingerprint anywhere in the served block (#253)" "$blk" "a1b2c3d4e5f6"
 # An UNSET secret stays absent — "no marker" is how a consumer tells there is nothing to keep, so a
@@ -7723,7 +7725,7 @@ assert_eq "config_meta: a re-stamp of the same config keeps the prior source/id 
 rfblk="$(
     rfd=$(mktemp -d "$SANDBOX/rfblk.XXXXXX")
     printf '1.8.0' >"$rfd/VERSION"
-    printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"secret"}] }' >"$rfd/config.json"
+    printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"PWNEEDLE415"}] }' >"$rfd/config.json"
     (
         source "$SCRIPT"
         CONFIG_JSON="$rfd/config.json"
@@ -7738,7 +7740,10 @@ assert_eq "feed: rigforge block carries the v1.7.0 keys + config + config_meta (
 assert_eq "feed: served config still masks pass + config_meta has a revision (contract)" "$(printf '%s' "$rfblk" | jq -r '(.config.pools[0].pass == {"__secret__": true}) and ((.config_meta.revision | length) > 0)')" "true"
 # #415 changed the mask from a deletion to a marker, so re-state the guarantee the old shape carried
 # for free: whatever the mask looks like, the password must not appear anywhere in the served block.
-assert_absent "feed: no pool password anywhere in the served block (contract)" "$rfblk" "$(jq -r '.pools[0].pass' "$rfd/config.json")"
+# The needle is the literal above and deliberately not the word "secret": the sentinel this feed now
+# emits is `__secret__`, so a needle of "secret" would match the MASK and report a leak that is not
+# one — the assertion has to be able to tell the two apart to mean anything.
+assert_absent "feed: no pool password anywhere in the served block (contract)" "$rfblk" "PWNEEDLE415"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
