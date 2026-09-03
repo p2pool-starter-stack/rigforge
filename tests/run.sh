@@ -1135,6 +1135,153 @@ r="$(
 )"
 assert_eq "reserved: nothing reserved -> 0" "$r" "0"
 
+# ---------------------------------------------------------------------------
+# #410: hugepages_pool_ceiling_mb has to reach the PERSISTED reservation, not only the runtime write.
+# Before this fix the key was consumed by _ensure_hugepages alone: GRUB was rewritten from the
+# UNCAPPED page math, the next boot brought the 2MB pool up above the declared ceiling, and
+# _ensure_hugepages — grow-only, and now seeing current > ceiling_pages — took its already-at-ceiling
+# branch and returned without writing. The box stayed over the ceiling permanently while the runtime
+# guard reported that everything was fine.
+#
+# Baseline for every case below (the same fixture the #65/#305 blocks use): 32 MiB L3, 1 socket ->
+# threads 16; 1G branch 2M total 128+16+10 = 154 with 3 x 1G; pure-2M fallback 1168+16+50 = 1234.
+echo "== unit: proposed-grub.sh honours the declared pool ceiling (#410) =="
+PGERR="$SANDBOX/pg410.err"
+PG_NOCEIL_1G="quiet splash hugepagesz=1G hugepages=3 hugepagesz=2M hugepages=154 default_hugepagesz=2M msr.allow_writes=on"
+PG_NOCEIL_FB="quiet splash default_hugepagesz=2M hugepages=1234 msr.allow_writes=on"
+
+# Control FIRST: with no ceiling declared the rendered cmdline is exactly the pre-#410 string. Every
+# clamp assertion below is read against these two, so a drift here invalidates the block rather than
+# hiding inside it.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q 2>"$PGERR")"
+assert_eq "grub: no ceiling declared -> unchanged cmdline (1G branch, #410 control)" "$out" "$PG_NOCEIL_1G"
+assert_eq "grub: no ceiling declared -> nothing on stderr (#410 control)" "$(cat "$PGERR")" ""
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=0 CPUINFO="$SANDBOX/cpuinfo_no1g" bash "$PG" -q 2>"$PGERR")"
+assert_eq "grub: POOL_CEILING_MB=0 is inert (fallback branch, #410 control)" "$out" "$PG_NOCEIL_FB"
+assert_eq "grub: POOL_CEILING_MB=0 says nothing on stderr (#410 control)" "$(cat "$PGERR")" ""
+
+# The fix: a 200MB ceiling is 100 2MB pages, below the computed 154, so the PERSISTED 2M entry is
+# capped at 100. Mutation kill: dropping the `TOTAL_2MB_PAGES=$(_cap_2mb ...)` line renders 154 again
+# and this assertion goes red — it is the whole defect, stated as a string.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=200 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q 2>"$PGERR")"
+assert_eq "grub: ceiling caps the persisted 2M reservation (154 -> 100, #410)" "$out" "quiet splash hugepagesz=1G hugepages=3 hugepagesz=2M hugepages=100 default_hugepagesz=2M msr.allow_writes=on"
+assert_contains "grub: the cap is NOTEd on stderr naming the ceiling (#410)" "$(cat "$PGERR")" "capping the persisted 2MB HugePages reservation at 100 pages (200MB"
+
+# SCOPE, pinned deliberately: the clamp bounds the 2MB pool only — the quantity vm.nr_hugepages names
+# and _ensure_hugepages measures its ceiling against. The 1G dataset reservation is a different pool
+# the key has never described, and clamping it would silently cost RandomX fast mode. So `hugepages=3`
+# of 1G survives a 200MB ceiling. If this assertion is ever "fixed" to 0, read the scope comment in
+# util/proposed-grub.sh first: it is a deliberate limit of the key, documented in the PR and CHANGELOG.
+assert_contains "grub: the 1G dataset reservation is NOT clamped (documented scope, #410)" "$out" "hugepagesz=1G hugepages=3 "
+
+# The pure-2M fallback branch: here the clamp bounds the ENTIRE reservation (1234 -> 100).
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=200 CPUINFO="$SANDBOX/cpuinfo_no1g" bash "$PG" -q 2>"$PGERR")"
+assert_eq "grub: ceiling caps the pure-2M fallback too (1234 -> 100, #410)" "$out" "quiet splash default_hugepagesz=2M hugepages=100 msr.allow_writes=on"
+assert_contains "grub: fallback cap is NOTEd with the value it replaced (#410)" "$(cat "$PGERR")" "instead of 1234"
+
+# A ceiling ABOVE the computed reservation is a no-op, and says nothing — it is a ceiling, not a
+# target. Mutation kill: replacing the `-gt` in _cap_2mb with `-ge`/`-lt` breaks one of these two.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=4000 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q 2>"$PGERR")"
+assert_eq "grub: ceiling above the computed reservation is a no-op (#410)" "$out" "$PG_NOCEIL_1G"
+assert_eq "grub: a non-binding ceiling is silent (#410)" "$(cat "$PGERR")" ""
+
+# An ODD declared ceiling FLOORS to the 2MB page below, exactly as _ensure_hugepages does — a cap
+# rounds toward LESS memory, never more. 201MB -> 100 pages (200MB), never 101 (202MB, a page past
+# what was declared). Mutation kill: `((POOL_CEILING_MB + 1) / 2)` — the rounding the #398 security
+# review already rejected once on the runtime half — renders 101 here and flips this red.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=201 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q 2>"$PGERR")"
+assert_contains "grub: odd ceiling (201MB) floors to 100 pages, not 101 (#410)" "$out" "hugepagesz=2M hugepages=100 "
+assert_absent "grub: odd ceiling never rounds up past itself (#410 mutation kill)" "$out" "hugepages=101"
+
+# A ceiling smaller than one 2MB page floors to ZERO pages and still BINDS — it is not silently
+# re-read as "no ceiling". That is why the no-ceiling sentinel is an empty CEILING_2MB_PAGES rather
+# than 0: with 0 as the sentinel a declared 1MB ceiling would be indistinguishable from an absent
+# key. It matches the runtime half, which computes ceiling_pages=0 for 1MB and declines to write.
+# Pathological as a config, reachable as a value (parse_config accepts 0-65536), so it is pinned
+# rather than left to whichever branch happens to catch it.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=1 CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q 2>"$PGERR")"
+assert_eq "grub: a sub-page ceiling (1MB) floors to 0 pages and still binds (#410)" "$out" "quiet splash hugepagesz=1G hugepages=3 hugepagesz=2M hugepages=0 default_hugepagesz=2M msr.allow_writes=on"
+assert_contains "grub: the sub-page clamp is NOTEd, not silent (#410)" "$(cat "$PGERR")" "at 0 pages (1MB"
+
+# --runtime is NOT clamped, deliberately: it is the miner's REQUIREMENT, which _ensure_hugepages
+# weighs against availability before clamping the WRITE. Clamping it here would move the "pool
+# already covers the miner" decision and suppress the #398 warning that fires when the requirement
+# genuinely exceeds the ceiling. Same 200MB ceiling that capped the cmdline to 100 above.
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=200 HUGEPAGES_1G_NR="$SANDBOX/nr_none" bash "$PG" --runtime 2>"$PGERR")"
+assert_eq "grub --runtime: the ceiling does NOT clamp the requirement (#410)" "$out" "1234"
+assert_eq "grub --runtime: and says nothing about a ceiling (#410)" "$(cat "$PGERR")" ""
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB=200 HUGEPAGES_1G_NR="$SANDBOX/nr_4" bash "$PG" --runtime 2>/dev/null)"
+assert_eq "grub --runtime: unclamped on the 1G-allocated branch too (#410)" "$out" "154"
+
+# A garbage ceiling cannot abort the calculation or leak a shell diagnostic into the cmdline: the
+# arithmetic guard is `[ "$POOL_CEILING_MB" -gt 0 ] 2>/dev/null`, so a non-numeric value is treated
+# as no ceiling. (rigforge#412 is the separate defect that such a value is accepted by parse_config
+# in the first place; this only pins that proposed-grub.sh does not compound it.)
+out="$(PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 POOL_CEILING_MB="1+1" CPUINFO="$SANDBOX/cpuinfo_1g" bash "$PG" -q 2>/dev/null)"
+assert_eq "grub: a non-numeric ceiling is ignored, not evaluated (#410)" "$out" "$PG_NOCEIL_1G"
+
+# ---------------------------------------------------------------------------
+# #410, the wiring half — and the half the defect actually lived in. util/proposed-grub.sh above can
+# be perfect and the ceiling still never bound, because _grub_proposed never passed it. A fake
+# proposed-grub records the env each invocation received.
+echo "== unit: _grub_proposed passes the declared ceiling to proposed-grub (#410) =="
+GC="$(mktemp -d "$SANDBOX/gc410.XXXXXX")"
+mkdir -p "$GC/util"
+cat >"$GC/util/proposed-grub.sh" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+    if [ "$a" = "--runtime" ]; then
+        echo "RUNTIME POOL_CEILING_MB=[${POOL_CEILING_MB-}]" >>"$PG_CALLS"
+        echo 200
+        exit 0
+    fi
+done
+echo "QUIET POOL_CEILING_MB=[${POOL_CEILING_MB-}]" >>"$PG_CALLS"
+echo "quiet splash hugepagesz=2M hugepages=100 msr.allow_writes=on"
+EOF
+chmod +x "$GC/util/proposed-grub.sh"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nomodeset"\n' >"$GC/grub"
+
+run_grub_proposed410() { # <pg_calls_file> <ceiling_mb> [reserve_extra_mb]
+    (
+        source "$SCRIPT"
+        SCRIPT_DIR="$GC"
+        GRUB_DEFAULT="$GC/grub"
+        RX_SETUP_THREADS=""
+        THREADS_CAP=""
+        HUGEPAGES_POOL_CEILING_MB="$2"
+        HUGEPAGES_RESERVE_EXTRA_MB="${3:-0}"
+        export PG_CALLS="$1"
+        set +e
+        PATH="$STUBS:$PATH" _grub_proposed
+        echo "MERGED=[$MERGED]"
+    )
+}
+
+# THE regression for #410: the declared ceiling reaches the cmdline-generating call. Mutation kill:
+# removing `POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}"` from _grub_proposed's MANAGED
+# assignment records `POOL_CEILING_MB=[]` and turns this red — that missing assignment IS the bug.
+GPC="$GC/calls1"
+: >"$GPC"
+out="$(run_grub_proposed410 "$GPC" 5120)"
+assert_contains "the declared ceiling reaches proposed-grub's cmdline call (#410)" "$(cat "$GPC")" "QUIET POOL_CEILING_MB=[5120]"
+assert_contains "and the capped cmdline is what gets merged (#410)" "$out" "MERGED=[quiet splash nomodeset hugepagesz=2M hugepages=100 msr.allow_writes=on]"
+
+# No ceiling declared: the call is made with an explicit 0, which proposed-grub.sh treats as no
+# ceiling — the key stays inert for every config that does not set it.
+GPC="$GC/calls2"
+: >"$GPC"
+out="$(run_grub_proposed410 "$GPC" 0)"
+assert_contains "an undeclared ceiling passes 0, not an empty value (#410)" "$(cat "$GPC")" "QUIET POOL_CEILING_MB=[0]"
+
+# The --runtime call inside the #305 co-resident guard must NOT receive the ceiling — it asks for the
+# requirement, not the write. Headroom > 0 is what makes that call happen at all.
+GPC="$GC/calls3"
+: >"$GPC"
+out="$(run_grub_proposed410 "$GPC" 5120 2874)"
+assert_contains "the cmdline call still gets the ceiling with headroom set (#410)" "$(cat "$GPC")" "QUIET POOL_CEILING_MB=[5120]"
+assert_contains "the #305 --runtime requirement call does NOT get it (#410)" "$(cat "$GPC")" "RUNTIME POOL_CEILING_MB=[]"
+
 # parse_config: the two new keys parse, default, and reject bad values.
 echo "== unit: parse_config hugepages_reserve_extra_mb + threads (#305) =="
 c305="$SANDBOX/c305.json"

@@ -44,6 +44,24 @@ All notable changes to RigForge are documented here. The format is based on
   `:065535`, which used to be accepted and is now rejected. Padding that stays within five digits
   (`:08080`) is unaffected and still accepted, as before.
 
+- **`hugepages_pool_ceiling_mb` now bounds the persisted reservation, not only the runtime write
+  (#410).** The key was consumed by `_ensure_hugepages` alone. `util/proposed-grub.sh`, which
+  computes the `hugepages=` RigForge merges into `GRUB_CMDLINE_LINUX_DEFAULT`, was never told about
+  it — so a co-resident box that declared a ceiling got one until its next reboot and then silently
+  stopped having one. The sequence: the runtime write is capped correctly, GRUB is rewritten from the
+  uncapped page math, the next boot brings the 2MB pool up *above* the ceiling, and the grow-only
+  runtime write — now seeing `current` past the ceiling — takes its already-at-ceiling branch and
+  returns without writing. The pool cannot come back down, and the guard reports that everything is
+  fine. The declared ceiling now reaches the cmdline calculation and caps the 2MB `hugepages=` the
+  same way, flooring to whole pages so an odd value never renders a page past what was declared, and
+  saying on stderr when the cap actually binds. Two deliberate limits, both pinned by tests: the
+  ceiling still does not clamp the **1GB** dataset reservation, which is a separate pool the key has
+  never described and which RandomX fast mode needs; and it does not clamp
+  `proposed-grub.sh --runtime`, which reports the miner's *requirement* — clamping that would move
+  the "pool already covers the miner" decision instead of bounding the pool, and would suppress the
+  #398 warning that fires when the requirement genuinely exceeds the ceiling. Inert unless a config
+  sets the key: with no ceiling declared the rendered cmdline is byte-for-byte what it was.
+
 - **A failed watchdog re-render no longer reports the change as applied (#395).** `install_watchdog`
   ended on `systemctl enable ... || true`, so it returned success whatever had happened above it, and
   both apply paths called it under `|| true` — which also suppresses `set -e` for the whole call, so

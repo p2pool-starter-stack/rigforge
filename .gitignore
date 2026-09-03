@@ -22,3 +22,7 @@ config.json
 
 # #254 config-change provenance marker (runtime state)
 .rigforge-config-meta.json
+
+# Python bytecode from util/*.py (the suite imports them; never a tracked artifact).
+__pycache__/
+*.pyc
