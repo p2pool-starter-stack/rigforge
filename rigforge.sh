@@ -4330,25 +4330,39 @@ _control_commit() { # <staged.json> <backups-dir>
     # that is not there, and the whole point here is that no credential change happens quietly. An
     # explicit value is always taken at face value, so `""` still hits #408's rejection and a real
     # new password still replaces the old one.
-    local secret_jq='
-        def pkey: [(.url? // "" | tostring), (.user? // "" | tostring)];
-        def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({};
-            if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end);
-        def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v
-            | if ($v | type) == "string" and $v != "" then $v else null end;
-        def is_marker($k): (.[$k] | type) == "object" and (.[$k].__secret__ == true);
-    '
     if printf '%s' "$change" | jq -e '(.pools | type) == "array"' >/dev/null 2>&1; then
-        local unresolved resolved
-        unresolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" "$secret_jq"'
+        local resolved unresolved
+        resolved=$(printf '%s' "$change" | jq -c --slurpfile base "$CONFIG_JSON" '
+            def pkey: [(.url? // ""), (.user? // "")];
+            def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({};
+                if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end);
+            def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v
+                | if ($v | type) == "string" and $v != "" then $v else null end;
             ($base[0] | lut) as $lut
-            | [ .pools[] | select(type == "object") as $p
-                | ("pass", "tls-fingerprint") as $k
-                | select(($p | is_marker($k)) and (($p | stored($lut; $k)) == null))
-                | $k ] | unique | join(",")' 2>/dev/null) || {
-            # Distinct from the reason below on purpose: a scan that could not run has not found an
-            # unresolvable marker, and a rejection reason that names the wrong problem sends whoever
-            # reads it looking in the wrong place.
+            | .pools |= map(
+                if type == "object" then
+                  . as $p
+                  | reduce ("pass", "tls-fingerprint") as $k (.;
+                      ($p | stored($lut; $k)) as $keep
+                      | if $keep != null
+                           and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true)
+                                or ($p | has($k) | not))
+                        then .[$k] = $keep
+                        else . end)
+                else . end)' 2>/dev/null) || {
+            echo "rejected secret-merge-failed"
+            return 1
+        }
+        # Post-condition rather than a second pre-scan: after the merge, a marker that is STILL there
+        # is exactly one the rig could not resolve — it asked to keep a secret that is not stored.
+        # Checking the output also covers a marker in a pool key this function does not resolve,
+        # which a pre-scan of the two known keys would have waved through into config.json.
+        unresolved=$(printf '%s' "$resolved" | jq -r '
+            [ .pools[]? | select(type == "object") | to_entries[]
+              | select((.value | type) == "object" and .value.__secret__ == true) | .key ]
+            | unique | join(",")' 2>/dev/null) || {
+            # A scan that could not RUN has not found an unresolvable marker; giving it the reason
+            # below would name the wrong problem and send whoever reads it looking in the wrong place.
             echo "rejected secret-scan-failed"
             return 1
         }
@@ -4356,20 +4370,6 @@ _control_commit() { # <staged.json> <backups-dir>
             echo "rejected unresolvable-secret-marker:$unresolved"
             return 1
         fi
-        resolved=$(printf '%s' "$change" | jq -c --slurpfile base "$CONFIG_JSON" "$secret_jq"'
-            ($base[0] | lut) as $lut
-            | .pools |= map(
-                if type == "object" then
-                  . as $p
-                  | reduce ("pass", "tls-fingerprint") as $k (.;
-                      ($p | stored($lut; $k)) as $keep
-                      | if $keep != null and (($p | is_marker($k)) or ($p | has($k) | not))
-                        then .[$k] = $keep
-                        else . end)
-                else . end)' 2>/dev/null) || {
-            echo "rejected secret-merge-failed"
-            return 1
-        }
         change="$resolved"
     fi
     # Build the candidate: current config with ONLY the allowlisted staged keys overlaid (pools and

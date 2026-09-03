@@ -7858,6 +7858,10 @@ sc_unres="$( (
     PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
 ) 2>/dev/null)"
 assert_contains "commit: the rejection names the unresolvable key (#415)" "$sc_unres" "unresolvable-secret-marker:pass"
+# The check is a post-condition on the merged pools, not a scan of the two keys the resolver knows,
+# so a marker in ANY pool key is refused rather than written into config.json under a confusing
+# error from some later validator that never heard of markers.
+assert_eq "commit: a marker in a pool key the resolver does not handle is refused too (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
 # A pool that never had a secret keeps working: omitting `pass` on a brand-new pool is not an error,
 # it just means there is nothing to carry over.
 assert_eq "commit: a brand-new pool with no pass still commits (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"other:4444"}]}')" "committed|pass=ABSENT|fp=ABSENT|marker=0"
