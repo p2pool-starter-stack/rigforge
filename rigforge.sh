@@ -81,6 +81,9 @@ CONFIG_JSON="$SCRIPT_DIR/config.json"
 CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$SCRIPT_DIR/.rigforge-config-meta.json}"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
+# Set to true by a caller that owns the service start/restart decision itself (#413: `upgrade`).
+# install_service then writes, reloads and enables the unit and starts nothing.
+SERVICE_NO_START=false
 
 # Pinned XMRig release for reproducible / supply-chain-hardened builds.
 # Override via environment if you need a different release.
@@ -1284,6 +1287,12 @@ install_service() {
             # now would run it DEGRADED (no huge-page backing, Restart=always churn) until then. So only
             # enable it; it starts automatically after the reboot. (#audit A2)
             log "Service enabled — it will start automatically after you reboot."
+        elif [ "${SERVICE_NO_START:-false}" = true ]; then
+            # The CALLER owns the start/restart decision (#413). `upgrade` sets this: it must not start
+            # a miner the operator — or the watchdog's thermal cutoff — deliberately left stopped, and on
+            # a rebuild it must not restart twice. The unit is rendered, reloaded and enabled here;
+            # nothing is started or restarted.
+            log "Service unit installed and enabled — the caller decides whether to restart."
         elif [ "$XMRIG_REBUILD" = true ]; then
             # Restart only when the binary was rebuilt; otherwise just ensure it's running (a running
             # service is left undisturbed on a no-op re-run).
@@ -2043,6 +2052,36 @@ _post_upgrade_retune() {
     fi
 }
 
+# Put what `upgrade` just wrote INTO EFFECT (#413). XMRig reads its config once at start and systemd
+# runs the unit it has already loaded, so a regenerated build/config.json and a re-rendered unit are
+# files on disk, not a changed rig, until the service restarts — the same "written, reported applied,
+# never in effect" gap #413 is about, one layer further down. So an upgrade restarts, exactly as
+# `apply` does after regenerating the same file.
+#
+# Deliberately NOT gated on "did the generated config actually change": the config we emit carries
+# `autosave: true`, so XMRig rewrites build/config.json itself at runtime and the on-disk copy is never
+# byte-identical to a freshly generated one. A before/after hash would therefore report "changed" on
+# every rig on every upgrade — the same restart, dressed up as a measurement.
+#
+# A miner that was NOT running is never started here: the regenerated config and unit sit on disk and
+# the next deliberate `start`/`apply` picks them up. An upgrade must respect a hold, whether it came
+# from the operator or from the watchdog's thermal cutoff (#396's class). install_service's own start is
+# suppressed via SERVICE_NO_START, so this is the ONLY place on the upgrade path that touches the
+# running miner. Extracted from upgrade() so the decision is testable without the (heavy) rebuild path,
+# the same reason _post_upgrade_retune above is.
+_upgrade_restart() { # <was-active: yes|no>
+    if [ "$OS_TYPE" != Linux ]; then
+        log "Config regenerated. Restart the miner to apply ('$0 restart')."
+        return 0
+    fi
+    if [ "$1" != yes ]; then
+        log "The miner wasn't running, so it was left stopped — the regenerated config and reinstalled unit take effect at the next 'sudo $0 start'."
+        return 0
+    fi
+    log "Restarting XMRig so the regenerated config and reinstalled unit take effect..."
+    sudo systemctl restart "$SERVICE_NAME.service"
+}
+
 # upgrade --check: compare the local VERSION against GitHub's latest release tag, on demand only.
 # This is the one place RigForge talks to GitHub's API, and it runs exactly when the operator types
 # it — never scheduled, never piggybacked on another verb (SECURITY.md's "no version ping" promise
@@ -2084,8 +2123,10 @@ _upgrade_check() {
     return 0
 }
 
-# Upgrade flow: rebuild + restart ONLY if the pinned XMRig version/commit changed. Skips the
-# setup-only steps (dependency install, kernel tuning) — those don't change on a version bump.
+# Upgrade flow: redeploy this RigForge release onto the rig — regenerate the live XMRig config,
+# reinstall the units, re-tune, re-own, and restart so all of it is actually in effect. The COMPILE is
+# what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
+# (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
     local arg
     for arg in "$@"; do
@@ -2100,15 +2141,30 @@ upgrade() {
     check_prerequisites
     parse_config
     decide_rebuild
-    if [ "$XMRIG_REBUILD" != true ]; then
-        log "Already on the pinned XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}); nothing to upgrade."
-        return 0
+    # #413: an upgrade is not a recompile. An early return used to sit here, taken whenever the XMRig
+    # pin was unchanged — which is EVERY published release pair, the pin being byte-identical at all 25
+    # tags v1.0.0..v1.16.0 — so config regeneration, unit reinstall, the post-upgrade re-tune and the
+    # re-own were skipped on every upgrade any rig has ever run, and it still reported success. The
+    # sequence below is the same ungated one every `setup` re-run takes, and it is safe for the same
+    # reason: the two steps that must not repeat carry their OWN XMRIG_REBUILD guard internally rather
+    # than relying on a caller to gate them — prepare_workspace archives the existing install only on a
+    # rebuild, and compile_xmrig returns immediately, after cd-ing to the build dir so the regenerated
+    # (relative) config.json lands where the unit actually reads it.
+    local was_active=no
+    if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        was_active=yes
     fi
+    SERVICE_NO_START=true # _upgrade_restart below owns the restart decision, not install_service
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
     install_service
-    log "Upgraded to XMRig $XMRIG_VERSION."
+    if [ "$XMRIG_REBUILD" = true ]; then
+        log "Upgraded to XMRig $XMRIG_VERSION."
+    else
+        log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) was already built — regenerated the config and reinstalled the units."
+    fi
+    _upgrade_restart "$was_active"
     _post_upgrade_retune
     _reown_worker
 }
@@ -4535,7 +4591,9 @@ _control_upgrade_do() { # <ref>
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
     git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    # Run the NEW code's upgrade: rebuild XMRig if the pin changed, regenerate config, reinstall units.
+    # Run the NEW code's upgrade: regenerate the config, reinstall the units, restart so both are in
+    # effect, and rebuild XMRig first if the pin changed. Every clause was aspirational until #413 —
+    # `upgrade` returned early on an unchanged pin, which is every published release pair.
     "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
 }
 

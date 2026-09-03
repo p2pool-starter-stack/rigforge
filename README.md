@@ -144,7 +144,7 @@ The everyday tasks, each a single command. There's a task-by-task cheat sheet in
 sudo ./rigforge.sh apply        # regenerate config + restart (no rebuild)
 
 # Redeploy after pulling updates:
-git pull && sudo ./rigforge.sh upgrade   # rebuild + restart if the XMRig pin moved
+git pull && sudo ./rigforge.sh upgrade   # apply the release: regenerate config, reinstall units, restart
 
 sudo ./rigforge.sh tune --now   # run a live tune now — keep the best prefetch mode
 sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service, pool connection

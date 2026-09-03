@@ -69,7 +69,7 @@ a copy-paste example in
 
 Edit `config.json`, then run `sudo ./rigforge.sh apply`. That regenerates the live XMRig config and
 restarts the worker, with no rebuild. `apply` is the everyday command for config edits; `setup` is for
-(re-)provisioning, and `upgrade` is for moving to a newer pinned XMRig. See
+(re-)provisioning, and `upgrade` is for redeploying a newer RigForge release (a moved XMRig pin included). See
 [Configuration › Changing settings later](configuration.md#changing-settings-later). On macOS, `apply`
 regenerates the config; run `./rigforge.sh restart` to pick it up. See
 [Operations › Running on macOS](operations.md#running-on-macos).

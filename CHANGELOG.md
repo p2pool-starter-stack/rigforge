@@ -19,6 +19,31 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **A one-click or command-line `upgrade` now actually applies the release (#413).** `upgrade`
+  returned early whenever the pinned XMRig version and commit were unchanged — which is *every*
+  published release pair, the pin being byte-identical at all 25 tags v1.0.0 through v1.16.0 — so
+  config regeneration, unit reinstall, the post-upgrade re-tune and the ownership reconcile were
+  skipped on every upgrade any rig has ever run, and it reported success throughout. A release that
+  changed the generated XMRig config or the systemd units therefore shipped those changes to disk
+  without putting them into effect; the drift healed later by accident, at the next `apply`, with
+  nothing ever reporting that it had been wrong. The one-click control-upgrade path inherited all of
+  it, including its rollback branch, and its own `_wait_miner_live` gate passed trivially because the
+  miner was never stopped.
+
+  The compile stays conditional; the upgrade no longer is. `upgrade` now runs the same ungated
+  sequence every `setup` re-run takes — which is safe for the same reason: the two steps that must not
+  repeat carry their own rebuild guard internally rather than relying on a caller to gate them. It
+  then **restarts**, because a regenerated `config.json` and a re-rendered unit are files on disk and
+  not a changed rig until the service restarts — the same "written, reported applied, never in effect"
+  gap one layer down. That restart is deliberately not conditional on the config having changed: the
+  generated config carries `autosave: true`, so XMRig rewrites it at runtime and the on-disk copy is
+  never byte-identical to a freshly generated one — a before/after comparison would report "changed"
+  on every rig every time, the same restart dressed up as a measurement. A miner that was **not**
+  running is left stopped, whether the operator stopped it or the watchdog's thermal cutoff did; the
+  new config and unit take effect at its next deliberate `start`. The comment at the control-upgrade
+  call site promised "regenerate config, reinstall units" throughout — it is now true rather than
+  aspirational.
+
 - **A test stub's broken-pipe noise no longer reds the #410 controls (#419).** Every real consumer of
   `lscpu` closes the pipe at its first match, so the suite's `lscpu` stub is mid-write when the reader
   goes away. At SIGPIPE's default disposition it dies silently — which is why this never reproduced
