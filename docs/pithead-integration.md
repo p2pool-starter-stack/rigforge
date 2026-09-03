@@ -79,7 +79,8 @@ pithead#235):
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
   as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
   `watchdog` (armed state, thermal-hold, `max_temp_c`), `config` (the effective **writable**
-  config — exactly the control-path allowlist, pool secrets masked; see the prefill note in §3), and
+  config — exactly the control-path allowlist, pool secrets masked to `{"__secret__": true}`; see
+  the prefill note in §3), and
   `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a content hash of the
   writable config that changes iff that config changes, so a poller can detect a change made directly
   on the rig; `source` is `control`/`local`/`restore`; see §3), and `control` (the last control-path
@@ -230,8 +231,13 @@ writable config as `rigforge.config` on `:8081/1/summary` (= `/2/summary`) — e
 `max_temp_c`), read the same way RigForge parses them (canonical strings, e.g. `perf` →
 `performance`). Worker Inspect can prefill its editor from this live read instead of its own
 last-applied record, and it's served even when the miner is down (it comes from `config.json`, not
-XMRig). Pool secrets are masked: `pools[].pass` and any `tls-fingerprint` are omitted — so a
-round-trip that re-sends the `pools` array must re-supply the pool password (the read never carries it).
+XMRig). Pool secrets are masked: `pools[].pass` and any `tls-fingerprint` are served as
+`{"__secret__": true}` when set and omitted when not — the value itself never leaves the rig. Send
+the marker back unchanged (or leave the key out) and the rig keeps the secret it already holds,
+matching the pool by `url` + `user`; send a real string to replace it. A marker for a pool the rig
+has no matching secret for is refused with `unresolvable-secret-marker`, so a re-sent `pools` array
+can never silently blank a credential — which is what it used to do, quietly re-keying the rig to
+XMRig's throwaway `x` and reporting success (#415).
 
 **The control path is a tuning channel, not a safety-removal one.** A `POST /apply` that would
 disable the `watchdog` or unset / set an out-of-band `max_temp_c` (a rig's thermal cutoff) is refused

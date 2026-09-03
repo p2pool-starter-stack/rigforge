@@ -517,6 +517,17 @@ parse_config() {
         if [ -n "$_user" ] && ! [[ "$_user" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
             error "Pool user '$_user' has invalid characters (allowed: letters, digits, . _ - : @ +)."
         fi
+        # #415: `pass` must be a STRING, checked before the charset rule below can be fooled. The
+        # feed masks a set password to the {"__secret__": true} sentinel and _control_commit
+        # resolves it back, but nothing stops a marker — or any other JSON object — reaching
+        # config.json by a hand edit or by a future writer that forgets to resolve one. `jq -r`
+        # renders an object as its JSON text, and the empty object `{}` renders as two graph
+        # characters on one line, so it passes the check below and becomes the rig's literal
+        # password. Type-check here so the guarantee does not depend on every writer remembering:
+        # the same posture as the non-string tls-fingerprint rejection below.
+        if [ "$(jq -r '.pass | type' <<<"$_pool")" != "string" ]; then
+            error "Pool pass must be a string (got a $(jq -r '.pass | type' <<<"$_pool")). A masked-secret marker from the API feed is not a password — send the real value, or omit 'pass' entirely."
+        fi
         if ! [[ "$_pass" =~ ^[[:graph:]]+$ ]]; then
             error "Pool pass must be non-empty with no spaces or control characters."
         fi
@@ -4305,6 +4316,62 @@ _control_commit() { # <staged.json> <backups-dir>
             return 1
         fi
     fi
+    # #415: resolve masked pool secrets BEFORE the overlay. _api_config_json serves a set `pass` /
+    # `tls-fingerprint` as the {"__secret__": true} sentinel and never the value, so the only pools
+    # array a consumer of that feed can send back either carries the sentinel or omits the key —
+    # and jq's `*` below replaces arrays wholesale, after which parse_config defaults a missing
+    # `pass` to "x" (a value that passes every check). Without this step any pools edit silently
+    # re-keyed the rig to the throwaway password, reported success, and logged nothing.
+    # Each incoming pool is matched to a stored one by (url, user), first-declared winning on a
+    # duplicate pair — the same shape Pithead uses to restore its per-worker token sentinels. The
+    # pair is the identity because a pool credential authenticates an ACCOUNT at a HOST: carrying a
+    # password across a changed url or user would be a different silent bug, not a fix for this one.
+    # A sentinel that resolves to nothing is REJECTED rather than dropped: it asks to keep a secret
+    # that is not there, and the whole point here is that no credential change happens quietly. An
+    # explicit value is always taken at face value, so `""` still hits #408's rejection and a real
+    # new password still replaces the old one.
+    local secret_jq='
+        def pkey: [(.url? // "" | tostring), (.user? // "" | tostring)];
+        def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({};
+            if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end);
+        def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v
+            | if ($v | type) == "string" and $v != "" then $v else null end;
+        def is_marker($k): (.[$k] | type) == "object" and (.[$k].__secret__ == true);
+    '
+    if printf '%s' "$change" | jq -e '(.pools | type) == "array"' >/dev/null 2>&1; then
+        local unresolved resolved
+        unresolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" "$secret_jq"'
+            ($base[0] | lut) as $lut
+            | [ .pools[] | select(type == "object") as $p
+                | ("pass", "tls-fingerprint") as $k
+                | select(($p | is_marker($k)) and (($p | stored($lut; $k)) == null))
+                | $k ] | unique | join(",")' 2>/dev/null) || {
+            # Distinct from the reason below on purpose: a scan that could not run has not found an
+            # unresolvable marker, and a rejection reason that names the wrong problem sends whoever
+            # reads it looking in the wrong place.
+            echo "rejected secret-scan-failed"
+            return 1
+        }
+        if [ -n "$unresolved" ]; then
+            echo "rejected unresolvable-secret-marker:$unresolved"
+            return 1
+        fi
+        resolved=$(printf '%s' "$change" | jq -c --slurpfile base "$CONFIG_JSON" "$secret_jq"'
+            ($base[0] | lut) as $lut
+            | .pools |= map(
+                if type == "object" then
+                  . as $p
+                  | reduce ("pass", "tls-fingerprint") as $k (.;
+                      ($p | stored($lut; $k)) as $keep
+                      | if $keep != null and (($p | is_marker($k)) or ($p | has($k) | not))
+                        then .[$k] = $keep
+                        else . end)
+                else . end)' 2>/dev/null) || {
+            echo "rejected secret-merge-failed"
+            return 1
+        }
+        change="$resolved"
+    fi
     # Build the candidate: current config with ONLY the allowlisted staged keys overlaid (pools and
     # other arrays replace, scalars replace). Filter again so a stray key can never ride in.
     cand="$CONFIG_JSON.control.$$"
@@ -5189,10 +5256,19 @@ _writable_config_canonical() {
 # signal a polling consumer compares against. Changes iff the effective writable config changes.
 _writable_config_hash() { _sha256 <(_writable_config_canonical) | cut -c1-16; }
 
-# #253: the MASKED view for the open feed — pool pass + tls-fingerprint dropped so no credential is
-# ever served on the token-optional read.
+# #253: the MASKED view for the open feed — no pool credential is ever served on the token-optional
+# read. #415: a SET secret is masked to the {"__secret__": true} sentinel rather than deleted
+# outright. Deleting the value was right; deleting the *fact* that one is set was not. A consumer
+# building an editor over this feed could not tell a pool with a password from one without, so it
+# could not offer "leave blank to keep it" — its only choices were to re-send `pools` with no `pass`
+# (which _control_commit then wiped, silently, to the throwaway "x") or to refuse every pools edit.
+# The sentinel is the one Pithead's Configuration view already uses, and _control_commit resolves it
+# back to the stored value. A key that is unset — or holds anything but a non-empty string — stays
+# ABSENT, so "no marker" means "there is nothing here to keep", and the value itself never leaves.
 _api_config_json() {
-    _writable_config_canonical | jq -c '.pools = [.pools[]? | del(.pass, ."tls-fingerprint")]'
+    _writable_config_canonical | jq -c '
+        def mask($k): if (.[$k] | type) == "string" and .[$k] != "" then .[$k] = {"__secret__": true} else del(.[$k]) end;
+        .pools = [.pools[]? | if type == "object" then mask("pass") | mask("tls-fingerprint") else . end]'
 }
 
 # #254: config-change provenance marker. Stamped by every path that rewrites the writable config
