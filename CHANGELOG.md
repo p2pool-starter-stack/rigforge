@@ -106,6 +106,33 @@ All notable changes to RigForge are documented here. The format is based on
   The HugePages write now also refuses outright rather than skipping its ceiling in silence: a cap
   that can be dropped without a message is not a cap.
 
+- **Editing `pools` from the dashboard no longer wipes the pool password (#415).** Two behaviours
+  combined into a silent credential loss. The enriched feed served the writable config with
+  `pools[].pass` and `tls-fingerprint` deleted — right about the value, wrong about the *fact* that
+  one was set, so a consumer building an editor over that feed could not offer "leave blank to keep
+  it". Its only choice was to send the `pools` array back without a password. The control applier
+  overlays a change with jq's `*`, where arrays replace wholesale, and `parse_config` then defaults a
+  missing `pass` to XMRig's throwaway `x` — a value that passes every check. So any `pools` edit
+  re-keyed the rig to `x`, reported `applied`, and logged nothing; on a stack running stratum
+  authentication the rig then stops mining with `Permission denied` and nothing says why.
+
+  A set secret is now served as `{"__secret__": true}`, the same marker Pithead's Configuration view
+  already uses, and the applier resolves it back to the stored value before the overlay — as it does
+  for a key that is simply omitted, which is what an older consumer sends. Pools are matched by
+  `url` + `user`: a pool credential authenticates an account at a host, so carrying a password
+  across a changed url or user would be a different silent bug, not a fix for this one. A marker the
+  rig cannot resolve is **rejected** (`unresolvable-secret-marker`) rather than dropped, because the
+  point of the fix is that no credential changes quietly. An explicit value is still taken at face
+  value: a real password replaces the old one, `""` still hits #408's rejection, and an unset secret
+  is still absent from the feed, so "no marker" means "there is nothing here to keep".
+
+  The value itself still never leaves the rig, and the rig's own `apply` is unaffected — it reads
+  `config.json` directly and never had an overlay. Separately, `pass` must now be a **string**:
+  `jq -r` renders a JSON object as its text and the empty object `{}` is two graph characters on one
+  line, so it passed the existing charset rule and would have become the rig's literal password.
+  That check is what makes the guarantee independent of every writer remembering to resolve a
+  marker, rather than resting on the applier alone.
+
 - **An empty-string `socks5` or `tls-fingerprint` no longer skips validation (#408).** Two
   predicates decided whether a pool key was set and they disagreed about `""`: the emit step keys
   on jq truthiness, so an empty string was written into the generated config, while validation read

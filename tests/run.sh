@@ -414,6 +414,24 @@ c="$(mkconf p_s5nullok "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":null,\"tls-
 parse_rc "$c" "$ROOT"
 assert_rc "null socks5 + null tls-fingerprint still accepted (#408)" "$?" "0"
 assert_eq "neither null key reaches the config (#408)" "$(PJ "$c" | jq -c '[(.[0]|has("socks5")),(.[0]|has("tls-fingerprint"))]')" "[false,false]"
+# #415: `pass` must be a STRING. The charset rule alone cannot catch a JSON object, because `jq -r`
+# renders one as its JSON text and the empty object `{}` is two graph characters on one line — so it
+# passed every check and became the rig's literal password. The masked-secret marker the API feed
+# serves is the object that would actually get here if any writer forgot to resolve it.
+c="$(mkconf p_passmarker '{ "pools": [{"url":"h:3333","pass":{"__secret__":true}}] }')"
+parse_rc "$c" "$ROOT"
+assert_rc "a masked-secret marker is not a password (#415)" "$?" "1"
+c="$(mkconf p_passempty_obj '{ "pools": [{"url":"h:3333","pass":{}}] }')"
+parse_rc "$c" "$ROOT"
+assert_rc "an empty object pass rejected — it used to pass the charset rule (#415)" "$?" "1"
+c="$(mkconf p_passnum '{ "pools": [{"url":"h:3333","pass":1234}] }')"
+parse_rc "$c" "$ROOT"
+assert_rc "a numeric pass rejected (#415)" "$?" "1"
+# The control that must NOT move: a real string password, and an absent one, both still parse.
+c="$(mkconf p_passok '{ "pools": [{"url":"h:3333","pass":"realpw"}] }')"
+parse_rc "$c" "$ROOT"
+assert_rc "a string pass still accepted (#415)" "$?" "0"
+assert_eq "an absent pass still defaults to x, unchanged (#415)" "$(PJ "$(mkconf p_passnone '{ "pools": [{"url":"h:3333"}] }')" | jq -r '.[0].pass')" "x"
 # #405: a port with more digits than bash can evaluate as an integer used to PASS. `[ "$_p" -lt 1 ]`
 # returns 2 — not false — on such a value, so the `if` took its else branch, no error fired, and an
 # unusable port reached the generated config behind a raw `[: integer expression expected` on stderr.
@@ -7715,8 +7733,21 @@ cfgblk() { # <config-json> -> the rigforge.config JSON
 }
 C253='{ "pools":[{"url":"stack-host:3333","user":"wallet.rig","pass":"SECRET","keepalive":true,"tls":true,"tls-fingerprint":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}], "DONATION":2, "autotune":"perf", "watchdog":"on", "watchdog_interval_min":10, "max_temp_c":85 }'
 blk="$(cfgblk "$C253")"
-assert_eq "config: pool pass masked — no secret on the open read (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].pass // "ABSENT"')" "ABSENT"
-assert_eq "config: pool tls-fingerprint masked (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0]."tls-fingerprint" // "ABSENT"')" "ABSENT"
+# #415: the mask is now the {"__secret__": true} sentinel, not a deletion. The #253 guarantee is
+# unchanged and asserted directly below — the VALUE never appears anywhere in the served block —
+# but the FACT that a secret is set is now visible, which is what lets a consumer offer
+# "leave blank to keep it" instead of wiping the credential on every pools edit.
+assert_eq "config: pool pass masked to the sentinel (#415)" "$(printf '%s' "$blk" | jq -c '.pools[0].pass // "ABSENT"')" '{"__secret__":true}'
+assert_eq "config: pool tls-fingerprint masked to the sentinel (#415)" "$(printf '%s' "$blk" | jq -c '.pools[0]."tls-fingerprint" // "ABSENT"')" '{"__secret__":true}'
+# The needle's CASE is load-bearing: the mask this feed now emits is the lowercase `__secret__`
+# sentinel, so a lowercase needle would match the mask and report a leak that is not one.
+assert_absent "config: no pool password anywhere in the served block (#253)" "$blk" "SECRET"
+assert_absent "config: no fingerprint anywhere in the served block (#253)" "$blk" "a1b2c3d4e5f6"
+# An UNSET secret stays absent — "no marker" is how a consumer tells there is nothing to keep, so a
+# marker on a pool that has no password would be a lie the consumer cannot detect (#415).
+blkns="$(cfgblk '{ "pools":[{"url":"h:3333","user":"w.rig"}] }')"
+assert_eq "config: unset pass has no marker — nothing to keep (#415)" "$(printf '%s' "$blkns" | jq -c '.pools[0] | has("pass")')" "false"
+assert_eq "config: unset tls-fingerprint has no marker (#415)" "$(printf '%s' "$blkns" | jq -c '.pools[0] | has("tls-fingerprint")')" "false"
 assert_eq "config: pool url + user preserved (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].url + " " + .pools[0].user')" "stack-host:3333 wallet.rig"
 assert_eq "config: autotune canonical perf->performance (#253)" "$(printf '%s' "$blk" | jq -r '.autotune')" "performance"
 assert_eq "config: watchdog canonical on->enabled (#253)" "$(printf '%s' "$blk" | jq -r '.watchdog')" "enabled"
@@ -7794,7 +7825,7 @@ assert_eq "config_meta: a re-stamp of the same config keeps the prior source/id 
 rfblk="$(
     rfd=$(mktemp -d "$SANDBOX/rfblk.XXXXXX")
     printf '1.8.0' >"$rfd/VERSION"
-    printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"secret"}] }' >"$rfd/config.json"
+    printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"PWNEEDLE415"}] }' >"$rfd/config.json"
     (
         source "$SCRIPT"
         CONFIG_JSON="$rfd/config.json"
@@ -7806,7 +7837,13 @@ rfblk="$(
     ) 2>/dev/null
 )"
 assert_eq "feed: rigforge block carries the v1.7.0 keys + config + config_meta (contract)" "$(printf '%s' "$rfblk" | jq -r '[has("version"), has("xmrig_version"), has("xmrig_commit"), has("tune"), has("power"), has("health"), has("watchdog"), has("config"), has("config_meta")] | all')" "true"
-assert_eq "feed: served config still masks pass + config_meta has a revision (contract)" "$(printf '%s' "$rfblk" | jq -r '((.config.pools[0] | has("pass")) | not) and ((.config_meta.revision | length) > 0)')" "true"
+assert_eq "feed: served config still masks pass + config_meta has a revision (contract)" "$(printf '%s' "$rfblk" | jq -r '(.config.pools[0].pass == {"__secret__": true}) and ((.config_meta.revision | length) > 0)')" "true"
+# #415 changed the mask from a deletion to a marker, so re-state the guarantee the old shape carried
+# for free: whatever the mask looks like, the password must not appear anywhere in the served block.
+# The needle is the literal above and deliberately not the word "secret": the sentinel this feed now
+# emits is `__secret__`, so a needle of "secret" would match the MASK and report a leak that is not
+# one — the assertion has to be able to tell the two apart to mean anything.
+assert_absent "feed: no pool password anywhere in the served block (contract)" "$rfblk" "PWNEEDLE415"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
@@ -7873,6 +7910,108 @@ assert_absent "reject reason does not echo the raw config value" "$red_out" "SEC
 # tls-fingerprint is a per-pool field (not a top-level key): it is writable AS PART OF a pools change.
 tlsfp="$(printf 'a%.0s' $(seq 1 64))"
 assert_eq "commit: pools change carrying tls-fingerprint lands" "$(commit_case "$CFG_236" "{\"pools\":[{\"url\":\"h:3333\",\"tls\":true,\"tls-fingerprint\":\"$tlsfp\"}]}")" "committed|don=1|pool=h:3333|bk=1|tmp=0"
+
+# #415: a pools change must not wipe the pool credential. The feed never serves the password, so the
+# only pools array a consumer of it can send back either carries the {"__secret__": true} sentinel or
+# omits `pass` — and jq's `*` replaces arrays wholesale, after which parse_config defaults a missing
+# `pass` to "x". Both shapes must now preserve the stored secret; an explicit value must still
+# replace it; and a sentinel that resolves to nothing must be REJECTED, never quietly dropped.
+echo "== unit: _control_commit — masked pool secrets survive a pools edit (#415) =="
+FP415="$(printf 'b%.0s' $(seq 1 64))"
+CFG_415="{ \"pools\": [{\"url\":\"h:3333\",\"user\":\"w.rig\",\"pass\":\"STOREDPW\",\"tls\":true,\"tls-fingerprint\":\"$FP415\"},{\"url\":\"h2:3333\",\"pass\":\"SECONDPW\"}], \"DONATION\": 1 }"
+secret_case() { # <config-json> <staged-json> -> "<verb>|pass=<p>|fp=kept|other|ABSENT|marker=<n>"
+    local d
+    d=$(mktemp -d "$SANDBOX/sc.XXXXXX")
+    printf '%s\n' "$1" >"$d/config.json"
+    printf '%s' "$2" >"$d/staged.json"
+    local out
+    out=$( (
+        source "$SCRIPT"
+        CONFIG_JSON="$d/config.json"
+        SCRIPT_DIR="$d"
+        set +e
+        PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
+    ) 2>/dev/null)
+    printf '%s|pass=%s|fp=%s|marker=%s' "${out%% *}" \
+        "$(jq -r '.pools[0].pass // "ABSENT"' "$d/config.json")" \
+        "$(jq -r --arg f "$FP415" 'if (.pools[0]."tls-fingerprint" // "") == $f then "kept" elif (.pools[0] | has("tls-fingerprint")) then "other" else "ABSENT" end' "$d/config.json")" \
+        "$(jq -r '[.. | objects | select(has("__secret__"))] | length' "$d/config.json")"
+}
+assert_eq "commit: pass OMITTED keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
+assert_eq "commit: pass SENTINEL keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":{"__secret__":true}}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
+assert_eq "commit: fingerprint SENTINEL keeps the stored pin (#415)" "$(secret_case "$CFG_415" "{\"pools\":[{\"url\":\"h:3333\",\"user\":\"w.rig\",\"tls\":true,\"tls-fingerprint\":{\"__secret__\":true}}]}")" "committed|pass=STOREDPW|fp=kept|marker=0"
+assert_eq "commit: an explicit password still REPLACES the stored one (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":"NEWPW"}]}')" "committed|pass=NEWPW|fp=kept|marker=0"
+assert_eq "commit: an explicit fingerprint still replaces the stored pin (#415)" "$(secret_case "$CFG_415" "{\"pools\":[{\"url\":\"h:3333\",\"user\":\"w.rig\",\"tls\":true,\"tls-fingerprint\":\"$tlsfp\"}]}")" "committed|pass=STOREDPW|fp=other|marker=0"
+# The stored secret belongs to an (url, user) pair. A sentinel that matches no stored pool is a
+# request to keep something that is not there — reject it loudly rather than commit a rig to "x".
+assert_eq "commit: sentinel for an unknown pool rejected, config untouched (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
+assert_eq "commit: sentinel rejected when the user changed (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"OTHERWALLET","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
+assert_eq "commit: fingerprint sentinel on a pool with no stored pin rejected (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h2:3333","tls":true,"tls-fingerprint":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
+sc_unres="$( (
+    source "$SCRIPT"
+    d=$(mktemp -d "$SANDBOX/scu.XXXXXX")
+    printf '%s\n' "$CFG_415" >"$d/config.json"
+    printf '%s' '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}' >"$d/staged.json"
+    CONFIG_JSON="$d/config.json"
+    SCRIPT_DIR="$d"
+    set +e
+    PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
+) 2>/dev/null)"
+assert_contains "commit: the rejection names the unresolvable key (#415)" "$sc_unres" "unresolvable-secret-marker:pass"
+# The check is a post-condition on the merged pools, not a scan of the two keys the resolver knows,
+# so a marker in ANY pool key is refused rather than written into config.json under a confusing
+# error from some later validator that never heard of markers.
+assert_eq "commit: a marker in a pool key the resolver does not handle is refused too (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
+# A pool that never had a secret keeps working: omitting `pass` on a brand-new pool is not an error,
+# it just means there is nothing to carry over.
+assert_eq "commit: a brand-new pool with no pass still commits (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"other:4444"}]}')" "committed|pass=ABSENT|fp=ABSENT|marker=0"
+# #408 is untouched: an EXPLICIT empty string is still not "leave it alone".
+assert_eq "commit: an explicit empty pass is still rejected, not treated as keep (#415/#408)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":""}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
+
+# The end-to-end shape the issue reports: take the masked block the feed actually serves, send its
+# `pools` straight back as a control change (the only thing a consumer of that feed CAN send), and
+# require the stored password to come out byte-identical. This is the round-trip that used to leave
+# the rig mining as "x" while reporting success.
+rt415="$(mktemp -d "$SANDBOX/rt415.XXXXXX")"
+printf '%s\n' "$CFG_415" >"$rt415/config.json"
+rt_pools="$( (
+    source "$SCRIPT"
+    CONFIG_JSON="$rt415/config.json"
+    SCRIPT_DIR="$rt415"
+    set +e
+    PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
+    _api_config_json
+) 2>/dev/null | jq -c '{pools: .pools}')"
+assert_contains "round-trip: the feed's pools carry the sentinel, not the value (#415)" "$rt_pools" '"__secret__":true'
+assert_absent "round-trip: the feed's pools carry no password (#415)" "$rt_pools" "STOREDPW"
+assert_eq "round-trip: replaying the feed's own pools preserves the password (#415)" "$(secret_case "$CFG_415" "$rt_pools")" "committed|pass=STOREDPW|fp=kept|marker=0"
+# The stated tie-break: on a duplicate (url, user) pair the FIRST-declared stored pool wins — the
+# same rule Pithead uses restoring its per-worker token sentinels. Asserted rather than assumed,
+# since it is the only place the lookup can silently pick the wrong credential.
+CFG_415D='{ "pools": [{"url":"d:3333","user":"u","pass":"FIRSTPW"},{"url":"d:3333","user":"u","pass":"SECONDPW"}], "DONATION": 1 }'
+assert_eq "commit: first-declared pool wins a duplicate (url,user) (#415)" "$(secret_case "$CFG_415D" '{"pools":[{"url":"d:3333","user":"u"}]}')" "committed|pass=FIRSTPW|fp=ABSENT|marker=0"
+# The resolve pass is now the only step that can fail here, and it fails LOUDLY rather than falling
+# through to the overlay: an unreadable base config makes --slurpfile fail, so there is no stored
+# password to carry over and the pools array would otherwise replace wholesale — the exact shape
+# this fix exists to prevent. The pre-existing `merge-failed` case cannot reach this branch: it
+# stages no `pools`, so the resolver never runs and the failure lands on the overlay instead. Both
+# reasons are asserted here so a future edit cannot silently swap one for the other.
+smb="$(mktemp -d "$SANDBOX/smb.XXXXXX")"
+printf '%s' '{broken json' >"$smb/config.json"
+printf '%s' '{"pools":[{"url":"h:3333","pass":{"__secret__":true}}]}' >"$smb/pools.json"
+printf '%s' '{"DONATION":2}' >"$smb/nopools.json"
+smb_case() { # <staged-file> -> the reject reason
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$smb/config.json"
+        SCRIPT_DIR="$smb"
+        set +e
+        PATH="$STUBS:$PATH" _control_commit "$1" "$smb/bk"
+    ) 2>/dev/null
+}
+assert_eq "commit: an unreadable base config rejects a pools edit at the resolve (#415)" "$(smb_case "$smb/pools.json")" "rejected secret-merge-failed"
+assert_eq "commit: the same base without a pools edit still rejects at the overlay (#415)" "$(smb_case "$smb/nopools.json")" "rejected merge-failed"
+assert_eq "commit: neither reject wrote config.json (#415)" "$(cat "$smb/config.json")" '{broken json'
 # A backup is a HARD precondition: if the snapshot can't be written, the change is rejected and
 # config.json is left untouched (never commit a change we couldn't back up).
 bkfail="$(mktemp -d "$SANDBOX/bkf.XXXXXX")"
