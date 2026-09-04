@@ -7960,6 +7960,12 @@ assert_eq "commit: pass SENTINEL keeps the stored password (#415)" "$(secret_cas
 assert_eq "commit: fingerprint SENTINEL keeps the stored pin (#415)" "$(secret_case "$CFG_415" "{\"pools\":[{\"url\":\"h:3333\",\"user\":\"w.rig\",\"tls\":true,\"tls-fingerprint\":{\"__secret__\":true}}]}")" "committed|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: an explicit password still REPLACES the stored one (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":"NEWPW"}]}')" "committed|pass=NEWPW|fp=kept|marker=0"
 assert_eq "commit: an explicit fingerprint still replaces the stored pin (#415)" "$(secret_case "$CFG_415" "{\"pools\":[{\"url\":\"h:3333\",\"user\":\"w.rig\",\"tls\":true,\"tls-fingerprint\":\"$tlsfp\"}]}")" "committed|pass=STOREDPW|fp=other|marker=0"
+# Every preserve case above pins a `user`. The common shape on a real rig has no `user` key at all —
+# its identity is (url, ""), which is the half of pkey a resolver that only ever matched a non-empty
+# user would still get past. Pin both shapes on the second stored pool: it has a password, no user,
+# and no fingerprint.
+assert_eq "commit: pass OMITTED keeps the password of a pool with no user (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h2:3333"}]}')" "committed|pass=SECONDPW|fp=ABSENT|marker=0"
+assert_eq "commit: pass SENTINEL keeps the password of a pool with no user (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h2:3333","pass":{"__secret__":true}}]}')" "committed|pass=SECONDPW|fp=ABSENT|marker=0"
 # The stored secret belongs to an (url, user) pair. A sentinel that matches no stored pool is a
 # request to keep something that is not there — reject it loudly rather than commit a rig to "x".
 assert_eq "commit: sentinel for an unknown pool rejected, config untouched (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"

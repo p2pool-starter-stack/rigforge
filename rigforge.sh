@@ -4365,6 +4365,14 @@ _control_commit() { # <staged.json> <backups-dir>
     # duplicate pair — the same shape Pithead uses to restore its per-worker token sentinels. The
     # pair is the identity because a pool credential authenticates an ACCOUNT at a HOST: carrying a
     # password across a changed url or user would be a different silent bug, not a fix for this one.
+    # That pairing rests on the feed serving RAW pools: _writable_config_canonical reads `.pools`
+    # straight out of config.json, not parse_config's normalized POOLS_JSON, which defaults a
+    # missing pool `pass` to the literal "x". Switch the canonical view to the normalized one and
+    # every pool that stores no password is served a sentinel for that invented "x"; it comes back,
+    # `stored` finds nothing to keep, the marker survives the merge, and the edit is rejected
+    # unresolvable-secret-marker below — the exact opposite of what this exists to allow. The
+    # `user` half of the pair is NOT the hazard: POOLS_JSON leaves a blank `user` as "" (the rig
+    # name is filled in generate_xmrig_config, not here), and pkey reads a missing key and "" alike.
     # A sentinel that resolves to nothing is REJECTED rather than dropped: it asks to keep a secret
     # that is not there, and the whole point here is that no credential change happens quietly. An
     # explicit value is always taken at face value, so `""` still hits #408's rejection and a real
