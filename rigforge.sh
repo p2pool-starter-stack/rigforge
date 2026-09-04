@@ -4624,8 +4624,11 @@ control_apply() {
     # write below with it, and the undrained spool then re-triggered the .path unit into systemd's
     # start limit. `||` is the tested context errexit exempts; `$?` on its right is still the
     # substitution's status. `rc` is already `local` above, so initialise it, don't re-declare it.
+    # The INNER `|| exit $?` is bash 3.2 (#364's split again): 3.2 does not carry the outer tested
+    # context into the subshell, so the ERR trap fires in there and prints a spurious "aborted while"
+    # on a correctly-rejected change. Tested on both sides is silent on both shells.
     rc=0
-    result=$(_control_commit "$newest" "$backups") || rc=$?
+    result=$(_control_commit "$newest" "$backups" || exit $?) || rc=$?
     rm -f "$newest"
     if [ "$rc" -ne 0 ]; then
         _control_status "$status" rejected "$cid" "$change_keys" "$result" ""
