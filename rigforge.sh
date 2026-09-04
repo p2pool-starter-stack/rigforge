@@ -4619,8 +4619,13 @@ control_apply() {
     cid=$(basename "$newest" .json)
     cid="${cid#pending-}"
     change_keys=$(jq -r 'keys | join(",")' "$newest" 2>/dev/null || echo "?")
-    result=$(_control_commit "$newest" "$backups")
-    rc=$?
+    # #426: a BARE assignment's status IS the substitution's, and it is not a tested context — so
+    # errexit aborted here on every rejection, taking `rc=$?`, the spool drain and the `rejected`
+    # write below with it, and the undrained spool then re-triggered the .path unit into systemd's
+    # start limit. `||` is the tested context errexit exempts; `$?` on its right is still the
+    # substitution's status. `rc` is already `local` above, so initialise it, don't re-declare it.
+    rc=0
+    result=$(_control_commit "$newest" "$backups") || rc=$?
     rm -f "$newest"
     if [ "$rc" -ne 0 ]; then
         _control_status "$status" rejected "$cid" "$change_keys" "$result" ""
