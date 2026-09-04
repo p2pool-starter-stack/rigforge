@@ -4365,6 +4365,11 @@ _control_commit() { # <staged.json> <backups-dir>
     # duplicate pair — the same shape Pithead uses to restore its per-worker token sentinels. The
     # pair is the identity because a pool credential authenticates an ACCOUNT at a HOST: carrying a
     # password across a changed url or user would be a different silent bug, not a fix for this one.
+    # That pairing rests on the feed serving RAW pools: _writable_config_canonical reads `.pools`
+    # straight out of config.json, not parse_config's normalized POOLS_JSON, which fills a blank
+    # pool `user` with the rig name. Switch the canonical view to the normalized one and every rig
+    # that leaves `user` blank sends back a `user` the stored config does not have: no pair matches
+    # and every pools edit is rejected below — the exact opposite of what this exists to allow.
     # A sentinel that resolves to nothing is REJECTED rather than dropped: it asks to keep a secret
     # that is not there, and the whole point here is that no credential change happens quietly. An
     # explicit value is always taken at face value, so `""` still hits #408's rejection and a real
