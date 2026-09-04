@@ -6125,11 +6125,31 @@ else
     mkdir -p "$TN/cpu266/cpu0/cpufreq"
     FF266="$TN/cpu266/cpu0/cpufreq/scaling_cur_freq"
     DONE266="$TN/done266"
+    # #424: the handshake below is a blocking FIFO and nothing in its path has a timeout. When the
+    # reader asks for one more sample than the feeder is positioned to serve, it parks in the FIFO's
+    # open()/read() and the enclosing `out="$( ... )"` never closes, because a command substitution
+    # ends only when every holder of the write end does. One run wedged that way for 53 minutes.
+    # T266 bounds the run under test so a wedge FAILS this block (rc 124) instead of hanging the
+    # suite. Killing the FEEDER is not an alternative and was tried: a reader blocked in open() waits
+    # for a writer to APPEAR, so dropping the last one leaves it exactly where it was.
+    T266="${T266:-120}"
     rm -f "$FF266" "$DONE266"
     mkfifo "$FF266"
     # Feeder: serve the pair, then release the fake xmrig so the bench window closes after exactly 2 samples.
     (while :; do printf '4627000\n' >"$FF266" && printf '4628001\n' >"$FF266" && touch "$DONE266" || exit; done) &
     FEED266=$!
+    # #425: the feeder is a background job stopped only by the straight-line `kill` below, which sits
+    # AFTER the command substitution — so anything that leaves the block early skips it. It then
+    # blocks inside open() on a FIFO with no reader, and unlinking the FIFO does NOT wake a writer
+    # already blocked on it: the line-49 sandbox trap deletes the FIFO and leaves the process at 0%
+    # CPU with no live parent, invisible to every load, disk and pane-children check. Reap it from the
+    # EXIT trap, which every exit path that runs traps at all reaches; the kill below stays as the
+    # fast path and disarms this. The EXIT trap also runs when bash is KILLED by SIGTERM or SIGHUP,
+    # so `kill <suite>` and a dropped SSH are covered too — the realistic escalation path, and the
+    # reason this is worth more than an orderly-exit cleanup. SIGINT is the one that is not covered,
+    # and not because the trap skips it: with the shell blocked inside the command substitution a
+    # Ctrl-C does not terminate the suite at all, so there is nothing for a trap to run.
+    trap 'kill "$FEED266" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
     cat >"$BD/xmrig" <<EOF
 #!/usr/bin/env bash
 echo "speed 1000.0 H/s max 1000.0 H/s"
@@ -6140,10 +6160,11 @@ EOF
     chmod +x "$BD/xmrig"
     out="$(cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpu266" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ=4000 \
         TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
-        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+        RIGFORGE_HOME="$PWD" timeout "$T266" bash "$SCRIPT" tune </dev/null 2>&1)"
     rc=$?
     kill "$FEED266" 2>/dev/null
     wait "$FEED266" 2>/dev/null
+    trap 'rm -rf "$SANDBOX"' EXIT
     rm -f "$FF266" "$DONE266"
     assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
     assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
@@ -8602,6 +8623,34 @@ cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply --extra </dev/nul
 assert_contains "control-apply rejects extra args" "$cb_out" "Unexpected argument for control-apply"
 cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-upgrade --extra </dev/null) 2>&1 || true)"
 assert_contains "control-upgrade rejects extra args (#312)" "$cb_out" "Unexpected argument for control-upgrade"
+
+# #426: the REJECTION branch through the REAL dispatch — errexit and the ERR trap live. Every
+# rejection assertion above runs control_apply SOURCED under `set +e` (ca_exec), which is the one
+# shape that cannot see this defect, so those rows stayed green while it shipped.
+# Separate bash process on purpose, for the #364 reason above: a subshell would inherit this
+# suite's errexit context instead of a clean top-level one.
+# `invalid-config` is the trigger reachable over HTTP — a WRITABLE key whose value parse_config
+# refuses. control-server.py screens non-writable and unsafe keys with a 400 before staging, so
+# most of _control_commit's other rejection branches never get here.
+CAB="$(mktemp -d "$SANDBOX/cab.XXXXXX")"
+CAB_CID=00000000000000ab # 16 hex: _control_status only writes the changes/<cid>.json index for these
+mkdir -p "$CAB/state/spool"
+printf '%s\n' "$CFG_236" >"$CAB/config.json"
+printf '%s' '{"DONATION":500}' >"$CAB/state/spool/pending-$CAB_CID.json"
+cab_out="$( (cd "$CAB" && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_CONTROL_STATE="$CAB/state" \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" control-apply </dev/null) 2>&1)"
+cab_rc=$?
+cabst() { jq -r ".$1" "$CAB/state/status.json" 2>/dev/null; }
+assert_rc "a rejected change does not abort control-apply (#426)" "$cab_rc" "0"
+assert_absent "a rejected change does not ERR-trap the applier (#426)" "$cab_out" "aborted while"
+# The reporting half: without these the change is decided and the decision is never published.
+assert_eq "rejected change writes a terminal status (#426)" "$(cabst status)" "rejected"
+assert_contains "the rejected status names why (#426)" "$(cabst reason)" "invalid-config"
+assert_eq "GET /status?change_id= stops reading pending (#426)" "$(jq -r .status "$CAB/state/changes/$CAB_CID.json" 2>/dev/null)" "rejected"
+# The availability half: an undrained spool is what re-triggers the .path unit into the start limit.
+assert_eq "a rejected change drains the spool (#426)" "$(ls "$CAB"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+# Unchanged by the fix, asserted so a future rewrite of this branch cannot quietly lose it.
+assert_eq "a rejected change leaves config.json untouched (#426)" "$(jq -r .DONATION "$CAB/config.json")" "1"
 
 echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
 # The git fetch/checkout/reachability/build half (_control_upgrade_do) and the miner liveness check are
