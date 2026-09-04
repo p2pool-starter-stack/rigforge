@@ -8624,6 +8624,34 @@ assert_contains "control-apply rejects extra args" "$cb_out" "Unexpected argumen
 cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-upgrade --extra </dev/null) 2>&1 || true)"
 assert_contains "control-upgrade rejects extra args (#312)" "$cb_out" "Unexpected argument for control-upgrade"
 
+# #426: the REJECTION branch through the REAL dispatch — errexit and the ERR trap live. Every
+# rejection assertion above runs control_apply SOURCED under `set +e` (ca_exec), which is the one
+# shape that cannot see this defect, so those rows stayed green while it shipped.
+# Separate bash process on purpose, for the #364 reason above: a subshell would inherit this
+# suite's errexit context instead of a clean top-level one.
+# `invalid-config` is the trigger reachable over HTTP — a WRITABLE key whose value parse_config
+# refuses. control-server.py screens non-writable and unsafe keys with a 400 before staging, so
+# most of _control_commit's other rejection branches never get here.
+CAB="$(mktemp -d "$SANDBOX/cab.XXXXXX")"
+CAB_CID=00000000000000ab # 16 hex: _control_status only writes the changes/<cid>.json index for these
+mkdir -p "$CAB/state/spool"
+printf '%s\n' "$CFG_236" >"$CAB/config.json"
+printf '%s' '{"DONATION":500}' >"$CAB/state/spool/pending-$CAB_CID.json"
+cab_out="$( (cd "$CAB" && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE_CONTROL_STATE="$CAB/state" \
+    RIGFORGE_HOME="$PWD" bash "$SCRIPT" control-apply </dev/null) 2>&1)"
+cab_rc=$?
+cabst() { jq -r ".$1" "$CAB/state/status.json" 2>/dev/null; }
+assert_rc "a rejected change does not abort control-apply (#426)" "$cab_rc" "0"
+assert_absent "a rejected change does not ERR-trap the applier (#426)" "$cab_out" "aborted while"
+# The reporting half: without these the change is decided and the decision is never published.
+assert_eq "rejected change writes a terminal status (#426)" "$(cabst status)" "rejected"
+assert_contains "the rejected status names why (#426)" "$(cabst reason)" "invalid-config"
+assert_eq "GET /status?change_id= stops reading pending (#426)" "$(jq -r .status "$CAB/state/changes/$CAB_CID.json" 2>/dev/null)" "rejected"
+# The availability half: an undrained spool is what re-triggers the .path unit into the start limit.
+assert_eq "a rejected change drains the spool (#426)" "$(ls "$CAB"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+# Unchanged by the fix, asserted so a future rewrite of this branch cannot quietly lose it.
+assert_eq "a rejected change leaves config.json untouched (#426)" "$(jq -r .DONATION "$CAB/config.json")" "1"
+
 echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
 # The git fetch/checkout/reachability/build half (_control_upgrade_do) and the miner liveness check are
 # stubbed here — they need a real git remote + compiler + systemd, and are validated on miner-0. This
