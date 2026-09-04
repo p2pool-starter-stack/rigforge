@@ -76,6 +76,15 @@ set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
+
+# Every git call on the operator-owned checkout goes through this (#401). git exempts a repo from its
+# dubious-ownership check when the repo is owned by $SUDO_UID, which is why a plain
+# `sudo bash tests/e2e-real.sh ...` works: SUDO_UID is the operator. Nest that inside a second sudo —
+# a `nohup setsid` detach recipe is one — and the inner sudo sets SUDO_UID=0, the exemption stops
+# matching a repo owned by the operator, and EVERY git op here fatals "detected dubious ownership".
+# Pinning safe.directory makes the phase behave identically from either invocation shape, which is
+# the point: a gate that passes only in the foreground is a gate that lies.
+_hgit() { git -C "$HERE" -c safe.directory="$HERE" "$@"; }
 GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 
 PASS=0
@@ -910,15 +919,15 @@ _upg_post_and_poll() { # <token> <port> <vX.Y.Z> <timeout-s> -> terminal status 
 # The upgrade-phase leftovers on top of _control_cleanup (which restores the snapshot, forces both
 # control flags off, re-applies, and checks the miner comes back). Idempotent like its parts.
 _upgrade_cleanup() {
-    git -C "$HERE" tag -d v99.99.99 >/dev/null 2>&1 || true
+    _hgit tag -d v99.99.99 >/dev/null 2>&1 || true
     rm -f /var/lib/rigforge-control/upgrade-last 2>/dev/null || true
     # #350: the auto-derived forward leg rewinds the checkout to a real previous tag to prove the
     # forward step for real, then must land back on the exact ref this phase started from — on ANY
     # exit, success or a hard abort mid-leg. A release gate must never leave the rig pinned to an
     # older release. Restore BEFORE _control_cleanup's `apply` below, so apply runs the right code.
     if [ -n "$UPG_ORIG_REF" ]; then
-        if [ "$(git -C "$HERE" rev-parse HEAD 2>/dev/null)" != "$UPG_ORIG_REF" ]; then
-            if git -C "$HERE" checkout --quiet --force "$UPG_ORIG_REF" 2>/dev/null; then
+        if [ "$(_hgit rev-parse HEAD 2>/dev/null)" != "$UPG_ORIG_REF" ]; then
+            if _hgit checkout --quiet --force "$UPG_ORIG_REF" 2>/dev/null; then
                 echo "  restored the checkout to ${UPG_ORIG_REF:0:12} (the ref this phase started from)"
                 "$RIGFORGE" upgrade >/tmp/e2e-upgrade-restore.log 2>&1 ||
                     echo "  WARNING: 'rigforge.sh upgrade' failed while restoring the pre-leg ref (see /tmp/e2e-upgrade-restore.log)" >&2
@@ -987,20 +996,24 @@ upgrade() {
     # A commit provably NOT reachable from origin/main, without moving HEAD or dirtying the tree:
     # commit-tree forges a throwaway child of HEAD and a local tag names it (fetch --tags never
     # prunes local-only tags). -f survives a leftover tag from a crashed run; cleanup deletes it.
-    local probe rev_before
-    probe=$(git -C "$HERE" -c user.name=e2e -c user.email=e2e@localhost \
-        commit-tree "HEAD^{tree}" -p HEAD -m "e2e-real upgrade probe (unreachable from origin/main)" 2>/dev/null || true)
-    if [ -n "$probe" ] && git -C "$HERE" tag -f v99.99.99 "$probe" >/dev/null 2>&1; then
+    local probe probe_err rev_before
+    # git's stderr is CAPTURED, not discarded. When this step failed under a nested sudo it reported
+    # only "could not forge the probe tag" and threw away the single line naming the cause (#401).
+    probe_err="$(mktemp)"
+    probe=$(_hgit -c user.name=e2e -c user.email=e2e@localhost \
+        commit-tree "HEAD^{tree}" -p HEAD -m "e2e-real upgrade probe (unreachable from origin/main)" 2>"$probe_err" || true)
+    if [ -n "$probe" ] && _hgit tag -f v99.99.99 "$probe" >/dev/null 2>&1; then
         ok "forged probe tag v99.99.99 -> ${probe:0:12} (not on origin/main)"
     else
-        bad "could not forge the probe tag"
+        bad "could not forge the probe tag: $(head -1 "$probe_err" 2>/dev/null || true)"
     fi
-    rev_before=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)
+    rm -f "$probe_err"
+    rev_before=$(_hgit rev-parse HEAD 2>/dev/null || true)
     st=$(_upg_post_and_poll "$tok" "$control_port" "v99.99.99" 420)
     [ "$st" = rolled_back ] &&
         ok "unreachable tag refused and rolled back to the running ref (D10, REAL git as the root oneshot)" ||
         bad "rollback leg ended '$st' (expected rolled_back)"
-    [ "$(git -C "$HERE" rev-parse HEAD 2>/dev/null)" = "$rev_before" ] &&
+    [ "$(_hgit rev-parse HEAD 2>/dev/null)" = "$rev_before" ] &&
         ok "checkout still on ${rev_before:0:12} (tree untouched by the refused forward leg)" ||
         bad "checkout moved off ${rev_before:0:12}"
     [ "$(tr -d '[:space:]' <"$HERE/VERSION" 2>/dev/null)" = "$installed" ] &&
@@ -1032,8 +1045,8 @@ upgrade() {
     else
         phase "upgrade — forward leg: auto-derive previous -> current real tags, prove a forward upgrade"
         local all_tags cur_tag="v$installed" prev_tag
-        git -C "$HERE" fetch --quiet --tags origin 2>/dev/null || true
-        all_tags="$(git -C "$HERE" tag --list --sort=-v:refname 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vxF v99.99.99 || true)"
+        _hgit fetch --quiet --tags origin 2>/dev/null || true
+        all_tags="$(_hgit tag --list --sort=-v:refname 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vxF v99.99.99 || true)"
         prev_tag="$(printf '%s\n' "$all_tags" | awk -v c="$cur_tag" '$0==c{f=1;next} f{print; exit}')"
         if [ -z "$prev_tag" ]; then
             ok "SKIP forward leg — fewer than two real release tags reachable yet (installed $cur_tag); nothing to prove a forward upgrade from"
@@ -1043,8 +1056,8 @@ upgrade() {
             # genuinely older rig to upgrade forward from — D10's anti-rollback in control_upgrade()
             # refuses a downgrade POST, so this step can only happen this way, same as a genuinely
             # older rig got here. _upgrade_cleanup restores $UPG_ORIG_REF on ANY exit from here on.
-            UPG_ORIG_REF="$(git -C "$HERE" rev-parse HEAD)"
-            if git -C "$HERE" checkout --quiet --force "$prev_tag" 2>/dev/null && "$RIGFORGE" upgrade >/tmp/e2e-upgrade-rewind.log 2>&1; then
+            UPG_ORIG_REF="$(_hgit rev-parse HEAD)"
+            if _hgit checkout --quiet --force "$prev_tag" 2>/dev/null && "$RIGFORGE" upgrade >/tmp/e2e-upgrade-rewind.log 2>&1; then
                 ok "rewound the checkout to $prev_tag (a real prior release, to prove the forward leg from)"
                 rm -f "$stamp" 2>/dev/null || true # the rollback leg stamped; this is a fresh attempt
                 st=$(_upg_post_and_poll "$tok" "$control_port" "$cur_tag" 600)
