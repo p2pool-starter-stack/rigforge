@@ -19,6 +19,24 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **A rejected control change is now recorded as `rejected` instead of killing the applier (#426).**
+  `control_apply` captured the commit result with a bare assignment, whose exit status *is* the
+  command substitution's — and a bare assignment is not a tested context, so under the script's
+  `set -Eeuo pipefail` every rejection aborted the run on that line. The `rc` read, the spool drain
+  and the `rejected` status write all sat below the abort and none of them ran. A consumer polling
+  `GET /status?change_id=…` therefore got `pending` forever for a change that had already been
+  decided, while `status.json` still held the *previous* change's outcome, so a poller reading it
+  without a change id saw a stale `applied`. Worse, the staged file was never removed, so
+  `rigforge-control-apply.path` re-triggered the service until systemd's start limit tripped and left
+  **both** units `failed` — the remote control path dead for every later change until someone drained
+  the spool and reset the units by hand. `config.json` was untouched throughout; this was a reporting
+  and availability defect, never a config-corruption one, and that guarantee is now asserted so a
+  future rewrite cannot quietly lose it. Reachable over HTTP through any writable key whose value
+  `parse_config` refuses, the receiver having already screened non-writable and unsafe keys with a
+  400. The suite had a green assertion covering this branch the whole time: it drives `control_apply`
+  as a *sourced* function under `set +e`, which switches off the exact mechanism that kills it in
+  production. The regression test added here drives the verb as an executed script, with errexit and
+  the `ERR` trap live.
 - **A one-click or command-line `upgrade` now actually applies the release (#413).** `upgrade`
   returned early whenever the pinned XMRig version and commit were unchanged — which is *every*
   published release pair, the pin being byte-identical at all 25 tags v1.0.0 through v1.16.0 — so
