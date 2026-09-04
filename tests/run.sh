@@ -6144,8 +6144,11 @@ else
     # already blocked on it: the line-49 sandbox trap deletes the FIFO and leaves the process at 0%
     # CPU with no live parent, invisible to every load, disk and pane-children check. Reap it from the
     # EXIT trap, which every exit path that runs traps at all reaches; the kill below stays as the
-    # fast path and disarms this. (SIGINT/SIGTERM are trapped nowhere in this suite, so those two
-    # still skip it — the same gap the sandbox cleanup has, and a suite-wide change to close.)
+    # fast path and disarms this. The EXIT trap also runs when bash is KILLED by SIGTERM or SIGHUP,
+    # so `kill <suite>` and a dropped SSH are covered too — the realistic escalation path, and the
+    # reason this is worth more than an orderly-exit cleanup. SIGINT is the one that is not covered,
+    # and not because the trap skips it: with the shell blocked inside the command substitution a
+    # Ctrl-C does not terminate the suite at all, so there is nothing for a trap to run.
     trap 'kill "$FEED266" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
     cat >"$BD/xmrig" <<EOF
 #!/usr/bin/env bash
