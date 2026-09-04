@@ -48,6 +48,21 @@ assert_rc() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected rc $3, g
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
+# #418: keep the suite's own bytecode cache out of the tracked tree. The two `python3 -m py_compile`
+# checks below write `util/__pycache__/*.pyc` next to the source, and that debris outlives the run:
+# `git status` then reads dirty on a clean checkout and the PR-opening warning cries wolf, in exactly
+# the signal a reader uses to decide whether it is safe to commit. `-B` / PYTHONDONTWRITEBYTECODE
+# does NOT suppress it — py_compile writes the cache file explicitly rather than through the import
+# machinery those disable. PYTHONPYCACHEPREFIX relocates the whole cache tree instead, so the compile
+# checks still compile and still write, but into the sandbox the trap above removes. Python < 3.8
+# ignores it, which leaves such a host exactly where it is today rather than breaking it.
+export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
+
+# Read BEFORE anything else runs, so the tree-hygiene check at the end of this file judges what THIS
+# run created rather than what some earlier tool left behind.
+PYCACHE_PRE=absent
+[ -e "$ROOT/util/__pycache__" ] && PYCACHE_PRE=present
+
 # HARDWARE INDEPENDENCE. The suite must give identical results on ANY machine — a cloud CI VM, a dev
 # laptop, or a real mining rig that actually has RAPL / DMI / SMT / reserved HugePages. So point every
 # hardware + firmware probe rigforge reads at a non-existent path (or a missing command) by default: a
@@ -9530,6 +9545,17 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
 live_feed="$(jq -S '.rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"
 fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
+if [ "$PYCACHE_PRE" = present ]; then
+    echo "  SKIP: util/__pycache__ predates this run — it cannot be attributed to the suite"
+else
+    pycache_post=absent
+    [ -e "$ROOT/util/__pycache__" ] && pycache_post=present
+    assert_eq "no util/__pycache__ left in the tracked tree (#418)" "$pycache_post" "absent"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
