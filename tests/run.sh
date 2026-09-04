@@ -6125,11 +6125,31 @@ else
     mkdir -p "$TN/cpu266/cpu0/cpufreq"
     FF266="$TN/cpu266/cpu0/cpufreq/scaling_cur_freq"
     DONE266="$TN/done266"
+    # #424: the handshake below is a blocking FIFO and nothing in its path has a timeout. When the
+    # reader asks for one more sample than the feeder is positioned to serve, it parks in the FIFO's
+    # open()/read() and the enclosing `out="$( ... )"` never closes, because a command substitution
+    # ends only when every holder of the write end does. One run wedged that way for 53 minutes.
+    # T266 bounds the run under test so a wedge FAILS this block (rc 124) instead of hanging the
+    # suite. Killing the FEEDER is not an alternative and was tried: a reader blocked in open() waits
+    # for a writer to APPEAR, so dropping the last one leaves it exactly where it was.
+    T266="${T266:-120}"
     rm -f "$FF266" "$DONE266"
     mkfifo "$FF266"
     # Feeder: serve the pair, then release the fake xmrig so the bench window closes after exactly 2 samples.
     (while :; do printf '4627000\n' >"$FF266" && printf '4628001\n' >"$FF266" && touch "$DONE266" || exit; done) &
     FEED266=$!
+    # #425: the feeder is a background job stopped only by the straight-line `kill` below, which sits
+    # AFTER the command substitution — so anything that leaves the block early skips it. It then
+    # blocks inside open() on a FIFO with no reader, and unlinking the FIFO does NOT wake a writer
+    # already blocked on it: the line-49 sandbox trap deletes the FIFO and leaves the process at 0%
+    # CPU with no live parent, invisible to every load, disk and pane-children check. Reap it from the
+    # EXIT trap, which every exit path that runs traps at all reaches; the kill below stays as the
+    # fast path and disarms this. The EXIT trap also runs when bash is KILLED by SIGTERM or SIGHUP,
+    # so `kill <suite>` and a dropped SSH are covered too — the realistic escalation path, and the
+    # reason this is worth more than an orderly-exit cleanup. SIGINT is the one that is not covered,
+    # and not because the trap skips it: with the shell blocked inside the command substitution a
+    # Ctrl-C does not terminate the suite at all, so there is nothing for a trap to run.
+    trap 'kill "$FEED266" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
     cat >"$BD/xmrig" <<EOF
 #!/usr/bin/env bash
 echo "speed 1000.0 H/s max 1000.0 H/s"
@@ -6140,10 +6160,11 @@ EOF
     chmod +x "$BD/xmrig"
     out="$(cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpu266" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ=4000 \
         TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
-        RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune </dev/null 2>&1)"
+        RIGFORGE_HOME="$PWD" timeout "$T266" bash "$SCRIPT" tune </dev/null 2>&1)"
     rc=$?
     kill "$FEED266" 2>/dev/null
     wait "$FEED266" 2>/dev/null
+    trap 'rm -rf "$SANDBOX"' EXIT
     rm -f "$FF266" "$DONE266"
     assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
     assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
