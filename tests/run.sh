@@ -7890,6 +7890,28 @@ assert_eq "round-trip: replaying the feed's own pools preserves the password (#4
 # since it is the only place the lookup can silently pick the wrong credential.
 CFG_415D='{ "pools": [{"url":"d:3333","user":"u","pass":"FIRSTPW"},{"url":"d:3333","user":"u","pass":"SECONDPW"}], "DONATION": 1 }'
 assert_eq "commit: first-declared pool wins a duplicate (url,user) (#415)" "$(secret_case "$CFG_415D" '{"pools":[{"url":"d:3333","user":"u"}]}')" "committed|pass=FIRSTPW|fp=ABSENT|marker=0"
+# The resolve pass is now the only step that can fail here, and it fails LOUDLY rather than falling
+# through to the overlay: an unreadable base config makes --slurpfile fail, so there is no stored
+# password to carry over and the pools array would otherwise replace wholesale — the exact shape
+# this fix exists to prevent. The pre-existing `merge-failed` case cannot reach this branch: it
+# stages no `pools`, so the resolver never runs and the failure lands on the overlay instead. Both
+# reasons are asserted here so a future edit cannot silently swap one for the other.
+smb="$(mktemp -d "$SANDBOX/smb.XXXXXX")"
+printf '%s' '{broken json' >"$smb/config.json"
+printf '%s' '{"pools":[{"url":"h:3333","pass":{"__secret__":true}}]}' >"$smb/pools.json"
+printf '%s' '{"DONATION":2}' >"$smb/nopools.json"
+smb_case() { # <staged-file> -> the reject reason
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$smb/config.json"
+        SCRIPT_DIR="$smb"
+        set +e
+        PATH="$STUBS:$PATH" _control_commit "$1" "$smb/bk"
+    ) 2>/dev/null
+}
+assert_eq "commit: an unreadable base config rejects a pools edit at the resolve (#415)" "$(smb_case "$smb/pools.json")" "rejected secret-merge-failed"
+assert_eq "commit: the same base without a pools edit still rejects at the overlay (#415)" "$(smb_case "$smb/nopools.json")" "rejected merge-failed"
+assert_eq "commit: neither reject wrote config.json (#415)" "$(cat "$smb/config.json")" '{broken json'
 # A backup is a HARD precondition: if the snapshot can't be written, the change is rejected and
 # config.json is left untouched (never commit a change we couldn't back up).
 bkfail="$(mktemp -d "$SANDBOX/bkf.XXXXXX")"

@@ -4332,45 +4332,22 @@ _control_commit() { # <staged.json> <backups-dir>
     # new password still replaces the old one.
     if printf '%s' "$change" | jq -e '(.pools | type) == "array"' >/dev/null 2>&1; then
         local resolved unresolved
-        resolved=$(printf '%s' "$change" | jq -c --slurpfile base "$CONFIG_JSON" '
-            def pkey: [(.url? // ""), (.user? // "")];
-            def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({};
-                if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end);
-            def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v
-                | if ($v | type) == "string" and $v != "" then $v else null end;
-            ($base[0] | lut) as $lut
-            | .pools |= map(
-                if type == "object" then
-                  . as $p
-                  | reduce ("pass", "tls-fingerprint") as $k (.;
-                      ($p | stored($lut; $k)) as $keep
-                      | if $keep != null
-                           and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true)
-                                or ($p | has($k) | not))
-                        then .[$k] = $keep
-                        else . end)
-                else . end)' 2>/dev/null) || {
+        # One jq, two output lines: the surviving markers first, the resolved config second. The
+        # marker check is a post-condition on the merged pools rather than a second pre-scan — after
+        # the merge, a marker that is STILL there is exactly one the rig could not resolve. Reading it
+        # out of the same pass also covers a marker in a pool key this resolver does not handle, which
+        # a pre-scan of the two known keys would have waved through into config.json, and it leaves a
+        # single failure branch: a scan that cannot RUN is no longer a separate outcome to name.
+        resolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" 'def pkey: [(.url? // ""), (.user? // "")]; def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({}; if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end); def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v | if ($v | type) == "string" and $v != "" then $v else null end; ($base[0] | lut) as $lut | (.pools |= map(if type == "object" then . as $p | reduce ("pass", "tls-fingerprint") as $k (.; ($p | stored($lut; $k)) as $keep | if $keep != null and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true) or ($p | has($k) | not)) then .[$k] = $keep else . end) else . end)) as $r | ([$r.pools[]? | select(type == "object") | to_entries[] | select((.value | type) == "object" and .value.__secret__ == true) | .key] | unique | join(",")), ($r | tojson)' 2>/dev/null) || {
             echo "rejected secret-merge-failed"
             return 1
         }
-        # Post-condition rather than a second pre-scan: after the merge, a marker that is STILL there
-        # is exactly one the rig could not resolve — it asked to keep a secret that is not stored.
-        # Checking the output also covers a marker in a pool key this function does not resolve,
-        # which a pre-scan of the two known keys would have waved through into config.json.
-        unresolved=$(printf '%s' "$resolved" | jq -r '
-            [ .pools[]? | select(type == "object") | to_entries[]
-              | select((.value | type) == "object" and .value.__secret__ == true) | .key ]
-            | unique | join(",")' 2>/dev/null) || {
-            # A scan that could not RUN has not found an unresolvable marker; giving it the reason
-            # below would name the wrong problem and send whoever reads it looking in the wrong place.
-            echo "rejected secret-scan-failed"
-            return 1
-        }
+        unresolved=${resolved%%$'\n'*}
+        change=${resolved#*$'\n'}
         if [ -n "$unresolved" ]; then
             echo "rejected unresolvable-secret-marker:$unresolved"
             return 1
         fi
-        change="$resolved"
     fi
     # Build the candidate: current config with ONLY the allowlisted staged keys overlaid (pools and
     # other arrays replace, scalars replace). Filter again so a stray key can never ride in.
@@ -5266,9 +5243,7 @@ _writable_config_hash() { _sha256 <(_writable_config_canonical) | cut -c1-16; }
 # back to the stored value. A key that is unset — or holds anything but a non-empty string — stays
 # ABSENT, so "no marker" means "there is nothing here to keep", and the value itself never leaves.
 _api_config_json() {
-    _writable_config_canonical | jq -c '
-        def mask($k): if (.[$k] | type) == "string" and .[$k] != "" then .[$k] = {"__secret__": true} else del(.[$k]) end;
-        .pools = [.pools[]? | if type == "object" then mask("pass") | mask("tls-fingerprint") else . end]'
+    _writable_config_canonical | jq -c 'def mask($k): if (.[$k] | type) == "string" and .[$k] != "" then .[$k] = {"__secret__": true} else del(.[$k]) end; .pools = [.pools[]? | if type == "object" then mask("pass") | mask("tls-fingerprint") else . end]'
 }
 
 # #254: config-change provenance marker. Stamped by every path that rewrites the writable config
