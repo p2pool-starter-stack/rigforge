@@ -8929,6 +8929,23 @@ echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
 bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
 
+# Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
+# its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
+# `sudo bash tests/e2e-real.sh upgrade` works. Nest that inside another sudo — a `nohup setsid`
+# detach recipe is one — and the inner sudo rewrites SUDO_UID to 0, the exemption stops matching a
+# repo owned by the operator, and every bare `git -C "$HERE"` in the upgrade phase fatals with
+# "detected dubious ownership". The releaser then reads a RED on a gate that is fine.
+echo "== unit: e2e-real git calls survive a nested sudo (#401) =="
+bare_e2e_git=$(grep -nE 'git -C "\$HERE"' "$ROOT/tests/e2e-real.sh" | grep -v 'safe\.directory' || true)
+assert_eq "no e2e-real git call omits -c safe.directory (nested sudo breaks git's SUDO_UID exemption)" "$bare_e2e_git" ""
+# ...and the row above is not vacuous: it would also pass on a file with no git calls left in it.
+hgit_calls=$(grep -cE '(^|[^A-Za-z_])_hgit ' "$ROOT/tests/e2e-real.sh")
+if [ "$hgit_calls" -ge 10 ]; then
+    ok "e2e-real still routes its git through the helper ($hgit_calls call sites)"
+else
+    bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"
+fi
+
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
