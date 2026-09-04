@@ -386,6 +386,35 @@ ensure_config_exists() {
     fi
 }
 
+# #412: every numeric range guard in this script was written as
+# `! [[ $v =~ ^[0-9]+$ ]] || [ "$v" -gt MAX ]`, and that shape ACCEPTS the value it exists to reject
+# when $v carries more digits than bash can evaluate: `[` returns **2** — an error, not "false" — and
+# `if` reads any non-zero as false, so the else branch runs and no error fires. The only tell is a
+# raw `[: ...: integer expression expected` on stderr, and where the caller redirects stderr there is
+# no tell at all. #405 fixed one instance (a pool's port) with a digit-count guard; the shape was
+# still live at ten more call sites — nine of them reachable, measured, and accepting a 20-digit
+# value; the tenth (the api_allow_from IPv6 prefix) is unreachable because the surrounding regex
+# already caps that field at three digits, and routes through here for uniformity. The guard lives
+# HERE once rather than being re-derived per key and missed again on the next key somebody adds.
+#
+# The bound is the digit count of the key's OWN maximum: no value in range can be longer, so nothing
+# legal is rejected — except a value zero-padded PAST that width, which the range test used to
+# evaluate as decimal and keep. That trade is #405's, made again deliberately. For a key read out of
+# JSON it is narrower than it looks: jq normalises a padded NUMBER before bash sees it (`065536` ->
+# `65536`), so only a padded STRING (`"065536"`) is newly rejected. Padding within the width
+# (`"05120"`, or `:08080` in #405) is untouched. All three shapes are pinned in tests/run.sh.
+#
+# Callers keep their own `error` messages: each names its key, its units and its range, and a shared
+# message could name none of them. `_validate_host_port` keeps its own inline copy of this guard
+# because it emits a DISTINCT digit-count message (#405) — the range wording there would quote a port
+# that IS in range and tell the operator nothing.
+_uint_in_range() { # <value> <min> <max> -> 0 iff a whole number bash can evaluate, within [min,max]
+    local _v="$1" _min="$2" _max="$3"
+    [[ "$_v" =~ ^[0-9]+$ ]] || return 1
+    [ "${#_v}" -le "${#_max}" ] || return 1
+    [ "$_v" -ge "$_min" ] && [ "$_v" -le "$_max" ]
+}
+
 # #400: ONE host:port validator, shared by a pool's `url` and its `socks5` proxy. The issue asks for
 # the socks5 value to get "the same rules the pool URL gets" — a second copy of these four checks
 # would satisfy that on the day it was written and drift the first time either side is touched, so
@@ -443,7 +472,7 @@ parse_config() {
     DONATION=$(jq -r '.DONATION // 1' "$CONFIG_JSON")
     # donate-level is a percentage; the compile step also seds this into donate.h, so a malformed
     # value would corrupt both the XMRig config and the source patch. Require an integer 0-100.
-    if ! [[ "$DONATION" =~ ^[0-9]+$ ]] || [ "$DONATION" -gt 100 ]; then
+    if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
     # Pool(s). The pool target is XMRig's native `pools` array — the same structure XMRig uses
@@ -589,7 +618,7 @@ parse_config() {
             # validator — same posture as the IPv4 octet check above.
             local _pfx=""
             case "$API_ALLOW_FROM" in */*) _pfx="${API_ALLOW_FROM##*/}" ;; esac
-            if [ -n "$_pfx" ] && { ! [[ "$_pfx" =~ ^[0-9]+$ ]] || [ "$_pfx" -gt 128 ]; }; then
+            if [ -n "$_pfx" ] && ! _uint_in_range "$_pfx" 0 128; then
                 error "api_allow_from IPv6 prefix must be 0-128 (got: '$API_ALLOW_FROM')."
             fi
             API_ALLOW_FAMILY=ip6
@@ -627,7 +656,7 @@ parse_config() {
     *) error "Invalid \"watchdog\" value '$_wd' in config.json — use \"disabled\" or \"enabled\"." ;;
     esac
     WATCHDOG_INTERVAL_MIN=$(jq -r '.watchdog_interval_min // 5' "$CONFIG_JSON")
-    if ! [[ "$WATCHDOG_INTERVAL_MIN" =~ ^[0-9]+$ ]] || [ "$WATCHDOG_INTERVAL_MIN" -lt 1 ] || [ "$WATCHDOG_INTERVAL_MIN" -gt 1440 ]; then
+    if ! _uint_in_range "$WATCHDOG_INTERVAL_MIN" 1 1440; then
         error "watchdog_interval_min must be a whole number of minutes, 1-1440 (got: $WATCHDOG_INTERVAL_MIN)."
     fi
     # Empty (the default) = no thermal cutoff. Opt-in because thermal_zone0's meaning varies by
@@ -635,7 +664,7 @@ parse_config() {
     # rig would never restart, above 110 is past any CPU's limit.
     MAX_TEMP_C=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON")
     if [ -n "$MAX_TEMP_C" ]; then
-        if ! [[ "$MAX_TEMP_C" =~ ^[0-9]+$ ]] || [ "$MAX_TEMP_C" -lt 40 ] || [ "$MAX_TEMP_C" -gt 110 ]; then
+        if ! _uint_in_range "$MAX_TEMP_C" 40 110; then
             error "max_temp_c must be empty (no thermal cutoff) or a whole number 40-110 °C (got: $MAX_TEMP_C)."
         fi
     fi
@@ -646,7 +675,7 @@ parse_config() {
     # just declares "leave this much for the rest of the box." Default 0 (miner-only sizing). The upper
     # bound is generous (64 GB of 2MB pages) — this is a deliberate reservation, not a typo guard.
     HUGEPAGES_RESERVE_EXTRA_MB=$(jq -r '.hugepages_reserve_extra_mb // 0' "$CONFIG_JSON")
-    if ! [[ "$HUGEPAGES_RESERVE_EXTRA_MB" =~ ^[0-9]+$ ]] || [ "$HUGEPAGES_RESERVE_EXTRA_MB" -gt 65536 ]; then
+    if ! _uint_in_range "$HUGEPAGES_RESERVE_EXTRA_MB" 0 65536; then
         error "hugepages_reserve_extra_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_RESERVE_EXTRA_MB)."
     fi
     # Total-pool ceiling (#398): a HARD CAP on the runtime pool RigForge will grow to, expressed in MB —
@@ -661,7 +690,7 @@ parse_config() {
     # FLOORS to the 2MB page below (e.g. 5121 -> 2560 pages, 5120MB effective) — a cap must round
     # toward less memory, never more.
     HUGEPAGES_POOL_CEILING_MB=$(jq -r '.hugepages_pool_ceiling_mb // 0' "$CONFIG_JSON")
-    if ! [[ "$HUGEPAGES_POOL_CEILING_MB" =~ ^[0-9]+$ ]] || [ "$HUGEPAGES_POOL_CEILING_MB" -gt 65536 ]; then
+    if ! _uint_in_range "$HUGEPAGES_POOL_CEILING_MB" 0 65536; then
         error "hugepages_pool_ceiling_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_POOL_CEILING_MB)."
     fi
     # First-class thread cap (#305): a CEILING on the RandomX thread count — min(auto-detected, threads).
@@ -669,7 +698,7 @@ parse_config() {
     # the stack cores free. Sizing and the generated cpu.rx both honour it; it never raises the count.
     THREADS_CAP=$(jq -r '.threads // empty' "$CONFIG_JSON")
     if [ -n "$THREADS_CAP" ]; then
-        if ! [[ "$THREADS_CAP" =~ ^[0-9]+$ ]] || [ "$THREADS_CAP" -lt 1 ] || [ "$THREADS_CAP" -gt 1024 ]; then
+        if ! _uint_in_range "$THREADS_CAP" 1 1024; then
             error "threads must be empty (auto) or a whole number 1-1024 (got: $THREADS_CAP)."
         fi
     fi
@@ -689,7 +718,7 @@ parse_config() {
     *) error "Invalid \"api\" value '$_api' in config.json — use \"disabled\" or \"enabled\"." ;;
     esac
     API_PORT=$(jq -r '.api_port // 8081' "$CONFIG_JSON")
-    if ! [[ "$API_PORT" =~ ^[0-9]+$ ]] || [ "$API_PORT" -lt 1 ] || [ "$API_PORT" -gt 65535 ]; then error "api_port must be a port number 1-65535 (got: $API_PORT)."; fi
+    if ! _uint_in_range "$API_PORT" 1 65535; then error "api_port must be a port number 1-65535 (got: $API_PORT)."; fi
     if [ "$API_PORT" = 8080 ]; then error "api_port 8080 collides with XMRig's own API — pick another port."; fi
     API_BIND=$(jq -r '.api_bind // "0.0.0.0"' "$CONFIG_JSON")
     [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
@@ -705,7 +734,7 @@ parse_config() {
     *) error "Invalid \"control\" value '$_control' in config.json — use \"disabled\" or \"enabled\"." ;;
     esac
     CONTROL_PORT=$(jq -r '.control_port // 8082' "$CONFIG_JSON")
-    if ! [[ "$CONTROL_PORT" =~ ^[0-9]+$ ]] || [ "$CONTROL_PORT" -lt 1 ] || [ "$CONTROL_PORT" -gt 65535 ]; then error "control_port must be a port number 1-65535 (got: $CONTROL_PORT)."; fi
+    if ! _uint_in_range "$CONTROL_PORT" 1 65535; then error "control_port must be a port number 1-65535 (got: $CONTROL_PORT)."; fi
     if [ "$CONTROL_PORT" = 8080 ]; then error "control_port 8080 collides with XMRig's own API — pick another port."; fi
     CONTROL_BIND=$(jq -r '.control_bind // "0.0.0.0"' "$CONFIG_JSON")
     [[ "$CONTROL_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "control_bind must be an IP address (got: $CONTROL_BIND)."
@@ -1627,7 +1656,17 @@ _ensure_hugepages() { # <required 2MB pages>
     # toward less memory, never more — an odd declared MB value (e.g. 5121) floors to the page below
     # (2560, 5120MB) rather than overshooting the declared ceiling by a page (security review finding
     # on the first version of this fix: ceil(MB/2) let an odd ceiling write one page past itself).
-    if [ "${HUGEPAGES_POOL_CEILING_MB:-0}" -gt 0 ] 2>/dev/null; then
+    # #412: no `2>/dev/null` on the comparison any more. That redirect was the SECOND half of the
+    # defect: fed a value bash could not evaluate, `[ -gt 0 ]` returned 2, the `if` read it as false,
+    # and the whole ceiling block was skipped with no message whatsoever — the pool grew uncapped
+    # while the config declared a cap. parse_config now rejects such a value, so this can only ever
+    # see a validated one; the explicit re-check is the backstop, because a cap that can be dropped
+    # in silence is not a cap. It ERRORS rather than falling through: refusing to size the pool is
+    # the safe direction when the declared bound is unenforceable.
+    if ! _uint_in_range "${HUGEPAGES_POOL_CEILING_MB:-0}" 0 65536; then
+        error "hugepages_pool_ceiling_mb is not a whole number of MB, 0-65536 at the HugePages write (got: '${HUGEPAGES_POOL_CEILING_MB:-}') — refusing to size the pool against an unenforceable ceiling (#412)."
+    fi
+    if [ "${HUGEPAGES_POOL_CEILING_MB:-0}" -gt 0 ]; then
         ceiling_pages=$((HUGEPAGES_POOL_CEILING_MB / 2))
         if [ "$target" -gt "$ceiling_pages" ]; then
             if [ "$ceiling_pages" -le "$current" ]; then
@@ -4311,7 +4350,7 @@ _control_commit() { # <staged.json> <backups-dir>
     esac
     if printf '%s' "$change" | jq -e 'has("max_temp_c")' >/dev/null 2>&1; then
         mt_new=$(printf '%s' "$change" | jq -r '.max_temp_c // ""')
-        if [ -z "$mt_new" ] || ! [[ "$mt_new" =~ ^[0-9]+$ ]] || [ "$mt_new" -lt 40 ] || [ "$mt_new" -gt 110 ]; then
+        if [ -z "$mt_new" ] || ! _uint_in_range "$mt_new" 40 110; then
             echo "rejected safety-max_temp_c-out-of-band"
             return 1
         fi

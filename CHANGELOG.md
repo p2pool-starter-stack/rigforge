@@ -85,6 +85,26 @@ All notable changes to RigForge are documented here. The format is based on
   of the script under test, and three #410 controls assert that stderr is empty, so a fixture's noise
   read as the subject's output and invalidated the block reading against it. The stub's writes now
   drop their own write errors; its stdout is byte-identical. Test-only.
+- **Every numeric config key now rejects a value bash cannot evaluate (#412).** This is #405's defect
+  in eight more keys. Each range check was written `[ "$value" -gt MAX ]`, which on a value carrying
+  more digits than bash can evaluate returns an error rather than false — so the check fell through
+  and the value was accepted, behind a raw shell diagnostic on stderr. `hugepages_pool_ceiling_mb` is
+  where that cost more than a confusing message: the HugePages write then skipped its ceiling block
+  for the same reason, behind a stderr redirect that removed even that tell, so a rig whose
+  `config.json` declared a hard cap on the pool reserved exactly as though no cap had been set, and
+  said nothing. `DONATION`, `watchdog_interval_min`, `max_temp_c`, `threads`,
+  `hugepages_reserve_extra_mb`, `api_port` and `control_port` had the same hole, as did the control
+  API's applier-side backstop for `max_temp_c` — a safety check, where a staged temperature limit
+  that the control server rejects outright was being committed instead. One shared guard now runs a
+  digit-count check before the arithmetic, so the comparison only ever sees a value bash can
+  evaluate, and every key keeps its own error message. It keys on digit count and nothing else, so
+  nothing in range is affected — except a value written as a JSON *string* and padded PAST the width
+  of that key's own maximum (`"065536"` where the maximum is `65536`), which used to be accepted and
+  is now rejected. Padding that stays within the width (`"05120"`) is unaffected and still accepted,
+  as with `:08080` in #405, and a padded JSON *number* is unaffected either way because jq normalises
+  it (`065536` reaches the check as `65536`).
+  The HugePages write now also refuses outright rather than skipping its ceiling in silence: a cap
+  that can be dropped without a message is not a cap.
 
 - **Editing `pools` from the dashboard no longer wipes the pool password (#415).** Two behaviours
   combined into a silent credential loss. The enriched feed served the writable config with
