@@ -7784,16 +7784,13 @@ assert_absent "config: no fingerprint anywhere in the served block (#253)" "$blk
 blkns="$(cfgblk '{ "pools":[{"url":"h:3333","user":"w.rig"}] }')"
 assert_eq "config: unset pass has no marker — nothing to keep (#415)" "$(printf '%s' "$blkns" | jq -c '.pools[0] | has("pass")')" "false"
 assert_eq "config: unset tls-fingerprint has no marker (#415)" "$(printf '%s' "$blkns" | jq -c '.pools[0] | has("tls-fingerprint")')" "false"
-# #429: the canonical view serves a pool AS STORED, inventing neither `user` nor `pass`. That is what
-# makes #415's secret round-trip possible at all, and until now it was carried by a comment in
-# _control_commit rather than by anything that can redden. parse_config normalizes on the way to
-# XMRig — a missing `pass` becomes the literal "x", a missing `user` becomes "" — so pointing this
-# view at POOLS_JSON ("use the parsed pools, we already have them") advertises a password on every
-# pool that stores none: the mask turns the invented "x" into a sentinel, the sentinel comes back on
-# the next pools edit, `stored` has nothing to resolve it against, the marker survives the merge, and
-# _control_commit rejects the edit `unresolvable-secret-marker` — naming a secret the operator never
-# set. Assert the KEY SET, not empty values: a later `// ""` default would satisfy an equality row
-# while reintroducing the defect.
+# #429: the canonical view serves a pool AS STORED, inventing neither `user` nor `pass` — the property
+# #415's secret round-trip rests on, carried until now by a comment in _control_commit. parse_config
+# normalizes on the way to XMRig (a missing `pass` becomes the literal "x"), so pointing this view at
+# POOLS_JSON advertises a password on every pool that stores none: the mask makes the invented "x" a
+# sentinel, it comes back on the next pools edit, `stored` has nothing to resolve it against, and the
+# edit is rejected `unresolvable-secret-marker` — naming a secret the operator never set. Assert the
+# KEY SET: a later `// ""` default would satisfy an equality row while reintroducing the defect.
 blkbare="$(cfgblk '{ "pools":[{"url":"bare:3333"},{"url":"pw:3333","user":"w.rig","pass":"KEEPME"}] }')"
 assert_eq "config: a pool stored with only a url is served with only a url (#429)" "$(printf '%s' "$blkbare" | jq -r '.pools[0] | keys | join(",")')" "url"
 # The control that makes the row above mean anything: the SECOND pool of the SAME served block does
