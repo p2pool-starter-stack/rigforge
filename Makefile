@@ -1,5 +1,5 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead lint lint-topology fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead lint lint-topology lint-file-budget fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci
 
 SHELL_FILES = $(shell git ls-files '*.sh')
 
@@ -37,13 +37,17 @@ e2e-real: ## Release pre-tag gate (full): real build+tune+bench+doctor+uninstall
 e2e-pithead: ## Release gate (worker↔stack): real worker vs a live Pithead stack (root; PITHEAD_URL=host:3333; see RELEASING.md)
 	bash tests/e2e-pithead.sh all
 
-lint: lint-topology ## shellcheck + shfmt (check) the script, utilities, and test scripts
+lint: lint-topology lint-file-budget ## shellcheck + shfmt (check) the script, utilities, and test scripts, plus the topology and file-budget gates
 	shellcheck --severity=warning $(SHELL_FILES)
 	shfmt -i 4 -d $(SHELL_FILES)
 
 lint-topology: ## fail if a real-looking IPv6/IPv4/hostname/path/user@host literal leaks in (generic classes only)
 	bash scripts/lint-topology-classes.sh --self-test
 	bash scripts/lint-topology-classes.sh
+
+lint-file-budget: ## fail if a file crosses the 800-line hard ceiling, or an existing offender grows past its docs/dev/file-budget.tsv ceiling (#407)
+	bash scripts/lint-file-budget.sh --self-test
+	bash scripts/lint-file-budget.sh
 
 fmt: ## auto-format all shell scripts with shfmt (resolves shfmt lint failures)
 	shfmt -i 4 -w $(SHELL_FILES)

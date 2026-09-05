@@ -65,10 +65,18 @@ jobs:
       SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
       SHFMT_VERSION: "3.13.1"
       SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
+      # The file-budget gate's "ceilings only go down" half needs origin/develop to diff the budget
+      # against. Without this it would SKIP that half and still exit 0 — a green that proves less
+      # than it looks like it does — so here it is fatal instead (#407).
+      FILE_BUDGET_REQUIRE_BASE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no pushes from CI; don't leave the token in .git/config (zizmor: artipacked)
+          # Full history so origin/develop resolves for the file-budget gate above; the default
+          # shallow fetch gives the PR ref only. Paired with FILE_BUDGET_REQUIRE_BASE, so if this
+          # line is ever dropped the job REDS instead of quietly running half the gate.
+          fetch-depth: 0
       # Install PINNED, checksum-verified shellcheck + shfmt instead of the runner's preinstalled
       # builds, so lint/format results are reproducible and don't drift with the runner image (#6).
       # Downloaded straight from the upstream releases — no `apt-get update`, avoiding the mirror
@@ -76,6 +84,10 @@ jobs:
       - name: Install pinned ShellCheck
         run: |
           set -euo pipefail
+          # Unpack in RUNNER_TEMP, not the workspace: the file-budget gate measures untracked,
+          # non-gitignored files too (that is how a new file is caught before `git add`), and an
+          # extracted toolchain in the repo root reads as a 674-line source file it must budget.
+          cd "$RUNNER_TEMP"
           tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
           curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${tarball}" -o "$tarball"
           echo "${SHELLCHECK_SHA256}  ${tarball}" | sha256sum -c -
@@ -85,6 +97,7 @@ jobs:
       - name: Install pinned shfmt
         run: |
           set -euo pipefail
+          cd "$RUNNER_TEMP" # same reason as ShellCheck above — keep the download out of the workspace
           curl -fsSL "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64" -o shfmt
           echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -
           sudo install shfmt /usr/local/bin/shfmt

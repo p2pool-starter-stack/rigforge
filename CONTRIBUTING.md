@@ -27,7 +27,7 @@ RigForge is portable Bash that has to run on Ubuntu/Debian and macOS:
   ```
 
   CI runs the same checks, so a clean local run keeps your PR green. (`make fmt` auto-applies the
-  `shfmt` formatting.)
+  `shfmt` formatting.) `make lint` also runs the topology gate and the **file budget gate** below.
 - Update the README or other docs when you change behavior or add options.
 - New `config.json` keys are lowercase `snake_case`, matching Pithead. The three SCREAMING legacy
   keys (`ACCESS_TOKEN`, `DONATION`, `HOME_DIR`) are frozen as-is — never rename a shipped key.
@@ -47,6 +47,35 @@ This runs `make lint` (ShellCheck + shfmt over the Makefile's `SHELL_FILES`),
 [gitleaks](https://github.com/gitleaks/gitleaks) secret scanning (the same pinned version CI runs, so
 a committed token or pool credential is caught before it's pushed), and a few hygiene checks:
 private-key detection, a large-file guard, and final-newline and trailing-whitespace fixers.
+
+### File budget gate
+
+`make lint` fails if a source file grows past its ceiling. Two rules, and
+`scripts/lint-file-budget.sh` is the whole implementation:
+
+- A file over **400 lines** must have a row in `docs/dev/file-budget.tsv` recording its current line
+  count. Over **800** with no row, the refusal names the hard ceiling instead — a new file has no
+  reason to be born that big.
+- **Ceilings only ever go down.** The gate compares your budget file against `develop` and rejects
+  any row whose ceiling rose. A row's *first* appearance must record the file's real count, not
+  reserve headroom above it. A file that shrinks back to 400 or under drops its row.
+
+```bash
+make lint-file-budget                    # self-test, then the gate
+scripts/lint-file-budget.sh --generate   # reprint the budget this tree implies; commit it by hand
+```
+
+Prose (`*.md`), data (`*.json`), and binaries are exempt — the reasons are enumerated one per glob in
+the script. `rigforge.sh` is deliberately *not* exempt.
+
+**If your change is refused because the ceiling equals the file's current size**, the ratchet has left
+no slack, which is intended. Ask first whether a line-neutral form of the change exists; that question
+usually dissolves the problem. If there genuinely is none, fold the addition into the same commit as a
+cut that makes room for it — never a follow-on PR, which cannot raise the ceiling to fit.
+
+**Regenerate the budget file rather than merging it**, and never resolve a conflict in it by taking a
+side: both sides are measurements of different trees, and taking one bakes in a count that was never
+true of the merged result.
 
 ### Config & docs linting
 
