@@ -8626,6 +8626,10 @@ CA_APPLY_OK=0 CA_BACKUP_UNREADABLE=1 ca_run "$CFG_236" '{"DONATION":42}' 0
 assert_eq "unreadable rollback backup still writes a terminal status (#276)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
 assert_eq "unreadable rollback backup -> status failed (#276)" "$(cst status)" "failed"
 assert_contains "unreadable rollback backup reason names the cause (#276)" "$(cst reason)" "rollback backup unreadable"
+# #436 review: the two `failed` outcomes are told apart by `backup`, not by the reason string alone.
+# THIS one is a change that was committed and then could not be rolled back, so it hands the operator
+# the snapshot to restore by hand; the #434 one below never wrote anything and has none.
+assert_contains "a post-commit failure hands back the backup it could not read (#276)" "$(cst backup)" "/config-backups/config-"
 # #434: the operator-visible half of the same defect. With the commit tail unguarded, a config.json
 # that never landed was still recorded `applied` — /status and the published changes/<cid>.json both
 # announcing a change the rig is not running, which is the worst shape available: no error anywhere
@@ -8639,6 +8643,9 @@ CA_COMMIT_MV_FAIL=1 ca_run "$CFG_236" '{"DONATION":42}' 1
 assert_eq "a commit that could not be installed still writes a terminal status (#434)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
 assert_eq "a config.json that never landed is NOT reported applied (#434)" "$(cst status)" "failed"
 assert_contains "the terminal status names the install as the cause (#434)" "$(cst reason)" "commit-install-failed"
+# #436 review: the discriminator against the #276 `failed` above — a change that never landed has
+# nothing to hand back, and a null here is what tells the operator not to go looking for a snapshot.
+assert_eq "a commit that never landed records NO backup (#434)" "$(cst backup)" "null"
 assert_eq "a failed install leaves the old config live (donation 1) (#434)" "$(jq -r .DONATION "$CA/config.json")" "1"
 assert_eq "a failed install still drains the spool (#434)" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "a failed install never restarts the miner (#434)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "not-called"
@@ -8752,6 +8759,55 @@ assert_eq "GET /status?change_id= stops reading pending (#426)" "$(jq -r .status
 assert_eq "a rejected change drains the spool (#426)" "$(ls "$CAB"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 # Unchanged by the fix, asserted so a future rewrite of this branch cannot quietly lose it.
 assert_eq "a rejected change leaves config.json untouched (#426)" "$(jq -r .DONATION "$CAB/config.json")" "1"
+
+# #435: the ACCEPTED branch through the REAL dispatch — the counterpart to the #426 rejection row
+# above, and for the same reason. Every applied/rolled_back/fast-path assertion in this section runs
+# control_apply SOURCED under `set +e` (ca_exec) with apply() stubbed to a marker write, which is the
+# one shape that can see neither an errexit abort on the accepted branch nor anything the real apply
+# pipeline does with the change. Measured before this row was written: seeding the #426 defect class
+# onto the accepted branch — `backup="${result#committed }"` rewritten as a bare assignment from a
+# substitution that exits non-zero — leaves EVERY ca_exec row green and still recording `applied`,
+# while this row goes rc 1 with no status file written and "aborted while" on stderr.
+# Separate bash process on purpose, for the #364 reason above: a subshell would inherit this suite's
+# errexit context instead of a clean top-level one, which disarms the failure under test on bash 5.2.
+CAA="$(mktemp -d "$SANDBOX/caa.XXXXXX")"
+CAA_CID=00000000000000ac # 16 hex, so _control_status writes the changes/<cid>.json index too
+mkdir -p "$CAA/state/spool" "$CAA/home/worker/xmrig/build" "$CAA/logrotate" "$CAA/etc-systemd"
+: >"$CAA/home/worker/xmrig/build/xmrig"
+chmod +x "$CAA/home/worker/xmrig/build/xmrig"
+# _apply_runtime hard-errors unless the built worker above is there, so HOME_DIR has to point at it.
+# DONATION is deliberately NOT in the fast-path allowlist (#381), so this drives the FULL pipeline.
+cat >"$CAA/config.json" <<EOF
+{ "HOME_DIR": "$CAA/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
+EOF
+printf '%s' '{"DONATION":7}' >"$CAA/state/spool/pending-$CAA_CID.json"
+# SYSTEMD_DIR and LOGROTATE_DIR are both redirected because the sudo stub is `exec "$@"`: unset, the
+# reconcile really writes into the host's /etc/systemd/system and /etc/logrotate.d. The logrotate
+# policy IS written on this run; no unit is, but that is one config key away, so both are sandboxed.
+# The watchdog staying disabled is what keeps apply()'s rc clean — it is the only install_* step
+# whose failure reaches it (#395); the rest run under `|| true`.
+caa_out="$( (cd "$CAA" && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux SYSTEMD_DIR="$CAA/etc-systemd" \
+    LOGROTATE_DIR="$CAA/logrotate" APPLY_POOL_TRIES=1 APPLY_POOL_IVL=0 \
+    RIGFORGE_CONTROL_STATE="$CAA/state" RIGFORGE_HOME="$PWD" bash "$SCRIPT" control-apply </dev/null) 2>&1)"
+caa_rc=$?
+caast() { jq -r ".$1" "$CAA/state/status.json" 2>/dev/null; }
+assert_rc "an accepted change does not abort control-apply (#435)" "$caa_rc" "0"
+assert_absent "an accepted change does not ERR-trap the applier (#435)" "$caa_out" "aborted while"
+# The reporting half, both files the receiver serves back.
+assert_eq "an accepted change writes a terminal status (#435)" "$(caast status)" "applied"
+assert_eq "GET /status?change_id= serves the accepted outcome too (#435)" "$(jq -r .status "$CAA/state/changes/$CAA_CID.json" 2>/dev/null)" "applied"
+# The rig-side half. ca_exec stubs apply() out entirely, so this run is the only place the accepted
+# path is shown to reach the pipeline that regenerates what the miner actually reads — asserted by
+# its effect on the rig, not by a log line.
+assert_eq "an accepted change lands in config.json (#435)" "$(jq -r .DONATION "$CAA/config.json")" "7"
+assert_eq "an accepted change regenerates the live xmrig config (#435)" "$(J "$CAA/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
+assert_eq "an accepted change drains the spool (#435)" "$(ls "$CAA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+# #254 attribution, end to end for the first time: the sidecar is written by the nested apply(), which
+# reads RIGFORGE_CONFIG_SOURCE/_CHANGE_ID through dynamic scope — a binding no sourced run can vouch for.
+assert_eq "an accepted change stamps the sidecar source 'control' (#435, #254)" "$(J "$CAA/.rigforge-config-meta.json" '.source')" "control"
+assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "$CAA/.rigforge-config-meta.json" '.last_change_id')" "$CAA_CID"
+# The backup the rollback branch would need: a `null` here fails this as surely as a wrong path does.
+assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
 echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
 # The git fetch/checkout/reachability/build half (_control_upgrade_do) and the miner liveness check are
