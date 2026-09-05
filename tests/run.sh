@@ -7982,6 +7982,13 @@ secret_case() { # <config-json> <staged-json> -> "<verb>|pass=<p>|fp=kept|other|
         "$(jq -r --arg f "$FP415" 'if (.pools[0]."tls-fingerprint" // "") == $f then "kept" elif (.pools[0] | has("tls-fingerprint")) then "other" else "ABSENT" end' "$d/config.json")" \
         "$(jq -r '[.. | objects | select(has("__secret__"))] | length' "$d/config.json")"
 }
+secret_out() { # <config-json> <staged-json> -> the raw _control_commit output (verb + reason)
+    local d
+    d=$(mktemp -d "$SANDBOX/so.XXXXXX")
+    printf '%s\n' "$1" >"$d/config.json"
+    printf '%s' "$2" >"$d/staged.json"
+    (source "$SCRIPT" && set +e && CONFIG_JSON="$d/config.json" SCRIPT_DIR="$d" PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups") 2>/dev/null
+}
 assert_eq "commit: pass OMITTED keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: pass SENTINEL keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":{"__secret__":true}}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: fingerprint SENTINEL keeps the stored pin (#415)" "$(secret_case "$CFG_415" "{\"pools\":[{\"url\":\"h:3333\",\"user\":\"w.rig\",\"tls\":true,\"tls-fingerprint\":{\"__secret__\":true}}]}")" "committed|pass=STOREDPW|fp=kept|marker=0"
@@ -7998,16 +8005,7 @@ assert_eq "commit: pass SENTINEL keeps the password of a pool with no user (#415
 assert_eq "commit: sentinel for an unknown pool rejected, config untouched (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: sentinel rejected when the user changed (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"OTHERWALLET","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: fingerprint sentinel on a pool with no stored pin rejected (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h2:3333","tls":true,"tls-fingerprint":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
-sc_unres="$( (
-    source "$SCRIPT"
-    d=$(mktemp -d "$SANDBOX/scu.XXXXXX")
-    printf '%s\n' "$CFG_415" >"$d/config.json"
-    printf '%s' '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}' >"$d/staged.json"
-    CONFIG_JSON="$d/config.json"
-    SCRIPT_DIR="$d"
-    set +e
-    PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
-) 2>/dev/null)"
+sc_unres="$(secret_out "$CFG_415" '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}')"
 assert_contains "commit: the rejection names the unresolvable key (#415)" "$sc_unres" "unresolvable-secret-marker:pass"
 # The check is a post-condition on the merged pools, not a scan of the two keys the resolver knows,
 # so a marker in ANY pool key is refused rather than written into config.json under a confusing
@@ -8023,19 +8021,21 @@ assert_eq "commit: an explicit empty pass is still rejected, not treated as keep
 # `pools` straight back as a control change (the only thing a consumer of that feed CAN send), and
 # require the stored password to come out byte-identical. This is the round-trip that used to leave
 # the rig mining as "x" while reporting success.
-rt415="$(mktemp -d "$SANDBOX/rt415.XXXXXX")"
-printf '%s\n' "$CFG_415" >"$rt415/config.json"
-rt_pools="$( (
-    source "$SCRIPT"
-    CONFIG_JSON="$rt415/config.json"
-    SCRIPT_DIR="$rt415"
-    set +e
-    PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
-    _api_config_json
-) 2>/dev/null | jq -c '{pools: .pools}')"
+rt_pools="$(cfgblk "$CFG_415" | jq -c '{pools: .pools}')"
 assert_contains "round-trip: the feed's pools carry the sentinel, not the value (#415)" "$rt_pools" '"__secret__":true'
 assert_absent "round-trip: the feed's pools carry no password (#415)" "$rt_pools" "STOREDPW"
 assert_eq "round-trip: replaying the feed's own pools preserves the password (#415)" "$(secret_case "$CFG_415" "$rt_pools")" "committed|pass=STOREDPW|fp=kept|marker=0"
+# #439: the pool shape the appliance rig actually ships — one that stores NO password. Every row
+# above replays a sentinel referring to a password that exists; none drives the other direction,
+# where a pool with nothing stored is advertised as holding a secret. Both halves are pinned here:
+# the feed serves no marker and its own pools replay cleanly, and a marker the feed never emitted is
+# rejected BY NAME rather than committing the rig to the throwaway "x" parse_config defaults to.
+CFG_439='{ "pools": [{"url":"bare:3333"}], "DONATION": 1 }'
+rt439_pools="$(cfgblk "$CFG_439" | jq -c '{pools: .pools}')"
+assert_eq "round-trip: a pool storing no password is served with no marker (#439)" "$rt439_pools" '{"pools":[{"url":"bare:3333"}]}'
+assert_eq "round-trip: replaying a passwordless pool's own feed commits (#439)" "$(secret_case "$CFG_439" "$rt439_pools")" "committed|pass=ABSENT|fp=ABSENT|marker=0"
+assert_eq "commit: a fabricated marker on a pool that stores no password is rejected (#439)" "$(secret_case "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "rejected|pass=ABSENT|fp=ABSENT|marker=0"
+assert_contains "commit: that rejection names the unresolvable key (#439)" "$(secret_out "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "unresolvable-secret-marker:pass"
 # The stated tie-break: on a duplicate (url, user) pair the FIRST-declared stored pool wins — the
 # same rule Pithead uses restoring its per-worker token sentinels. Asserted rather than assumed,
 # since it is the only place the lookup can silently pick the wrong credential.
@@ -8569,7 +8569,7 @@ ca_exec() {
         # backup FILE for a directory of the same name: a plain `cp` (no -r) always refuses to read a
         # directory, unlike chmod 000 which root (e.g. the kcov coverage container) simply ignores.
         if [ "${CA_BACKUP_UNREADABLE:-0}" = 1 ]; then
-            _reown_config_backups() {
+            _sweep_config_backups() {
                 local f
                 for f in "$1"/config-*.json; do rm -f "$f" && mkdir -p "$f"; done
             }
@@ -8599,6 +8599,8 @@ ca_run() { # <config> <staged|""> <apply_ok 1|0>
     mkdir -p "$CA/state/spool"
     printf '%s\n' "$1" >"$CA/config.json"
     [ -n "$2" ] && printf '%s' "$2" >"$CA/state/spool/pending-abc123.json"
+    for ((i = 1; i <= ${CA_SEED_BACKUPS:-0}; i++)); do mkdir -p "$CA/config-backups" && printf '{}' >"$CA/config-backups/config-2026010$i-000000.json"; done # NOT $(seq 1 N): BSD seq counts DOWN on an empty range
+    [ "${CA_SEED_BACKUPS:-0}" -eq 0 ] || touch -t 202601010000 "$CA/config-backups"/config-*.json                                                            # age them: on an mtime TIE `ls -t` orders by NAME and the orphan sorts oldest
     CA_APPLY_OK="$3" ca_exec
 }
 cst() { jq -r ".$1" "$CA/state/status.json" 2>/dev/null; }
@@ -8642,12 +8644,9 @@ assert_contains "a post-commit failure hands back the backup it could not read (
 # #434: the operator-visible half of the same defect. With the commit tail unguarded, a config.json
 # that never landed was still recorded `applied` — /status and the published changes/<cid>.json both
 # announcing a change the rig is not running, which is the worst shape available: no error anywhere
-# and a rig quietly on the old config. The terminal status must not be `applied`; it must also not be
-# `rejected`, which docs/operations.md defines as an INVALID change with nothing written, and which
-# would send the operator to fix a change that was fine. `failed` is the rig-side terminal ADR 0002
-# already gives the upgrade path for this class. The rename is same-directory, so it either replaces
-# the config wholly or leaves it untouched: nothing was applied and there is nothing to roll back,
-# which is why apply() must never be reached on this path.
+# and a rig quietly on the old config. Not `applied`, and not `rejected` either (docs/operations.md
+# defines that as an INVALID change with nothing written, which would send the operator to fix a
+# change that was fine): `failed` is the rig-side ADR 0002 terminal, and apply() never runs here.
 CA_COMMIT_MV_FAIL=1 ca_run "$CFG_236" '{"DONATION":42}' 1
 assert_eq "a commit that could not be installed still writes a terminal status (#434)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
 assert_eq "a config.json that never landed is NOT reported applied (#434)" "$(cst status)" "failed"
@@ -8658,6 +8657,11 @@ assert_eq "a commit that never landed records NO backup (#434)" "$(cst backup)" 
 assert_eq "a failed install leaves the old config live (donation 1) (#434)" "$(jq -r .DONATION "$CA/config.json")" "1"
 assert_eq "a failed install still drains the spool (#434)" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "a failed install never restarts the miner (#434)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "not-called"
+# #438: same path, one layer down — its snapshot copies a config that was never replaced, and the
+# sweep ran on the success branch alone. Seeded 3 under KEEP=2: only an orphan can hold DONATION.
+CA_COMMIT_MV_FAIL=1 CA_SEED_BACKUPS=3 KEEP_CONFIG_BACKUPS=2 ca_run "$CFG_236" '{"DONATION":42}' 1
+assert_eq "a failed install leaves NO orphan snapshot behind (#438)" "$(grep -lF DONATION "$CA"/config-backups/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "the failed-install path still prunes to the retention cap (#438)" "$(ls "$CA"/config-backups/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "2"
 # supersede: two staged -> only the newest applies, older dropped, no double restart
 rm -rf "$CA"
 mkdir -p "$CA/state/spool"
@@ -8723,11 +8727,7 @@ assert_eq "the rollback re-apply after a fast-path failure uses the FULL path (#
 PB="$(mktemp -d "$SANDBOX/pb.XXXXXX")"
 mkdir -p "$PB/bk"
 for i in 1 2 3 4 5; do printf '{}' >"$PB/bk/config-2026010$i-000000.json"; done
-(
-    source "$SCRIPT"
-    set +e
-    KEEP_CONFIG_BACKUPS=2 _reown_config_backups "$PB/bk"
-)
+(source "$SCRIPT" && set +e && KEEP_CONFIG_BACKUPS=2 _sweep_config_backups "$PB/bk")
 assert_eq "backups pruned to KEEP_CONFIG_BACKUPS" "$(ls "$PB/bk"/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "2"
 # black-box dispatch: Linux-only guard + extra-arg rejection
 cb_out="$( (STUB_UNAME_S=Darwin RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply </dev/null) 2>&1 || true)"

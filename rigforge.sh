@@ -4422,7 +4422,7 @@ _control_commit() { # <staged.json> <backups-dir>
     stamp=$(date -u +%Y%m%d-%H%M%S)
     backup="$backups/config-$stamp.json"
     if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$backup"); then
-        rm -f "$cand"
+        rm -f "$cand" "$backup" # #438: a cp that died mid-copy leaves a TRUNCATED snapshot behind
         echo "rejected backup-failed"
         return 1
     fi
@@ -4434,19 +4434,19 @@ _control_commit() { # <staged.json> <backups-dir>
     # looks like: bash unsets it inside a command substitution unless `inherit_errexit` is on, and
     # this file sets no shopt, so `set -E` bought an ERR-trap log line here and never a guard.
     # rc 2, not 1: the change itself is valid, and the caller must not tell the operator otherwise.
+    # #438: both rc-2 arms drop the snapshot they just took. config.json was never replaced here, so
+    # it is a byte copy of the live config, and the terminal status already reports `backup: null`.
     if ! chmod 600 "$cand"; then
-        rm -f "$cand"
+        rm -f "$cand" "$backup"
         echo "failed commit-chmod-failed"
         return 2
     fi
-    # Durable: flush the candidate's data and the backup to disk, then atomically rename over
-    # config.json (a crash leaves either the old file or the whole new one, never a torn config).
+    # Durable: flush candidate + backup, then rename over config.json. Same directory, so a
+    # same-filesystem rename(2): a crash leaves the old file or the whole new one, never a torn
+    # config, and a failure here is "config.json untouched" — the caller skips the rollback.
     sync
-    # The candidate sits in config.json's own directory, so this is a same-filesystem rename(2): it
-    # either replaces the config wholly or leaves it untouched. That is what lets the caller report a
-    # failure here as "config.json untouched" and skip the rollback — nothing was applied.
     if ! mv -f "$cand" "$CONFIG_JSON"; then
-        rm -f "$cand"
+        rm -f "$cand" "$backup"
         echo "failed commit-install-failed"
         return 2
     fi
@@ -4457,14 +4457,12 @@ _control_commit() { # <staged.json> <backups-dir>
 
 # Prune config-backups/ to the retention cap and hand it to the operator so they can inspect or
 # restore old configs without sudo (recovery = `cp config-backups/config-<stamp>.json config.json`
-# then `sudo rigforge apply`). Override the cap with KEEP_CONFIG_BACKUPS.
-_reown_config_backups() { # <backups-dir>
+# then `sudo rigforge apply`). Override the cap with KEEP_CONFIG_BACKUPS. #438: named for BOTH jobs.
+_sweep_config_backups() { # <backups-dir>
     local dir="$1" keep="${KEEP_CONFIG_BACKUPS:-20}" old
     # shellcheck disable=SC2012  # names are controlled (config-YYYYmmdd-HHMMSS.json); ls -t orders by recency
     old=$(ls -t "$dir"/config-*.json 2>/dev/null | tail -n +"$((keep + 1))" || true)
-    if [ -n "$old" ]; then
-        printf '%s\n' "$old" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
-    fi
+    [ -z "$old" ] || printf '%s\n' "$old" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
     if [ "$(id -u)" -eq 0 ] && [ -n "${REAL_USER:-}" ]; then sudo chown -R "$REAL_USER" "$dir" 2>/dev/null || true; fi
 }
 
@@ -4655,9 +4653,11 @@ control_apply() {
     # that must not land. `rejected` is documented (docs/operations.md) as an invalid change with
     # nothing written, so reporting one here would send the operator to fix a change that was fine;
     # `failed` is the rig-side terminal ADR 0002 already gives this class on the upgrade path. The
-    # commit's rename is atomic within config.json's own directory, so the old config is still live
-    # and the miner was never touched: there is nothing to roll back and no backup to hand back.
+    # rename is atomic in config.json's own directory: the old config is live, the miner untouched,
+    # nothing to roll back and no backup to hand back.
+    # #438: the sweep runs here too — the only outcome that repeats without ever reaching success.
     if [ "$rc" -eq 2 ]; then
+        _sweep_config_backups "$backups" || true # never abort before the terminal status (#434)
         _control_status "$status" failed "$cid" "$change_keys" "$result" ""
         warn "control-apply: change $cid could not be committed (${result#failed }) — config.json untouched."
         return 0
@@ -4668,7 +4668,7 @@ control_apply() {
         return 0
     fi
     backup="${result#committed }"
-    _reown_config_backups "$backups"
+    _sweep_config_backups "$backups" || true # same guard; pre-existing exposure on this path
     # #254: attribute this (and the rollback re-apply) to the control path with its change_id — the
     # nested apply()'s _stamp_config_meta reads these via dynamic scope.
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
