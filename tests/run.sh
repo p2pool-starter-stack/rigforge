@@ -8037,7 +8037,7 @@ assert_eq "round-trip: replaying the feed's own pools preserves the password (#4
 # rejected BY NAME rather than committing the rig to the throwaway "x" parse_config defaults to.
 CFG_439='{ "pools": [{"url":"bare:3333"}], "DONATION": 1 }'
 rt439_pools="$(cfgblk "$CFG_439" | jq -c '{pools: .pools}')"
-assert_absent "round-trip: a pool storing no password is served with no marker (#439)" "$rt439_pools" "__secret__"
+assert_eq "round-trip: a pool storing no password is served with no marker (#439)" "$rt439_pools" '{"pools":[{"url":"bare:3333"}]}'
 assert_eq "round-trip: replaying a passwordless pool's own feed commits (#439)" "$(secret_case "$CFG_439" "$rt439_pools")" "committed|pass=ABSENT|fp=ABSENT|marker=0"
 assert_eq "commit: a fabricated marker on a pool that stores no password is rejected (#439)" "$(secret_case "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "rejected|pass=ABSENT|fp=ABSENT|marker=0"
 assert_contains "commit: that rejection names the unresolvable key (#439)" "$(secret_out "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "unresolvable-secret-marker:pass"
