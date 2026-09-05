@@ -612,7 +612,10 @@ How a change flows:
    outcome is recorded as `failed` and **nothing is applied** (#434). The rename lands in
    `config.json`'s own directory, so it either replaces the file wholly or leaves it alone: the
    old config stays live, the miner is never restarted, and there is nothing to roll back. The
-   change itself was valid, which is why this is not reported as `rejected`. Changing only
+   change itself was valid, which is why this is not reported as `rejected`. The snapshot taken a
+   moment earlier is discarded on this path (#438): `config.json` was never replaced, so that file
+   is a copy of the config still live and records no change to go back to, which is also why the
+   status reports `backup: null` for this outcome and not a path. Changing only
    `watchdog_interval_min` and/or `max_temp_c` takes a **restart-free fast path** (#381): neither key
    ever reaches XMRig's generated config or its unit, so only the watchdog timer is reconciled and
    XMRig itself is left running — round-trip in about a second instead of the ~60s a full restart
@@ -644,7 +647,10 @@ How a change flows:
    changes (#253/#254), on `/1/summary` (= `/2/summary`) once apply completes.
 
 **Recovery.** Every applied change leaves a timestamped snapshot in `config-backups/` (owner-readable,
-the newest `KEEP_CONFIG_BACKUPS`, default 20, are kept). To inspect or roll back by hand:
+the newest `KEEP_CONFIG_BACKUPS`, default 20, are kept). The retention sweep runs on every outcome
+that got as far as snapshotting, not on the applied ones alone (#438) — a rig stuck on a failing
+disk keeps a capped, operator-owned backup directory rather than an unbounded root-owned one. To
+inspect or roll back by hand:
 
 ```bash
 ls -t config-backups/                                   # newest first
