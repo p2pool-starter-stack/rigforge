@@ -73,8 +73,8 @@ _apt_prereqs() { # -> 0 once apt succeeds, 1 once the bound is spent (having nam
     return 1
 }
 # Sourced with E2E_LIB_ONLY=1 the file stops here, so the helpers above are testable outside Docker.
-# Only line 10's `set -uo pipefail` has run by now — everything else below this guard, the
-# DEBIAN_FRONTEND export included, would otherwise leak into whatever sourced us.
+# Above the guard: line 10's `set -uo pipefail`, PASS/FAIL=0 and the helper definitions — so source
+# this from a subshell if you keep a tally. The DEBIAN_FRONTEND export below deliberately sits under.
 [ -z "${E2E_LIB_ONLY:-}" ] || return 0
 
 export DEBIAN_FRONTEND=noninteractive
