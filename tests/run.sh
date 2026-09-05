@@ -8604,7 +8604,8 @@ ca_run() { # <config> <staged|""> <apply_ok 1|0>
     mkdir -p "$CA/state/spool"
     printf '%s\n' "$1" >"$CA/config.json"
     [ -n "$2" ] && printf '%s' "$2" >"$CA/state/spool/pending-abc123.json"
-    for ((i = 1; i <= ${CA_SEED_BACKUPS:-0}; i++)); do mkdir -p "$CA/config-backups" && printf '{}' >"$CA/config-backups/config-2026010$i-000000.json"; done # not $(seq 1 N): BSD seq counts DOWN on an empty range and planted 2 strays per run
+    for ((i = 1; i <= ${CA_SEED_BACKUPS:-0}; i++)); do mkdir -p "$CA/config-backups" && printf '{}' >"$CA/config-backups/config-2026010$i-000000.json"; done # NOT $(seq 1 N): BSD seq counts DOWN on an empty range
+    [ "${CA_SEED_BACKUPS:-0}" -eq 0 ] || touch -t 202601010000 "$CA/config-backups"/config-*.json                                                            # age them: on an mtime TIE `ls -t` orders by NAME and the orphan sorts oldest
     CA_APPLY_OK="$3" ca_exec
 }
 cst() { jq -r ".$1" "$CA/state/status.json" 2>/dev/null; }
@@ -8650,8 +8651,7 @@ assert_contains "a post-commit failure hands back the backup it could not read (
 # announcing a change the rig is not running, which is the worst shape available: no error anywhere
 # and a rig quietly on the old config. Not `applied`, and not `rejected` either (docs/operations.md
 # defines that as an INVALID change with nothing written, which would send the operator to fix a
-# change that was fine): `failed` is the rig-side ADR 0002 terminal for the class. The rename is
-# same-directory, so nothing was applied and apply() must never be reached on this path.
+# change that was fine): `failed` is the rig-side ADR 0002 terminal, and apply() never runs here.
 CA_COMMIT_MV_FAIL=1 ca_run "$CFG_236" '{"DONATION":42}' 1
 assert_eq "a commit that could not be installed still writes a terminal status (#434)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
 assert_eq "a config.json that never landed is NOT reported applied (#434)" "$(cst status)" "failed"

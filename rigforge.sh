@@ -4441,9 +4441,9 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "failed commit-chmod-failed"
         return 2
     fi
-    # Durable: flush the candidate's data and the backup to disk, then rename over config.json. Same
-    # directory, so it is a same-filesystem rename(2) that replaces the config wholly or leaves it
-    # untouched — which lets the caller report "config.json untouched" and skip the rollback.
+    # Durable: flush candidate + backup, then rename over config.json. Same directory, so a
+    # same-filesystem rename(2): a crash leaves the old file or the whole new one, never a torn
+    # config, and a failure here is "config.json untouched" — the caller skips the rollback.
     sync
     if ! mv -f "$cand" "$CONFIG_JSON"; then
         rm -f "$cand" "$backup"
@@ -4657,7 +4657,7 @@ control_apply() {
     # nothing to roll back and no backup to hand back.
     # #438: the sweep runs here too — the only outcome that repeats without ever reaching success.
     if [ "$rc" -eq 2 ]; then
-        _sweep_config_backups "$backups"
+        _sweep_config_backups "$backups" || true # never abort before the terminal status (#434)
         _control_status "$status" failed "$cid" "$change_keys" "$result" ""
         warn "control-apply: change $cid could not be committed (${result#failed }) — config.json untouched."
         return 0
@@ -4668,7 +4668,7 @@ control_apply() {
         return 0
     fi
     backup="${result#committed }"
-    _sweep_config_backups "$backups"
+    _sweep_config_backups "$backups" || true # same guard; pre-existing exposure on this path
     # #254: attribute this (and the rollback re-apply) to the control path with its change_id — the
     # nested apply()'s _stamp_config_meta reads these via dynamic scope.
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
