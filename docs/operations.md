@@ -607,7 +607,12 @@ How a change flows:
 2. A path-triggered root oneshot picks up the staged change, snapshots the current `config.json` to
    `config-backups/config-<UTC-stamp>.json`, merges only the allowlisted keys, and re-validates the
    result with the same rules `apply` uses. An invalid change is rejected and **nothing is written**.
-3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied. Changing only
+3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied. If that
+   write cannot be completed — the mode cannot be pinned to `0600`, or the rename fails — the
+   outcome is recorded as `failed` and **nothing is applied** (#434). The rename lands in
+   `config.json`'s own directory, so it either replaces the file wholly or leaves it alone: the
+   old config stays live, the miner is never restarted, and there is nothing to roll back. The
+   change itself was valid, which is why this is not reported as `rejected`. Changing only
    `watchdog_interval_min` and/or `max_temp_c` takes a **restart-free fast path** (#381): neither key
    ever reaches XMRig's generated config or its unit, so only the watchdog timer is reconciled and
    XMRig itself is left running — round-trip in about a second instead of the ~60s a full restart
