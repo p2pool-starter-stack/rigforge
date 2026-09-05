@@ -8604,7 +8604,7 @@ ca_run() { # <config> <staged|""> <apply_ok 1|0>
     mkdir -p "$CA/state/spool"
     printf '%s\n' "$1" >"$CA/config.json"
     [ -n "$2" ] && printf '%s' "$2" >"$CA/state/spool/pending-abc123.json"
-    for i in $(seq 1 "${CA_SEED_BACKUPS:-0}"); do mkdir -p "$CA/config-backups" && printf '{}' >"$CA/config-backups/config-2026010$i-000000.json"; done
+    for ((i = 1; i <= ${CA_SEED_BACKUPS:-0}; i++)); do mkdir -p "$CA/config-backups" && printf '{}' >"$CA/config-backups/config-2026010$i-000000.json"; done # not $(seq 1 N): BSD seq counts DOWN on an empty range and planted 2 strays per run
     CA_APPLY_OK="$3" ca_exec
 }
 cst() { jq -r ".$1" "$CA/state/status.json" 2>/dev/null; }
