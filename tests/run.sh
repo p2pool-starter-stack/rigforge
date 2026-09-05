@@ -7784,6 +7784,20 @@ assert_absent "config: no fingerprint anywhere in the served block (#253)" "$blk
 blkns="$(cfgblk '{ "pools":[{"url":"h:3333","user":"w.rig"}] }')"
 assert_eq "config: unset pass has no marker — nothing to keep (#415)" "$(printf '%s' "$blkns" | jq -c '.pools[0] | has("pass")')" "false"
 assert_eq "config: unset tls-fingerprint has no marker (#415)" "$(printf '%s' "$blkns" | jq -c '.pools[0] | has("tls-fingerprint")')" "false"
+# #429: the canonical view serves a pool AS STORED, inventing neither `user` nor `pass` — the property
+# #415's secret round-trip rests on, carried until now by a comment in _control_commit. parse_config
+# normalizes on the way to XMRig (a missing `pass` becomes the literal "x"), so pointing this view at
+# POOLS_JSON advertises a password on every pool that stores none: the mask makes the invented "x" a
+# sentinel, it comes back on the next pools edit, `stored` has nothing to resolve it against, and the
+# edit is rejected `unresolvable-secret-marker` — naming a secret the operator never set. Assert the
+# KEY SET: a later `// ""` default would satisfy an equality row while reintroducing the defect.
+blkbare="$(cfgblk '{ "pools":[{"url":"bare:3333"},{"url":"pw:3333","user":"w.rig","pass":"KEEPME"}] }')"
+assert_eq "config: a pool stored with only a url is served with only a url (#429)" "$(printf '%s' "$blkbare" | jq -r '.pools[0] | keys | join(",")')" "url"
+# The control that makes the row above mean anything: the SECOND pool of the SAME served block does
+# store a password, and it comes back as the sentinel. Without it, "no pass key" cannot be told apart
+# from a fixture that never reached the mask at all.
+assert_eq "config: control — a stored pass in the same block still masks to the sentinel (#429)" "$(printf '%s' "$blkbare" | jq -c '.pools[1].pass // "ABSENT"')" '{"__secret__":true}'
+assert_absent "config: control — the stored password itself is not in the block (#429)" "$blkbare" "KEEPME"
 assert_eq "config: pool url + user preserved (#253)" "$(printf '%s' "$blk" | jq -r '.pools[0].url + " " + .pools[0].user')" "stack-host:3333 wallet.rig"
 assert_eq "config: autotune canonical perf->performance (#253)" "$(printf '%s' "$blk" | jq -r '.autotune')" "performance"
 assert_eq "config: watchdog canonical on->enabled (#253)" "$(printf '%s' "$blk" | jq -r '.watchdog')" "enabled"

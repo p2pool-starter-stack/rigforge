@@ -4375,6 +4375,8 @@ _control_commit() { # <staged.json> <backups-dir>
     # unresolvable-secret-marker below — the exact opposite of what this exists to allow. The
     # `user` half of the pair is NOT the hazard: POOLS_JSON leaves a blank `user` as "" (the rig
     # name is filled in generate_xmrig_config, not here), and pkey reads a missing key and "" alike.
+    # #429: that is a GUARD now, not only this paragraph — tests/run.sh pins that a pool stored with
+    # only a url is served with only a url, with a stored-pass pool in the same block as the control.
     # A sentinel that resolves to nothing is REJECTED rather than dropped: it asks to keep a secret
     # that is not there, and the whole point here is that no credential change happens quietly. An
     # explicit value is always taken at face value, so `""` still hits #408's rejection and a real
