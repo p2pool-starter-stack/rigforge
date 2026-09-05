@@ -56,8 +56,15 @@ commit_all() { # <repo> <msg>
 }
 
 # Run the gate in <repo>; sets RC and OUT.
+#
+# `env -u FILE_BUDGET_REQUIRE_BASE` is load-bearing, not tidiness. CI sets that variable at JOB level,
+# so it is exported into the self-test too, and it leaked into these synthetic repos: the "no base
+# ref" fixture below deliberately has no base ref, so under an inherited =1 it refused and the whole
+# self-test went red in CI while passing locally. A fixture whose verdict depends on the caller's
+# environment is not a fixture. Every case here states its own condition — the one case that WANTS
+# strict mode sets it explicitly on its own command line.
 run_gate_in() { # <repo>
-    OUT=$(cd "$1" && bash scripts/lint-file-budget.sh 2>&1) && RC=0 || RC=$?
+    OUT=$(cd "$1" && env -u FILE_BUDGET_REQUIRE_BASE bash scripts/lint-file-budget.sh 2>&1) && RC=0 || RC=$?
 }
 
 expect_pass() { # <desc> <repo>
@@ -201,7 +208,7 @@ if OUT=$(cd "$R" && PATH="$TMP/nogit:$PATH" bash -c '
     mkdir -p "'"$TMP"'/nogit"
     printf "#!/usr/bin/env bash\nexit 0\n" > "'"$TMP"'/nogit/git"
     chmod +x "'"$TMP"'/nogit/git"
-    PATH="'"$TMP"'/nogit:$PATH" bash scripts/lint-file-budget.sh' 2>&1); then
+    PATH="'"$TMP"'/nogit:$PATH" env -u FILE_BUDGET_REQUIRE_BASE bash scripts/lint-file-budget.sh' 2>&1); then
     fail "an empty git-ls-files enumeration did not fail loudly"
 elif [[ "$OUT" == *"enumerated zero tracked files"* ]]; then
     pass "an empty git-ls-files enumeration fails loudly instead of reading as clean"
