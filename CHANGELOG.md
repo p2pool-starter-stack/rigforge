@@ -9,6 +9,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Added
 
+- **A file-budget ratchet stops the big files getting bigger (#407).** `make lint` (and CI) now
+  refuses a source file that grows past the ceiling recorded for it in `docs/dev/file-budget.tsv`,
+  and refuses a new file over 800 lines outright. Ceilings only ever go down, checked against
+  `develop`, and a row's first appearance has to record the file's real count rather than reserve
+  headroom under it. Four files are budgeted today: `tests/run.sh`, `rigforge.sh`,
+  `tests/e2e-real.sh` and `tests/e2e-pithead.sh`. Nothing has to be split to land this — the point
+  is that the next thousand lines cannot arrive without a decision. Prose, JSON and binaries are
+  exempt, each reason enumerated in the script. See CONTRIBUTING.md for what to do when the ratchet
+  leaves no slack.
+
 - **A pool can be dialled through a SOCKS5 proxy (#400).** XMRig has always supported a per-pool
   `socks5`, but RigForge rebuilt each pool from a fixed key set, so the key was dropped and the
   operator got a warning that it was ignored — leaving a rig no way to reach a stratum published as

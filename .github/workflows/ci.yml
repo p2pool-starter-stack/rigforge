@@ -65,10 +65,18 @@ jobs:
       SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
       SHFMT_VERSION: "3.13.1"
       SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
+      # The file-budget gate's "ceilings only go down" half needs origin/develop to diff the budget
+      # against. Without this it would SKIP that half and still exit 0 — a green that proves less
+      # than it looks like it does — so here it is fatal instead (#407).
+      FILE_BUDGET_REQUIRE_BASE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no pushes from CI; don't leave the token in .git/config (zizmor: artipacked)
+          # Full history so origin/develop resolves for the file-budget gate above; the default
+          # shallow fetch gives the PR ref only. Paired with FILE_BUDGET_REQUIRE_BASE, so if this
+          # line is ever dropped the job REDS instead of quietly running half the gate.
+          fetch-depth: 0
       # Install PINNED, checksum-verified shellcheck + shfmt instead of the runner's preinstalled
       # builds, so lint/format results are reproducible and don't drift with the runner image (#6).
       # Downloaded straight from the upstream releases — no `apt-get update`, avoiding the mirror
