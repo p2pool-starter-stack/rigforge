@@ -19,6 +19,20 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **A control change whose install failed is no longer recorded as `applied` (#434).** The tail of
+  `_control_commit` is what actually puts the new `config.json` in place — a `chmod 600` on the
+  candidate, then an atomic rename — and neither step was checked. If either failed the function
+  still echoed `committed <backup>` and returned 0, so `control_apply` believed it and wrote a
+  terminal `applied`: `GET /status` and the published `changes/<cid>.json` both announced a change
+  the rig was not running, with no error anywhere and the miner restarted for a config that had not
+  moved. Both steps are now guarded and the outcome is recorded as `failed` with a reason naming the
+  step that lost the change. Nothing is applied on that path — the rename is same-directory, so the
+  old config stays live and there is nothing to roll back — and it is deliberately not reported as
+  `rejected`, which this project documents as an invalid change and would send the operator to fix a
+  change that was fine. The script's `set -E` was never a backstop here: bash unsets `errexit`
+  inside a command substitution unless `inherit_errexit` is set, and this script sets no `shopt`, so
+  the `ERR` trap bought a log line and never a guard. Pre-existing, not a regression.
+
 - **A rejected control change is now recorded as `rejected` instead of killing the applier (#426).**
   `control_apply` captured the commit result with a bare assignment, whose exit status *is* the
   command substitution's — and a bare assignment is not a tested context, so under the script's

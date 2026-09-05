@@ -8070,6 +8070,65 @@ bkf_out="$( (
 assert_contains "commit: unwritable backup dir -> rejected" "$bkf_out" "rejected backup-failed"
 assert_eq "commit: backup failure leaves config.json untouched (donation 1)" "$(jq -r .DONATION "$bkfail/config.json")" "1"
 
+# #434: the tail that actually INSTALLS the new config — `chmod 600` on the candidate, then the
+# atomic rename over config.json — was unguarded, so a failure of either still echoed
+# "committed <backup>" and returned 0. Each step is pinned separately, because they are separate
+# branches with separate reasons and one combined guard could not say which step lost the change.
+# The two commands are stubbed as shell functions rather than by making the filesystem refuse: root
+# (the kcov coverage container) ignores a mode-based refusal, and putting a directory where
+# config.json goes fails the earlier `cp` to the backup instead, never reaching this tail at all.
+mvfail="$SANDBOX/mvf"
+cmt_tail() { # <sabotage: none|mv|chmod> -> "<echoed line>|rc=<rc>|"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$mvfail/config.json"
+        SCRIPT_DIR="$mvfail"
+        # Both stubs key on the candidate's `.control.` infix, so neither can fire on anything but
+        # the install itself, and the un-sabotaged command is still run for every other path.
+        if [ "$1" = mv ]; then
+            mv() {
+                case "$*" in *.control.*) return 1 ;; esac
+                command mv "$@"
+            }
+        elif [ "$1" = chmod ]; then
+            chmod() {
+                case "$*" in *.control.*) return 1 ;; esac
+                command chmod "$@"
+            }
+        fi
+        set +e
+        PATH="$STUBS:$PATH" _control_commit "$mvfail/s.json" "$mvfail/backups"
+        echo "rc=$?"
+    ) 2>/dev/null | tr '\n' '|'
+}
+cmt_reset() {
+    rm -rf "$mvfail"
+    mkdir -p "$mvfail"
+    printf '%s\n' "$CFG_236" >"$mvfail/config.json"
+    printf '%s' '{"DONATION":4}' >"$mvfail/s.json"
+}
+# The positive control FIRST. Without it a green "did not commit" row proves only that something in
+# this fixture is broken, not that a guard fired — the sabotage argument is the ONLY thing that
+# differs between the three cases below, so the un-sabotaged one has to land the change.
+cmt_reset
+assert_contains "commit: the install harness commits when nothing is sabotaged (#434)" "$(cmt_tail none)" "committed "
+assert_eq "commit: the un-sabotaged control really landed the change (donation 4) (#434)" "$(jq -r .DONATION "$mvfail/config.json")" "4"
+cmt_reset
+mvf_out="$(cmt_tail mv)"
+assert_contains "commit: a failed install is reported failed, not committed (#434)" "$mvf_out" "failed commit-install-failed"
+assert_contains "commit: a failed install returns 2, not 0 (#434)" "$mvf_out" "rc=2"
+assert_eq "commit: a failed install leaves the OLD config live (donation 1) (#434)" "$(jq -r .DONATION "$mvfail/config.json")" "1"
+assert_eq "commit: a failed install removes its candidate file (#434)" "$(ls "$mvfail"/config.json.control.* 2>/dev/null | wc -l | tr -d ' ')" "0"
+# A candidate that could not be chmod-ed must stop BEFORE the rename: 0600 is the contract for a file
+# holding ACCESS_TOKEN and pool credentials, and mv would carry the candidate's mode onto the live
+# config. This is a separate branch from the one above, with its own reason.
+cmt_reset
+cmf_out="$(cmt_tail chmod)"
+assert_contains "commit: a candidate that could not be chmod-ed is not installed (#434)" "$cmf_out" "failed commit-chmod-failed"
+assert_contains "commit: a failed chmod returns 2, not 0 (#434)" "$cmf_out" "rc=2"
+assert_eq "commit: a failed chmod leaves the OLD config live (donation 1) (#434)" "$(jq -r .DONATION "$mvfail/config.json")" "1"
+assert_eq "commit: a failed chmod removes its candidate file (#434)" "$(ls "$mvfail"/config.json.control.* 2>/dev/null | wc -l | tr -d ' ')" "0"
+
 echo "== unit: _control_fast_path_eligible — closed allowlist classification (#381) =="
 fpe() { # <keys-csv> -> eligible|not
     (
@@ -8506,6 +8565,17 @@ ca_exec() {
                 for f in "$1"/config-*.json; do rm -f "$f" && mkdir -p "$f"; done
             }
         fi
+        # #434: sabotage ONLY the rename that installs config.json, keyed on the candidate's
+        # `.control.` infix, so every other rename still lands — _control_status writes its terminal
+        # record through `mv` too, and a blanket stub would delete the very status this case reads.
+        # Installed unconditionally and gated by the env var, which makes every other ca_run in this
+        # section the control that the wrapper is transparent when it is off.
+        mv() {
+            if [ "${CA_COMMIT_MV_FAIL:-0}" = 1 ]; then
+                case "$*" in *.control.*) return 1 ;; esac
+            fi
+            command mv "$@"
+        }
         OS_TYPE=Linux
         SCRIPT_DIR="$CA"
         CONFIG_JSON="$CA/config.json"
@@ -8556,6 +8626,22 @@ CA_APPLY_OK=0 CA_BACKUP_UNREADABLE=1 ca_run "$CFG_236" '{"DONATION":42}' 0
 assert_eq "unreadable rollback backup still writes a terminal status (#276)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
 assert_eq "unreadable rollback backup -> status failed (#276)" "$(cst status)" "failed"
 assert_contains "unreadable rollback backup reason names the cause (#276)" "$(cst reason)" "rollback backup unreadable"
+# #434: the operator-visible half of the same defect. With the commit tail unguarded, a config.json
+# that never landed was still recorded `applied` — /status and the published changes/<cid>.json both
+# announcing a change the rig is not running, which is the worst shape available: no error anywhere
+# and a rig quietly on the old config. The terminal status must not be `applied`; it must also not be
+# `rejected`, which docs/operations.md defines as an INVALID change with nothing written, and which
+# would send the operator to fix a change that was fine. `failed` is the rig-side terminal ADR 0002
+# already gives the upgrade path for this class. The rename is same-directory, so it either replaces
+# the config wholly or leaves it untouched: nothing was applied and there is nothing to roll back,
+# which is why apply() must never be reached on this path.
+CA_COMMIT_MV_FAIL=1 ca_run "$CFG_236" '{"DONATION":42}' 1
+assert_eq "a commit that could not be installed still writes a terminal status (#434)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
+assert_eq "a config.json that never landed is NOT reported applied (#434)" "$(cst status)" "failed"
+assert_contains "the terminal status names the install as the cause (#434)" "$(cst reason)" "commit-install-failed"
+assert_eq "a failed install leaves the old config live (donation 1) (#434)" "$(jq -r .DONATION "$CA/config.json")" "1"
+assert_eq "a failed install still drains the spool (#434)" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "a failed install never restarts the miner (#434)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "not-called"
 # supersede: two staged -> only the newest applies, older dropped, no double restart
 rm -rf "$CA"
 mkdir -p "$CA/state/spool"

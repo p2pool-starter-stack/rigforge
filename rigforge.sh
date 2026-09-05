@@ -4316,7 +4316,9 @@ EOF
 # testable without systemd or a live miner. Only allowlisted keys are applied; the merged result
 # must pass parse_config BEFORE anything touches disk, so an invalid change never lands; only then
 # is the old config snapshotted to config-backups/ (history + recovery) and the new one written
-# atomically + fsynced. Echoes "committed <backup>" or "rejected <reason>"; returns 0 / 1.
+# atomically + fsynced. Echoes "committed <backup>" (rc 0), "rejected <reason>" for a change that
+# must not land (rc 1), or "failed <reason>" for a VALID change whose install did not (rc 2, #434) —
+# the caller turns those three into the applied / rejected / failed terminals a consumer polls for.
 _control_commit() { # <staged.json> <backups-dir>
     local staged="$1" backups="$2"
     local CONTROL_WRITABLE_KEYS="pools DONATION autotune watchdog watchdog_interval_min max_temp_c"
@@ -4424,11 +4426,28 @@ _control_commit() { # <staged.json> <backups-dir>
     fi
     # config.json is secret-bearing (ACCESS_TOKEN, pool creds) and 0600 by contract; mv inherits the
     # candidate's mode, so pin it to 0600 BEFORE the rename or the live config goes world-readable.
-    chmod 600 "$cand"
+    # #434: this tail is what INSTALLS the change, and both of its steps are now checked. Unguarded,
+    # a failure here still echoed "committed <backup>" and returned 0, and the caller recorded a
+    # terminal `applied` for a config.json that never changed. Errexit was never the backstop it
+    # looks like: bash unsets it inside a command substitution unless `inherit_errexit` is on, and
+    # this file sets no shopt, so `set -E` bought an ERR-trap log line here and never a guard.
+    # rc 2, not 1: the change itself is valid, and the caller must not tell the operator otherwise.
+    if ! chmod 600 "$cand"; then
+        rm -f "$cand"
+        echo "failed commit-chmod-failed"
+        return 2
+    fi
     # Durable: flush the candidate's data and the backup to disk, then atomically rename over
     # config.json (a crash leaves either the old file or the whole new one, never a torn config).
     sync
-    mv -f "$cand" "$CONFIG_JSON"
+    # The candidate sits in config.json's own directory, so this is a same-filesystem rename(2): it
+    # either replaces the config wholly or leaves it untouched. That is what lets the caller report a
+    # failure here as "config.json untouched" and skip the rollback — nothing was applied.
+    if ! mv -f "$cand" "$CONFIG_JSON"; then
+        rm -f "$cand"
+        echo "failed commit-install-failed"
+        return 2
+    fi
     sync
     echo "committed $backup"
     return 0
@@ -4630,6 +4649,17 @@ control_apply() {
     rc=0
     result=$(_control_commit "$newest" "$backups" || exit $?) || rc=$?
     rm -f "$newest"
+    # #434: rc 2 is a valid change whose INSTALL failed, which is not the same outcome as a change
+    # that must not land. `rejected` is documented (docs/operations.md) as an invalid change with
+    # nothing written, so reporting one here would send the operator to fix a change that was fine;
+    # `failed` is the rig-side terminal ADR 0002 already gives this class on the upgrade path. The
+    # commit's rename is atomic within config.json's own directory, so the old config is still live
+    # and the miner was never touched: there is nothing to roll back and no backup to hand back.
+    if [ "$rc" -eq 2 ]; then
+        _control_status "$status" failed "$cid" "$change_keys" "$result" ""
+        warn "control-apply: change $cid could not be committed (${result#failed }) — config.json untouched."
+        return 0
+    fi
     if [ "$rc" -ne 0 ]; then
         _control_status "$status" rejected "$cid" "$change_keys" "$result" ""
         warn "control-apply: change $cid rejected (${result#rejected }) — config.json untouched."
