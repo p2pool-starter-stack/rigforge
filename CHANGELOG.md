@@ -29,6 +29,20 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **A failed control-apply no longer leaks a root-owned backup, or stops pruning the ones it has
+  (#438).** `config-backups/` was swept — capped to `KEEP_CONFIG_BACKUPS` and handed back to the
+  operator — only on the branch where a change actually applied. The failed-install path added by
+  #434 reached neither, so the snapshot it had taken stayed root-owned and nothing pruned the
+  directory on that run at all. Reaching that path takes a persistent fault (a `chmod` or a rename
+  the filesystem refuses), so every retry left another orphan on a rig that was already in trouble,
+  and the terminal record said `backup: null` while the file sat on disk, referenced by nothing.
+  The sweep now runs on that path too, and the snapshot itself is dropped there: the config it
+  copied was never replaced, so the file duplicates the config still live and records nothing to go
+  back to. Dropping it matters more than the sweep does — kept, an orphan is the newest file in the
+  directory, so the retention cap would have evicted a real restore point in its favour on every
+  failed retry. A snapshot left half-written by a failing `cp` is now cleaned up on the rejection
+  path for the same reason.
+
 - **A control change whose install failed is no longer recorded as `applied` (#434).** The tail of
   `_control_commit` is what actually puts the new `config.json` in place — a `chmod 600` on the
   candidate, then an atomic rename — and neither step was checked. If either failed the function

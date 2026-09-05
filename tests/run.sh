@@ -8574,7 +8574,7 @@ ca_exec() {
         # backup FILE for a directory of the same name: a plain `cp` (no -r) always refuses to read a
         # directory, unlike chmod 000 which root (e.g. the kcov coverage container) simply ignores.
         if [ "${CA_BACKUP_UNREADABLE:-0}" = 1 ]; then
-            _reown_config_backups() {
+            _sweep_config_backups() {
                 local f
                 for f in "$1"/config-*.json; do rm -f "$f" && mkdir -p "$f"; done
             }
@@ -8604,6 +8604,8 @@ ca_run() { # <config> <staged|""> <apply_ok 1|0>
     mkdir -p "$CA/state/spool"
     printf '%s\n' "$1" >"$CA/config.json"
     [ -n "$2" ] && printf '%s' "$2" >"$CA/state/spool/pending-abc123.json"
+    for ((i = 1; i <= ${CA_SEED_BACKUPS:-0}; i++)); do mkdir -p "$CA/config-backups" && printf '{}' >"$CA/config-backups/config-2026010$i-000000.json"; done # NOT $(seq 1 N): BSD seq counts DOWN on an empty range
+    [ "${CA_SEED_BACKUPS:-0}" -eq 0 ] || touch -t 202601010000 "$CA/config-backups"/config-*.json                                                            # age them: on an mtime TIE `ls -t` orders by NAME and the orphan sorts oldest
     CA_APPLY_OK="$3" ca_exec
 }
 cst() { jq -r ".$1" "$CA/state/status.json" 2>/dev/null; }
@@ -8647,12 +8649,9 @@ assert_contains "a post-commit failure hands back the backup it could not read (
 # #434: the operator-visible half of the same defect. With the commit tail unguarded, a config.json
 # that never landed was still recorded `applied` — /status and the published changes/<cid>.json both
 # announcing a change the rig is not running, which is the worst shape available: no error anywhere
-# and a rig quietly on the old config. The terminal status must not be `applied`; it must also not be
-# `rejected`, which docs/operations.md defines as an INVALID change with nothing written, and which
-# would send the operator to fix a change that was fine. `failed` is the rig-side terminal ADR 0002
-# already gives the upgrade path for this class. The rename is same-directory, so it either replaces
-# the config wholly or leaves it untouched: nothing was applied and there is nothing to roll back,
-# which is why apply() must never be reached on this path.
+# and a rig quietly on the old config. Not `applied`, and not `rejected` either (docs/operations.md
+# defines that as an INVALID change with nothing written, which would send the operator to fix a
+# change that was fine): `failed` is the rig-side ADR 0002 terminal, and apply() never runs here.
 CA_COMMIT_MV_FAIL=1 ca_run "$CFG_236" '{"DONATION":42}' 1
 assert_eq "a commit that could not be installed still writes a terminal status (#434)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
 assert_eq "a config.json that never landed is NOT reported applied (#434)" "$(cst status)" "failed"
@@ -8663,6 +8662,11 @@ assert_eq "a commit that never landed records NO backup (#434)" "$(cst backup)" 
 assert_eq "a failed install leaves the old config live (donation 1) (#434)" "$(jq -r .DONATION "$CA/config.json")" "1"
 assert_eq "a failed install still drains the spool (#434)" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "a failed install never restarts the miner (#434)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "not-called"
+# #438: same path, one layer down — its snapshot copies a config that was never replaced, and the
+# sweep ran on the success branch alone. Seeded 3 under KEEP=2: only an orphan can hold DONATION.
+CA_COMMIT_MV_FAIL=1 CA_SEED_BACKUPS=3 KEEP_CONFIG_BACKUPS=2 ca_run "$CFG_236" '{"DONATION":42}' 1
+assert_eq "a failed install leaves NO orphan snapshot behind (#438)" "$(grep -lF DONATION "$CA"/config-backups/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "the failed-install path still prunes to the retention cap (#438)" "$(ls "$CA"/config-backups/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "2"
 # supersede: two staged -> only the newest applies, older dropped, no double restart
 rm -rf "$CA"
 mkdir -p "$CA/state/spool"
@@ -8728,11 +8732,7 @@ assert_eq "the rollback re-apply after a fast-path failure uses the FULL path (#
 PB="$(mktemp -d "$SANDBOX/pb.XXXXXX")"
 mkdir -p "$PB/bk"
 for i in 1 2 3 4 5; do printf '{}' >"$PB/bk/config-2026010$i-000000.json"; done
-(
-    source "$SCRIPT"
-    set +e
-    KEEP_CONFIG_BACKUPS=2 _reown_config_backups "$PB/bk"
-)
+(source "$SCRIPT" && set +e && KEEP_CONFIG_BACKUPS=2 _sweep_config_backups "$PB/bk")
 assert_eq "backups pruned to KEEP_CONFIG_BACKUPS" "$(ls "$PB/bk"/config-*.json 2>/dev/null | wc -l | tr -d ' ')" "2"
 # black-box dispatch: Linux-only guard + extra-arg rejection
 cb_out="$( (STUB_UNAME_S=Darwin RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-apply </dev/null) 2>&1 || true)"

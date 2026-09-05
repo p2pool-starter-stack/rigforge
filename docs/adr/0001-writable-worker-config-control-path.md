@@ -22,7 +22,8 @@ The maintainer's sign-off resolved the open questions and added two hard require
   is rejected, never committed.
 - **Timestamped backups (new requirement):** every applied change first snapshots the current
   `config.json` to `config-backups/config-<UTC-stamp>.json` (owner-readable, pruned to
-  `KEEP_CONFIG_BACKUPS`, default 20), so the operator can inspect old configs or recover by copying
+  `KEEP_CONFIG_BACKUPS`, default 20 — pruned on every outcome that snapshots, #438), so the operator
+  can inspect old configs or recover by copying
   one back and running `apply`.
 
 ## Context
