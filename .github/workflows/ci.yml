@@ -84,6 +84,10 @@ jobs:
       - name: Install pinned ShellCheck
         run: |
           set -euo pipefail
+          # Unpack in RUNNER_TEMP, not the workspace: the file-budget gate measures untracked,
+          # non-gitignored files too (that is how a new file is caught before `git add`), and an
+          # extracted toolchain in the repo root reads as a 674-line source file it must budget.
+          cd "$RUNNER_TEMP"
           tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
           curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${tarball}" -o "$tarball"
           echo "${SHELLCHECK_SHA256}  ${tarball}" | sha256sum -c -
@@ -93,6 +97,7 @@ jobs:
       - name: Install pinned shfmt
         run: |
           set -euo pipefail
+          cd "$RUNNER_TEMP" # same reason as ShellCheck above — keep the download out of the workspace
           curl -fsSL "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64" -o shfmt
           echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -
           sudo install shfmt /usr/local/bin/shfmt
