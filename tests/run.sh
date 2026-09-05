@@ -7987,6 +7987,13 @@ secret_case() { # <config-json> <staged-json> -> "<verb>|pass=<p>|fp=kept|other|
         "$(jq -r --arg f "$FP415" 'if (.pools[0]."tls-fingerprint" // "") == $f then "kept" elif (.pools[0] | has("tls-fingerprint")) then "other" else "ABSENT" end' "$d/config.json")" \
         "$(jq -r '[.. | objects | select(has("__secret__"))] | length' "$d/config.json")"
 }
+secret_out() { # <config-json> <staged-json> -> the raw _control_commit output (verb + reason)
+    local d
+    d=$(mktemp -d "$SANDBOX/so.XXXXXX")
+    printf '%s\n' "$1" >"$d/config.json"
+    printf '%s' "$2" >"$d/staged.json"
+    (source "$SCRIPT" && set +e && CONFIG_JSON="$d/config.json" SCRIPT_DIR="$d" PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups") 2>/dev/null
+}
 assert_eq "commit: pass OMITTED keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: pass SENTINEL keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":{"__secret__":true}}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: fingerprint SENTINEL keeps the stored pin (#415)" "$(secret_case "$CFG_415" "{\"pools\":[{\"url\":\"h:3333\",\"user\":\"w.rig\",\"tls\":true,\"tls-fingerprint\":{\"__secret__\":true}}]}")" "committed|pass=STOREDPW|fp=kept|marker=0"
@@ -8003,16 +8010,7 @@ assert_eq "commit: pass SENTINEL keeps the password of a pool with no user (#415
 assert_eq "commit: sentinel for an unknown pool rejected, config untouched (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: sentinel rejected when the user changed (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"OTHERWALLET","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: fingerprint sentinel on a pool with no stored pin rejected (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h2:3333","tls":true,"tls-fingerprint":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
-sc_unres="$( (
-    source "$SCRIPT"
-    d=$(mktemp -d "$SANDBOX/scu.XXXXXX")
-    printf '%s\n' "$CFG_415" >"$d/config.json"
-    printf '%s' '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}' >"$d/staged.json"
-    CONFIG_JSON="$d/config.json"
-    SCRIPT_DIR="$d"
-    set +e
-    PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
-) 2>/dev/null)"
+sc_unres="$(secret_out "$CFG_415" '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}')"
 assert_contains "commit: the rejection names the unresolvable key (#415)" "$sc_unres" "unresolvable-secret-marker:pass"
 # The check is a post-condition on the merged pools, not a scan of the two keys the resolver knows,
 # so a marker in ANY pool key is refused rather than written into config.json under a confusing
@@ -8028,19 +8026,21 @@ assert_eq "commit: an explicit empty pass is still rejected, not treated as keep
 # `pools` straight back as a control change (the only thing a consumer of that feed CAN send), and
 # require the stored password to come out byte-identical. This is the round-trip that used to leave
 # the rig mining as "x" while reporting success.
-rt415="$(mktemp -d "$SANDBOX/rt415.XXXXXX")"
-printf '%s\n' "$CFG_415" >"$rt415/config.json"
-rt_pools="$( (
-    source "$SCRIPT"
-    CONFIG_JSON="$rt415/config.json"
-    SCRIPT_DIR="$rt415"
-    set +e
-    PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
-    _api_config_json
-) 2>/dev/null | jq -c '{pools: .pools}')"
+rt_pools="$(cfgblk "$CFG_415" | jq -c '{pools: .pools}')"
 assert_contains "round-trip: the feed's pools carry the sentinel, not the value (#415)" "$rt_pools" '"__secret__":true'
 assert_absent "round-trip: the feed's pools carry no password (#415)" "$rt_pools" "STOREDPW"
 assert_eq "round-trip: replaying the feed's own pools preserves the password (#415)" "$(secret_case "$CFG_415" "$rt_pools")" "committed|pass=STOREDPW|fp=kept|marker=0"
+# #439: the pool shape the appliance rig actually ships — one that stores NO password. Every row
+# above replays a sentinel referring to a password that exists; none drives the other direction,
+# where a pool with nothing stored is advertised as holding a secret. Both halves are pinned here:
+# the feed serves no marker and its own pools replay cleanly, and a marker the feed never emitted is
+# rejected BY NAME rather than committing the rig to the throwaway "x" parse_config defaults to.
+CFG_439='{ "pools": [{"url":"bare:3333"}], "DONATION": 1 }'
+rt439_pools="$(cfgblk "$CFG_439" | jq -c '{pools: .pools}')"
+assert_absent "round-trip: a pool storing no password is served with no marker (#439)" "$rt439_pools" "__secret__"
+assert_eq "round-trip: replaying a passwordless pool's own feed commits (#439)" "$(secret_case "$CFG_439" "$rt439_pools")" "committed|pass=ABSENT|fp=ABSENT|marker=0"
+assert_eq "commit: a fabricated marker on a pool that stores no password is rejected (#439)" "$(secret_case "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "rejected|pass=ABSENT|fp=ABSENT|marker=0"
+assert_contains "commit: that rejection names the unresolvable key (#439)" "$(secret_out "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "unresolvable-secret-marker:pass"
 # The stated tie-break: on a duplicate (url, user) pair the FIRST-declared stored pool wins — the
 # same rule Pithead uses restoring its per-worker token sentinels. Asserted rather than assumed,
 # since it is the only place the lookup can silently pick the wrong credential.
