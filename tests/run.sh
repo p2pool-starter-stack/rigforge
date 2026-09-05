@@ -10,9 +10,9 @@
 # all faked in a stub directory placed first on PATH. The fakes read STUB_* env vars, so one test run
 # can exercise the generic-Linux (incl. EPYC / Ryzen X3D inputs) and macOS code paths back to back.
 #
-# Suites run top to bottom. `grep -n 'echo "== ' tests/run.sh` is the index: 191 sections, against
-#   which a hand-kept list here offered 29 topic phrases and named none of the control-path,
-#   contract-guard or e2e-harness groups. Do not re-add one — it goes stale the next test you add.
+# Suites run top to bottom; `grep -n 'echo "== ' tests/run.sh` is the index. A hand-kept list here
+#   went stale — it offered 29 topic phrases and named none of the control-path, contract-guard or
+#   e2e-harness groups. Do not re-add one; it goes stale the next test you add.
 #
 # We source the script-under-test from a dynamic path, and set many globals that the sourced rigforge
 # functions consume (shellcheck can't see across the source boundary). Disable the two warnings that
@@ -9387,6 +9387,8 @@ fi
 
 echo "== unit: e2e in-container apt prereqs — the abort names a cause only where apt named one (#442) =="
 assert_eq "e2e: a hash/size mismatch is named as a mirror mid-sync, NOT the network (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Failed to fetch x  Hash Sum mismatch") 2>/dev/null)" "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)"
+assert_eq "e2e: apt's other mirror-desync string is the same class (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Failed to fetch y  File has unexpected size (10 != 12)") 2>/dev/null)" "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)"
+assert_eq "e2e: near-miss control — 'unexpected size' outside apt's own sentence is not a mirror (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: rsync reported an unexpected size for /x") 2>/dev/null)" "see the apt output above for the cause"
 assert_eq "e2e: control — every other failure defers to apt's own output (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Unable to locate package jq") 2>/dev/null)" "see the apt output above for the cause"
 echo "== unit: e2e-pithead dashboard leg — hardened-dashboard curl + no vacuous drop-off (#390) =="
 DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"

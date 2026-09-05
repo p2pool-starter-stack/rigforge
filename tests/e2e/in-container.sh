@@ -39,42 +39,48 @@ summarize() { # print the tally and exit (non-zero if any assertion failed)
 #    Reproducibility comes from the digest-pinned base image (see run.sh). The apt package versions
 #    are intentionally NOT hard-pinned: Ubuntu's archive rotates superseded versions out of the
 #    release pocket, so a pinned `jq=<ver>` would 404 and break the run once a new build lands.
-export DEBIAN_FRONTEND=noninteractive
 _apt_failure_reason() { # <apt output> -> a cause, named ONLY where apt itself named one (#442)
     # A mirror mid-sync serves an index its own Release file does not describe. Measured once here
     # as a Hash Sum mismatch at an IDENTICAL filesize; the sibling case in the image builds reports
-    # "File has unexpected size" instead — same class, different string, so match both and still
-    # retry on the COMMAND failing rather than on either symptom.
+    # "File has unexpected size (N != M)" instead — same class, different string, so match both and
+    # still retry on the COMMAND failing rather than on either symptom. One apt run prints every
+    # repo's errors together, so this names the cause it can see, not the only cause there was.
     case "$1" in
-    *"Hash Sum mismatch"* | *"unexpected size"*) echo "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)" ;;
+    *"Hash Sum mismatch"* | *"File has unexpected size"*) echo "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)" ;;
     *) echo "see the apt output above for the cause" ;;
     esac
 }
-# Sourced with E2E_LIB_ONLY=1 the file stops here, so the helpers above are testable outside Docker.
-[ -z "${E2E_LIB_ONLY:-}" ] || return 0
-
 # One attempt against a public archive is a coin flip on a bad day, and the failure has nothing to
 # do with the tree under test. Bounded, so a genuinely dead archive still aborts rather than hanging
 # the job; the backoff grows so a mirror has time to finish its sync. (#442)
-_apt_tries="${E2E_APT_TRIES:-3}"
-_apt_err=""
-_apt_rc=1
-for ((_apt_n = 1; _apt_n <= _apt_tries; _apt_n++)); do
-    _apt_err="$({ apt-get update -qq >/dev/null && apt-get install -y -qq jq gettext-base python3 >/dev/null; } 2>&1)"
-    _apt_rc=$?
-    [ "$_apt_rc" -eq 0 ] && break
-    printf '%s\n' "$_apt_err" >&2
-    [ "$_apt_n" -ge "$_apt_tries" ] || {
-        echo "apt prerequisites failed (attempt $_apt_n/$_apt_tries) — retrying in $((_apt_n * 5))s." >&2
-        sleep $((_apt_n * 5))
-    }
-done
-if [ "$_apt_rc" -ne 0 ]; then
-    # No set -e in this harness (it counts assertions), so a failure must abort here explicitly —
-    # every later assertion depends on jq + envsubst existing. (#135)
+_apt_prereqs() { # -> 0 once apt succeeds, 1 once the bound is spent (having named a cause)
+    _apt_tries="${E2E_APT_TRIES:-3}"
+    _apt_err=""
+    _apt_rc=1
+    for ((_apt_n = 1; _apt_n <= _apt_tries; _apt_n++)); do
+        _apt_err="$({ apt-get update -qq >/dev/null && apt-get install -y -qq jq gettext-base python3 >/dev/null; } 2>&1)"
+        _apt_rc=$?
+        # Replayed on EVERY attempt, not just the failing ones: apt's stderr went straight to the
+        # job log before this loop existed, and a noisy-but-successful run is worth keeping there.
+        [ -z "$_apt_err" ] || printf '%s\n' "$_apt_err" >&2
+        [ "$_apt_rc" -eq 0 ] && return 0
+        [ "$_apt_n" -ge "$_apt_tries" ] || {
+            echo "apt prerequisites failed (attempt $_apt_n/$_apt_tries) — retrying in $((_apt_n * 5))s." >&2
+            sleep $((_apt_n * 5))
+        }
+    done
     echo "FATAL: apt prerequisites (jq gettext-base python3) failed after $_apt_tries attempts — $(_apt_failure_reason "$_apt_err"). Aborting the e2e run." >&2
-    exit 1
-fi
+    return 1
+}
+# Sourced with E2E_LIB_ONLY=1 the file stops here, so the helpers above are testable outside Docker.
+# Only line 10's `set -uo pipefail` has run by now — everything else below this guard, the
+# DEBIAN_FRONTEND export included, would otherwise leak into whatever sourced us.
+[ -z "${E2E_LIB_ONLY:-}" ] || return 0
+
+export DEBIAN_FRONTEND=noninteractive
+# No set -e in this harness (it counts assertions), so a failure must abort here explicitly —
+# every later assertion depends on jq + envsubst existing. (#135)
+_apt_prereqs || exit 1
 
 # 2. Writable copy of the repo (/src is mounted read-only).
 WORK=/work
