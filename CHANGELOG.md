@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-09-05
+
 ### Added
 
 - **A file-budget ratchet stops the big files getting bigger (#407).** `make lint` (and CI) now
