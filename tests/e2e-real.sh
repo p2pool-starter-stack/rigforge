@@ -8,37 +8,11 @@
 # Run it before tagging a release; it is deliberately NOT a CI job (real build + HugePages + mining are
 # flaky-by-nature and against Actions' ToS).
 #
-# It drives the genuine commands end to end and asserts each step:
-#   provision : sudo ./rigforge.sh setup   -> deps + real XMRig build + tuning + kernel tuning + service
-#   (reboot)  : HugePages (1G + the GRUB cmdline) only take effect on boot
-#   verify    : doctor (HugePages/MSR/governor/service) + bench (real H/s) + tune (perf/efficiency/confirm)
-#               + autotune (the LIVE re-tune engine the monthly timer drives) + tune --history + the
-#               systemd re-own + EVERY verb & alias (version/-v/--version, help/-h/--help, status, logs,
-#               start|up, stop|down, restart, enable, disable, upgrade, backup, restore, apply, autotune
-#               + non-root doctor)
-#   control   : the writable control path (#236), for real, for the first time — enable it, prove the
-#               receiver is up, POST a benign change through it, poll the real path-unit -> control-apply
-#               round trip to "applied", assert it landed (config + revision + live miner), then revert.
-#               Config is snapshotted and control is force-disabled again on ANY exit (see _control_cleanup) —
-#               the fleet runs this disabled on purpose and this phase must never leave it on.
-#   upgrade   : the remote-upgrade chain (#308/#322) against the real units and REAL git — a noop leg
-#               (POST the installed version -> terminal `noop`), a rollback leg (a forged tag the D10
-#               ancestry guard must refuse -> `rolled_back`, tree + VERSION untouched, throttle
-#               stamped), and a MANDATORY forward leg (#350: auto-derives the previous real release
-#               tag -> current and proves a genuine fetch/build/apply into it, then restores the
-#               checkout — E2E_UPGRADE_TARGET/E2E_UPGRADE_SKIP_REASON override it). Same
-#               snapshot/revert guarantees as control.
-#   watchdog  : the thermal-hold path (#349), for real, for the first time — tests/run.sh drives
-#               watchdog() entirely through stubs (systemctl/curl/_read_temp all faked), so the
-#               over-temp stop has never fired against a real sensor, a real systemd, or a real
-#               miner. Lowers max_temp_c below the live reading (the same reader the verb itself
-#               calls), runs `rigforge.sh watchdog` once, asserts the stop + hold marker + an
-#               independent journal witness, then restores config + state + the running service.
-#               Same snapshot/revert guarantees as control; skips explicitly if no temperature
-#               reading is available (the wedge-restart leg is not exercised here — forcing an
-#               unreachable API on a production-adjacent rig is exactly the "stranded miner" risk
-#               control()'s own skipped rollback leg calls out; see #276 for that path stubbed).
-#   teardown  : sudo ./rigforge.sh uninstall --yes  -> assert a clean revert of every system path + idempotency
+# It drives the genuine commands end to end: provision builds and tunes; reboot activates HugePages;
+# verify checks doctor, mining, tune/autotune, service verbs, backup/restore, and sister-feed liveness;
+# control proves a benign authenticated change and always restores disabled state; upgrade proves
+# noop, refused-tag rollback, and a real forward move before restoring; watchdog proves the thermal
+# stop against real sensors/systemd and restores it; teardown asserts a complete, idempotent revert.
 #
 # Env knobs:
 #   E2E_ALLOW_OFFLINE_POOL       1 = don't fail the connect check when the pool is unreachable
@@ -49,17 +23,11 @@
 #   E2E_PERF_TOLERANCE_PCT       allowed drop vs the committed baseline/best-ever (default 5)
 #   E2E_PERF_RECORD              1 = record the baseline + append history instead of judging
 #   E2E_PERF_TAG                 release tag stamped into the history entry (with E2E_PERF_RECORD)
-#   E2E_UPGRADE_TARGET           vX.Y.Z = override the forward leg's target explicitly instead of the
-#                                auto-derived previous-tag -> current-tag pair (PERMANENT: upgrades
-#                                the checkout — does not restore afterward, unlike the default leg)
-#   E2E_UPGRADE_SKIP_REASON      set (to a reason string) to skip the now-mandatory forward leg — an
-#                                explicit, logged escape hatch, not a silent bypass
+#   E2E_UPGRADE_TARGET           vX.Y.Z = permanent explicit target instead of the auto-derived,
+#                                restored previous-tag -> current-tag pair
+#   E2E_UPGRADE_SKIP_REASON      explicit reason to skip the mandatory forward leg
 #
-# The checkout itself must be traversable by an unprivileged user too (#362): rigforge-control.service
-# and rigforge-api.service run as systemd DynamicUser, so a checkout under $HOME (typically mode 750)
-# makes them die in a Permission-denied restart loop that reads as a product failure. Every phase
-# pre-flights this and fails immediately with the fix if not — move the checkout somewhere
-# world-traversable, e.g. /opt/rigforge-e2e.
+# DynamicUser API/control units need a world-traversable checkout (#362); every phase preflights it.
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
 #   sudo bash tests/e2e-real.sh provision
@@ -217,6 +185,32 @@ require_linux_root() {
 hugepages_total() { awk '/^HugePages_Total:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0; }
 find_worker_bin() { find "$HERE" -type f -path '*xmrig/build/xmrig' 2>/dev/null | head -1; }
 
+check_api_refresh() {
+    case "$(jq -r '.api // "disabled"' "$HERE/config.json" 2>/dev/null)" in
+    enabled | true | on) ;;
+    *)
+        ok "SKIP sister-feed liveness — api not enabled in config.json"
+        return
+        ;;
+    esac
+    local next stamp epoch age now token port bind host auth=() i
+    next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    if [ -z "$next" ] || [ "$next" = n/a ]; then bad "sister-feed timer has no NEXT trigger"; else ok "sister-feed timer has a NEXT trigger ($next)"; fi
+    token=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null)
+    port=$(jq -r '.api_port // 8081' "$HERE/config.json" 2>/dev/null)
+    bind=$(jq -r '.api_bind // "0.0.0.0"' "$HERE/config.json" 2>/dev/null)
+    case "$bind" in 0.0.0.0) host=127.0.0.1 ;; ::) host='[::1]' ;; *:*) host="[$bind]" ;; *) host="$bind" ;; esac
+    [ -n "$token" ] && auth=(-H "Authorization: Bearer $token")
+    for i in 1 2 3 4 5; do
+        stamp=$(curl -fsS --max-time 4 "${auth[@]}" "http://$host:$port/1/summary" 2>/dev/null | jq -r '.generated_at // empty' 2>/dev/null) && [ -n "$stamp" ] && break
+        sleep 3
+    done
+    epoch=$(date -d "${stamp:-invalid}" +%s 2>/dev/null || echo 0)
+    now=$(date +%s)
+    age=$((now - epoch))
+    if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
+}
+
 ensure_config() {
     # setup needs a valid config.json. Benching is OFFLINE so any valid pool entry suffices for the build +
     # bench + tune phases; default to an unroutable TEST-NET-3 (RFC 5737) host so the installed service
@@ -272,6 +266,7 @@ provision() {
     else
         bad "add_to_path is enabled but setup didn't install /usr/local/bin/rigforge"
     fi
+    check_api_refresh
 
     if [ "$(hugepages_total)" -gt 0 ]; then
         ok "HugePages already reserved — no reboot needed; you can run 'verify' now"
@@ -340,6 +335,7 @@ verify() {
     [ "$(cat "$GOVERNOR_FILE" 2>/dev/null)" = "performance" ] && ok "CPU governor = performance" ||
         bad "governor is '$(cat "$GOVERNOR_FILE" 2>/dev/null || echo unknown)' (expected performance)"
     systemctl is-active --quiet xmrig && ok "service 'xmrig' is active" || bad "service 'xmrig' not active"
+    check_api_refresh
     # #78: the BIOS/firmware advisory reads the board/BIOS identity from /sys/class/dmi/id on real hardware.
     printf '%s' "$doc" | grep -q "Firmware:" &&
         ok "doctor prints the BIOS/firmware context (#78: $(printf '%s' "$doc" | grep -oE 'BIOS [^ ]+' | head -1))" ||

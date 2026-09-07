@@ -17,6 +17,9 @@ config.json
 /coverage/
 /.coverage-cache/
 
+# Local code knowledge graph
+/graphify-out/
+
 # OS
 .DS_Store
 

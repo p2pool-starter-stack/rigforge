@@ -2,8 +2,8 @@
 Description=RigForge sister API refresh cadence
 
 [Timer]
-OnBootSec=15
-OnUnitActiveSec=15
+OnCalendar=*:*:0/15
+Persistent=false
 AccuracySec=5
 
 [Install]

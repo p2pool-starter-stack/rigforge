@@ -3,5 +3,5 @@
 # path<TAB>ceiling-in-lines. Ceilings only ever go down; a file at or below 400 lines drops its entry.
 rigforge.sh	6307
 tests/e2e-pithead.sh	563
-tests/e2e-real.sh	1399
+tests/e2e-real.sh	1395
 tests/run.sh	9795

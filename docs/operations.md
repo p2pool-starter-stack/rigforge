@@ -562,8 +562,10 @@ last-change provenance (`config_meta`; #254), and the last control-path outcome 
 `rigforge` in `/1/summary` and `/2/summary`). It follows XMRig's own architecture: one tiny
 persistent server (python3 stdlib, ~10 MB idle) ships pre-computed bytes, so a request costs
 microseconds and cannot touch mining performance; a systemd timer recomputes the state every 15
-seconds at idle priority, off the request path — responses are at most ~15s stale, within the
-resolution of XMRig's own 10s hashrate window. The same
+seconds at idle priority, off the request path. The timer uses an independent wall-clock cadence,
+so a failed refresh or a unit reinstall cannot strand the feed without a future run. Summary and
+health responses carry `generated_at` in UTC; `doctor` reports its age and the timer's next/last
+trigger, and warns once the payload is over a minute old. The same
 `ACCESS_TOKEN` posture applies (open when unset, Bearer required when set), it is read-only by
 construction (GET only), and when XMRig is down the RigForge data still serves with an
 `"xmrig_api": "unreachable"` marker — which is exactly when the health data matters. Linux-only;
