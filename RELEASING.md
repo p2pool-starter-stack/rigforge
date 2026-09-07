@@ -79,25 +79,39 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
      --body "Promote develop to main for the vX.Y.Z release."
    ```
 
-   Review it, then land it with a **fast-forward push** rather than the merge button, so `main` ends up
-   on `develop`'s release commit *exactly* — same sha, not merely the same tree — and stays linear.
-   GitHub closes the PR as merged once its commits are reachable from `main`:
+   Before review, record the PR's exact head in a private local ref. Set `RELEASE_PR` to the number
+   printed by `gh pr create`, then give the printed sha to the reviewer. Their verdict must name that
+   same sha:
 
    ```bash
+   : "${RELEASE_PR:?set RELEASE_PR to the promotion PR number}"
+   repo=$(gh api repos/{owner}/{repo} --jq .full_name)
+   reviewed_commit=$(gh api "repos/$repo/pulls/$RELEASE_PR" --jq .head.sha)
+   git update-ref refs/rigforge/release-candidate "$reviewed_commit"
+   printf 'Review release candidate %s\n' "$reviewed_commit"
+   ```
+
+   After a PASS at that sha, land it with a **fast-forward push** rather than the merge button, so
+   `main` ends up on the reviewed release commit *exactly* — same sha, not merely the same tree — and
+   stays linear. GitHub closes the PR as merged once its commits are reachable from `main`:
+
+   ```bash
+   release_commit=$(git rev-parse refs/rigforge/release-candidate)
    git fetch origin
-   release_commit=$(git rev-parse refs/remotes/origin/develop)
+   test "$(git rev-parse refs/remotes/origin/develop)" = "$release_commit" \
+     || { echo "develop moved after review — stop and review the new commit"; exit 1; }
    main_commit=$(git rev-parse refs/remotes/origin/main)
    git merge-base --is-ancestor "$main_commit" "$release_commit" \
      || { echo "NOT a fast-forward — main has commits develop lacks; back-merge first (see below)"; exit 1; }
    git push origin "$release_commit:refs/heads/main"
    test "$(git ls-remote --heads origin refs/heads/main | cut -f1)" = "$release_commit" \
      || { echo "main does not point at the audited release commit"; exit 1; }
-   git update-ref refs/rigforge/release-candidate "$release_commit"
    ```
 
-   The explicit sha is deliberate: a refspec source such as `develop:main` resolves the unqualified
-   `develop` **locally**. It can therefore push a stale local branch even when every preflight read
-   `origin/develop`. The command above gates and pushes the same object, then reads the remote back.
+   The recorded sha closes the review-to-fetch race. The explicit push closes a second trap: a
+   refspec source such as `develop:main` resolves the unqualified `develop` **locally**, so it can
+   push a stale local branch even when every preflight read `origin/develop`. The commands above bind
+   review, gate, push, and readback to one object.
 
    The `Main Branch` ruleset targets `refs/heads/main` only (`develop` carries no rules at all) and has
    `pull_request`, `non_fast_forward` and `deletion`, with `OrganizationAdmin` bypass at
