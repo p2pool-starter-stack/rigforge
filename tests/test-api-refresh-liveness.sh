@@ -25,3 +25,25 @@ mv "$RFS/summary.json" "$RFS/summary.saved"
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1030 || true)"
 assert_contains "doctor: missing payload is stale, not healthy (#454)" "$out" "payload missing"
 mv "$RFS/summary.saved" "$RFS/summary.json"
+
+printf '{ "api": "enabled", "HOME_DIR": "%s/home", "pools": [{"url": "h:3333"}] }\n' "$DOC" >"$RFS/config.json"
+run_refresh_doctor() { # <refresh status rc> <message>
+    local refresh_rc="$1" refresh_message="$2"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux SCRIPT_DIR="$ROOT" CONFIG_JSON="$RFS/config.json"
+        MEMINFO="$DOC/meminfo_ok" MSR_MODULE_DIR="$DOC/msrmod" GOVERNOR_FILE="$DOC/gov_perf" HUGEPAGES_1G_NR="$DOC/nr1g"
+        DMIDECODE=/nonexistent CPUFREQ_MAX=/nonexistent CPU_SYSFS=/nonexistent
+        _api_refresh_status() {
+            printf '%s' "$refresh_message"
+            return "$refresh_rc"
+        }
+        set +e
+        PATH="$STUBS:$PATH" doctor 2>&1
+    )
+}
+out="$(run_refresh_doctor 0 'sister feed refresh scheduled')"
+assert_contains "doctor: healthy refresh status is reported (#454)" "$out" "sister feed refresh scheduled"
+out="$(run_refresh_doctor 1 'sister feed is stale')"
+assert_contains "doctor: failed refresh status is warned (#454)" "$out" "sister feed is stale"
+assert_contains "doctor: failed refresh status counts as an issue (#454)" "$out" "issue(s) found"
