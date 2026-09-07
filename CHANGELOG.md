@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-09-07
+
 ### Fixed
 
 - **The sister API refresh can recover instead of freezing indefinitely (#454).** Its 15-second
