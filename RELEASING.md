@@ -92,6 +92,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    git push origin "$release_commit:refs/heads/main"
    test "$(git ls-remote --heads origin refs/heads/main | cut -f1)" = "$release_commit" \
      || { echo "main does not point at the audited release commit"; exit 1; }
+   git update-ref refs/rigforge/release-candidate "$release_commit"
    ```
 
    The explicit sha is deliberate: a refspec source such as `develop:main` resolves the unqualified
@@ -131,16 +132,21 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 7. Tag and push from `main` (annotated tag, matching `VERSION`) once the PR is merged:
 
    ```bash
+   release_commit=$(git rev-parse refs/rigforge/release-candidate)
    git checkout main && git pull --ff-only origin main
-   release_commit=$(git rev-parse HEAD)
-   git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
+   test "$(git rev-parse HEAD)" = "$release_commit" \
+     || { echo "main moved after review — stop and review the new commit"; exit 1; }
+   git tag -a vX.Y.Z "$release_commit" -m "RigForge vX.Y.Z"
    git push origin refs/tags/vX.Y.Z
    test "$(git ls-remote --tags origin 'refs/tags/vX.Y.Z^{}' | cut -f1)" = "$release_commit" \
      || { echo "the remote tag does not dereference to the release commit"; exit 1; }
+   git update-ref -d refs/rigforge/release-candidate
    ```
 
-   Push the named tag explicitly. `--follow-tags` can truthfully report that the branch is current
-   without proving the intended tag moved, so the remote dereference is the release evidence.
+   The private local ref carries the reviewed commit across release steps and makes a concurrent
+   `main` change fail closed. Push the named tag explicitly: `--follow-tags` can truthfully report
+   that the branch is current without proving the intended tag moved, so the remote dereference is
+   the release evidence.
 
 Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
