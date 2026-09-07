@@ -25,6 +25,7 @@ ROUTES = {
     "/health": "health.json",
     "/tune": "tune.json",
 }
+READ_SCOPE = b"rigforge:api-read:v1"
 
 
 def load_token(cfg_path):
@@ -35,6 +36,11 @@ def load_token(cfg_path):
             return (json.load(f).get("ACCESS_TOKEN") or "").strip()
     except Exception:
         sys.exit("api-server: %s is unreadable — refusing to start without a known token posture" % cfg_path)
+
+
+def derive_read_token(token):
+    """A read-only bearer Pithead can hold without receiving the control credential."""
+    return hmac.new(token.encode(), READ_SCOPE, "sha256").hexdigest() if token else ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -56,9 +62,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if TOKEN:
             auth = (self.headers.get("Authorization") or "").strip()
-            # Constant-time compare: the Bearer check is the only auth this API has, so don't
-            # hand a public network a timing side-channel on it.
-            if not hmac.compare_digest(auth.encode(), ("Bearer " + TOKEN).encode()):
+            # Compare both candidates before deciding. The raw token remains accepted for existing
+            # clients; the derived bearer grants this GET-only API without granting :8082 control.
+            raw_ok = hmac.compare_digest(auth.encode(), ("Bearer " + TOKEN).encode())
+            read_ok = hmac.compare_digest(auth.encode(), ("Bearer " + READ_TOKEN).encode())
+            if not (raw_ok or read_ok):
                 return self._send(401, "Unauthorized", b'{"error":"unauthorized"}')
         name = ROUTES.get(self.path.split("?", 1)[0])
         if name is None:
@@ -81,6 +89,7 @@ if __name__ == "__main__":
         sys.exit("usage: api-server.py <bind> <port> <data-dir> <config.json>")
     bind, port, DATA_DIR, cfg = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
     TOKEN = load_token(cfg)
+    READ_TOKEN = derive_read_token(TOKEN)
     # Single-threaded on purpose: requests serialize naturally, and serving pre-built bytes takes
     # microseconds — concurrency would only add ways to compete with the miner. The flip side of
     # single-threaded is that one held-open connection would block everyone (slowloris), so cap

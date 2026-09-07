@@ -33,7 +33,9 @@ per-rig stats over the LAN. Know exactly what it is:
 
 The optional sister API (`:8081`, `"api": "enabled"` — **off by default**) follows the same
 posture: read-only by construction (GET only, fixed routes, nothing from a request is executed or
-logged), gated by the same `ACCESS_TOKEN`, and served by a single persistent python3-stdlib
+logged). When `ACCESS_TOKEN` is set it accepts the exact bearer and a read-only HMAC-derived bearer;
+the writable `:8082` endpoint rejects the derived value and still requires the exact token. It uses a
+single persistent python3-stdlib
 process that only ships pre-computed files (`ProtectSystem=strict`, `NoNewPrivileges`, lowest CPU
 priority — it can never compete with the miner, and a config it cannot parse is fatal at startup
 rather than silently dropping the token). The probe pass that produces those files runs from a

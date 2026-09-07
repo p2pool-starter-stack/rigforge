@@ -94,9 +94,10 @@ pithead#235):
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
   matters.
 
-Same token rule as `:8080`: open when `ACCESS_TOKEN` is unset (the default), the exact `Bearer`
-otherwise — the sister API deliberately mirrors XMRig's own API conventions: the versioned `/1`/`/2`
-paths, the same `Bearer`/`401` semantics, JSON-only bodies, and minimal headers. The release gate's
+When `ACCESS_TOKEN` is set, `:8081` accepts either the exact bearer for existing clients or the
+lowercase hex HMAC-SHA256 derived with that token as the key and `rigforge:api-read:v1` as the
+message. The derived bearer grants reads only: `:8082` rejects it and continues to require the exact
+control token. When `ACCESS_TOKEN` is unset, `:8081` remains open. The release gate's
 `network` phase enforces the boundary on the wire: the miner's only TCP peers are the configured
 pool, `:8081` exists exactly while enabled, and no response byte ever contains `ACCESS_TOKEN` or a
 pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
@@ -173,11 +174,15 @@ rig name), so there's nothing to register stack-side. Workers run on a trusted L
 > NOTE: By default the worker API is open (read-only, no token), which matches Pithead's default probe
 > (`workers.api_auth: none`). Nothing to coordinate. Leave `ACCESS_TOKEN` unset and it works.
 
-If you do want a token (e.g. you don't fully trust the LAN), set `ACCESS_TOKEN` here and match it on the
-dashboard side:
+If you do want a token (e.g. you don't fully trust the LAN), set `ACCESS_TOKEN` here. Existing raw
+token clients remain compatible:
 
 - a single shared token → Pithead `workers.api_auth: token` + `workers.api_token: <the token>`;
 - the rig name as the token (`ACCESS_TOKEN` = the first pool's `user`) → Pithead `workers.api_auth: name`.
+
+Pithead 2.0 derives a separate read bearer for an adopted RigForge 1.17.2+ rig and keeps the raw
+token on the host for control. An adopted token-protected 1.17.0/1.17.1 rig must be upgraded before
+its enriched feed can be read without giving the dashboard its control capability.
 
 Likewise, don't bind the API to localhost only and don't change the port without matching it on the stack
 side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host than the one it

@@ -7394,7 +7394,6 @@ if [ "$(uname -s)" = Linux ]; then
 else
     assert_contains "api-refresh refuses off-Linux" "$out" "Linux-only"
 fi
-
 echo "== black-box: the persistent api server (#164, the xmrig model) =="
 # python3 is the server's runtime (stock on Ubuntu runners, macOS dev boxes, and the container
 # e2e). The kcov coverage container is deliberately apt-free and lacks it — skip LOUDLY there;
@@ -7434,6 +7433,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     assert_eq "server: exactly 3 response headers" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
     body="$(curl -fsS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
     assert_eq "server: serves the produced summary verbatim" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
+    assert_eq "server: derived read bearer -> 200" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Authorization: Bearer 7bbf612eed0f29d2260124301be5c03ff939e1002037cf6db58c7159f417f57f' "http://127.0.0.1:$APIPORT/2/summary")" "200"
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$APIPORT/2/summary")"
     assert_eq "server: unauthed -> 401" "$code" "401"
     resp="$(curl -sS --max-time 5 "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
@@ -9096,7 +9096,6 @@ if [ "$hgit_calls" -ge 10 ]; then
 else
     bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"
 fi
-
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
@@ -9127,6 +9126,7 @@ else
     hc() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
     assert_eq "POST unauthed -> 401" "$(hc -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
     assert_eq "POST wrong token -> 401" "$(hc -X POST "$U/apply" -H "Authorization: Bearer nope" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
+    assert_eq "POST derived read bearer -> 401" "$(hc -X POST "$U/apply" -H 'Authorization: Bearer 61cac658219a7ff9907d30270c6703abce35fdbe6b00d8a4ca92762c995eae49' -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
     resp="$(curl -sS --max-time 5 -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"
     assert_absent "401 body never echoes the token" "$resp" "$CTOK"
     body="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"
