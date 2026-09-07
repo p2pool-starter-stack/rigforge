@@ -97,7 +97,8 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 
    ```bash
    release_commit=$(git rev-parse refs/rigforge/release-candidate)
-   git fetch origin
+   git fetch origin \
+     || { echo "fetch failed — refusing to promote cached refs"; exit 1; }
    test "$(git rev-parse refs/remotes/origin/develop)" = "$release_commit" \
      || { echo "develop moved after review — stop and review the new commit"; exit 1; }
    main_commit=$(git rev-parse refs/remotes/origin/main)
@@ -147,7 +148,10 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 
    ```bash
    release_commit=$(git rev-parse refs/rigforge/release-candidate)
-   git checkout main && git pull --ff-only origin main
+   git checkout main \
+     || { echo "cannot check out main — refusing to tag"; exit 1; }
+   git pull --ff-only origin main \
+     || { echo "pull failed — refusing to tag a cached main"; exit 1; }
    test "$(git rev-parse HEAD)" = "$release_commit" \
      || { echo "main moved after review — stop and review the new commit"; exit 1; }
    git tag -a vX.Y.Z "$release_commit" -m "RigForge vX.Y.Z"
