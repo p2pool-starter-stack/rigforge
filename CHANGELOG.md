@@ -11,6 +11,9 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **The real-hardware watchdog gate now proves its cleanup restored the miner runtime (#462).**
+  A previously running miner is restarted after the deliberate thermal hold; a stopped one stays stopped.
+
 - **`doctor` no longer reports a healthy refresh timer activation as a critical failure (#460).**
   It retries the transiently hidden next trigger while still failing a persistently absent schedule.
 

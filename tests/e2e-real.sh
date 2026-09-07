@@ -67,6 +67,7 @@ UPG_ORIG_REF=""
 WD_SAVED_CFG=""
 WD_CLEANUP_DONE=0
 WD_WORKER_ROOT=""
+WD_WAS_ACTIVE=0
 ok() {
     PASS=$((PASS + 1))
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
@@ -1086,14 +1087,8 @@ upgrade() {
 # max_temp_c below the live reading is safe and reversible, and fires the SAME code path
 # (rigforge.sh's watchdog(), the `t > MAX_TEMP_C` branch) a genuinely hot rig would hit.
 #
-# Same snapshot-first/trap-immediately shape as control()/upgrade() for the MUTATION half — the
-# skip decisions all run before the snapshot, so a skipped leg arms no trap at all: every step below can fail under
-# `set -Eeuo pipefail`, and this leg must NEVER be able to leave the rig with a lowered thermal
-# limit, a held miner, or a stopped service. _watchdog_cleanup restores config.json from the
-# pre-leg snapshot AND removes the thermal-hold/strike-count state files directly — a config restore
-# alone would leave a stale watchdog.thermal-hold on disk, which (if the operator's own config
-# already carries a real max_temp_c) could hold the miner off until some later real watchdog tick
-# happens to notice the temperature dropped — restoring config.json is not enough by itself.
+# Snapshot and trap the mutation half like control/upgrade; skips arm no cleanup. Cleanup restores
+# config, hold state, and the miner's prior running state even if any later command aborts.
 _watchdog_cleanup() {
     [ "$WD_CLEANUP_DONE" = 1 ] && return 0
     WD_CLEANUP_DONE=1
@@ -1112,10 +1107,20 @@ _watchdog_cleanup() {
     fi
     "$RIGFORGE" apply >/tmp/e2e-watchdog-cleanup-apply.log 2>&1 ||
         echo "  WARNING: the revert 'apply' exited non-zero (see /tmp/e2e-watchdog-cleanup-apply.log)" >&2
-    if systemctl is-active --quiet xmrig 2>/dev/null; then
-        echo "  service 'xmrig' is active"
-    else
+    if [ "$WD_WAS_ACTIVE" = 1 ]; then
+        systemctl is-active --quiet xmrig 2>/dev/null || "$RIGFORGE" start >/tmp/e2e-watchdog-cleanup-start.log 2>&1 || true
+        if systemctl is-active --quiet xmrig 2>/dev/null; then
+            echo "  restored service 'xmrig' to active"
+            return 0
+        fi
         echo "  WARNING: service 'xmrig' is not active after the revert — check the rig by hand" >&2
+        return 1
+    elif systemctl is-active --quiet xmrig 2>/dev/null; then
+        echo "  WARNING: service 'xmrig' became active although it entered stopped" >&2
+        return 1
+    else
+        echo "  preserved stopped service state"
+        return 0
     fi
 }
 
@@ -1124,11 +1129,8 @@ watchdog() {
     [ -f "$HERE/config.json" ] || die "no $HERE/config.json — run 'provision' first (this phase needs an already-provisioned worker)."
     phase "watchdog — thermal-hold leg: lower max_temp_c below the live reading, run the real verb once (#349)"
 
-    # Resolve every input and decide the skips BEFORE the snapshot/trap install below. A skip must
-    # leave NO armed trap behind: a dangling one fires only at process exit — in `all` mode that is
-    # AFTER teardown() has uninstalled everything, so its deferred cleanup 'apply' would die against
-    # the torn-down system and print warnings right after the gate reported PASS. (rig_lock's own
-    # holder-only EXIT trap stays armed on a skip, exactly as for the phases that set no trap.)
+    # Decide skips before installing the cleanup trap: in `all`, a trap armed by a skip would fire
+    # after teardown against an already uninstalled system. The rig-lock holder trap remains armed.
     WD_WORKER_ROOT="$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_from_config' _ "$RIGFORGE" 2>/dev/null || true)"
     if [ -z "$WD_WORKER_ROOT" ]; then
         # Fail, don't skip: the verb's own independent resolution could still succeed and write the
@@ -1148,14 +1150,9 @@ watchdog() {
         summary "watchdog"
         return
     fi
-    # max_temp_c must stay a whole number 40-110 (rigforge.sh parse_config). A 1°C margin would be
-    # enough to satisfy the `t > MAX_TEMP_C` compare at THIS instant, but 'apply' below restarts the
-    # service (a brief dip while XMRig re-inits its dataset) before the real check re-samples the
-    # temperature — a tight margin is exactly the flake that would produce, so aim for 5°C of
-    # headroom and only proceed on at least 2. A rig too cool for that (e.g. idling near the 40°C
-    # floor) can't get a safely-below cutoff at all — an explicit skip, not a false failure. The
-    # 110 ceiling is clamped too: a misreading sensor (118°C says broken sensor, not fire) must
-    # still stage a schema-legal value, and the margin check below keeps the compare honest.
+    # max_temp_c is an integer 40-110. Use 5°C headroom because apply briefly cools the CPU; require
+    # at least 2°C after clamping. A rig near the floor skips, while an implausibly hot sensor still
+    # stages a schema-legal cutoff and the margin check remains honest.
     cutoff=$(awk -v t="$t" 'BEGIN { c = int(t) - 5; if (c < 40) c = 40; if (c > 110) c = 110; print c }')
     if ! awk -v t="$t" -v c="$cutoff" 'BEGIN { exit !(t - c >= 2) }'; then
         ok "SKIP watchdog thermal-hold leg — live temperature ${t}°C is too close to the 40°C config-schema floor to construct a cutoff with a safe margin below it"
@@ -1166,6 +1163,7 @@ watchdog() {
     # Snapshot BEFORE any mutation and install the EXIT trap immediately; see the block comment above.
     WD_SAVED_CFG="$(mktemp)"
     cp "$HERE/config.json" "$WD_SAVED_CFG"
+    systemctl is-active --quiet xmrig 2>/dev/null && WD_WAS_ACTIVE=1 || WD_WAS_ACTIVE=0
     WD_CLEANUP_DONE=0
     trap '_watchdog_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
 
@@ -1214,7 +1212,7 @@ watchdog() {
     fi
 
     phase "watchdog — restore: config.json snapshot + state files + apply, service comes back live"
-    _watchdog_cleanup
+    _watchdog_cleanup && ok "watchdog cleanup restored the pre-leg service state" || bad "watchdog cleanup did not restore the pre-leg service state"
     summary "watchdog"
 }
 
