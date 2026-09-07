@@ -1,0 +1,30 @@
+name: Release latest marker
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-latest:
+    name: Verify published release is latest
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Read back the latest marker
+        run: |
+          set -euo pipefail
+          latest=""
+          for attempt in 1 2 3 4 5 6; do
+            latest=$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
+            [ "$latest" = "$RELEASE_TAG" ] && exit 0
+            [ "$attempt" -eq 6 ] || sleep 10
+          done
+          echo "::error::Published $RELEASE_TAG, but the repository's latest marker is ${latest:-unavailable}."
+          exit 1

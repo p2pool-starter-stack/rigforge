@@ -79,24 +79,49 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
      --body "Promote develop to main for the vX.Y.Z release."
    ```
 
-   Review it, then land it with a **fast-forward push** rather than the merge button, so `main` ends up
-   on `develop`'s release commit *exactly* — same sha, not merely the same tree — and stays linear.
-   GitHub closes the PR as merged once its commits are reachable from `main`:
+   Before review, record the PR's exact head in a private local ref. Set `RELEASE_PR` to the number
+   printed by `gh pr create`, then give the printed sha to the reviewer. Their verdict must name that
+   same sha:
 
    ```bash
-   git fetch origin
-   git merge-base --is-ancestor origin/main origin/develop \
-     || { echo "NOT a fast-forward — main has commits develop lacks; back-merge first (see below)"; exit 1; }
-   git push origin develop:main
+   : "${RELEASE_PR:?set RELEASE_PR to the promotion PR number}"
+   repo=$(gh api repos/{owner}/{repo} --jq .full_name)
+   reviewed_commit=$(gh api "repos/$repo/pulls/$RELEASE_PR" --jq .head.sha)
+   git update-ref refs/rigforge/release-candidate "$reviewed_commit" \
+     || { echo "cannot record the reviewed commit — refusing to continue"; exit 1; }
+   printf 'Review release candidate %s\n' "$reviewed_commit"
    ```
+
+   After a PASS at that sha, land it with a **fast-forward push** rather than the merge button, so
+   `main` ends up on the reviewed release commit *exactly* — same sha, not merely the same tree — and
+   stays linear. GitHub closes the PR as merged once its commits are reachable from `main`:
+
+   ```bash
+   release_commit=$(git rev-parse refs/rigforge/release-candidate)
+   git fetch origin \
+     || { echo "fetch failed — refusing to promote cached refs"; exit 1; }
+   test "$(git rev-parse refs/remotes/origin/develop)" = "$release_commit" \
+     || { echo "develop moved after review — stop and review the new commit"; exit 1; }
+   main_commit=$(git rev-parse refs/remotes/origin/main)
+   git merge-base --is-ancestor "$main_commit" "$release_commit" \
+     || { echo "NOT a fast-forward — main has commits develop lacks; back-merge first (see below)"; exit 1; }
+   git push origin "$release_commit:refs/heads/main"
+   test "$(git ls-remote --heads origin refs/heads/main | cut -f1)" = "$release_commit" \
+     || { echo "main does not point at the audited release commit"; exit 1; }
+   ```
+
+   The recorded sha closes the review-to-fetch race. The explicit push closes a second trap: a
+   refspec source such as `develop:main` resolves the unqualified `develop` **locally**, so it can
+   push a stale local branch even when every preflight read `origin/develop`. The commands above bind
+   review, gate, push, and readback to one object.
 
    The `Main Branch` ruleset targets `refs/heads/main` only (`develop` carries no rules at all) and has
    `pull_request`, `non_fast_forward` and `deletion`, with `OrganizationAdmin` bypass at
    `bypass_mode: always`. The push satisfies `non_fast_forward` — that rule blocks force-pushes, and
-   this is a genuine fast-forward — and needs the bypass for `pull_request`.
-   **Untested: no push has yet relied on that bypass, so confirm it on the next promotion. If it is
-   refused, fall back to `gh pr merge --merge --admin` and then back-merge (`git merge origin/main` on
-   `develop`) to restore the invariant before the next release.**
+   this is a genuine fast-forward — and needs the bypass for `pull_request`. The organization-admin
+   bypass admitted both corrective fast-forward pushes during v1.17.0. If a future push is refused,
+   fall back to `gh pr merge --merge --admin` and then back-merge (`git merge origin/main` on
+   `develop`) to restore the invariant before the next release.
 
    > **The invariant is the point: `main` must stay an ancestor of `develop`.** Both `gh pr merge`
    > modes break it, in different ways, and the repo has been broken by each in turn.
@@ -123,10 +148,25 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 7. Tag and push from `main` (annotated tag, matching `VERSION`) once the PR is merged:
 
    ```bash
-   git checkout main && git pull --ff-only origin main
-   git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
-   git push origin main --follow-tags
+   release_commit=$(git rev-parse refs/rigforge/release-candidate)
+   git checkout main \
+     || { echo "cannot check out main — refusing to tag"; exit 1; }
+   git pull --ff-only origin main \
+     || { echo "pull failed — refusing to tag a cached main"; exit 1; }
+   test "$(git rev-parse HEAD)" = "$release_commit" \
+     || { echo "main moved after review — stop and review the new commit"; exit 1; }
+   git tag -a vX.Y.Z "$release_commit" -m "RigForge vX.Y.Z" \
+     || { echo "tag creation failed — refusing to push an existing local tag"; exit 1; }
+   git push origin refs/tags/vX.Y.Z
+   test "$(git ls-remote --tags origin 'refs/tags/vX.Y.Z^{}' | cut -f1)" = "$release_commit" \
+     || { echo "the remote tag does not dereference to the release commit"; exit 1; }
+   git update-ref -d refs/rigforge/release-candidate
    ```
+
+   The private local ref carries the reviewed commit across release steps and makes a concurrent
+   `main` change fail closed. Push the named tag explicitly: `--follow-tags` can truthfully report
+   that the branch is current without proving the intended tag moved, so the remote dereference is
+   the release evidence.
 
 Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
@@ -139,6 +179,21 @@ Pushing the tag triggers the release pipeline
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
 - creates the GitHub Release as a draft. Review the generated notes and bundles, then click
   Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
+
+For a full release, make the published release the repository's `latest` marker explicitly and read
+it back. Rigs' `upgrade --check` and remote upgrade path follow that endpoint; “published” and
+“latest” are separate release state:
+
+```bash
+repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+release_id=$(gh api "repos/$repo/releases/tags/vX.Y.Z" --jq .id)
+gh api -X PATCH "repos/$repo/releases/$release_id" -f make_latest=true
+test "$(gh api "repos/$repo/releases/latest" --jq .tag_name)" = vX.Y.Z \
+  || { echo "published release is not the repository's latest marker"; exit 1; }
+```
+
+The `Release latest marker` workflow repeats that read after every non-prerelease publish and fails
+loudly if the marker differs. It is a guard, not a substitute for the explicit publish step above.
 
 After a rig is re-tagged, record its benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
