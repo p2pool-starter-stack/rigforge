@@ -97,7 +97,8 @@ pithead#235):
 When `ACCESS_TOKEN` is set, `:8081` accepts either the exact bearer for existing clients or the
 lowercase hex HMAC-SHA256 derived with that token as the key and `rigforge:api-read:v1` as the
 message. The derived bearer grants reads only: `:8082` rejects it and continues to require the exact
-control token. When `ACCESS_TOKEN` is unset, `:8081` remains open. The release gate's
+control token. Derivation requires a random token of at least 32 ASCII characters; generate one with
+`openssl rand -hex 16`. When `ACCESS_TOKEN` is unset, `:8081` remains open. The release gate's
 `network` phase enforces the boundary on the wire: the miner's only TCP peers are the configured
 pool, `:8081` exists exactly while enabled, and no response byte ever contains `ACCESS_TOKEN` or a
 pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
@@ -182,7 +183,8 @@ token clients remain compatible:
 
 Pithead 2.0 derives a separate read bearer for an adopted RigForge 1.17.2+ rig and keeps the raw
 token on the host for control. An adopted token-protected 1.17.0/1.17.1 rig must be upgraded before
-its enriched feed can be read without giving the dashboard its control capability.
+its enriched feed can be read without giving the dashboard its control capability; use the remote
+upgrade when enabled or upgrade locally otherwise.
 
 Likewise, don't bind the API to localhost only and don't change the port without matching it on the stack
 side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host than the one it

@@ -42,6 +42,11 @@ rather than silently dropping the token). The probe pass that produces those fil
 separate idle-priority timer. It additionally serves RigForge's tune/health/power data — still
 stats, never a control surface.
 
+The derived bearer is available only when `ACCESS_TOKEN` is at least 32 ASCII characters and must
+be generated randomly (`openssl rand -hex 16`). A deterministic derivation is an offline verifier,
+so a short or human-chosen token is unsafe for this split; it remains raw-client compatible but gets
+no derived bearer.
+
 The optional writable control path (`:8082`, `"control": "enabled"` — **off by default**, #236) is
 the one endpoint that accepts writes, and it is fail-closed by construction. Enabling it requires
 *both* a Bearer `ACCESS_TOKEN` and an `api_allow_from` source pin, or setup refuses to start it —

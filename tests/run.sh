@@ -7397,8 +7397,7 @@ fi
 echo "== black-box: the persistent api server (#164, the xmrig model) =="
 # python3 is the server's runtime (stock on Ubuntu runners, macOS dev boxes, and the container
 # e2e). The kcov coverage container is deliberately apt-free and lacks it — skip LOUDLY there;
-# the suite still enforces this block in CI's Test suite, the macOS job, and locally, and
-# api-server.py is python (outside kcov's bash coverage) so no coverage is lost by skipping.
+# the suite still enforces this Python-only block in CI's Test suite, the macOS job, and locally.
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the api-server wire suite runs in the other CI jobs"
     APISRV_SKIP=1
@@ -7407,11 +7406,12 @@ else
 fi
 if [ "$APISRV_SKIP" = 0 ]; then
     python3 -m py_compile "$ROOT/util/api-server.py" && ok "api-server.py compiles" || bad "api-server.py does not compile" ""
+    python3 -c 'import runpy,sys; d=runpy.run_path(sys.argv[1]); assert d["derive_read_token"]("short") == ""' "$ROOT/util/api-server.py" && ok "api-server refuses to derive from a weak token" || bad "api-server derived from a weak token" ""
     APISRV="$(mktemp -d "$SANDBOX/apisrv.XXXXXX")"
     printf '%s' '{"hashrate":{"total":[1234.5]},"rigforge":{"version":"t"}}' >"$APISRV/summary.json"
     printf '%s' '{"service_active":true}' >"$APISRV/health.json"
     printf '%s' '{"applied":null}' >"$APISRV/tune.json"
-    STOK="tok-srv1"
+    STOK="0123456789abcdef0123456789abcdef"
     printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "%s" }\n' "$STOK" >"$APISRV/config.json"
     APIPORT=$((20000 + RANDOM % 20000))
     python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" &
@@ -7433,7 +7433,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     assert_eq "server: exactly 3 response headers" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
     body="$(curl -fsS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
     assert_eq "server: serves the produced summary verbatim" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
-    assert_eq "server: derived read bearer -> 200" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Authorization: Bearer 7bbf612eed0f29d2260124301be5c03ff939e1002037cf6db58c7159f417f57f' "http://127.0.0.1:$APIPORT/2/summary")" "200"
+    assert_eq "server: derived read bearer -> 200" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Authorization: Bearer 79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8' "http://127.0.0.1:$APIPORT/2/summary")" "200"
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$APIPORT/2/summary")"
     assert_eq "server: unauthed -> 401" "$code" "401"
     resp="$(curl -sS --max-time 5 "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"

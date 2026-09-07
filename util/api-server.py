@@ -40,7 +40,8 @@ def load_token(cfg_path):
 
 def derive_read_token(token):
     """A read-only bearer Pithead can hold without receiving the control credential."""
-    return hmac.new(token.encode(), READ_SCOPE, "sha256").hexdigest() if token else ""
+    key = token.encode()
+    return hmac.new(key, READ_SCOPE, "sha256").hexdigest() if len(key) >= 32 else ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -65,7 +66,9 @@ class Handler(BaseHTTPRequestHandler):
             # Compare both candidates before deciding. The raw token remains accepted for existing
             # clients; the derived bearer grants this GET-only API without granting :8082 control.
             raw_ok = hmac.compare_digest(auth.encode(), ("Bearer " + TOKEN).encode())
-            read_ok = hmac.compare_digest(auth.encode(), ("Bearer " + READ_TOKEN).encode())
+            read_ok = bool(READ_TOKEN) and hmac.compare_digest(
+                auth.encode(), ("Bearer " + READ_TOKEN).encode()
+            )
             if not (raw_ok or read_ok):
                 return self._send(401, "Unauthorized", b'{"error":"unauthorized"}')
         name = ROUTES.get(self.path.split("?", 1)[0])
