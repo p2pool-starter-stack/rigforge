@@ -172,9 +172,7 @@ sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}
     -e "s|\${WATCHDOG_INTERVAL_MIN}|${WATCHDOG_INTERVAL_MIN:-}|g" \
     -e "s|\$CONTROL_BIND|${CONTROL_BIND:-}|g" -e "s|\$CONTROL_PORT|${CONTROL_PORT:-}|g"
 EOF
-    # No-op recorders / package managers. dpkg/rpm/pacman exit 0 so "is this dep installed?" is always yes.
-    # cc: the appliance-mode tool check (pithead#797 R1) probes `command -v cc` — stub it so black-box
-    # runs don't depend on whether the host has a compiler.
+    # No-op recorders / package managers. The cc stub keeps appliance-mode checks host-independent.
     local cmd
     for cmd in make cmake cc systemctl modprobe mount umount mountpoint update-grub apt-get apt-cache dpkg dnf rpm pacman brew cpupower journalctl python3 nft useradd; do
         cat >"$bin/$cmd" <<EOF
@@ -183,6 +181,7 @@ echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
 exit 0
 EOF
     done
+    printf '#!/usr/bin/env bash\n[ "$#" -gt 0 ]\n' >"$bin/sync" # control commits must never flush every filesystem (#472)
     # launchctl stub (macOS): records calls; `list <label>` emits a plist dict with a PID when
     # STUB_LAUNCHD_PID is set (so `status` can be exercised), else a dict without one.
     cat >"$bin/launchctl" <<'EOF'
@@ -7587,6 +7586,7 @@ out="$(run_control_install enabled)"
 assert_eq "control enable writes the server unit" "$([ -f "$CPS/systemd/rigforge-control.service" ] && echo y || echo n)" "y"
 assert_eq "control enable writes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "y"
 assert_eq "control enable writes the path watcher" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
+assert_eq "accepted control applies keep foreground scheduling (#472)" "$(grep -Ec '^(Nice=|IOSchedulingClass=)' "$CPS/systemd/rigforge-control-apply.service")" "0"
 assert_contains "server unit runs control-server.py with the configured bind/port" "$(cat "$CPS/systemd/rigforge-control.service")" "control-server.py 0.0.0.0 8082"
 assert_eq "server is unprivileged (DynamicUser)" "$(grep -c '^DynamicUser=yes$' "$CPS/systemd/rigforge-control.service")" "1"
 assert_eq "server has a writable StateDirectory spool" "$(grep -c '^StateDirectory=rigforge-control$' "$CPS/systemd/rigforge-control.service")" "1"
@@ -8036,17 +8036,9 @@ assert_eq "round-trip: a pool storing no password is served with no marker (#439
 assert_eq "round-trip: replaying a passwordless pool's own feed commits (#439)" "$(secret_case "$CFG_439" "$rt439_pools")" "committed|pass=ABSENT|fp=ABSENT|marker=0"
 assert_eq "commit: a fabricated marker on a pool that stores no password is rejected (#439)" "$(secret_case "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "rejected|pass=ABSENT|fp=ABSENT|marker=0"
 assert_contains "commit: that rejection names the unresolvable key (#439)" "$(secret_out "$CFG_439" '{"pools":[{"url":"bare:3333","pass":{"__secret__":true}}]}')" "unresolvable-secret-marker:pass"
-# The stated tie-break: on a duplicate (url, user) pair the FIRST-declared stored pool wins — the
-# same rule Pithead uses restoring its per-worker token sentinels. Asserted rather than assumed,
-# since it is the only place the lookup can silently pick the wrong credential.
 CFG_415D='{ "pools": [{"url":"d:3333","user":"u","pass":"FIRSTPW"},{"url":"d:3333","user":"u","pass":"SECONDPW"}], "DONATION": 1 }'
 assert_eq "commit: first-declared pool wins a duplicate (url,user) (#415)" "$(secret_case "$CFG_415D" '{"pools":[{"url":"d:3333","user":"u"}]}')" "committed|pass=FIRSTPW|fp=ABSENT|marker=0"
-# The resolve pass is now the only step that can fail here, and it fails LOUDLY rather than falling
-# through to the overlay: an unreadable base config makes --slurpfile fail, so there is no stored
-# password to carry over and the pools array would otherwise replace wholesale — the exact shape
-# this fix exists to prevent. The pre-existing `merge-failed` case cannot reach this branch: it
-# stages no `pools`, so the resolver never runs and the failure lands on the overlay instead. Both
-# reasons are asserted here so a future edit cannot silently swap one for the other.
+# An unreadable base fails secret resolution for pools, or the later overlay without pools.
 smb="$(mktemp -d "$SANDBOX/smb.XXXXXX")"
 printf '%s' '{broken json' >"$smb/config.json"
 printf '%s' '{"pools":[{"url":"h:3333","pass":{"__secret__":true}}]}' >"$smb/pools.json"
@@ -8079,21 +8071,19 @@ bkf_out="$( (
 assert_contains "commit: unwritable backup dir -> rejected" "$bkf_out" "rejected backup-failed"
 assert_eq "commit: backup failure leaves config.json untouched (donation 1)" "$(jq -r .DONATION "$bkfail/config.json")" "1"
 
-# #434: the tail that actually INSTALLS the new config — `chmod 600` on the candidate, then the
-# atomic rename over config.json — was unguarded, so a failure of either still echoed
-# "committed <backup>" and returned 0. Each step is pinned separately, because they are separate
-# branches with separate reasons and one combined guard could not say which step lost the change.
-# The two commands are stubbed as shell functions rather than by making the filesystem refuse: root
-# (the kcov coverage container) ignores a mode-based refusal, and putting a directory where
-# config.json goes fails the earlier `cp` to the backup instead, never reaching this tail at all.
 mvfail="$SANDBOX/mvf"
-cmt_tail() { # <sabotage: none|mv|chmod> -> "<echoed line>|rc=<rc>|"
+cmt_tail() { # <sabotage: none|mv|chmod|sync-pre|sync-post|sync-uncertain> -> "<echoed line>|rc=<rc>|"
     (
         source "$SCRIPT"
         CONFIG_JSON="$mvfail/config.json"
         SCRIPT_DIR="$mvfail"
-        # Both stubs key on the candidate's `.control.` infix, so neither can fire on anything but
-        # the install itself, and the un-sabotaged command is still run for every other path.
+        local fail_sync=0 sync_call=0
+        case "$1" in sync-pre) fail_sync=1 ;; sync-post) fail_sync=2 ;; sync-uncertain) fail_sync=-2 ;; esac
+        _fsync_paths() {
+            sync_call=$((sync_call + 1))
+            printf '%s\n' "$*" >>"$mvfail/sync.log"
+            case "$fail_sync" in -2) [ "$sync_call" -lt 2 ] ;; *) [ "$sync_call" -ne "$fail_sync" ] ;; esac
+        }
         if [ "$1" = mv ]; then
             mv() {
                 case "$*" in *.control.*) return 1 ;; esac
@@ -8116,21 +8106,31 @@ cmt_reset() {
     printf '%s\n' "$CFG_236" >"$mvfail/config.json"
     printf '%s' '{"DONATION":4}' >"$mvfail/s.json"
 }
-# The positive control FIRST. Without it a green "did not commit" row proves only that something in
-# this fixture is broken, not that a guard fired — the sabotage argument is the ONLY thing that
-# differs between the three cases below, so the un-sabotaged one has to land the change.
 cmt_reset
 assert_contains "commit: the install harness commits when nothing is sabotaged (#434)" "$(cmt_tail none)" "committed "
 assert_eq "commit: the un-sabotaged control really landed the change (donation 4) (#434)" "$(jq -r .DONATION "$mvfail/config.json")" "4"
+assert_eq "commit: pre-rename sync scopes candidate, backup, and both dirs (#472)" "$(awk 'NR==1 {print NF}' "$mvfail/sync.log")" "4"
+assert_eq "commit: pre-rename sync includes backup dir (#472)" "$(awk 'NR==1 {print $3}' "$mvfail/sync.log")" "$mvfail/backups"
+assert_eq "commit: pre-rename sync includes backup parent (#472)" "$(awk 'NR==1 {print $4}' "$mvfail/sync.log")" "$mvfail"
+assert_eq "commit: post-rename sync scopes config and its dir (#472)" "$(awk 'NR==2 {print NF}' "$mvfail/sync.log")" "2"
+cmt_reset
+syn_out="$(cmt_tail sync-pre)"
+assert_contains "commit: pre-rename sync failure is terminal" "$syn_out" "failed commit-sync-failed|rc=2"
+assert_eq "commit: pre-rename sync failure leaves OLD config live" "$(jq -r .DONATION "$mvfail/config.json")" "1"
+cmt_reset
+syn_out="$(cmt_tail sync-post)"
+assert_contains "commit: post-rename sync failure restores OLD config" "$syn_out" "failed commit-sync-failed|rc=2"
+assert_eq "commit: post-rename sync recovery leaves OLD config live" "$(jq -r .DONATION "$mvfail/config.json")" "1"
+cmt_reset
+syn_out="$(cmt_tail sync-uncertain)"
+assert_contains "commit: failed sync recovery is explicit and retains backup" "$syn_out" "failed commit-sync-uncertain:$mvfail/backups/"
+assert_contains "commit: failed sync recovery returns distinct rc 3" "$syn_out" "rc=3"
 cmt_reset
 mvf_out="$(cmt_tail mv)"
 assert_contains "commit: a failed install is reported failed, not committed (#434)" "$mvf_out" "failed commit-install-failed"
 assert_contains "commit: a failed install returns 2, not 0 (#434)" "$mvf_out" "rc=2"
 assert_eq "commit: a failed install leaves the OLD config live (donation 1) (#434)" "$(jq -r .DONATION "$mvfail/config.json")" "1"
 assert_eq "commit: a failed install removes its candidate file (#434)" "$(ls "$mvfail"/config.json.control.* 2>/dev/null | wc -l | tr -d ' ')" "0"
-# A candidate that could not be chmod-ed must stop BEFORE the rename: 0600 is the contract for a file
-# holding ACCESS_TOKEN and pool credentials, and mv would carry the candidate's mode onto the live
-# config. This is a separate branch from the one above, with its own reason.
 cmt_reset
 cmf_out="$(cmt_tail chmod)"
 assert_contains "commit: a candidate that could not be chmod-ed is not installed (#434)" "$cmf_out" "failed commit-chmod-failed"
@@ -9083,10 +9083,10 @@ assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME
 # Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
 # its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
 # `sudo bash tests/e2e-real.sh upgrade` works. Nest that inside another sudo — a `nohup setsid`
-# detach recipe is one — and the inner sudo rewrites SUDO_UID to 0, the exemption stops matching a
 # repo owned by the operator, and every bare `git -C "$HERE"` in the upgrade phase fatals with
 # "detected dubious ownership". The releaser then reads a RED on a gate that is fine.
 echo "== unit: e2e-real git calls survive a nested sudo (#401) =="
+assert_eq "e2e-real callers snapshot four service states and hide bearer argv" "$(printf '%s|%s|%s|%s' "$(grep -c '^    _snapshot_control_state$' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec 'systemctl is-(active|enabled).*&& CTL_.*=1' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec 'curl .*Authorization: Bearer' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec '(auth|_auth)=\(' "$ROOT/tests/e2e-real.sh")")" "2|4|0|0"
 bare_e2e_git=$(grep -nE 'git -C "\$HERE"' "$ROOT/tests/e2e-real.sh" | grep -v 'safe\.directory' || true)
 assert_eq "no e2e-real git call omits -c safe.directory (nested sudo breaks git's SUDO_UID exemption)" "$bare_e2e_git" ""
 # ...and the row above is not vacuous: it would also pass on a file with no git calls left in it.

@@ -41,23 +41,19 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 
-# Every git call on the operator-owned checkout goes through this (#401). git exempts a repo from its
-# dubious-ownership check when the repo is owned by $SUDO_UID, which is why a plain
-# `sudo bash tests/e2e-real.sh ...` works: SUDO_UID is the operator. Nest that inside a second sudo —
-# a `nohup setsid` detach recipe is one — and the inner sudo sets SUDO_UID=0, the exemption stops
-# matching a repo owned by the operator, and EVERY git op here fatals "detected dubious ownership".
-# Pinning safe.directory makes the phase behave identically from either invocation shape, which is
-# the point: a gate that passes only in the foreground is a gate that lies.
+# Root may reach this through nested sudo, so every git call pins the operator-owned checkout (#401).
 _hgit() { git -C "$HERE" -c safe.directory="$HERE" "$@"; }
 GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 
 PASS=0
 FAIL=0
-# control phase state (script-global, not `local` — must survive past control()'s own return so a
-# late trap fire, e.g. during a later phase in `all` mode, is still a safe idempotent no-op; see
-# _control_cleanup).
+# Control state is global so cleanup traps can restore it after a phase returns.
 CTL_SAVED_CFG=""
 CTL_CLEANUP_DONE=0
+CTL_XMRIG_ACTIVE=0
+CTL_XMRIG_ENABLED=0
+CTL_CONTROL_ACTIVE=0
+CTL_CONTROL_ENABLED=0
 # #350: the pre-forward-leg HEAD sha, set only by the auto-derived forward leg (never by the
 # E2E_UPGRADE_TARGET override, which stays deliberately PERMANENT). Same script-global reasoning as
 # above — _upgrade_cleanup must see it from a late trap fire too.
@@ -189,7 +185,7 @@ check_api_refresh() {
         return
         ;;
     esac
-    local next stamp epoch age now token port bind host auth=() i
+    local next stamp epoch age now token port bind host i
     for i in 1 2 3 4 5; do # #458: NEXT is briefly hidden while the triggered service activates.
         next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
         { [ -n "$next" ] && [ "$next" != n/a ]; } && break
@@ -200,9 +196,13 @@ check_api_refresh() {
     port=$(jq -r '.api_port // 8081' "$HERE/config.json" 2>/dev/null)
     bind=$(jq -r '.api_bind // "0.0.0.0"' "$HERE/config.json" 2>/dev/null)
     case "$bind" in 0.0.0.0) host=127.0.0.1 ;; ::) host='[::1]' ;; *:*) host="[$bind]" ;; *) host="$bind" ;; esac
-    [ -n "$token" ] && auth=(-H "Authorization: Bearer $token")
     for i in 1 2 3 4 5; do
-        stamp=$(curl -fsS --max-time 4 "${auth[@]}" "http://$host:$port/1/summary" 2>/dev/null | jq -r '.generated_at // empty' 2>/dev/null) && [ -n "$stamp" ] && break
+        if [ -n "$token" ]; then
+            stamp=$(_auth_curl "$token" -fsS --max-time 4 "http://$host:$port/1/summary" 2>/dev/null | jq -r '.generated_at // empty' 2>/dev/null)
+        else
+            stamp=$(curl -fsS --max-time 4 "http://$host:$port/1/summary" 2>/dev/null | jq -r '.generated_at // empty' 2>/dev/null)
+        fi
+        [ -n "$stamp" ] && break
         sleep 3
     done
     epoch=$(date -d "${stamp:-invalid}" +%s 2>/dev/null || echo 0)
@@ -280,20 +280,15 @@ provision() {
 
 verify() {
     require_linux_root verify
-    # On a freshly rebooted rig the service has only just auto-started, so give it a moment to come fully
-    # up — allocate the per-NUMA datasets, apply the MSR mod, and LOG it — before the doctor #66 check
-    # below greps that log line. Without this, running `verify` immediately after the reboot races the
-    # miner's startup logging and spuriously fails the MSR assertions (the mod is applied a beat later).
-    # Best-effort: wait up to ~90s for a live API hashrate, then proceed regardless so a genuinely dead
-    # miner still surfaces as a doctor failure rather than hanging.
-    # The worker API is open (read-only) with no token by default now, so only send a Bearer when the
-    # operator actually set ACCESS_TOKEN — XMRig 401s a token it never asked for, which under set -e +
-    # pipefail (curl -f → exit 22) would abort verify here before it prints a thing.
-    local _w _hr _tok _auth=()
+    # Let a freshly rebooted miner initialize before doctor inspects its log, bounded at ~90s.
+    local _w _hr _tok
     _tok=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null || true)
-    [ -n "$_tok" ] && _auth=(-H "Authorization: Bearer $_tok")
     for _w in $(seq 1 30); do
-        _hr=$(curl -fsS --max-time 4 "${_auth[@]}" http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
+        if [ -n "$_tok" ]; then
+            _hr=$(_auth_curl "$_tok" -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
+        else
+            _hr=$(curl -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
+        fi
         { [ -n "$_hr" ] && awk "BEGIN{exit !($_hr > 0)}" 2>/dev/null; } && break
         sleep 3
     done
@@ -629,10 +624,26 @@ verify() {
 # DynamicUser python server can take >3s to bind; a single-shot check after `sleep 3` read as
 # connection-refused on real miner-0 runs (the upgrade phase's first run, then the control phase on
 # the v1.12.0 gate). Sets RCV_CODE/RCV_TRY for the caller's ok/bad line.
+_auth_curl() { # <token> <curl args...>; keep the bearer out of process argv
+    local token=$1
+    shift
+    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl --config - "$@"
+}
+
+_snapshot_control_state() {
+    CTL_SAVED_CFG="$(mktemp)"
+    cp "$HERE/config.json" "$CTL_SAVED_CFG"
+    systemctl is-active --quiet xmrig 2>/dev/null && CTL_XMRIG_ACTIVE=1 || CTL_XMRIG_ACTIVE=0
+    systemctl is-enabled --quiet xmrig 2>/dev/null && CTL_XMRIG_ENABLED=1 || CTL_XMRIG_ENABLED=0
+    systemctl is-active --quiet rigforge-control 2>/dev/null && CTL_CONTROL_ACTIVE=1 || CTL_CONTROL_ACTIVE=0
+    systemctl is-enabled --quiet rigforge-control 2>/dev/null && CTL_CONTROL_ENABLED=1 || CTL_CONTROL_ENABLED=0
+    CTL_CLEANUP_DONE=0
+}
+
 _await_receiver() { # <token> <port> -> 0 once serving, 1 after ~30s
     local tok=$1 port=$2
     for RCV_TRY in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-        RCV_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $tok" \
+        RCV_CODE=$(_auth_curl "$tok" -s -o /dev/null -w '%{http_code}' --max-time 5 \
             "http://127.0.0.1:$port/status" 2>/dev/null || true)
         case "$RCV_CODE" in 200 | 503) return 0 ;; esac
         sleep 2
@@ -640,61 +651,29 @@ _await_receiver() { # <token> <port> -> 0 once serving, 1 after ~30s
     return 1
 }
 
-# --- control (#272): the writable control path (#236), for real, for the first time ------------
-#
-# Everything below has only ever run against stubs: tests/run.sh stubs apply()/_wait_miner_live for
-# control_apply(), and the wire test (tests/run.sh's control-server checks) stops at the receiver
-# staging a change — it never lets the real rigforge-control-apply.path unit fire the real root
-# oneshot against a real systemd. This phase is the first time the whole chain runs for real:
+# --- control (#272): the writable control path (#236), for real -------------------------------
 #   POST /apply (receiver, DynamicUser) -> spool -> rigforge-control-apply.path (PathExistsGlob)
 #   -> rigforge-control-apply.service (root oneshot: rigforge.sh control-apply) -> _control_commit
 #   -> apply() -> _wait_miner_live -> GET /status?change_id=... "applied"
-#
-# Runs between verify and perf: it restarts services repeatedly (config toggled on, a change
-# applied, config toggled back off — each an `apply`), which is exactly the kind of churn perf's
-# "clean, idle-machine" bench should NOT be measured through. Sitting it before perf means perf's
-# offline bench (which stops the service outright anyway) still runs last against a fully-settled,
-# already-reverted config — the same rig state teardown then tears down. Deliberately not "verify"
-# itself: verify covers rigforge.sh directly, this exercises the separate control-server.py process
-# + two more systemd units, so a broken chain reads as `E2E-REAL (control): FAIL` on its own.
-#
-# Rollback leg (#272's stretch goal): SKIPPED. control_apply()'s rollback only fires when
-# _wait_miner_live times out post-apply, and the only way to force that from outside rigforge.sh
-# without editing a live systemd unit (which this gate must not do to a production-adjacent rig) is
-# to make the miner fail to come up on purpose — e.g. divert the built xmrig binary out from under a
-# running install. That is exactly the kind of "leaves a window where the rig can't mine if cleanup
-# doesn't run" risk the task brief calls out as the thing to avoid on miner-0. No clean hook for it
-# turned up while reading control_apply()/rigforge-control-apply.path — see #276 for the rollback
-# failure-path tests (those exercise it against a stubbed apply, which is the safe place to do it).
 control() {
     require_linux_root control
     [ -f "$HERE/config.json" ] || die "no $HERE/config.json — run 'provision' first (this phase needs an already-provisioned worker)."
     phase "control — enable the writable control path + apply"
 
-    # Snapshot BEFORE any mutation and install the EXIT trap immediately: every step below can fail
-    # under `set -Eeuo pipefail`, and the rig must come back with control OFF regardless. Same shape
-    # as e2e-pithead.sh's snapshot_config/_cleanup (see there for why: traps replace, not stack, so
-    # this REPLACES rig_lock's holder-only EXIT trap set at the bottom of this file — the trap below
-    # re-does that holder-file removal at process exit. The holder rm lives HERE, not inside
-    # _control_cleanup: the explicit mid-phase cleanup call must not delete the breadcrumb while
-    # perf/teardown still run holding the flock (a blocked arrival would then read "busy: unknown").
-    CTL_SAVED_CFG="$(mktemp)"
-    cp "$HERE/config.json" "$CTL_SAVED_CFG"
-    trap '_control_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
+    # Snapshot before mutation; this trap replaces rig_lock's EXIT trap, so it also removes holder.
+    _snapshot_control_state
+    trap '_control_cleanup || true; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
 
     # Ephemeral bearer token for this run only: generated, used over loopback, and discarded. Never
     # echoed, never written anywhere but config.json itself (which the snapshot above restores).
-    local tok cur_donation new_donation control_port rev_before rev_after cid st tmp
+    local tok cur_donation new_donation control_port api_port read_tok rev_before rev_after cid st tmp
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur_donation=$(jq -r '.DONATION // 1' "$HERE/config.json" 2>/dev/null || echo 1)
     new_donation=$(((cur_donation + 1) % 101)) # DONATION is 0-100 (rigforge.sh); always differs from cur_donation
 
-    # api_allow_from is pinned to loopback: every request this phase makes is FROM this box (root, on
-    # miner-0 itself), and the nft firewall install_api_firewall renders always accepts iifname "lo"
-    # regardless of the configured scope — so 127.0.0.1/32 both satisfies the hard-required check
-    # (rigforge.sh:540-541) and is the literal, correct scope for how this phase actually talks to it.
+    # Every request is local, so restrict the temporary receiver to loopback.
     tmp="$(mktemp)"
-    if jq --arg tok "$tok" '.control = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
+    if jq --arg tok "$tok" '.api = "enabled" | .control = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
         "$HERE/config.json" >"$tmp" && [ -s "$tmp" ]; then
         mv "$tmp" "$HERE/config.json"
     else
@@ -707,12 +686,9 @@ control() {
     sleep 3 # let rigforge-control.service (restarted by install_control) and xmrig settle
 
     control_port=$(jq -r '.control_port // 8082' "$HERE/config.json" 2>/dev/null || echo 8082)
-    # Captured AFTER enabling control (not before): control/ACCESS_TOKEN/api_allow_from aren't part
-    # of the writable-config hash _stamp_config_meta tracks (only pools/DONATION/autotune/watchdog/
-    # watchdog_interval_min/max_temp_c are — the same set control-apply is allowed to touch), so
-    # enabling control alone never bumps the revision. This is the true "before" for the #254 check.
-    # `|| true`: the meta file may not exist yet on a rig where 'control' runs standalone before any
-    # apply() has ever stamped it — jq erroring on a missing file must not abort the phase (set -e).
+    api_port=$(jq -r '.api_port // 8081' "$HERE/config.json" 2>/dev/null || echo 8081)
+    read_tok=$(printf '%s' "$tok" | python3 -c 'import hashlib,hmac,sys; print(hmac.new(sys.stdin.buffer.read(),b"rigforge:api-read:v1",hashlib.sha256).hexdigest())')
+    # Capture after enabling control; those keys do not move the writable-config revision.
     rev_before=$(jq -r '.revision // ""' "$HERE/.rigforge-config-meta.json" 2>/dev/null || true)
 
     phase "control — receiver up"
@@ -726,7 +702,7 @@ control() {
     phase "control — POST a benign change (DONATION $cur_donation -> $new_donation) and poll to applied"
     local resp_file resp_code
     resp_file="$(mktemp)"
-    resp_code=$(curl -s -o "$resp_file" -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $tok" \
+    resp_code=$(_auth_curl "$tok" -s -o "$resp_file" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"DONATION\": $new_donation}" \
         "http://127.0.0.1:$control_port/apply" 2>/dev/null || true)
     if [ "$resp_code" = 202 ]; then
@@ -739,16 +715,10 @@ control() {
 
     st=""
     if [ -n "${cid:-}" ]; then
-        # Bounded by control_apply()'s real wall-clock, which is dominated by the miner restart the
-        # apply performs: HugePages dataset re-init plus the return-to-live-hashrate wait before the
-        # terminal record is written. Measured on the v1.15.2 gate (EPYC 7642, 12x1G pages): the
-        # record landed ~150s after the POST — the old 150s budget missed it by seconds and failed
-        # the phase on a change that applied cleanly (visible as an honest 'pending' since #344).
-        # 300s bounds the same failure it always did (a genuinely wedged apply) without racing the
-        # dataset init on big-page hosts.
+        # Big-page hosts can take ~150s to reinitialize; 300s still bounds a wedged apply.
         local waited=0 poll_to=300 body
         while [ "$waited" -lt "$poll_to" ]; do
-            body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" \
+            body=$(_auth_curl "$tok" -fsS --max-time 5 \
                 "http://127.0.0.1:$control_port/status?change_id=$cid" 2>/dev/null || true)
             # `|| true`: an empty/unreachable body makes jq exit non-zero on some builds — under
             # pipefail that would abort the whole phase (set -e) on a single transient miss instead
@@ -771,6 +741,13 @@ control() {
     [ "$landed" = "$new_donation" ] &&
         ok "config.json carries DONATION=$new_donation (control-apply persisted it)" ||
         bad "config.json DONATION is '$landed', expected $new_donation"
+    local effective="" i
+    for i in {1..20}; do
+        effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
+        [ "$effective" = "$new_donation" ] && break
+        sleep 2
+    done
+    [ "$effective" = "$new_donation" ] && ok "authenticated sister feed carries effective DONATION=$new_donation" || bad "sister feed DONATION is '$effective', expected $new_donation"
     systemctl is-active --quiet xmrig &&
         ok "miner service is active after the control-path apply" ||
         bad "miner service is not active after the control-path apply"
@@ -781,77 +758,108 @@ control() {
         bad "feed config revision did not move (before='$rev_before' after='$rev_after')"
     fi
 
-    # Revert now (not just on exit): in `all` mode later phases (perf, teardown) run in this SAME
-    # process, and the EXIT trap only fires once the whole script exits — an explicit call here is
-    # what actually gets the rig back to control-disabled before perf/teardown see it. The trap stays
-    # armed as a backstop for a hard abort mid-phase; _control_cleanup is idempotent so the (harmless)
-    # second run at real process exit is a no-op.
-    _control_cleanup
+    phase "control — revert through the same authenticated path"
+    resp_file="$(mktemp)"
+    resp_code=$(_auth_curl "$tok" -s -o "$resp_file" -w '%{http_code}' --max-time 10 \
+        -H "Content-Type: application/json" -d "{\"DONATION\": $cur_donation}" \
+        "http://127.0.0.1:$control_port/apply" 2>/dev/null || true)
+    cid=$(jq -r '.change_id // empty' "$resp_file" 2>/dev/null || true)
+    rm -f "$resp_file"
+    st=""
+    waited=0
+    if [ "$resp_code" = 202 ] && [ -n "$cid" ]; then
+        while [ "$waited" -lt 300 ]; do
+            body=$(_auth_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$control_port/status?change_id=$cid" 2>/dev/null || true)
+            st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
+            case "$st" in applied | rejected | rolled_back | failed) break ;; esac
+            sleep 5
+            waited=$((waited + 5))
+        done
+    fi
+    [ "$st" = applied ] && ok "reversion reached 'applied' within ${waited}s" || bad "reversion failed (HTTP ${resp_code:-none}, status ${st:-none})"
+    effective=""
+    for i in {1..20}; do
+        effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
+        [ "$effective" = "$cur_donation" ] && break
+        sleep 2
+    done
+    [ "$effective" = "$cur_donation" ] && ok "authenticated sister feed returned to DONATION=$cur_donation" || bad "sister feed did not return to DONATION=$cur_donation"
+
+    # Restore now for later all-mode phases; the trap remains an idempotent abort backstop.
+    _control_cleanup && ok "exact pre-control config and service state restored" || bad "pre-control state restoration failed"
     summary "control"
 }
 
-# Idempotent: restores the snapshotted config.json, then INDEPENDENTLY forces control back to
-# disabled (belt-and-suspenders — even if the snapshot copy itself failed, this still lands), re-runs
-# apply, and logs (never gates the exit code — this runs from a trap, possibly after summary() has
-# already decided pass/fail) whether the receiver is gone and the miner is back live. Guarded by
-# CTL_CLEANUP_DONE so a trap fire after control() already ran its own explicit cleanup is a no-op.
+_restore_unit_state() { # <unit> <was-active:0|1> <was-enabled:0|1>
+    local unit=$1 want_active=$2 want_enabled=$3 got_active=0 got_enabled=0
+    if [ "$want_enabled" = 1 ]; then systemctl enable "$unit" >/dev/null 2>&1; else systemctl disable "$unit" >/dev/null 2>&1 || true; fi
+    if [ "$want_active" = 1 ]; then systemctl start "$unit" >/dev/null 2>&1; else systemctl stop "$unit" >/dev/null 2>&1 || true; fi
+    systemctl is-active --quiet "$unit" 2>/dev/null && got_active=1 || true
+    systemctl is-enabled --quiet "$unit" 2>/dev/null && got_enabled=1 || true
+    [ "$got_active:$got_enabled" = "$want_active:$want_enabled" ]
+}
+
 _control_cleanup() {
     [ "$CTL_CLEANUP_DONE" = 1 ] && return 0
     CTL_CLEANUP_DONE=1
+    local cleanup_ok=1
     echo ""
-    echo "control: reverting — restoring the snapshotted config.json and disabling control..."
+    echo "control: reverting — restoring the snapshotted config.json..."
     if [ -n "$CTL_SAVED_CFG" ] && [ -f "$CTL_SAVED_CFG" ]; then
         cp "$CTL_SAVED_CFG" "$HERE/config.json" 2>/dev/null &&
             echo "  restored config.json from the pre-phase snapshot" ||
-            echo "  WARNING: could not restore config.json from $CTL_SAVED_CFG — check it by hand" >&2
-        rm -f "$CTL_SAVED_CFG"
+            {
+                echo "  WARNING: could not restore config.json from $CTL_SAVED_CFG — check it by hand" >&2
+                cleanup_ok=0
+            }
     else
         echo "  WARNING: no config.json snapshot on hand to restore — leaving config.json as-is" >&2
+        cleanup_ok=0
     fi
-    if [ -f "$HERE/config.json" ]; then
-        # This whole block is best-effort belt-and-suspenders on top of the restore above — a failure
-        # here (mktemp, jq, mv) must WARN and fall through, never abort mid-cleanup (a partial run
-        # here would skip the apply/holder-file steps below).
-        local dtmp
-        dtmp="$(mktemp 2>/dev/null || true)"
-        if [ -n "$dtmp" ] && jq '.control = "disabled" | .control_upgrade = "disabled"' "$HERE/config.json" >"$dtmp" 2>/dev/null && [ -s "$dtmp" ]; then
-            mv "$dtmp" "$HERE/config.json" 2>/dev/null ||
-                echo "  WARNING: could not move the disabled-control config into place — check $HERE/config.json by hand" >&2
-        else
-            rm -f "$dtmp" 2>/dev/null || true
-            echo "  WARNING: could not force control=disabled via jq — check $HERE/config.json by hand" >&2
-        fi
-    fi
-    "$RIGFORGE" apply >/tmp/e2e-control-cleanup-apply.log 2>&1 ||
+    "$RIGFORGE" apply >/tmp/e2e-control-cleanup-apply.log 2>&1 || {
         echo "  WARNING: the revert 'apply' exited non-zero (see /tmp/e2e-control-cleanup-apply.log)" >&2
-    if systemctl is-active --quiet rigforge-control 2>/dev/null; then
-        echo "  WARNING: rigforge-control.service is STILL ACTIVE after revert — check the rig by hand" >&2
-    else
-        echo "  rigforge-control.service is inactive/absent (control path off)"
-    fi
-    local _tok _auth=() i hr=""
+        cleanup_ok=0
+    }
+    cmp -s "$CTL_SAVED_CFG" "$HERE/config.json" || {
+        echo "  WARNING: config.json differs from its snapshot after revert" >&2
+        cleanup_ok=0
+    }
+    _restore_unit_state rigforge-control "$CTL_CONTROL_ACTIVE" "$CTL_CONTROL_ENABLED" || {
+        echo "  WARNING: rigforge-control service state differs from snapshot" >&2
+        cleanup_ok=0
+    }
+    _restore_unit_state xmrig "$CTL_XMRIG_ACTIVE" "$CTL_XMRIG_ENABLED" || {
+        echo "  WARNING: xmrig service state differs from snapshot" >&2
+        cleanup_ok=0
+    }
+    local _tok i hr=""
     _tok=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null || true)
-    [ -n "$_tok" ] && _auth=(-H "Authorization: Bearer $_tok")
     for i in 1 2 3 4 5 6 7 8 9 10; do
         # `|| true`: a connection-refused curl (miner not up yet) makes the pipeline non-zero under
         # pipefail even when jq itself succeeds on empty input — must not abort cleanup mid-poll.
-        hr=$(curl -fsS --max-time 4 "${_auth[@]}" http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null || true)
+        if [ -n "$_tok" ]; then
+            hr=$(_auth_curl "$_tok" -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null || true)
+        else
+            hr=$(curl -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null || true)
+        fi
         { [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null; } && break
         sleep 3
     done
-    if [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null; then
+    if [ "$CTL_XMRIG_ACTIVE" = 0 ]; then
+        echo "  miner returned to its pre-test stopped state"
+    elif [ -n "$hr" ] && awk "BEGIN{exit !($hr > 0)}" 2>/dev/null; then
         echo "  miner is live post-revert ($hr H/s)"
     else
         echo "  WARNING: miner did not report a live hashrate post-revert within 30s — check the rig by hand" >&2
+        cleanup_ok=0
     fi
+    [ "$cleanup_ok" = 1 ] && rm -f "$CTL_SAVED_CFG"
+    [ "$cleanup_ok" = 1 ]
 }
 
 # --- upgrade (#322): the remote-upgrade chain (#308, ADR 0002), for real -----------------------
 #
-# Both real bugs in this chain — #308's missing-$HOME "dubious ownership" silent git death (v1.11.1)
-# and #318's origin/HEAD-resolves-to-develop refusal (v1.11.2) — were caught only by a real-hardware
-# miner-0 control-upgrade run: the unit suite stubs git BY DESIGN, so this chain regresses in exactly
-# the ways only a real rig catches. This codifies that run as a repeatable phase:
+# Exercise the remote-upgrade chain with real git and systemd (#308/#318/#322).
 #   POST /upgrade (receiver, DynamicUser) -> spool upgrade-*.json -> rigforge-control-upgrade.path
 #   -> rigforge-control-upgrade.service (root oneshot: rigforge.sh control-upgrade)
 #   -> _control_upgrade_do (REAL git fetch/ancestry/checkout + rebuild) -> health gate -> /status
@@ -862,9 +870,7 @@ _control_cleanup() {
 #   rollback : POST v99.99.99 from a locally-forged tag on a commit NOT reachable from origin/main
 #              -> the D10 ancestry guard refuses the forward leg, the verb rolls back to the running
 #              ref -> terminal `rolled_back`, checkout + VERSION unchanged, throttle stamp written.
-#              This runs the real git calls (fetch, rev-parse, merge-base, checkout) as the root
-#              oneshot with no $HOME — the #308 dubious-ownership class dies here, not in the
-#              stubbed suite. Cheap: the forward refusal happens before any checkout or build.
+#              Uses real git as the root oneshot; refusal happens before checkout or build.
 #   forward  : MANDATORY (#350) — a broken fetch/rebuild path must fail the gate, not slip through on
 #              an operator forgetting to opt in. Auto-derives the last two REAL, already-published
 #              release tags (git tag listing: previous -> current/installed) — the release this gate
@@ -878,7 +884,7 @@ _control_cleanup() {
 #              explicitly (PERMANENT — does not restore, the pre-#350 shape, still useful for a
 #              deliberate real deploy); E2E_UPGRADE_SKIP_REASON="..." skips it with a logged reason.
 #
-# Sits after control (same restart churn perf must not measure through) and reuses control's
+# Sits before control (same restart churn perf must not measure through) and reuses control's
 # snapshot/cleanup machinery (CTL_ globals + _control_cleanup) — config is snapshotted and BOTH
 # control flags are forced off again on ANY exit, plus the upgrade-phase leftovers (probe tag,
 # throttle stamp, and #350's checkout rewind) are removed. Also the producer half of pithead#597's
@@ -890,7 +896,7 @@ _control_cleanup() {
 _upg_post_and_poll() { # <token> <port> <vX.Y.Z> <timeout-s> -> terminal status on stdout
     local tok=$1 port=$2 target=$3 to=$4 resp code cid st="" waited=0 body
     resp="$(mktemp)"
-    code=$(curl -s -o "$resp" -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $tok" \
+    code=$(_auth_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"version\": \"$target\"}" \
         "http://127.0.0.1:$port/upgrade" 2>/dev/null || true)
     cid=$(jq -r '.change_id // empty' "$resp" 2>/dev/null || true)
@@ -902,7 +908,7 @@ _upg_post_and_poll() { # <token> <port> <vX.Y.Z> <timeout-s> -> terminal status 
     while [ "$waited" -lt "$to" ]; do
         # `|| true` on both: transient unreachability mid-oneshot (units restarting) must not abort
         # the poll under set -e/pipefail — same shape as control()'s poll loop.
-        body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" \
+        body=$(_auth_curl "$tok" -fsS --max-time 5 \
             "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
         st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
         case "$st" in applied | rolled_back | failed | noop | throttled) break ;; esac
@@ -941,12 +947,7 @@ upgrade() {
     [ -f "$HERE/config.json" ] || die "no $HERE/config.json — run 'provision' first (this phase needs an already-provisioned worker)."
     phase "upgrade — enable control + control_upgrade"
 
-    # Same snapshot-first/trap-immediately shape as control(); see there. The trap REPLACES any
-    # earlier phase's (control() has already run its explicit, guard-protected cleanup by the time
-    # `all` reaches this phase, so replacing its backstop is safe).
-    CTL_SAVED_CFG="$(mktemp)"
-    cp "$HERE/config.json" "$CTL_SAVED_CFG"
-    CTL_CLEANUP_DONE=0
+    _snapshot_control_state
     trap '_upgrade_cleanup; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
 
     local tok control_port tmp installed st
@@ -1379,8 +1380,8 @@ all)
     provision
     if [ "$(hugepages_total)" -gt 0 ]; then
         verify
-        control
         upgrade
+        control
         watchdog
         perf
         teardown

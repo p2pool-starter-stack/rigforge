@@ -4281,13 +4281,19 @@ EOF
 
 # --- Writable control path applier (#236) ---
 
-# Merge a staged control change into config.json — the security-critical core, isolated so it is
-# testable without systemd or a live miner. Only allowlisted keys are applied; the merged result
-# must pass parse_config BEFORE anything touches disk, so an invalid change never lands; only then
-# is the old config snapshotted to config-backups/ (history + recovery) and the new one written
-# atomically + fsynced. Echoes "committed <backup>" (rc 0), "rejected <reason>" for a change that
-# must not land (rc 1), or "failed <reason>" for a VALID change whose install did not (rc 2, #434) —
-# the caller turns those three into the applied / rejected / failed terminals a consumer polls for.
+_fsync_paths() {
+    python3 - "$@" <<'PY'
+import os, sys
+for path in sys.argv[1:]:
+    fd = os.open(path, os.O_RDONLY | (os.O_DIRECTORY if os.path.isdir(path) else 0))
+    try: os.fsync(fd)
+    finally: os.close(fd)
+PY
+}
+
+# Merge an allowlisted, parse-valid staged change into config.json after snapshotting the old one.
+# rc 0 = committed, 1 = invalid/rejected, 2 = install failed with old config restored, and 3 =
+# storage failed after rename and recovery is uncertain. The caller records the matching terminal.
 _control_commit() { # <staged.json> <backups-dir>
     local staged="$1" backups="$2"
     local CONTROL_WRITABLE_KEYS="pools DONATION autotune watchdog watchdog_interval_min max_temp_c"
@@ -4307,11 +4313,8 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "rejected non-writable-keys:$badkeys"
         return 1
     fi
-    # #257: safety — the control path is for TUNING, not removing thermal protection. Refuse a staged
-    # change that disables the watchdog or unsets/out-of-bands max_temp_c. A local `rigforge.sh apply`
-    # still can (the operator is physically present); only the remote/spool path is constrained. The
-    # remote entry (util/control-server.py unsafe_reasons()) already rejects these with a 400 before
-    # staging — this is the applier-side backstop for anything staged out-of-band (drift-tested).
+    # #257: remote control may tune thermal protection, not remove it. This duplicates the receiver
+    # check as an applier-side backstop for anything staged out of band; local apply remains capable.
     local wd_new mt_new
     wd_new=$(printf '%s' "$change" | jq -r 'if has("watchdog") then (.watchdog | tostring | ascii_downcase) else "-" end')
     case "$wd_new" in disabled | false | off | none | "" | null)
@@ -4326,30 +4329,9 @@ _control_commit() { # <staged.json> <backups-dir>
             return 1
         fi
     fi
-    # #415: resolve masked pool secrets BEFORE the overlay. _api_config_json serves a set `pass` /
-    # `tls-fingerprint` as the {"__secret__": true} sentinel and never the value, so the only pools
-    # array a consumer of that feed can send back either carries the sentinel or omits the key —
-    # and jq's `*` below replaces arrays wholesale, after which parse_config defaults a missing
-    # `pass` to "x" (a value that passes every check). Without this step any pools edit silently
-    # re-keyed the rig to the throwaway password, reported success, and logged nothing.
-    # Each incoming pool is matched to a stored one by (url, user), first-declared winning on a
-    # duplicate pair — the same shape Pithead uses to restore its per-worker token sentinels. The
-    # pair is the identity because a pool credential authenticates an ACCOUNT at a HOST: carrying a
-    # password across a changed url or user would be a different silent bug, not a fix for this one.
-    # That pairing rests on the feed serving RAW pools: _writable_config_canonical reads `.pools`
-    # straight out of config.json, not parse_config's normalized POOLS_JSON, which defaults a
-    # missing pool `pass` to the literal "x". Switch the canonical view to the normalized one and
-    # every pool that stores no password is served a sentinel for that invented "x"; it comes back,
-    # `stored` finds nothing to keep, the marker survives the merge, and the edit is rejected
-    # unresolvable-secret-marker below — the exact opposite of what this exists to allow. The
-    # `user` half of the pair is NOT the hazard: POOLS_JSON leaves a blank `user` as "" (the rig
-    # name is filled in generate_xmrig_config, not here), and pkey reads a missing key and "" alike.
-    # #429: that is a GUARD now, not only this paragraph — tests/run.sh pins that a pool stored with
-    # only a url is served with only a url, with a stored-pass pool in the same block as the control.
-    # A sentinel that resolves to nothing is REJECTED rather than dropped: it asks to keep a secret
-    # that is not there, and the whole point here is that no credential change happens quietly. An
-    # explicit value is always taken at face value, so `""` still hits #408's rejection and a real
-    # new password still replaces the old one.
+    # #415: resolve masked pool secrets before jq's array-replacing overlay. Match a stored pool by
+    # (url,user), keep only a real stored secret, and reject any sentinel left unresolved. The raw
+    # config view matters: normalized POOLS_JSON invents pass="x" for an absent password (#429).
     if printf '%s' "$change" | jq -e '(.pools | type) == "array"' >/dev/null 2>&1; then
         local resolved unresolved
         # One jq, two output lines: the surviving markers first, the resolved config second. The
@@ -4395,31 +4377,39 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "rejected backup-failed"
         return 1
     fi
-    # config.json is secret-bearing (ACCESS_TOKEN, pool creds) and 0600 by contract; mv inherits the
-    # candidate's mode, so pin it to 0600 BEFORE the rename or the live config goes world-readable.
-    # #434: this tail is what INSTALLS the change, and both of its steps are now checked. Unguarded,
-    # a failure here still echoed "committed <backup>" and returned 0, and the caller recorded a
-    # terminal `applied` for a config.json that never changed. Errexit was never the backstop it
-    # looks like: bash unsets it inside a command substitution unless `inherit_errexit` is on, and
-    # this file sets no shopt, so `set -E` bought an ERR-trap log line here and never a guard.
-    # rc 2, not 1: the change itself is valid, and the caller must not tell the operator otherwise.
-    # #438: both rc-2 arms drop the snapshot they just took. config.json was never replaced here, so
-    # it is a byte copy of the live config, and the terminal status already reports `backup: null`.
+    # Pin the secret-bearing candidate to 0600 before mv inherits its mode (#434). rc 2 means a
+    # valid change could not be installed but the old config remains live; rc 3 means uncertain.
     if ! chmod 600 "$cand"; then
         rm -f "$cand" "$backup"
         echo "failed commit-chmod-failed"
         return 2
     fi
-    # Durable: flush candidate + backup, then rename over config.json. Same directory, so a
-    # same-filesystem rename(2): a crash leaves the old file or the whole new one, never a torn
-    # config, and a failure here is "config.json untouched" — the caller skips the rollback.
-    sync
+    # Flush the two files and both directory entries, never every filesystem on the host (#472).
+    # A pre-rename failure leaves the old config live; a post-rename failure restores it from the
+    # already-flushed backup. rc 3 is the honest last resort when even that recovery cannot persist.
+    local config_dir backup_parent
+    config_dir=$(dirname "$CONFIG_JSON")
+    backup_parent=$(dirname "$backups")
+    if ! _fsync_paths "$cand" "$backup" "$backups" "$backup_parent"; then
+        rm -f "$cand" "$backup"
+        echo "failed commit-sync-failed"
+        return 2
+    fi
     if ! mv -f "$cand" "$CONFIG_JSON"; then
         rm -f "$cand" "$backup"
         echo "failed commit-install-failed"
         return 2
     fi
-    sync
+    if ! _fsync_paths "$CONFIG_JSON" "$config_dir"; then
+        if cp "$backup" "$cand" && chmod 600 "$cand" && _fsync_paths "$cand" && mv -f "$cand" "$CONFIG_JSON" && _fsync_paths "$CONFIG_JSON" "$config_dir"; then
+            rm -f "$backup"
+            echo "failed commit-sync-failed"
+            return 2
+        fi
+        rm -f "$cand"
+        echo "failed commit-sync-uncertain:$backup"
+        return 3
+    fi
     echo "committed $backup"
     return 0
 }
@@ -4629,6 +4619,12 @@ control_apply() {
         _sweep_config_backups "$backups" || true # never abort before the terminal status (#434)
         _control_status "$status" failed "$cid" "$change_keys" "$result" ""
         warn "control-apply: change $cid could not be committed (${result#failed }) — config.json untouched."
+        return 0
+    fi
+    if [ "$rc" -eq 3 ]; then
+        backup="${result#failed commit-sync-uncertain:}"
+        _control_status "$status" failed "$cid" "$change_keys" "$result" "$backup"
+        warn "control-apply: change $cid hit a storage error after install; restore $backup and re-run apply."
         return 0
     fi
     if [ "$rc" -ne 0 ]; then

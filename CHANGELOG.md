@@ -7,6 +7,11 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Accepted control changes are no longer starved behind mining or a global filesystem flush (#472).**
+  The privileged apply worker runs at normal priority and fsyncs only the changed config and backup.
+
 ## [1.17.2] - 2026-09-07
 
 ### Fixed
