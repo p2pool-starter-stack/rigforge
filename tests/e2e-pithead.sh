@@ -335,9 +335,7 @@ phase_api_impact() {
 phase_network() {
     phase "network — nothing listens or leaks beyond what the config defines"
     local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0
-    # Outbound: the miner's ONLY established TCP peers are the configured pool. Anything else would
-    # mean traffic the operator never asked for. The previous phase's cleanup `apply` restarts the
-    # miner, so give the stratum connection up to 45s to re-establish before judging.
+    # Wait up to 45s, then require the pool to be XMRig's only established TCP peer.
     remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
     while [ -z "$remotes" ] && [ "$waited" -lt 45 ]; do
         sleep 5
@@ -358,7 +356,6 @@ phase_network() {
     else
         bad "no established xmrig connections found to inspect"
     fi
-    # Listeners: the miner owns :8080 and nothing else; :8081 exists exactly while enabled.
     set_cfg '.api = "enabled"'
     sleep 3
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
@@ -372,17 +369,16 @@ phase_network() {
     else
         bad "miner has unexpected listeners: $xl"
     fi
-    # The sister /2/summary minus its documented rigforge block and generation stamp must carry
-    # exactly XMRig's key set — a verbatim superset, nothing renamed, dropped, or invented.
+    # Require the documented metadata, then compare the remaining keys exactly with XMRig's API.
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
-    k2=$(api8081 http://127.0.0.1:8081/2/summary | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)
-    if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then
+    k2=$(api8081 http://127.0.0.1:8081/2/summary)
+    if [ -n "$k1" ] && printf '%s' "$k2" | jq -e '(.rigforge | type) == "object" and (.generated_at | type) == "string" and (.generated_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' >/dev/null 2>&1 &&
+        [ "$k1" = "$(printf '%s' "$k2" | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)" ]; then
         ok "wire superset: sister /2/summary = xmrig's keys + rigforge + generated_at"
     else
-        bad "superset mismatch: xmrig keys $k1 vs sister-without-rigforge-or-stamp $k2"
+        bad "sister summary lacks valid metadata or its XMRig key superset differs"
     fi
-    # Leak sweep: with a token AND a stratum pass configured, no byte of any response on either port
-    # — authed, unauthed, or error, headers included — may contain either secret.
+    # No response on either port may expose the configured token or pool password.
     set_cfg '.ACCESS_TOKEN = "tok-net1" | .pools[0].pass = "pass-net1"'
     sleep 3
     sweep=$(
@@ -456,10 +452,7 @@ phase_stratum_auth() {
     fi
 }
 
-dash_curl() { # -> the dashboard payload (empty on failure). A live stack fronts the dashboard
-    # with Caddy: HTTP 308s to HTTPS, the certificate is self-signed, and the API sits behind
-    # basic auth (#390) — so follow redirects, accept the stack's own cert, and present
-    # E2E_DASH_AUTH when the operator supplied it.
+dash_curl() { # Follow Caddy redirects, accept the stack cert, and present optional basic auth (#390).
     curl -kLfsS --max-time 10 ${E2E_DASH_AUTH:+-u "$E2E_DASH_AUTH"} "$E2E_DASH_URL" 2>/dev/null || true
 }
 
@@ -469,15 +462,17 @@ phase_dashboard() {
         skip "E2E_DASH_URL not set — dashboard phases skipped (agree fixtures with pithead#209)"
         return 0
     fi
-    local me payload
+    local me payload valid=0
     me=$(hostname)
     payload=$(dash_curl)
-    if printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]?; .name == $me)' >/dev/null 2>&1; then
+    if ! printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array"' >/dev/null 2>&1; then
+        bad "dashboard returned no valid workers array"
+        return 0
+    elif printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1; then
         ok "worker '$me' visible in the dashboard payload"
     else
         bad "worker '$me' not in the dashboard payload"
-        # Without the worker visible first, the drop-off loop below would break on its very
-        # first probe and report "dropped off within 0s" — a pass that measured nothing (#390).
+        # Never let initial absence become a vacuous drop-off pass (#390).
         skip "drop-off check skipped: the worker was never visible, so its disappearance proves nothing"
         return 0
     fi
@@ -485,11 +480,16 @@ phase_dashboard() {
     local to="${E2E_DROPOFF_TIMEOUT:-300}" waited=0
     while [ "$waited" -lt "$to" ]; do
         payload=$(dash_curl)
-        printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]?; .name == $me)' >/dev/null 2>&1 || break
+        if printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array"' >/dev/null 2>&1; then
+            valid=1
+            printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1 || break
+        fi
         sleep 15
         waited=$((waited + 15))
     done
-    if printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]?; .name == $me)' >/dev/null 2>&1; then
+    if [ "$valid" != 1 ]; then
+        bad "dashboard returned no valid workers array during the ${to}s drop-off window"
+    elif printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1; then
         bad "stopped worker still listed after ${to}s"
     else
         ok "stopped worker dropped off within ${waited}s"

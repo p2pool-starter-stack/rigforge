@@ -9394,8 +9394,7 @@ echo "== unit: e2e-pithead dashboard leg — hardened-dashboard curl + no vacuou
 DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PD_SRC="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 DDIR="$(mktemp -d "$SANDBOX/dash390.XXXXXX")"
-# dash_curl behavior: a stub curl records its argv; the helper must follow redirects through the
-# self-signed cert (-kLfsS; -f keeps an HTTP-error payload empty instead of an error page) and present E2E_DASH_AUTH via -u only when set.
+# Stub curl records whether dash_curl supplies TLS/redirect/auth flags.
 mkdir -p "$DDIR/bin"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$DC_ARGS"\n' >"$DDIR/bin/curl"
 chmod +x "$DDIR/bin/curl"
@@ -9409,10 +9408,7 @@ out="$( (
 assert_contains "dash_curl follows redirects + accepts the stack cert (#390)" "$(cat "$DDIR/args.with")" "-kLfsS"
 assert_contains "dash_curl presents basic-auth creds when E2E_DASH_AUTH is set (#390)" "$(cat "$DDIR/args.with")" "probe:pw"
 assert_absent "dash_curl sends no -u when E2E_DASH_AUTH is empty (#390)" "$(cat "$DDIR/args.without")" "probe:pw"
-# Never-visible worker: the leg must report the failure and SKIP the drop-off check — before #390
-# the loop broke on its first probe and reported "dropped off within 0s", a pass that measured
-# nothing. Mutation (run during review): restoring the pre-#390 body (no skip/return) makes the
-# assert_absent below go red.
+# A never-visible worker must fail and skip drop-off, never pass vacuously (#390).
 pd_run() { # <dash_curl-body> -> phase_dashboard transcript with stubbed collaborators
     (
         eval "$PD_SRC"
@@ -9421,6 +9417,7 @@ pd_run() { # <dash_curl-body> -> phase_dashboard transcript with stubbed collabo
         skip() { printf 'SKIP %s\n' "$1"; }
         ok() { printf 'OK %s\n' "$1"; }
         bad() { printf 'BAD %s\n' "$1"; }
+        sleep() { :; }
         RIGFORGE=true E2E_DASH_URL="http://stack-host/api/state" E2E_DROPOFF_TIMEOUT=1 phase_dashboard
     ) 2>&1
 }
@@ -9432,14 +9429,17 @@ assert_absent "no vacuous dropped-off pass on a never-visible worker (#390)" "$o
 out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"; fi')"
 assert_contains "visible worker passes the visibility check (#390)" "$out" "OK worker"
 assert_contains "stopped worker still measured dropping off (#390)" "$out" "OK stopped worker dropped off"
+for invalid in '' '{' '{}' '{"workers":"bad"}'; do
+    out="$(pd_run "printf '%s' '$invalid'")"
+    assert_contains "invalid dashboard payload fails closed (#464)" "$out" "BAD dashboard returned no valid workers array"
+    assert_absent "invalid dashboard payload never proves drop-off (#464)" "$out" "OK stopped worker dropped off"
+done
 
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
     "$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")" "$RL_SRC"
-# #269: the byte-compare above only sees rig_lock() itself, not _cleanup's own fallback drifting
-# back to the pre-#244 path. Match the ":-" fallback shape, not bare text — e2e-real.sh/e2e-pithead.sh
-# both legitimately mention the old path in an (#244) migration comment. Split so this needle can't self-match.
+# #269: match the fallback shape because comments legitimately mention the old holder path.
 _stale_holder_pat=':-/run/rig-e2e.hold''er'
 assert_eq "no code under tests/ still falls back to the pre-#244 holder path (#269)" \
     "$(grep -rl -- "$_stale_holder_pat" "$ROOT/tests" 2>/dev/null | wc -l | tr -d ' ')" "0"
