@@ -204,6 +204,9 @@ EOF
     cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "[curl] $*" >> "${CURL_LOG:-/dev/null}"
+case " $* " in
+*" --config - "*) cat >>"${CURL_STDIN_LOG:-/dev/null}" ;;
+esac
 printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}\n' "${STUB_API_HR:-1234.5}"
 EOF
 
@@ -3013,6 +3016,7 @@ assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEA
 # API_CMD, so this is the one place the real curl branch (the header logic) is exercised.
 echo "== unit: _read_api_hashrate sends a Bearer only when ACCESS_TOKEN is set (#125) =="
 clog="$SANDBOX/curl-calls.log"
+curl_stdin="$SANDBOX/curl-stdin.log"
 : >"$clog"
 hr_open="$( (
     source "$SCRIPT"
@@ -3023,14 +3027,16 @@ hr_open="$( (
 assert_eq "_read_api_hashrate returns the hashrate on the open (no-token) API" "$hr_open" "1234.5"
 assert_absent "no Authorization header sent when ACCESS_TOKEN is unset" "$(cat "$clog")" "Authorization"
 : >"$clog"
+: >"$curl_stdin"
 hr_auth="$( (
     source "$SCRIPT"
     unset API_CMD
     ACCESS_TOKEN="miner-0"
-    PATH="$STUBS:$PATH" CURL_LOG="$clog" STUB_API_HR=987.6 _read_api_hashrate
+    PATH="$STUBS:$PATH" CURL_LOG="$clog" CURL_STDIN_LOG="$curl_stdin" STUB_API_HR=987.6 _read_api_hashrate
 ))"
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
-assert_contains "Bearer <token> sent when ACCESS_TOKEN is set" "$(cat "$clog")" "Authorization: Bearer miner-0"
+assert_absent "Bearer <token> is absent from curl argv" "$(cat "$clog")" "miner-0"
+assert_contains "Bearer <token> reaches curl over stdin config" "$(cat "$curl_stdin")" 'Authorization: Bearer miner-0'
 
 # #147: support-bundle — everything a maintainer needs, nothing secret. The redaction is
 # structural (jq paths), and THE test is the whole-bundle grep: with fixture secrets planted in

@@ -3604,7 +3604,8 @@ _read_api_summary() {
     fi
     command -v curl >/dev/null 2>&1 || return 0
     if [ -n "${ACCESS_TOKEN:-}" ]; then
-        curl -fsS --max-time 5 -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
+        printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$ACCESS_TOKEN" | jq -Rs .)" |
+            curl --config - -fsS --max-time 5 "$url" 2>/dev/null || true
     else
         curl -fsS --max-time 5 "$url" 2>/dev/null || true
     fi
