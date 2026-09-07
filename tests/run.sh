@@ -7299,7 +7299,7 @@ APS_CALLS="$APS/calls.log"
     PATH="$STUBS:$PATH" CALL_LOG="$APS_CALLS" install_api >/dev/null 2>&1
 )
 assert_contains "port change re-renders the server unit (#99)" "$(cat "$APS/systemd/rigforge-api.service")" "api-server.py 0.0.0.0 9000"
-assert_contains "port change restarts the server to re-read config (#99)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api.service"
+assert_contains "port change restarts the timer and server to adopt both units (#99/#454)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api-refresh.timer rigforge-api.service"
 # Legacy v1.2.x socket pair is removed on sight (upgrade convergence).
 printf 'x' >"$APS/systemd/rigforge-api.socket"
 printf 'x' >"$APS/systemd/rigforge-api@.service"
