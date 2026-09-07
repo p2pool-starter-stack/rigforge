@@ -9384,7 +9384,6 @@ EOF
     assert_absent "a fully-traversable path never dies (#362)" "$out2" "DIE:"
     assert_contains "a fully-traversable path returns cleanly (#362)" "$out2" "rc=0"
 fi
-
 echo "== unit: e2e in-container apt prereqs — the abort names a cause only where apt named one (#442) =="
 assert_eq "e2e: a hash/size mismatch is named as a mirror mid-sync, NOT the network (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Failed to fetch x  Hash Sum mismatch") 2>/dev/null)" "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)"
 assert_eq "e2e: apt's other mirror-desync string is the same class (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Failed to fetch y  File has unexpected size (10 != 12)") 2>/dev/null)" "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)"
@@ -9394,7 +9393,6 @@ echo "== unit: e2e-pithead dashboard leg — hardened curl + no vacuous offline 
 DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PD_SRC="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 DDIR="$(mktemp -d "$SANDBOX/dash390.XXXXXX")"
-# Stub curl records whether dash_curl supplies TLS/redirect/auth flags.
 mkdir -p "$DDIR/bin"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$DC_ARGS"\n' >"$DDIR/bin/curl"
 chmod +x "$DDIR/bin/curl"
@@ -9432,10 +9430,12 @@ for invalid in '' '{' '{}' '{"workers":"bad"}' '{"workers":[null]}' '{"workers":
     assert_contains "invalid dashboard payload fails closed (#464)" "$out" "BAD dashboard returned no valid workers array"
     assert_absent "invalid dashboard payload never proves offline (#466)" "$out" "OK stopped worker became offline"
 done
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-bad" ]; then touch "'"$DDIR"'/valid-then-bad"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[]}'\''; fi')"
-assert_contains "worker absence cannot impersonate offline (#466)" "$out" "BAD worker did not become offline"
-assert_absent "stale validity never proves offline (#466)" "$out" "OK stopped worker became offline"
-
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-absent" ]; then touch "'"$DDIR"'/valid-then-absent"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"; fi')"
+assert_contains "historical-only worker cannot impersonate offline (#466)" "$out" "BAD worker did not become offline"
+assert_absent "historical-only worker never proves offline (#466)" "$out" "OK stopped worker became offline"
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-malformed" ]; then touch "'"$DDIR"'/valid-then-malformed"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[null,{"name":"%s","status":"offline"}]}'\'' "$(hostname)"; fi')"
+assert_contains "malformed member blocks exact-target offline (#466)" "$out" "BAD worker did not become offline"
+assert_absent "malformed transition never proves offline (#466)" "$out" "OK stopped worker became offline"
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
