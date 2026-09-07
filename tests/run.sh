@@ -204,9 +204,11 @@ EOF
     cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "[curl] $*" >> "${CURL_LOG:-/dev/null}"
+case " $* " in
+*" --config - "*) cat >>"${CURL_STDIN_LOG:-/dev/null}" ;;
+esac
 printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}\n' "${STUB_API_HR:-1234.5}"
 EOF
-
     chmod +x "$bin"/*
 }
 
@@ -3007,12 +3009,11 @@ wdead="$( (
 ))"
 assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
 
-# The worker API is open (read-only) with no token by default (#125), so _read_api_hashrate must send a
-# Bearer ONLY when ACCESS_TOKEN is set — else XMRig 401s a token it never asked for and curl -f (exit 22)
-# aborts the caller under set -e, silently breaking live tuning. The rest of the suite stubs this via
-# API_CMD, so this is the one place the real curl branch (the header logic) is exercised.
+# The worker API is open (read-only) with no token by default (#125), so send a Bearer only when set.
+# This real curl branch proves token-bearing probes work without exposing the token in curl argv.
 echo "== unit: _read_api_hashrate sends a Bearer only when ACCESS_TOKEN is set (#125) =="
 clog="$SANDBOX/curl-calls.log"
+curl_stdin="$SANDBOX/curl-stdin.log"
 : >"$clog"
 hr_open="$( (
     source "$SCRIPT"
@@ -3023,18 +3024,17 @@ hr_open="$( (
 assert_eq "_read_api_hashrate returns the hashrate on the open (no-token) API" "$hr_open" "1234.5"
 assert_absent "no Authorization header sent when ACCESS_TOKEN is unset" "$(cat "$clog")" "Authorization"
 : >"$clog"
+: >"$curl_stdin"
 hr_auth="$( (
     source "$SCRIPT"
     unset API_CMD
     ACCESS_TOKEN="miner-0"
-    PATH="$STUBS:$PATH" CURL_LOG="$clog" STUB_API_HR=987.6 _read_api_hashrate
+    PATH="$STUBS:$PATH" CURL_LOG="$clog" CURL_STDIN_LOG="$curl_stdin" STUB_API_HR=987.6 _read_api_hashrate
 ))"
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
-assert_contains "Bearer <token> sent when ACCESS_TOKEN is set" "$(cat "$clog")" "Authorization: Bearer miner-0"
-
-# #147: support-bundle — everything a maintainer needs, nothing secret. The redaction is
-# structural (jq paths), and THE test is the whole-bundle grep: with fixture secrets planted in
-# both configs, neither may appear anywhere in the extracted archive.
+assert_absent "Bearer <token> is absent from curl argv" "$(cat "$clog")" "miner-0"
+assert_contains "Bearer <token> reaches curl over stdin config" "$(cat "$curl_stdin")" 'Authorization: Bearer miner-0'
+# #147: support-bundle — everything needed, nothing secret; structural redaction covers both configs.
 echo "== black-box: support-bundle collects + redacts (#147) =="
 SB="$(mktemp -d "$SANDBOX/support.XXXXXX")"
 mkdir -p "$SB/home/worker/xmrig/build"
@@ -7394,12 +7394,9 @@ if [ "$(uname -s)" = Linux ]; then
 else
     assert_contains "api-refresh refuses off-Linux" "$out" "Linux-only"
 fi
-
 echo "== black-box: the persistent api server (#164, the xmrig model) =="
-# python3 is the server's runtime (stock on Ubuntu runners, macOS dev boxes, and the container
-# e2e). The kcov coverage container is deliberately apt-free and lacks it — skip LOUDLY there;
-# the suite still enforces this block in CI's Test suite, the macOS job, and locally, and
-# api-server.py is python (outside kcov's bash coverage) so no coverage is lost by skipping.
+# The kcov container lacks this Python runtime; the suite still enforces the block in ordinary CI,
+# the macOS job, and locally.
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the api-server wire suite runs in the other CI jobs"
     APISRV_SKIP=1
@@ -7408,11 +7405,13 @@ else
 fi
 if [ "$APISRV_SKIP" = 0 ]; then
     python3 -m py_compile "$ROOT/util/api-server.py" && ok "api-server.py compiles" || bad "api-server.py does not compile" ""
+    python3 -c 'import runpy,sys; d=runpy.run_path(sys.argv[1]); f=d["derive_read_token"]; assert f("short") == f("é" * 32) == ""' "$ROOT/util/api-server.py" && ok "api-server refuses to derive from a weak or non-ASCII token" || bad "api-server derived from a weak or non-ASCII token" ""
     APISRV="$(mktemp -d "$SANDBOX/apisrv.XXXXXX")"
     printf '%s' '{"hashrate":{"total":[1234.5]},"rigforge":{"version":"t"}}' >"$APISRV/summary.json"
     printf '%s' '{"service_active":true}' >"$APISRV/health.json"
     printf '%s' '{"applied":null}' >"$APISRV/tune.json"
-    STOK="tok-srv1"
+    STOK="0123456789abcdef0123456789abcdef"
+    SREAD="79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8"
     printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "%s" }\n' "$STOK" >"$APISRV/config.json"
     APIPORT=$((20000 + RANDOM % 20000))
     python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" &
@@ -7434,6 +7433,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     assert_eq "server: exactly 3 response headers" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
     body="$(curl -fsS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
     assert_eq "server: serves the produced summary verbatim" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
+    assert_eq "server: derived read bearer -> 200" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $SREAD" "http://127.0.0.1:$APIPORT/2/summary")" "200"
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$APIPORT/2/summary")"
     assert_eq "server: unauthed -> 401" "$code" "401"
     resp="$(curl -sS --max-time 5 "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
@@ -9096,7 +9096,6 @@ if [ "$hgit_calls" -ge 10 ]; then
 else
     bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"
 fi
-
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
@@ -9127,6 +9126,7 @@ else
     hc() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
     assert_eq "POST unauthed -> 401" "$(hc -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
     assert_eq "POST wrong token -> 401" "$(hc -X POST "$U/apply" -H "Authorization: Bearer nope" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
+    assert_eq "POST derived read bearer -> 401" "$(hc -X POST "$U/apply" -H 'Authorization: Bearer 61cac658219a7ff9907d30270c6703abce35fdbe6b00d8a4ca92762c995eae49' -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
     resp="$(curl -sS --max-time 5 -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"
     assert_absent "401 body never echoes the token" "$resp" "$CTOK"
     body="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"

@@ -33,12 +33,19 @@ per-rig stats over the LAN. Know exactly what it is:
 
 The optional sister API (`:8081`, `"api": "enabled"` — **off by default**) follows the same
 posture: read-only by construction (GET only, fixed routes, nothing from a request is executed or
-logged), gated by the same `ACCESS_TOKEN`, and served by a single persistent python3-stdlib
+logged). When `ACCESS_TOKEN` is set it accepts the exact bearer and a read-only HMAC-derived bearer;
+the writable `:8082` endpoint rejects the derived value and still requires the exact token. It uses a
+single persistent python3-stdlib
 process that only ships pre-computed files (`ProtectSystem=strict`, `NoNewPrivileges`, lowest CPU
 priority — it can never compete with the miner, and a config it cannot parse is fatal at startup
 rather than silently dropping the token). The probe pass that produces those files runs from a
 separate idle-priority timer. It additionally serves RigForge's tune/health/power data — still
 stats, never a control surface.
+
+The derived bearer is available only when `ACCESS_TOKEN` is at least 32 ASCII characters and must
+be generated randomly (`openssl rand -hex 16`). A deterministic derivation is an offline verifier,
+so a short or human-chosen token is unsafe for this split; it remains raw-client compatible but gets
+no derived bearer.
 
 The optional writable control path (`:8082`, `"control": "enabled"` — **off by default**, #236) is
 the one endpoint that accepts writes, and it is fail-closed by construction. Enabling it requires
