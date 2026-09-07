@@ -457,42 +457,42 @@ dash_curl() { # Follow Caddy redirects, accept the stack cert, and present optio
 }
 
 phase_dashboard() {
-    phase "dashboard — workers-alive shows this rig; a stopped rig drops off"
+    phase "dashboard — workers-alive shows this rig; a stopped rig becomes offline"
     if [ -z "${E2E_DASH_URL:-}" ]; then
         skip "E2E_DASH_URL not set — dashboard phases skipped (agree fixtures with pithead#209)"
         return 0
     fi
-    local me payload absent=0
+    local me payload offline=0
     me=$(hostname)
     payload=$(dash_curl)
-    if ! printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array" and all(.workers[]; type == "object" and (.name | type) == "string")' >/dev/null 2>&1; then
+    if ! printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array" and all(.workers[]; type == "object" and (.name | type) == "string" and ((.status == "online") or (.status == "offline")))' >/dev/null 2>&1; then
         bad "dashboard returned no valid workers array"
         return 0
-    elif printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1; then
-        ok "worker '$me' visible in the dashboard payload"
+    elif printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me and .status == "online")' >/dev/null 2>&1; then
+        ok "worker '$me' online in the dashboard payload"
     else
         bad "worker '$me' not in the dashboard payload"
-        # Never let initial absence become a vacuous drop-off pass (#390).
-        skip "drop-off check skipped: the worker was never visible, so its disappearance proves nothing"
+        # Never let initial absence become a vacuous offline pass (#390).
+        skip "offline check skipped: the worker was never online, so its later state proves nothing"
         return 0
     fi
     "$RIGFORGE" stop >/dev/null 2>&1 || true
     local to="${E2E_DROPOFF_TIMEOUT:-300}" waited=0
     while [ "$waited" -lt "$to" ]; do
         payload=$(dash_curl)
-        if printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array" and all(.workers[]; type == "object" and (.name | type) == "string")' >/dev/null 2>&1; then
-            if ! printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1; then
-                absent=1
+        if printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array" and all(.workers[]; type == "object" and (.name | type) == "string" and ((.status == "online") or (.status == "offline")))' >/dev/null 2>&1; then
+            if printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me and .status == "offline")' >/dev/null 2>&1; then
+                offline=1
                 break
             fi
         fi
         sleep 15
         waited=$((waited + 15))
     done
-    if [ "$absent" = 1 ]; then
-        ok "stopped worker dropped off within ${waited}s"
+    if [ "$offline" = 1 ]; then
+        ok "stopped worker became offline within ${waited}s"
     else
-        bad "worker stayed listed or no valid workers array arrived during the ${to}s drop-off window"
+        bad "worker did not become offline in a valid workers array during the ${to}s window"
     fi
     "$RIGFORGE" start >/dev/null 2>&1 || true
 }

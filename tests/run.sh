@@ -9390,7 +9390,7 @@ assert_eq "e2e: a hash/size mismatch is named as a mirror mid-sync, NOT the netw
 assert_eq "e2e: apt's other mirror-desync string is the same class (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Failed to fetch y  File has unexpected size (10 != 12)") 2>/dev/null)" "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)"
 assert_eq "e2e: near-miss control — 'unexpected size' outside apt's own sentence is not a mirror (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: rsync reported an unexpected size for /x") 2>/dev/null)" "see the apt output above for the cause"
 assert_eq "e2e: control — every other failure defers to apt's own output (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Unable to locate package jq") 2>/dev/null)" "see the apt output above for the cause"
-echo "== unit: e2e-pithead dashboard leg — hardened-dashboard curl + no vacuous drop-off (#390) =="
+echo "== unit: e2e-pithead dashboard leg — hardened curl + no vacuous offline pass (#390/#466) =="
 DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PD_SRC="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 DDIR="$(mktemp -d "$SANDBOX/dash390.XXXXXX")"
@@ -9422,19 +9422,19 @@ pd_run() { # <dash_curl-body> -> phase_dashboard transcript with stubbed collabo
 }
 out="$(pd_run 'printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"')"
 assert_contains "never-visible worker reads as a failure (#390)" "$out" "BAD worker"
-assert_contains "drop-off is skipped when visibility never held (#390)" "$out" "SKIP drop-off check skipped"
-assert_absent "no vacuous dropped-off pass on a never-visible worker (#390)" "$out" "dropped off within"
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"; fi')"
+assert_contains "offline check is skipped when visibility never held (#390)" "$out" "SKIP offline check skipped"
+assert_absent "no vacuous offline pass on a never-visible worker (#390)" "$out" "became offline within"
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[{"name":"%s","status":"offline"}],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)" "$(hostname)"; fi')"
 assert_contains "visible worker passes the visibility check (#390)" "$out" "OK worker"
-assert_contains "stopped worker still measured dropping off (#390)" "$out" "OK stopped worker dropped off"
-for invalid in '' '{' '{}' '{"workers":"bad"}' '{"workers":[null]}' '{"workers":[42]}' '{"workers":[{}]}' '{"workers":[{"name":42}]}'; do
+assert_contains "stopped worker measured offline before expiry (#466)" "$out" "OK stopped worker became offline"
+for invalid in '' '{' '{}' '{"workers":"bad"}' '{"workers":[null]}' '{"workers":[42]}' '{"workers":[{}]}' '{"workers":[{"name":"x"}]}' '{"workers":[{"name":42,"status":"online"}]}' '{"workers":[{"name":"x","status":42}]}' '{"workers":[{"name":"x","status":"paused"}]}'; do
     out="$(pd_run "printf '%s' '$invalid'")"
     assert_contains "invalid dashboard payload fails closed (#464)" "$out" "BAD dashboard returned no valid workers array"
-    assert_absent "invalid dashboard payload never proves drop-off (#464)" "$out" "OK stopped worker dropped off"
+    assert_absent "invalid dashboard payload never proves offline (#466)" "$out" "OK stopped worker became offline"
 done
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-bad" ]; then touch "'"$DDIR"'/valid-then-bad"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{"workers":[null]}'\''; fi')"
-assert_contains "valid presence followed by malformed payload fails closed (#464)" "$out" "BAD worker stayed listed or no valid workers array"
-assert_absent "stale validity never proves drop-off (#464)" "$out" "OK stopped worker dropped off"
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-bad" ]; then touch "'"$DDIR"'/valid-then-bad"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[]}'\''; fi')"
+assert_contains "worker absence cannot impersonate offline (#466)" "$out" "BAD worker did not become offline"
+assert_absent "stale validity never proves offline (#466)" "$out" "OK stopped worker became offline"
 
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
