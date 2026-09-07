@@ -209,7 +209,6 @@ case " $* " in
 esac
 printf '{"hashrate":{"total":[%s,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}\n' "${STUB_API_HR:-1234.5}"
 EOF
-
     chmod +x "$bin"/*
 }
 
@@ -3010,10 +3009,8 @@ wdead="$( (
 ))"
 assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
 
-# The worker API is open (read-only) with no token by default (#125), so _read_api_hashrate must send a
-# Bearer ONLY when ACCESS_TOKEN is set — else XMRig 401s a token it never asked for and curl -f (exit 22)
-# aborts the caller under set -e, silently breaking live tuning. The rest of the suite stubs this via
-# API_CMD, so this is the one place the real curl branch (the header logic) is exercised.
+# The worker API is open (read-only) with no token by default (#125), so send a Bearer only when set.
+# This real curl branch proves token-bearing probes work without exposing the token in curl argv.
 echo "== unit: _read_api_hashrate sends a Bearer only when ACCESS_TOKEN is set (#125) =="
 clog="$SANDBOX/curl-calls.log"
 curl_stdin="$SANDBOX/curl-stdin.log"
@@ -3037,10 +3034,7 @@ hr_auth="$( (
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_absent "Bearer <token> is absent from curl argv" "$(cat "$clog")" "miner-0"
 assert_contains "Bearer <token> reaches curl over stdin config" "$(cat "$curl_stdin")" 'Authorization: Bearer miner-0'
-
-# #147: support-bundle — everything a maintainer needs, nothing secret. The redaction is
-# structural (jq paths), and THE test is the whole-bundle grep: with fixture secrets planted in
-# both configs, neither may appear anywhere in the extracted archive.
+# #147: support-bundle — everything needed, nothing secret; structural redaction covers both configs.
 echo "== black-box: support-bundle collects + redacts (#147) =="
 SB="$(mktemp -d "$SANDBOX/support.XXXXXX")"
 mkdir -p "$SB/home/worker/xmrig/build"
