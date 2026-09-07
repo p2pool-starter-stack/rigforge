@@ -3556,9 +3556,8 @@ assert_contains "toolchain still installs without a cpupower package (#327)" "$(
 assert_absent "no cpupower name reaches apt when neither exists (#327)" "$(cat "$NC/calls.log")" "linux-tools-common"
 assert_absent "linux-cpupower also stays out when absent (#327)" "$(cat "$NC/calls.log")" "linux-cpupower"
 
-# check_prerequisites (the jq bootstrap) had NO test. jq is deliberately kept OFF the scenario PATH so the
-# install branch runs; each dir holds ONLY the package manager(s) under test, so `command -v` selects the
-# intended per-distro branch from any host. sudo is a passthrough so the (stubbed) installer actually runs.
+# check_prerequisites (the jq bootstrap) had NO test. jq stays OFF each scenario PATH, whose dir holds only
+# the package manager(s) under test; sudo passes through so the stubbed installer runs.
 echo "== unit: check_prerequisites installs jq per package manager =="
 mk_pm_bin() { # <dir> <cmd...>: a passthrough sudo (strips any VAR=val prefix) + a logging stub per command.
     # Absolute /bin/sh shebangs so the stubs run under a PATH restricted to <dir> alone (no bash/env lookup).
@@ -3576,6 +3575,7 @@ prereq_run() { # <bin_dir> <os>: echoes the function output, an rc line, then th
         source "$SCRIPT"
         OS_TYPE="$os"
         set +e
+        hash -r 2>/dev/null || true # Parent-shell jq calls must not leak through bash's command cache.
         PATH="$d" CALL_LOG="$d/calls.log" check_prerequisites 2>&1
     )"
     rc=$?
