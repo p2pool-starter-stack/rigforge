@@ -155,7 +155,8 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
      || { echo "pull failed — refusing to tag a cached main"; exit 1; }
    test "$(git rev-parse HEAD)" = "$release_commit" \
      || { echo "main moved after review — stop and review the new commit"; exit 1; }
-   git tag -a vX.Y.Z "$release_commit" -m "RigForge vX.Y.Z"
+   git tag -a vX.Y.Z "$release_commit" -m "RigForge vX.Y.Z" \
+     || { echo "tag creation failed — refusing to push an existing local tag"; exit 1; }
    git push origin refs/tags/vX.Y.Z
    test "$(git ls-remote --tags origin 'refs/tags/vX.Y.Z^{}' | cut -f1)" = "$release_commit" \
      || { echo "the remote tag does not dereference to the release commit"; exit 1; }
