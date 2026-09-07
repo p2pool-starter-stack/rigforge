@@ -9408,7 +9408,6 @@ out="$( (
 assert_contains "dash_curl follows redirects + accepts the stack cert (#390)" "$(cat "$DDIR/args.with")" "-kLfsS"
 assert_contains "dash_curl presents basic-auth creds when E2E_DASH_AUTH is set (#390)" "$(cat "$DDIR/args.with")" "probe:pw"
 assert_absent "dash_curl sends no -u when E2E_DASH_AUTH is empty (#390)" "$(cat "$DDIR/args.without")" "probe:pw"
-# A never-visible worker must fail and skip drop-off, never pass vacuously (#390).
 pd_run() { # <dash_curl-body> -> phase_dashboard transcript with stubbed collaborators
     (
         eval "$PD_SRC"
@@ -9425,7 +9424,6 @@ out="$(pd_run 'printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}
 assert_contains "never-visible worker reads as a failure (#390)" "$out" "BAD worker"
 assert_contains "drop-off is skipped when visibility never held (#390)" "$out" "SKIP drop-off check skipped"
 assert_absent "no vacuous dropped-off pass on a never-visible worker (#390)" "$out" "dropped off within"
-# Visible-then-stopped: history retains the name, but only workers[].name defines live presence.
 out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"; fi')"
 assert_contains "visible worker passes the visibility check (#390)" "$out" "OK worker"
 assert_contains "stopped worker still measured dropping off (#390)" "$out" "OK stopped worker dropped off"
@@ -9434,6 +9432,9 @@ for invalid in '' '{' '{}' '{"workers":"bad"}'; do
     assert_contains "invalid dashboard payload fails closed (#464)" "$out" "BAD dashboard returned no valid workers array"
     assert_absent "invalid dashboard payload never proves drop-off (#464)" "$out" "OK stopped worker dropped off"
 done
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-bad" ]; then touch "'"$DDIR"'/valid-then-bad"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{'\''; fi')"
+assert_contains "valid presence followed by malformed payload fails closed (#464)" "$out" "BAD worker stayed listed or no valid workers array"
+assert_absent "stale validity never proves drop-off (#464)" "$out" "OK stopped worker dropped off"
 
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"

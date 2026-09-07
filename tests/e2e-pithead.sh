@@ -372,7 +372,7 @@ phase_network() {
     # Require the documented metadata, then compare the remaining keys exactly with XMRig's API.
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
     k2=$(api8081 http://127.0.0.1:8081/2/summary)
-    if [ -n "$k1" ] && printf '%s' "$k2" | jq -e '(.rigforge | type) == "object" and (.generated_at | type) == "string" and (.generated_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' >/dev/null 2>&1 &&
+    if [ -n "$k1" ] && printf '%s' "$k2" | jq -e '(.rigforge | type) == "object" and (.generated_at | type) == "string" and ([.generated_at | try fromdateiso8601 catch empty] | length == 1)' >/dev/null 2>&1 &&
         [ "$k1" = "$(printf '%s' "$k2" | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)" ]; then
         ok "wire superset: sister /2/summary = xmrig's keys + rigforge + generated_at"
     else
@@ -462,7 +462,7 @@ phase_dashboard() {
         skip "E2E_DASH_URL not set — dashboard phases skipped (agree fixtures with pithead#209)"
         return 0
     fi
-    local me payload valid=0
+    local me payload absent=0
     me=$(hostname)
     payload=$(dash_curl)
     if ! printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array"' >/dev/null 2>&1; then
@@ -481,18 +481,18 @@ phase_dashboard() {
     while [ "$waited" -lt "$to" ]; do
         payload=$(dash_curl)
         if printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array"' >/dev/null 2>&1; then
-            valid=1
-            printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1 || break
+            if ! printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1; then
+                absent=1
+                break
+            fi
         fi
         sleep 15
         waited=$((waited + 15))
     done
-    if [ "$valid" != 1 ]; then
-        bad "dashboard returned no valid workers array during the ${to}s drop-off window"
-    elif printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me)' >/dev/null 2>&1; then
-        bad "stopped worker still listed after ${to}s"
-    else
+    if [ "$absent" = 1 ]; then
         ok "stopped worker dropped off within ${waited}s"
+    else
+        bad "worker stayed listed or no valid workers array arrived during the ${to}s drop-off window"
     fi
     "$RIGFORGE" start >/dev/null 2>&1 || true
 }
