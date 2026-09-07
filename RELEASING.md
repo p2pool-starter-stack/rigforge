@@ -87,7 +87,8 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    : "${RELEASE_PR:?set RELEASE_PR to the promotion PR number}"
    repo=$(gh api repos/{owner}/{repo} --jq .full_name)
    reviewed_commit=$(gh api "repos/$repo/pulls/$RELEASE_PR" --jq .head.sha)
-   git update-ref refs/rigforge/release-candidate "$reviewed_commit"
+   git update-ref refs/rigforge/release-candidate "$reviewed_commit" \
+     || { echo "cannot record the reviewed commit — refusing to continue"; exit 1; }
    printf 'Review release candidate %s\n' "$reviewed_commit"
    ```
 
