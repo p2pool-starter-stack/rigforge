@@ -3575,7 +3575,7 @@ prereq_run() { # <bin_dir> <os>: echoes the function output, an rc line, then th
         source "$SCRIPT"
         OS_TYPE="$os"
         set +e
-        hash -r 2>/dev/null || true # Parent-shell jq calls must not leak through bash's command cache.
+        hash -r
         PATH="$d" CALL_LOG="$d/calls.log" check_prerequisites 2>&1
     )"
     rc=$?
