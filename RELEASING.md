@@ -85,18 +85,26 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 
    ```bash
    git fetch origin
-   git merge-base --is-ancestor origin/main origin/develop \
+   release_commit=$(git rev-parse refs/remotes/origin/develop)
+   main_commit=$(git rev-parse refs/remotes/origin/main)
+   git merge-base --is-ancestor "$main_commit" "$release_commit" \
      || { echo "NOT a fast-forward — main has commits develop lacks; back-merge first (see below)"; exit 1; }
-   git push origin develop:main
+   git push origin "$release_commit:refs/heads/main"
+   test "$(git ls-remote --heads origin refs/heads/main | cut -f1)" = "$release_commit" \
+     || { echo "main does not point at the audited release commit"; exit 1; }
    ```
+
+   The explicit sha is deliberate: a refspec source such as `develop:main` resolves the unqualified
+   `develop` **locally**. It can therefore push a stale local branch even when every preflight read
+   `origin/develop`. The command above gates and pushes the same object, then reads the remote back.
 
    The `Main Branch` ruleset targets `refs/heads/main` only (`develop` carries no rules at all) and has
    `pull_request`, `non_fast_forward` and `deletion`, with `OrganizationAdmin` bypass at
    `bypass_mode: always`. The push satisfies `non_fast_forward` — that rule blocks force-pushes, and
-   this is a genuine fast-forward — and needs the bypass for `pull_request`.
-   **Untested: no push has yet relied on that bypass, so confirm it on the next promotion. If it is
-   refused, fall back to `gh pr merge --merge --admin` and then back-merge (`git merge origin/main` on
-   `develop`) to restore the invariant before the next release.**
+   this is a genuine fast-forward — and needs the bypass for `pull_request`. The organization-admin
+   bypass admitted both corrective fast-forward pushes during v1.17.0. If a future push is refused,
+   fall back to `gh pr merge --merge --admin` and then back-merge (`git merge origin/main` on
+   `develop`) to restore the invariant before the next release.
 
    > **The invariant is the point: `main` must stay an ancestor of `develop`.** Both `gh pr merge`
    > modes break it, in different ways, and the repo has been broken by each in turn.
@@ -124,9 +132,15 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 
    ```bash
    git checkout main && git pull --ff-only origin main
+   release_commit=$(git rev-parse HEAD)
    git tag -a vX.Y.Z -m "RigForge vX.Y.Z"
-   git push origin main --follow-tags
+   git push origin refs/tags/vX.Y.Z
+   test "$(git ls-remote --tags origin 'refs/tags/vX.Y.Z^{}' | cut -f1)" = "$release_commit" \
+     || { echo "the remote tag does not dereference to the release commit"; exit 1; }
    ```
+
+   Push the named tag explicitly. `--follow-tags` can truthfully report that the branch is current
+   without proving the intended tag moved, so the remote dereference is the release evidence.
 
 Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
@@ -139,6 +153,21 @@ Pushing the tag triggers the release pipeline
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
 - creates the GitHub Release as a draft. Review the generated notes and bundles, then click
   Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
+
+For a full release, make the published release the repository's `latest` marker explicitly and read
+it back. Rigs' `upgrade --check` and remote upgrade path follow that endpoint; “published” and
+“latest” are separate release state:
+
+```bash
+repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+release_id=$(gh api "repos/$repo/releases/tags/vX.Y.Z" --jq .id)
+gh api -X PATCH "repos/$repo/releases/$release_id" -f make_latest=true
+test "$(gh api "repos/$repo/releases/latest" --jq .tag_name)" = vX.Y.Z \
+  || { echo "published release is not the repository's latest marker"; exit 1; }
+```
+
+The `Release latest marker` workflow repeats that read after every non-prerelease publish and fails
+loudly if the marker differs. It is a guard, not a substitute for the explicit publish step above.
 
 After a rig is re-tagged, record its benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit

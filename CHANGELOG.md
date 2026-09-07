@@ -7,6 +7,17 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release promotion now pushes the commit that was actually audited (#451).** The release guide
+  resolves the fetched remote tip to an explicit commit, pushes that object to `main`, and reads it
+  back. It no longer uses a local branch name that can silently lag the remote. Tag publication is
+  explicit and verifies the annotated tag's dereferenced commit instead of trusting `--follow-tags`.
+
+- **A published release must also become the repository's latest release (#453).** The release guide
+  now sets `make_latest` explicitly and verifies the endpoint used by rig upgrades. A publish-event
+  workflow checks the same invariant for every full release and fails loudly on drift.
+
 ## [1.17.0] - 2026-09-05
 
 ### Added
