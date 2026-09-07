@@ -47,3 +47,39 @@ assert_contains "doctor: healthy refresh status is reported (#454)" "$out" "sist
 out="$(run_refresh_doctor 1 'sister feed is stale')"
 assert_contains "doctor: failed refresh status is warned (#454)" "$out" "sister feed is stale"
 assert_contains "doctor: failed refresh status counts as an issue (#454)" "$out" "issue(s) found"
+
+echo "== unit: e2e-real retries NEXT through timer activation (#458) =="
+E2E_REFRESH_SRC="$(sed -n '/^check_api_refresh()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
+assert_contains "e2e refresh check is extractable (#458)" "$E2E_REFRESH_SRC" "check_api_refresh()"
+EFR="$(mktemp -d "$SANDBOX/e2e-refresh.XXXXXX")"
+printf '{"api":"enabled"}\n' >"$EFR/config.json"
+: >"$EFR/systemctl.calls"
+out="$({
+    eval "$E2E_REFRESH_SRC"
+    HERE="$EFR"
+    ok() { printf 'ok: %s\n' "$1"; }
+    bad() { printf 'bad: %s\n' "$1"; }
+    systemctl() {
+        local n
+        n=$(wc -l <"$EFR/systemctl.calls")
+        printf 'x\n' >>"$EFR/systemctl.calls"
+        [ "$n" -lt 2 ] || printf 'Mon 2099-01-01 00:00:00 UTC\n'
+    }
+    curl() { printf '{"generated_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
+    sleep() { :; }
+    check_api_refresh
+} 2>&1)"
+assert_contains "e2e refresh accepts NEXT after the activation window (#458)" "$out" "timer has a NEXT trigger"
+assert_absent "e2e refresh does not false-red the activation window (#458)" "$out" "timer has no NEXT trigger"
+assert_eq "e2e refresh retried twice before NEXT appeared (#458)" "$(wc -l <"$EFR/systemctl.calls" | tr -d ' ')" "3"
+out="$({
+    eval "$E2E_REFRESH_SRC"
+    HERE="$EFR"
+    ok() { printf 'ok: %s\n' "$1"; }
+    bad() { printf 'bad: %s\n' "$1"; }
+    systemctl() { printf 'n/a\n'; }
+    curl() { printf '{"generated_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
+    sleep() { :; }
+    check_api_refresh
+} 2>&1)"
+assert_contains "e2e refresh still rejects a persistently absent NEXT (#458)" "$out" "timer has no NEXT trigger"

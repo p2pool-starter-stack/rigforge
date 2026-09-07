@@ -8,11 +8,7 @@
 # Run it before tagging a release; it is deliberately NOT a CI job (real build + HugePages + mining are
 # flaky-by-nature and against Actions' ToS).
 #
-# It drives the genuine commands end to end: provision builds and tunes; reboot activates HugePages;
-# verify checks doctor, mining, tune/autotune, service verbs, backup/restore, and sister-feed liveness;
-# control proves a benign authenticated change and always restores disabled state; upgrade proves
-# noop, refused-tag rollback, and a real forward move before restoring; watchdog proves the thermal
-# stop against real sensors/systemd and restores it; teardown asserts a complete, idempotent revert.
+# It drives every genuine phase end to end, including mining, control, upgrades and safe restoration.
 #
 # Env knobs:
 #   E2E_ALLOW_OFFLINE_POOL       1 = don't fail the connect check when the pool is unreachable
@@ -194,7 +190,11 @@ check_api_refresh() {
         ;;
     esac
     local next stamp epoch age now token port bind host auth=() i
-    next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    for i in 1 2 3 4 5; do # #458: NEXT is briefly hidden while the triggered service activates.
+        next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+        { [ -n "$next" ] && [ "$next" != n/a ]; } && break
+        sleep 1
+    done
     if [ -z "$next" ] || [ "$next" = n/a ]; then bad "sister-feed timer has no NEXT trigger"; else ok "sister-feed timer has a NEXT trigger ($next)"; fi
     token=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null)
     port=$(jq -r '.api_port // 8081' "$HERE/config.json" 2>/dev/null)

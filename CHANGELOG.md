@@ -11,6 +11,10 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **The real-hardware gate no longer mistakes an activating refresh timer for an unscheduled one
+  (#458).** systemd briefly hides a timer's next trigger while its service activates. The gate now
+  waits through that bounded window while still failing a persistently missing schedule.
+
 - **The sister API refresh can recover instead of freezing indefinitely (#454).** Its 15-second
   timer now follows an independent wall-clock cadence instead of chaining each run to the refresh
   service's previous activation. Reinstalling units, a failed refresh, or a timed-out run therefore
