@@ -62,8 +62,7 @@ CTL_CLEANUP_DONE=0
 # E2E_UPGRADE_TARGET override, which stays deliberately PERMANENT). Same script-global reasoning as
 # above — _upgrade_cleanup must see it from a late trap fire too.
 UPG_ORIG_REF=""
-# #349: watchdog phase state. Same script-global reasoning as CTL_SAVED_CFG above — a late trap fire
-# (e.g. during perf/teardown in `all` mode, which set no trap of their own) must still see these.
+# #349: script-global watchdog state remains visible to a late EXIT trap.
 WD_SAVED_CFG=""
 WD_CLEANUP_DONE=0
 WD_WORKER_ROOT=""
@@ -1115,11 +1114,13 @@ _watchdog_cleanup() {
         fi
         echo "  WARNING: service 'xmrig' is not active after the revert — check the rig by hand" >&2
         return 1
-    elif systemctl is-active --quiet xmrig 2>/dev/null; then
-        echo "  WARNING: service 'xmrig' became active although it entered stopped" >&2
-        return 1
     else
-        echo "  preserved stopped service state"
+        systemctl is-active --quiet xmrig 2>/dev/null && "$RIGFORGE" stop >/tmp/e2e-watchdog-cleanup-stop.log 2>&1 || true
+        if systemctl is-active --quiet xmrig 2>/dev/null; then
+            echo "  WARNING: service 'xmrig' is active although it entered stopped" >&2
+            return 1
+        fi
+        echo "  restored service 'xmrig' to inactive"
         return 0
     fi
 }
@@ -1160,7 +1161,7 @@ watchdog() {
         return
     fi
 
-    # Snapshot BEFORE any mutation and install the EXIT trap immediately; see the block comment above.
+    # Snapshot before mutation and install the EXIT trap immediately.
     WD_SAVED_CFG="$(mktemp)"
     cp "$HERE/config.json" "$WD_SAVED_CFG"
     systemctl is-active --quiet xmrig 2>/dev/null && WD_WAS_ACTIVE=1 || WD_WAS_ACTIVE=0

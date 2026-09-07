@@ -108,8 +108,8 @@ assert_contains "e2e refresh still rejects a persistently absent NEXT (#458)" "$
 
 echo "== unit: e2e-real watchdog cleanup restores prior service state (#462) =="
 WD_CLEANUP_SRC="$(sed -n '/^_watchdog_cleanup()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
-watchdog_cleanup_case() { # <was active> <start succeeds>
-    local was_active="$1" start_ok="$2" w
+watchdog_cleanup_case() { # <was active> <start succeeds> [cleanup state]
+    local was_active="$1" start_ok="$2" state="${3:-inactive}" w
     w="$(mktemp -d "$SANDBOX/watchdog-cleanup.XXXXXX")"
     printf '{}\n' >"$w/config.json"
     printf '{}\n' >"$w/saved.json"
@@ -117,11 +117,16 @@ watchdog_cleanup_case() { # <was active> <start succeeds>
     (
         eval "$WD_CLEANUP_SRC"
         HERE="$w" WD_CLEANUP_DONE=0 WD_SAVED_CFG="$w/saved.json" WD_WORKER_ROOT="$w/worker" WD_WAS_ACTIVE="$was_active"
-        state=inactive RIGFORGE=rigforge_stub
-        rigforge_stub() { [ "$1" = start ] && {
-            [ "$start_ok" = 1 ] || return 1
-            state=active
-        }; }
+        RIGFORGE=rigforge_stub
+        rigforge_stub() {
+            case "$1" in
+            start)
+                [ "$start_ok" = 1 ] || return 1
+                state=active
+                ;;
+            stop) state=inactive ;;
+            esac
+        }
         systemctl() { [ "$state" = active ]; }
         _watchdog_cleanup >/dev/null 2>&1
         rc=$?
@@ -130,4 +135,5 @@ watchdog_cleanup_case() { # <was active> <start succeeds>
 }
 assert_eq "watchdog cleanup restarts a previously active miner (#462)" "$(watchdog_cleanup_case 1 1)" "0:active"
 assert_eq "watchdog cleanup preserves a previously stopped miner (#462)" "$(watchdog_cleanup_case 0 1)" "0:inactive"
+assert_eq "watchdog cleanup stops a previously stopped miner that became active (#462)" "$(watchdog_cleanup_case 0 1 active)" "0:inactive"
 assert_eq "watchdog cleanup fails when prior active state cannot be restored (#462)" "$(watchdog_cleanup_case 1 0)" "1:inactive"
