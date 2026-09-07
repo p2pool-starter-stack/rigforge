@@ -1890,7 +1890,7 @@ assert_contains "no-rebuild upgrade reloads systemd (#413)" "$(cat "$UPN/calls.l
 assert_contains "no-rebuild upgrade restarts so the new config takes effect (#413)" \
     "$(cat "$UPN/calls.log")" "[systemctl] restart xmrig.service"
 assert_eq "no-rebuild upgrade restarts exactly once (#413)" \
-    "$(grep -c 'systemctl\] restart xmrig.service' "$UPN/calls.log")" "1"
+    "$(grep -c 'systemctl\] restart' "$UPN/calls.log")" "1"
 assert_absent "no-rebuild upgrade does not also 'start' the unit (#413)" "$(cat "$UPN/calls.log")" "[systemctl] start"
 
 UPA="$(mktemp -d "$SANDBOX/upg-api.XXXXXX")"
@@ -1920,7 +1920,7 @@ assert_eq "upgrade still reinstalls the unit on a stopped rig (#413)" \
     "$([ -f "$UPS/etc-systemd/xmrig.service" ] && echo installed || echo missing)" "installed"
 assert_eq "upgrade still regenerates the config on a stopped rig (#413)" \
     "$(J "$UPS/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
-assert_absent "upgrade does not restart a miner the operator stopped (#413)" "$(cat "$UPS/calls.log")" "] restart xmrig.service"
+assert_absent "upgrade does not restart a miner the operator stopped (#413)" "$(cat "$UPS/calls.log")" "] restart"
 assert_absent "upgrade does not start a miner the operator stopped (#413)" "$(cat "$UPS/calls.log")" "] start"
 # macOS has no systemd, so it can only tell the operator.
 o="$(
@@ -1961,7 +1961,7 @@ assert_eq "upgrade re-merges the tuned prefetch into the live config (#10)" \
 # install_service would show up here as TWO on the rebuild path, which is the regression this pins.
 if [ "$UPG_OS" = Linux ]; then
     assert_eq "upgrade rebuild restarts exactly once (#413)" \
-        "$(grep -c 'systemctl\] restart xmrig.service' "$UPG/calls.log")" "1"
+        "$(grep -c 'systemctl\] restart' "$UPG/calls.log")" "1"
 fi
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" help 2>&1)"
 rc=$?

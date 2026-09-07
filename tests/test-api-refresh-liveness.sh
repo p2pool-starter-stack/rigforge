@@ -1,6 +1,6 @@
 # shellcheck shell=bash disable=SC1090,SC2034,SC2329
-# #454: doctor's timer/payload diagnosis is deterministic here; the real transient-systemd proof
-# is a separate Linux-only check because this dependency-free suite must also run on macOS.
+# #454: doctor's diagnosis stays deterministic here. Real transient-systemd timing was checked
+# separately because this dependency-free suite must also run on macOS.
 RFS="$(mktemp -d "$SANDBOX/refresh-status.XXXXXX")"
 printf '%s' '{"generated_at":"2026-09-07T04:00:00Z"}' >"$RFS/summary.json"
 refresh_status() { # <next> <mtime> <now>
