@@ -7,6 +7,16 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.17.2] - 2026-09-07
+
+### Fixed
+
+- **Pithead can read an adopted rig without holding its write-capable control token (#469).**
+  The read-only sister API accepts a scoped HMAC-derived bearer while the writable control API
+  continues to require the exact `ACCESS_TOKEN`. Existing raw API clients remain compatible.
+  Derivation requires a cryptographically random token of at least 32 ASCII characters; shorter
+  legacy tokens retain raw access but receive no derived read capability.
+
 ## [1.17.1] - 2026-09-07
 
 ### Fixed
