@@ -1,0 +1,5 @@
+# Synthetic derived-bearer fixtures committed before the test switched to a named variable.
+28e9865e6024dab857e8c0351617e5ce9edcf9c6:tests/run.sh:curl-auth-header:7436
+da898f48b632c133f9dc4b5cb3a35fd20432d1de:tests/run.sh:curl-auth-header:7436
+# Existing synthetic control-health fixture exposed by the first project-local ignore file.
+ed3a94a2efe0374de76f79fcbe4995019a492967:tests/run.sh:generic-api-key:3193

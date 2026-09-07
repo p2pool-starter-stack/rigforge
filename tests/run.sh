@@ -7395,9 +7395,8 @@ else
     assert_contains "api-refresh refuses off-Linux" "$out" "Linux-only"
 fi
 echo "== black-box: the persistent api server (#164, the xmrig model) =="
-# python3 is the server's runtime (stock on Ubuntu runners, macOS dev boxes, and the container
-# e2e). The kcov coverage container is deliberately apt-free and lacks it — skip LOUDLY there;
-# the suite still enforces this Python-only block in CI's Test suite, the macOS job, and locally.
+# The kcov container lacks this Python runtime; the suite still enforces the block in ordinary CI,
+# the macOS job, and locally.
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the api-server wire suite runs in the other CI jobs"
     APISRV_SKIP=1
@@ -7412,6 +7411,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     printf '%s' '{"service_active":true}' >"$APISRV/health.json"
     printf '%s' '{"applied":null}' >"$APISRV/tune.json"
     STOK="0123456789abcdef0123456789abcdef"
+    SREAD="79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8"
     printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "%s" }\n' "$STOK" >"$APISRV/config.json"
     APIPORT=$((20000 + RANDOM % 20000))
     python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" &
@@ -7433,7 +7433,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     assert_eq "server: exactly 3 response headers" "$(printf '%s' "$hdrs" | grep -c ':')" "3"
     body="$(curl -fsS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
     assert_eq "server: serves the produced summary verbatim" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
-    assert_eq "server: derived read bearer -> 200" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Authorization: Bearer 79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8' "http://127.0.0.1:$APIPORT/2/summary")" "200"
+    assert_eq "server: derived read bearer -> 200" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $SREAD" "http://127.0.0.1:$APIPORT/2/summary")" "200"
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$APIPORT/2/summary")"
     assert_eq "server: unauthed -> 401" "$code" "401"
     resp="$(curl -sS --max-time 5 "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
