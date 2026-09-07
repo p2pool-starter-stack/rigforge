@@ -73,7 +73,8 @@ HTTP endpoint the stack can consume for data XMRig doesn't know (the enriched fe
 pithead#235):
 
 - `GET /1/summary` and `GET /2/summary` — XMRig's own body passed through **verbatim** (a strict
-  superset: everything the `:8080` probe returns is here unchanged), plus one namespaced
+  superset: everything the `:8080` probe returns is here unchanged), a top-level UTC
+  `generated_at` timestamp for freshness checks, plus one namespaced
   `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance), `tune` (applied
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
@@ -87,7 +88,8 @@ pithead#235):
   outcome, `{change_id, status, reason}` mirrored from the control status file, so a poller that
   missed a slow rollback catches the terminal outcome here without dialing the control port; `null`
   when the rig has never taken a control change or the status file is unreadable).
-- `GET /health` and `GET /tune` — the `rigforge.health` / `rigforge.tune` objects bare.
+- `GET /health` and `GET /tune` — the `rigforge.health` / `rigforge.tune` objects bare; `/health`
+  carries the same `generated_at` timestamp as the summaries from that refresh pass.
 - When XMRig's own API is unreachable the response is still `200` with
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
   matters.
@@ -100,7 +102,8 @@ pool, `:8081` exists exactly while enabled, and no response byte ever contains `
 pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
 `api_port`/`api_bind`. Architecture mirrors XMRig's own API: a tiny persistent server ships
 pre-computed state (a request costs microseconds — polling cannot shave hashrate), refreshed every
-15s by an idle-priority timer, so responses are at most ~15s stale.
+15s by an idle-priority wall-clock timer. Consumers should still age `generated_at`: it distinguishes
+a current report from a cached response when a rig or its refresh job is unhealthy.
 
 ### Stratum over TLS (optional)
 

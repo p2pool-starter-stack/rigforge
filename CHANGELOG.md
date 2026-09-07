@@ -9,6 +9,14 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **The sister API refresh can recover instead of freezing indefinitely (#454).** Its 15-second
+  timer now follows an independent wall-clock cadence instead of chaining each run to the refresh
+  service's previous activation. Reinstalling units, a failed refresh, or a timed-out run therefore
+  cannot remove the only future trigger while the miner continues hashing. Missed probes are not
+  replayed after downtime. Summary and health payloads now carry the same UTC `generated_at` stamp,
+  and `doctor` reports the timer's next and last trigger plus payload age, counting a missing schedule
+  or a payload older than a minute as an issue.
+
 - **Release promotion now pushes the commit that was actually audited (#451).** The release guide
   resolves the fetched remote tip to an explicit commit, pushes that object to `main`, and reads it
   back. It no longer uses a local branch name that can silently lag the remote. Tag publication is

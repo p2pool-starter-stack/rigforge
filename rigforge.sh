@@ -50,9 +50,7 @@ on_err() {
 
 # --- Global Variables ---
 OS_TYPE="$(uname -s)"
-# Resolve a path through any symlink chain and echo the directory that holds the real file (absolute).
-# This is what lets an on-PATH symlink (e.g. /usr/local/bin/rigforge -> the checkout) still locate the
-# repo it points into, so config.json / util/ / data/ resolve to the checkout, not the symlink's dir.
+# Resolve symlinks to the real script directory, so an on-PATH link still finds config and assets.
 # Portable (no `readlink -f`, which BSD/macOS lacks): follow links one hop at a time.
 _script_dir() {
     local src="${1:-${BASH_SOURCE[0]}}" dir
@@ -64,69 +62,42 @@ _script_dir() {
     cd -P "$(dirname "$src")" &>/dev/null && pwd
 }
 
-# Base directory for the script's bundled assets (VERSION, systemd/, util/) and its runtime state
-# (config.json, data/, backups/). Defaults to the directory the script lives in — resolved through any
-# symlink, so a normal deploy is unchanged AND a `rigforge` symlink on PATH still finds the repo.
-# Overridable via RIGFORGE_HOME so the test suite can run THIS file against a throwaway sandbox
-# (keeping per-test state isolated) instead of a copy of it, which lets coverage credit the real
-# script for black-box runs too (#68).
+# Base for bundled assets and runtime state. RIGFORGE_HOME lets tests sandbox this real script so
+# black-box runs remain isolated while coverage still credits the production file (#68).
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
-# The operator to hand root-written files back to. Under interactive `sudo` that's SUDO_USER. The
-# periodic autotune runs from systemd as root with NO SUDO_USER — so its unit bakes in RIGFORGE_OPERATOR
-# (the operator captured at setup time), keeping the scheduled run from re-owning files to root.
+# Operator for root-written files; timer units bake it into RIGFORGE_OPERATOR when SUDO_USER is absent.
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
-# #254: config-change provenance marker (revision/source/last_change_id/changed_at), a sidecar next to
-# config.json. Env-overridable so tests can sandbox it.
+# #254 config provenance sidecar; overridable for tests.
 CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$SCRIPT_DIR/.rigforge-config-meta.json}"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
-# Set to true by a caller that owns the service start/restart decision itself (#413: `upgrade`).
-# install_service then writes, reloads and enables the unit and starts nothing.
+# True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
 SERVICE_NO_START=false
 
-# Pinned XMRig release for reproducible / supply-chain-hardened builds.
-# Override via environment if you need a different release.
+# Pinned XMRig release for reproducible builds; environment-overridable.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
 # Set to false when the pinned XMRig commit is already built, so a re-run/upgrade skips the (slow)
 # recompile and the service restart — making re-runs idempotent (#4).
 XMRIG_REBUILD=true
 
-# Appliance mode (pithead#797 R1): opt-in via RIGFORGE_APPLIANCE=1 for running setup on the Pithead
-# appliance image, whose root filesystem is read-only and whose /etc is a volatile overlay — every
-# write there vanishes at reboot, and a pithead boot leg re-runs setup each boot instead. An env
-# flag, not a config.json key, because the caller is the image's boot path (not the operator) and
-# the mode is a preset bundle over the env-overridable system paths below — the same seam the R0
-# bench drove by hand with GRUB_DEFAULT=/nonexistent. Under the flag, setup:
-#   - never installs packages (the toolchain is baked at image build; apt cannot run on the RO
-#     root) — it verifies the tools it needs and fails naming what's missing;
-#   - skips the GRUB leg deliberately (the kernel cmdline, incl. any 1GB-hugepage reservation, is
-#     image-owned; update-grub aborted the whole run on the RO /boot);
-#   - renders systemd units into /run/systemd/system and enables them with --runtime;
-#   - mounts hugetlbfs at runtime instead of appending to fstab, and skips the limits.conf memlock
-#     append (the unit already sets LimitMEMLOCK=infinity; interactive-run memlock is not an
-#     appliance concern).
-# Runtime tuning is unchanged: modprobe msr, the grow-only HugePages sysctl (#328), and the
-# cpupower governor via ExecStartPre all work on a read-only root.
+# Appliance mode (pithead#797 R1) is an environment preset because the image boot path owns it.
+# The read-only-root path verifies baked tools, skips image-owned GRUB, renders runtime systemd
+# units, and mounts hugetlbfs without persistent /etc writes. Runtime MSR, HugePages, and governor
+# tuning remain unchanged.
 RIGFORGE_APPLIANCE="${RIGFORGE_APPLIANCE:-0}" # every consumer tests `= 1`; anything else is off
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
     # Preset only — an explicit SYSTEMD_DIR in the environment (the test sandbox) still wins, and
     # the non-appliance default below keeps this value because it is now set.
     SYSTEMD_DIR="${SYSTEMD_DIR:-/run/systemd/system}"
 fi
-# Unit-enablement mode: appliance units live in /run, so their wants/ symlinks must too (a plain
-# `enable` would write them to the volatile /etc overlay — working until reboot, then gone). The
-# same flag is REQUIRED on `disable` too (#353) — verified empirically (systemd 255, real enable/
-# disable round-trip): a plain `disable` only ever removes the /etc-side wants-symlink, silently
-# leaving a --runtime-enabled unit's /run one in place (`is-enabled` still reports
-# "enabled-runtime", rc 0) — it is NOT a superset that also cleans up /run. Every disable call
-# below passes ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"}, mirroring its enable counterpart exactly.
+# Appliance enable/disable both need --runtime: its units and wants links live under /run, and a
+# plain disable leaves a runtime link enabled (#353, verified on systemd 255).
 ENABLE_RUNTIME=""
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then ENABLE_RUNTIME="--runtime"; fi
 
-# System paths the script writes to. Overridable so the test suite can redirect them at a sandbox
-# (the defaults are the real locations, so production behaviour is unchanged).
+# Writable system paths are overridable for the test sandbox; defaults remain the real locations.
 LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
 GRUB_DEFAULT="${GRUB_DEFAULT:-/etc/default/grub}"
 FSTAB="${FSTAB:-/etc/fstab}"
@@ -138,28 +109,25 @@ HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
 # Directory on PATH where `setup` installs the `rigforge` command (a symlink back to this script).
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 
-# Read-only system paths the `doctor` health check inspects (overridable for tests).
+# Read-only doctor paths, overridable for tests.
 MEMINFO="${MEMINFO:-/proc/meminfo}"
-# CPU flags source for the ISA preflight (#338). Same override name util/proposed-grub.sh already
-# uses for its pdpe1gb probe — one knob, and the test harness already isolates it from the host.
+# CPU flags source shared with util/proposed-grub.sh's pdpe1gb probe (#338).
 CPUINFO="${CPUINFO:-/proc/cpuinfo}"
 MSR_MODULE_DIR="${MSR_MODULE_DIR:-/sys/module/msr}"
 GOVERNOR_FILE="${GOVERNOR_FILE:-/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor}"
 HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages}"
 NR_HUGEPAGES_FILE="${NR_HUGEPAGES_FILE:-/proc/sys/vm/nr_hugepages}"
-# Hashrate-capping-hardware diagnostics (#67): RAM layout (dmidecode) + effective CPU clock under load.
+# Hashrate-capping diagnostics (#67): RAM layout and effective loaded CPU clock.
 DMIDECODE="${DMIDECODE:-dmidecode}"
 RDMSR_BIN="${RDMSR_BIN:-rdmsr}" # msr-tools, for doctor's register-level MSR verification (#66)
 CPUFREQ_MAX="${CPUFREQ_MAX:-/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq}"
 CPU_SYSFS="${CPU_SYSFS:-/sys/devices/system/cpu}"
 MIN_RAM_MTS="${MIN_RAM_MTS:-2666}"   # warn below this configured RAM speed (MT/s)
 MIN_CLOCK_PCT="${MIN_CLOCK_PCT:-75}" # warn when the loaded clock is below this % of max boost
-# BIOS/firmware advisory (#78): board/BIOS identity + SMT state (both world-readable from sysfs).
+# BIOS/firmware advisory (#78): board identity and SMT state.
 DMI_DIR="${DMI_DIR:-/sys/class/dmi/id}"
 SMT_CONTROL="${SMT_CONTROL:-/sys/devices/system/cpu/smt/control}"
-# Kernel lockdown state (#333): securityfs exposes the active level, world-readable. Distro kernels
-# (Ubuntu >= 20.04, RHEL, Debian) turn lockdown on automatically under UEFI Secure Boot, and lockdown
-# blocks every /dev/cpu/*/msr write — so the MSR mod silently can't apply. Read, never inferred.
+# Kernel lockdown state (#333); Secure Boot lockdown blocks every MSR write. Read, never infer.
 LOCKDOWN_FILE="${LOCKDOWN_FILE:-/sys/kernel/security/lockdown}"
 
 # systemd service name for the worker.
@@ -1487,10 +1455,10 @@ install_api() {
     RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null
     sudo tee "$rtmr" <"$SCRIPT_DIR/systemd/rigforge-api-refresh.timer.template" >/dev/null
     sudo systemctl daemon-reload
-    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-api-refresh.timer 2>/dev/null || true
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api-refresh.timer 2>/dev/null || true
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api.service 2>/dev/null || true
-    # restart, not just enable --now: a bind/port/token change must be re-read (restart also starts).
-    sudo systemctl restart rigforge-api.service 2>/dev/null || true
+    # Restart adopts timer and server edits on setup, apply, and upgrade; it also starts inactive units.
+    sudo systemctl restart rigforge-api-refresh.timer rigforge-api.service 2>/dev/null || true
     # Prime the state files so the first poll isn't a 503 for a whole timer period.
     sudo systemctl start rigforge-api-refresh.service 2>/dev/null || true
 }
@@ -2173,8 +2141,7 @@ _upgrade_check() {
     return 0
 }
 
-# Upgrade flow: redeploy this RigForge release onto the rig — regenerate the live XMRig config,
-# reinstall the units, re-tune, re-own, and restart so all of it is actually in effect. The COMPILE is
+# Upgrade redeploys this release: regenerate config, reinstall every unit, re-tune, re-own, and restart. The COMPILE is
 # what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
 # (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
@@ -2209,6 +2176,7 @@ upgrade() {
     compile_xmrig
     generate_xmrig_config
     install_service
+    install_api
     if [ "$XMRIG_REBUILD" = true ]; then
         log "Upgraded to XMRig $XMRIG_VERSION."
     else
@@ -5377,30 +5345,52 @@ _api_rigforge_block() { # <hashrate|"">
 
 # Produce the sister API's response bodies: compute once, write atomically (tmp + rename, the
 # node_exporter textfile pattern), and let the persistent server ship bytes. Driven by
-# rigforge-api-refresh.timer every 15s at idle priority — the REQUEST path never runs a probe,
-# which is how xmrig's own API costs nothing (#164; four gate iterations proved every
-# per-request-process design shaves hashrate one way or another).
+# Timer-driven idle refresh keeps every probe off the request path (#164).
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     parse_config >/dev/null
-    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body
+    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at
     mkdir -p "$dir"
+    generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     sum=$(_read_api_summary || true)
     printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
     hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
     rf=$(_api_rigforge_block "$hr")
     # Superset rule: every XMRig field passes through unchanged, plus one namespaced key. When the
     # miner is down the RigForge data still serves — that is when health matters most.
-    if [ -n "$sum" ]; then body=$(jq -n --argjson x "$sum" --argjson r "$rf" '$x + {rigforge: $r}'); else body=$(jq -n --argjson r "$rf" '{rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
+    if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     printf '%s' "$body" >"$dir/summary.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json"
-    printf '%s' "$rf" | jq -c '.health + {watchdog: .watchdog}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
+    printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
     printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
+}
+
+_api_refresh_status() {
+    local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last stamp mtime now age
+    next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    last=$(systemctl show rigforge-api-refresh.timer -p LastTriggerUSec --value 2>/dev/null || true)
+    if [ ! -f "$file" ]; then
+        printf 'sister feed is stale since never (next: %s; last: %s; payload missing)' "${next:-none}" "${last:-never}"
+        return 1
+    fi
+    stamp=$(jq -r '.generated_at // empty' "$file" 2>/dev/null || true)
+    mtime=$(date -d "$stamp" +%s 2>/dev/null || stat -c %Y "$file" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    age=$((now - mtime))
+    [ "$age" -lt 0 ] && age=0
+    if [ -z "$next" ] || [ "$next" = n/a ]; then
+        printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
+        return 1
+    fi
+    if [ "$age" -gt 60 ]; then
+        printf 'sister feed is stale since %s (next: %s; last: %s; payload age: %ss)' "${stamp:-unknown}" "$next" "${last:-never}" "$age"
+        return 1
+    fi
+    printf 'sister feed refresh scheduled (next: %s; last: %s; payload age: %ss)' "$next" "${last:-never}" "$age"
 }
 
 # --- Doctor: one-stop health check ---
 
-# --- Pool-connection probe (#343), shared by doctor and apply ---
-
+# Pool-connection probe (#343), shared by doctor and apply.
 # The miner's own verdict on its pool connection, read from the local /2/summary (API_CMD test hook
 # + Bearer discipline via _read_api_summary). One TSV line:
 #   connected <pool> <conn_uptime_s> <accepted>   — a stratum connection is live
@@ -5451,6 +5441,16 @@ doctor() {
     fi
     log "Checking the worker (read-only)..."
     local issues=0
+
+    case "$(jq -r '.api // "disabled"' "$CONFIG_JSON" 2>/dev/null || true)" in
+    enabled | true | on)
+        local refresh_state
+        if refresh_state=$(_api_refresh_status); then _ck_ok "$refresh_state"; else
+            _ck_warn "$refresh_state"
+            issues=$((issues + 1))
+        fi
+        ;;
+    esac
 
     # Service active?
     local svc_up=n

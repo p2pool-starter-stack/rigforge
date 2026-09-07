@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 #
-# Dependency-free test suite for rigforge (no bats required).
-# Mixes unit tests (sourcing rigforge.sh and calling its functions in isolation) with black-box
-# tests that run the full script end-to-end with every side effect stubbed on PATH. The whole suite
-# runs on macOS or Linux with nothing installed but bash + jq + coreutils. Run: tests/run.sh
-#
-# How platforms are simulated FROM ANY MACHINE: hardware detection (uname/lscpu/sysctl/nproc/hostname)
-# and the privileged/external commands (git/make/cmake/sudo/systemctl/modprobe/mount/apt-get/...) are
-# all faked in a stub directory placed first on PATH. The fakes read STUB_* env vars, so one test run
-# can exercise the generic-Linux (incl. EPYC / Ryzen X3D inputs) and macOS code paths back to back.
+# Dependency-free unit and black-box suite. PATH stubs isolate every external side effect and let
+# one macOS or Linux host exercise both platform paths. Run: tests/run.sh
 #
 # Suites run top to bottom; `grep -n 'echo "== ' tests/run.sh` is the index. A hand-kept list here
 #   went stale — it offered 29 topic phrases and named none of the control-path, contract-guard or
@@ -1854,11 +1847,8 @@ printf 'ABC\n' >"$U/home/worker/xmrig/.rigforge-commit"
 cat >"$U/config.json" <<EOF
 { "HOME_DIR": "$U/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
-# #413: the NO-REBUILD upgrade — the only kind any published release pair has ever produced, the
-# XMRig pin being byte-identical at all 25 tags v1.0.0..v1.16.0. `upgrade` used to return early here,
-# so it regenerated no config, reinstalled no unit, re-tuned nothing, restarted nothing, and exited 0.
-# Each of the four steps is asserted by its EFFECT on the rig rather than by a log line, because this
-# repo's own e2e has already found that a "changed" report and a changed rig are different things.
+# #413: no-rebuild upgrades used to return before config, units, tuning, or restart. Assert effects,
+# not logs: this suite has caught “changed” reports that did not match rig state.
 mk_upgrade_rig() { # <dir> <commit marker> — a rig at the pinned commit, with a STALE generated config
     local d="$1"
     mkdir -p "$d/home/worker/xmrig/build" "$d/logrotate" "$d/etc-systemd"
@@ -1903,8 +1893,14 @@ assert_eq "no-rebuild upgrade restarts exactly once (#413)" \
     "$(grep -c 'systemctl\] restart' "$UPN/calls.log")" "1"
 assert_absent "no-rebuild upgrade does not also 'start' the unit (#413)" "$(cat "$UPN/calls.log")" "[systemctl] start"
 
-# A miner the operator stopped — or the watchdog's thermal cutoff stopped — must come out of an upgrade
-# still stopped, with the new config and unit on disk for its next deliberate start (#413, #396's class).
+UPA="$(mktemp -d "$SANDBOX/upg-api.XXXXXX")"
+mk_upgrade_rig "$UPA" ABC
+jq '.api = "enabled"' "$UPA/config.json" >"$UPA/config.new" && mv "$UPA/config.new" "$UPA/config.json"
+run_upgrade_rig "$UPA" >/dev/null
+assert_eq "upgrade deploys the current sister-feed timer (#454)" "$(grep -c '^OnCalendar=\*:\*:0/15$' "$UPA/etc-systemd/rigforge-api-refresh.timer")" "1"
+assert_contains "upgrade restarts the sister-feed timer after rewriting it (#454)" "$(cat "$UPA/calls.log")" "restart rigforge-api-refresh.timer rigforge-api.service"
+
+# A stopped miner must stay stopped with its new config/unit ready (#413, #396's class).
 echo "== black-box: upgrade leaves a stopped miner stopped (#413) =="
 UPS="$(mktemp -d "$SANDBOX/upg-stopped.XXXXXX")"
 mk_upgrade_rig "$UPS" ABC
@@ -1926,7 +1922,7 @@ assert_eq "upgrade still regenerates the config on a stopped rig (#413)" \
     "$(J "$UPS/home/worker/xmrig/build/config.json" '.pools[0].url')" "poolbox.lan:3333"
 assert_absent "upgrade does not restart a miner the operator stopped (#413)" "$(cat "$UPS/calls.log")" "] restart"
 assert_absent "upgrade does not start a miner the operator stopped (#413)" "$(cat "$UPS/calls.log")" "] start"
-# The macOS branch of the same decision: no systemd, so it can only tell the operator.
+# macOS has no systemd, so it can only tell the operator.
 o="$(
     source "$SCRIPT"
     OS_TYPE=Darwin
@@ -1936,9 +1932,8 @@ o="$(
 assert_contains "upgrade on macOS points at a manual restart (#413)" "$o" "Restart the miner to apply"
 
 echo "== black-box: upgrade / help / unknown command (#4), rebuild path =="
-# #10: a rebuild (pinned commit changed) nudges to re-tune when saved tuning exists. compile_xmrig's
-# `sed` differs by OS, so we run the host's real OS path (like the compile-verification + e2e tests). We
-# derive the host OS from bash's built-in $OSTYPE — immune to the stubbed `uname` on PATH.
+# #10: a rebuild nudges to re-tune when saved tuning exists. Use the host OS path; OSTYPE is immune
+# to the stubbed `uname` on PATH.
 case "${OSTYPE:-}" in darwin*) UPG_OS=Darwin ;; *) UPG_OS=Linux ;; esac
 UPG="$(mktemp -d "$SANDBOX/upg2.XXXXXX")"
 cp "$ROOT/VERSION" "$UPG/"
@@ -3561,9 +3556,8 @@ assert_contains "toolchain still installs without a cpupower package (#327)" "$(
 assert_absent "no cpupower name reaches apt when neither exists (#327)" "$(cat "$NC/calls.log")" "linux-tools-common"
 assert_absent "linux-cpupower also stays out when absent (#327)" "$(cat "$NC/calls.log")" "linux-cpupower"
 
-# check_prerequisites (the jq bootstrap) had NO test. jq is deliberately kept OFF the scenario PATH so the
-# install branch runs; each dir holds ONLY the package manager(s) under test, so `command -v` selects the
-# intended per-distro branch from any host. sudo is a passthrough so the (stubbed) installer actually runs.
+# check_prerequisites (the jq bootstrap) had NO test. jq stays OFF each scenario PATH, whose dir holds only
+# the package manager(s) under test; sudo passes through so the stubbed installer runs.
 echo "== unit: check_prerequisites installs jq per package manager =="
 mk_pm_bin() { # <dir> <cmd...>: a passthrough sudo (strips any VAR=val prefix) + a logging stub per command.
     # Absolute /bin/sh shebangs so the stubs run under a PATH restricted to <dir> alone (no bash/env lookup).
@@ -3581,6 +3575,7 @@ prereq_run() { # <bin_dir> <os>: echoes the function output, an rc line, then th
         source "$SCRIPT"
         OS_TYPE="$os"
         set +e
+        hash -r
         PATH="$d" CALL_LOG="$d/calls.log" check_prerequisites 2>&1
     )"
     rc=$?
@@ -7285,7 +7280,9 @@ assert_eq "credential var survives the envsubst render un-expanded (#sec)" "$(gr
 assert_contains "server caps request-arrival time (slowloris) (#sec)" "$(cat "$ROOT/util/api-server.py")" "Handler.timeout"
 assert_contains "token compare is constant-time (#sec)" "$(cat "$ROOT/util/api-server.py")" "hmac.compare_digest"
 assert_eq "refresh runs at idle priority off the request path (#164)" "$(grep -c '^IOSchedulingClass=idle$' "$APS/systemd/rigforge-api-refresh.service")" "1"
-assert_contains "refresh timer fires every 15s" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnUnitActiveSec=15"
+assert_contains "refresh timer has an independent 15s wall-clock cadence (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnCalendar=*:*:0/15"
+assert_contains "refresh timer does not replay missed probes after downtime (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "Persistent=false"
+assert_absent "refresh cadence is not chained to the service's last activation (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnUnitActiveSec"
 assert_contains "enable log reports token posture without any token value" "$out" "token: open"
 # Port change re-renders + restarts the server (config re-read on restart).
 APS_CALLS="$APS/calls.log"
@@ -7302,7 +7299,7 @@ APS_CALLS="$APS/calls.log"
     PATH="$STUBS:$PATH" CALL_LOG="$APS_CALLS" install_api >/dev/null 2>&1
 )
 assert_contains "port change re-renders the server unit (#99)" "$(cat "$APS/systemd/rigforge-api.service")" "api-server.py 0.0.0.0 9000"
-assert_contains "port change restarts the server to re-read config (#99)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api.service"
+assert_contains "port change restarts the timer and server to adopt both units (#99/#454)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api-refresh.timer rigforge-api.service"
 # Legacy v1.2.x socket pair is removed on sight (upgrade convergence).
 printf 'x' >"$APS/systemd/rigforge-api.socket"
 printf 'x' >"$APS/systemd/rigforge-api@.service"
@@ -7335,7 +7332,9 @@ assert_eq "refresh writes all three response files" "$(ls "$APIQ/data" | sort | 
 assert_eq "summary: xmrig fields pass through unchanged (superset rule)" "$(jq -r '.hashrate.total[0]' "$APIQ/data/summary.json")" "1234.5"
 assert_eq "summary: rigforge.version = the VERSION file" "$(jq -r '.rigforge.version' "$APIQ/data/summary.json")" "$(cat "$ROOT/VERSION")"
 assert_eq "summary: provenance carries the full pinned commit" "$(jq -r '.rigforge.xmrig_commit | length' "$APIQ/data/summary.json")" "40"
-assert_eq "/health wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/health.json")" '["clock_pct_of_boost","firmware","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","watchdog","xmp"]'
+assert_eq "summary and health carry the same UTC generation stamp (#454)" "$(jq -r .generated_at "$APIQ/data/summary.json")" "$(jq -r .generated_at "$APIQ/data/health.json")"
+assert_eq "generation stamp is RFC 3339 UTC (#454)" "$(jq -r .generated_at "$APIQ/data/summary.json" | grep -Ec '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')" "1"
+assert_eq "/health wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/health.json")" '["clock_pct_of_boost","firmware","generated_at","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","watchdog","xmp"]'
 assert_eq "/tune wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/tune.json")" '["applied","autotune","candidates_tried","last_best_hs","target"]'
 # #212: watchdog state on the wire. Disabled (no key in config) -> the one-field object.
 assert_eq "watchdog disabled -> {mode: disabled} (#212)" "$(jq -cS '.rigforge.watchdog' "$APIQ/data/summary.json")" '{"mode":"disabled"}'
@@ -7387,6 +7386,7 @@ run_refresh '_api_rigforge_block() { _rf_broken_health_block; }'
 assert_eq "api-refresh: a broken health block leaves health.json serving the previous content (#276)" "$(cat "$APIQ/data/health.json")" "$oldhealth"
 assert_eq "api-refresh: tune.json still updates despite the health failure (#276)" "$(jq -r '.applied' "$APIQ/data/tune.json")" "true"
 assert_eq "api-refresh: summary.json still updates despite the health failure (#276)" "$(jq -r '.rigforge.xmrig_version' "$APIQ/data/summary.json")" "x"
+source "$ROOT/tests/test-api-refresh-liveness.sh"
 # The dispatch entry is wired (any OS: rc + message prove the verb was reached).
 out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
@@ -9770,7 +9770,7 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     set +e
     api_refresh 2>/dev/null
 )
-live_feed="$(jq -S '.rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"
+live_feed="$(jq -S '.generated_at = "NORMALIZED" | .rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"
 fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
 
