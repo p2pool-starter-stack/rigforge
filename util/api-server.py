@@ -41,7 +41,9 @@ def load_token(cfg_path):
 def derive_read_token(token):
     """A read-only bearer Pithead can hold without receiving the control credential."""
     key = token.encode()
-    return hmac.new(key, READ_SCOPE, "sha256").hexdigest() if len(key) >= 32 else ""
+    if token.isascii() and len(token) >= 32:
+        return hmac.new(key, READ_SCOPE, "sha256").hexdigest()
+    return ""
 
 
 class Handler(BaseHTTPRequestHandler):

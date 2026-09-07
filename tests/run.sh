@@ -7406,7 +7406,7 @@ else
 fi
 if [ "$APISRV_SKIP" = 0 ]; then
     python3 -m py_compile "$ROOT/util/api-server.py" && ok "api-server.py compiles" || bad "api-server.py does not compile" ""
-    python3 -c 'import runpy,sys; d=runpy.run_path(sys.argv[1]); assert d["derive_read_token"]("short") == ""' "$ROOT/util/api-server.py" && ok "api-server refuses to derive from a weak token" || bad "api-server derived from a weak token" ""
+    python3 -c 'import runpy,sys; d=runpy.run_path(sys.argv[1]); f=d["derive_read_token"]; assert f("short") == f("é" * 32) == ""' "$ROOT/util/api-server.py" && ok "api-server refuses to derive from a weak or non-ASCII token" || bad "api-server derived from a weak or non-ASCII token" ""
     APISRV="$(mktemp -d "$SANDBOX/apisrv.XXXXXX")"
     printf '%s' '{"hashrate":{"total":[1234.5]},"rigforge":{"version":"t"}}' >"$APISRV/summary.json"
     printf '%s' '{"service_active":true}' >"$APISRV/health.json"
