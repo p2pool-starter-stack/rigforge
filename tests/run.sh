@@ -9424,13 +9424,12 @@ pd_run() { # <dash_curl-body> -> phase_dashboard transcript with stubbed collabo
         RIGFORGE=true E2E_DASH_URL="http://stack-host/api/state" E2E_DROPOFF_TIMEOUT=1 phase_dashboard
     ) 2>&1
 }
-out="$(pd_run 'printf no-workers-here')"
+out="$(pd_run 'printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"')"
 assert_contains "never-visible worker reads as a failure (#390)" "$out" "BAD worker"
 assert_contains "drop-off is skipped when visibility never held (#390)" "$out" "SKIP drop-off check skipped"
 assert_absent "no vacuous dropped-off pass on a never-visible worker (#390)" "$out" "dropped off within"
-# Visible-then-stopped worker: the drop-off pass must still function (first probe sees the rig,
-# later probes do not).
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; hostname; fi')"
+# Visible-then-stopped: history retains the name, but only workers[].name defines live presence.
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"; fi')"
 assert_contains "visible worker passes the visibility check (#390)" "$out" "OK worker"
 assert_contains "stopped worker still measured dropping off (#390)" "$out" "OK stopped worker dropped off"
 

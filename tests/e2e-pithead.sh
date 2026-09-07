@@ -372,14 +372,14 @@ phase_network() {
     else
         bad "miner has unexpected listeners: $xl"
     fi
-    # Spirit-of-XMRig on the wire: the sister /2/summary minus `rigforge` must carry EXACTLY the key
-    # set XMRig's own API serves — verbatim superset, nothing renamed, dropped, or invented.
+    # The sister /2/summary minus its documented rigforge block and generation stamp must carry
+    # exactly XMRig's key set — a verbatim superset, nothing renamed, dropped, or invented.
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
-    k2=$(api8081 http://127.0.0.1:8081/2/summary | jq -cS 'del(.rigforge) | keys' 2>/dev/null || true)
+    k2=$(api8081 http://127.0.0.1:8081/2/summary | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)
     if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then
-        ok "wire superset: sister /2/summary = xmrig's keys + rigforge, nothing else"
+        ok "wire superset: sister /2/summary = xmrig's keys + rigforge + generated_at"
     else
-        bad "superset mismatch: xmrig keys $k1 vs sister-without-rigforge $k2"
+        bad "superset mismatch: xmrig keys $k1 vs sister-without-rigforge-or-stamp $k2"
     fi
     # Leak sweep: with a token AND a stratum pass configured, no byte of any response on either port
     # — authed, unauthed, or error, headers included — may contain either secret.
@@ -472,7 +472,7 @@ phase_dashboard() {
     local me payload
     me=$(hostname)
     payload=$(dash_curl)
-    if printf '%s' "$payload" | grep -q "$me"; then
+    if printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]?; .name == $me)' >/dev/null 2>&1; then
         ok "worker '$me' visible in the dashboard payload"
     else
         bad "worker '$me' not in the dashboard payload"
@@ -485,11 +485,11 @@ phase_dashboard() {
     local to="${E2E_DROPOFF_TIMEOUT:-300}" waited=0
     while [ "$waited" -lt "$to" ]; do
         payload=$(dash_curl)
-        printf '%s' "$payload" | grep -q "$me" || break
+        printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]?; .name == $me)' >/dev/null 2>&1 || break
         sleep 15
         waited=$((waited + 15))
     done
-    if printf '%s' "$payload" | grep -q "$me"; then
+    if printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]?; .name == $me)' >/dev/null 2>&1; then
         bad "stopped worker still listed after ${to}s"
     else
         ok "stopped worker dropped off within ${waited}s"

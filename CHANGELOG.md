@@ -11,6 +11,9 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **The worker↔Pithead gate now follows the current timestamp and live-worker contracts (#464).**
+  Historical energy rows no longer masquerade as a worker that is still online.
+
 - **The real-hardware watchdog gate now proves its cleanup restored the miner runtime (#462).**
   A previously running miner is restarted after the deliberate thermal hold; a stopped one stays stopped.
 
