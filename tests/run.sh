@@ -9427,12 +9427,12 @@ assert_absent "no vacuous dropped-off pass on a never-visible worker (#390)" "$o
 out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"; fi')"
 assert_contains "visible worker passes the visibility check (#390)" "$out" "OK worker"
 assert_contains "stopped worker still measured dropping off (#390)" "$out" "OK stopped worker dropped off"
-for invalid in '' '{' '{}' '{"workers":"bad"}'; do
+for invalid in '' '{' '{}' '{"workers":"bad"}' '{"workers":[null]}' '{"workers":[42]}' '{"workers":[{}]}' '{"workers":[{"name":42}]}'; do
     out="$(pd_run "printf '%s' '$invalid'")"
     assert_contains "invalid dashboard payload fails closed (#464)" "$out" "BAD dashboard returned no valid workers array"
     assert_absent "invalid dashboard payload never proves drop-off (#464)" "$out" "OK stopped worker dropped off"
 done
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-bad" ]; then touch "'"$DDIR"'/valid-then-bad"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{'\''; fi')"
+out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-bad" ]; then touch "'"$DDIR"'/valid-then-bad"; printf '\''{"workers":[{"name":"%s"}]}'\'' "$(hostname)"; else printf '\''{"workers":[null]}'\''; fi')"
 assert_contains "valid presence followed by malformed payload fails closed (#464)" "$out" "BAD worker stayed listed or no valid workers array"
 assert_absent "stale validity never proves drop-off (#464)" "$out" "OK stopped worker dropped off"
 
