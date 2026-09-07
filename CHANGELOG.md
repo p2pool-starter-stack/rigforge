@@ -11,6 +11,9 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **`doctor` no longer reports a healthy refresh timer activation as a critical failure (#460).**
+  It retries the transiently hidden next trigger while still failing a persistently absent schedule.
+
 - **The real-hardware gate no longer mistakes an activating refresh timer for an unscheduled one
   (#458).** systemd briefly hides a timer's next trigger while its service activates. The gate now
   waits through that bounded window while still failing a persistently missing schedule.

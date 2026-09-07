@@ -11,12 +11,34 @@ refresh_status() { # <next> <mtime> <now>
         systemctl() { case "$*" in *NextElapse*) printf '%s\n' "$_next" ;; *LastTrigger*) echo 'Sun 2026-09-06 23:59:45 CDT' ;; esac }
         stat() { echo "$_mtime"; }
         date() { if [ "$1" = -d ]; then echo "$_mtime"; else echo "$_now"; fi; }
+        sleep() { :; }
         _api_refresh_status
     )
 }
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1030)"
 assert_contains "doctor: scheduled refresh reports NEXT and payload age (#454)" "$out" "next: Sun 2026-09-06 23:59:45 CDT"
 assert_contains "doctor: fresh payload reports its age (#454)" "$out" "payload age: 30s"
+printf '0\n' >"$RFS/systemctl.calls"
+out="$({
+    source "$SCRIPT"
+    RIGFORGE_API_DATA="$RFS"
+    systemctl() {
+        case "$*" in
+        *NextElapse*)
+            n=$(cat "$RFS/systemctl.calls")
+            printf '%s\n' "$((n + 1))" >"$RFS/systemctl.calls"
+            [ "$n" -lt 2 ] && echo n/a || echo 'Sun 2026-09-06 23:59:45 CDT'
+            ;;
+        *LastTrigger*) echo 'Sun 2026-09-06 23:59:30 CDT' ;;
+        esac
+    }
+    stat() { echo 1000; }
+    date() { [ "$1" = -d ] && echo 1000 || echo 1030; }
+    sleep() { :; }
+    _api_refresh_status
+} 2>&1)"
+assert_contains "doctor: timer activation is retried (#460)" "$out" "refresh scheduled"
+assert_eq "doctor: delayed timer schedule took three reads (#460)" "$(cat "$RFS/systemctl.calls")" "3"
 out="$(refresh_status n/a 1000 1030 || true)"
 assert_contains "doctor: missing timer schedule is an issue (#454)" "$out" "has no next refresh"
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1061 || true)"

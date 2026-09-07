@@ -5330,11 +5330,8 @@ _api_config_meta_json() {
     fi
 }
 
-# #346: the last control outcome mirrored into the feed as `rigforge.control`. Pithead's host runner
-# caps its synchronous /status poll after a worker-apply, so a slow rollback outruns it; rather than a
-# new authenticated dial to the control port, the rig mirrors {change_id, status, reason} from the
-# status.json _control_status already writes 644, and the next routine poll catches up. Missing,
-# unreadable, or malformed status.json -> null — the mirror must never break the feed.
+# #346: mirror the last control outcome because a slow rollback can outlast Pithead's synchronous
+# status poll. Missing, unreadable, or malformed status.json -> null, never a broken feed.
 _api_control_json() {
     jq -c '{change_id, status, reason}' "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/status.json" 2>/dev/null || echo null
 }
@@ -5343,9 +5340,8 @@ _api_rigforge_block() { # <hashrate|"">
     jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control}'
 }
 
-# Produce the sister API's response bodies: compute once, write atomically (tmp + rename, the
-# node_exporter textfile pattern), and let the persistent server ship bytes. Driven by
-# Timer-driven idle refresh keeps every probe off the request path (#164).
+# Produce the sister API's response bodies atomically; the timer-driven idle refresh keeps every
+# probe off the persistent server's request path (#164).
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     parse_config >/dev/null
@@ -5356,8 +5352,7 @@ api_refresh() {
     printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
     hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
     rf=$(_api_rigforge_block "$hr")
-    # Superset rule: every XMRig field passes through unchanged, plus one namespaced key. When the
-    # miner is down the RigForge data still serves — that is when health matters most.
+    # Preserve every XMRig field and add one namespaced key; health still serves if XMRig is down.
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     printf '%s' "$body" >"$dir/summary.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json"
     printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
@@ -5365,8 +5360,12 @@ api_refresh() {
 }
 
 _api_refresh_status() {
-    local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last stamp mtime now age
-    next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last stamp mtime now age i
+    for i in 1 2 3 4 5; do
+        next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+        { [ -n "$next" ] && [ "$next" != n/a ]; } && break
+        sleep 1
+    done
     last=$(systemctl show rigforge-api-refresh.timer -p LastTriggerUSec --value 2>/dev/null || true)
     if [ ! -f "$file" ]; then
         printf 'sister feed is stale since never (next: %s; last: %s; payload missing)' "${next:-none}" "${last:-never}"
