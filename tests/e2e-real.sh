@@ -1107,7 +1107,7 @@ _watchdog_cleanup() {
     "$RIGFORGE" apply >/tmp/e2e-watchdog-cleanup-apply.log 2>&1 ||
         echo "  WARNING: the revert 'apply' exited non-zero (see /tmp/e2e-watchdog-cleanup-apply.log)" >&2
     if [ "$WD_WAS_ACTIVE" = 1 ]; then
-        systemctl is-active --quiet xmrig 2>/dev/null || "$RIGFORGE" start >/tmp/e2e-watchdog-cleanup-start.log 2>&1 || true
+        systemctl is-active --quiet xmrig 2>/dev/null || "$RIGFORGE" start >/dev/null 2>&1 || true
         if systemctl is-active --quiet xmrig 2>/dev/null; then
             echo "  restored service 'xmrig' to active"
             return 0
@@ -1115,7 +1115,7 @@ _watchdog_cleanup() {
         echo "  WARNING: service 'xmrig' is not active after the revert — check the rig by hand" >&2
         return 1
     else
-        systemctl is-active --quiet xmrig 2>/dev/null && "$RIGFORGE" stop >/tmp/e2e-watchdog-cleanup-stop.log 2>&1 || true
+        systemctl is-active --quiet xmrig 2>/dev/null && "$RIGFORGE" stop >/dev/null 2>&1 || true
         if systemctl is-active --quiet xmrig 2>/dev/null; then
             echo "  WARNING: service 'xmrig' is active although it entered stopped" >&2
             return 1
