@@ -64,6 +64,7 @@ OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STAT
 [ "$(jq -r .status "$D/state/status.json")" = applied ]
 [ ! -e "$D/processing/fedcba9876543210.json" ]
 
+export RIGFORGE_CONTROL_PROCESSING="$D/processing"
 for kind in directory fifo; do
     src="$D/state/spool/pending-$kind.json"
     [ "$kind" = directory ] && mkdir "$src" || mkfifo "$src"
