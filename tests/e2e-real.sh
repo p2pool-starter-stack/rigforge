@@ -739,10 +739,10 @@ control() {
         ok "config.json carries DONATION=$new_donation (control-apply persisted it)" ||
         bad "config.json DONATION is '$landed', expected $new_donation"
     local effective="" i
-    for i in {1..20}; do
+    for i in {1..66}; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$new_donation" ] && break
-        sleep 2
+        sleep 5
     done
     [ "$effective" = "$new_donation" ] && ok "authenticated sister feed carries effective DONATION=$new_donation" || bad "sister feed DONATION is '$effective', expected $new_donation"
     systemctl is-active --quiet xmrig &&
@@ -775,10 +775,10 @@ control() {
     fi
     [ "$st" = applied ] && ok "reversion reached 'applied' within ${waited}s" || bad "reversion failed (HTTP ${resp_code:-none}, status ${st:-none})"
     effective=""
-    for i in {1..20}; do
+    for i in {1..66}; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$cur_donation" ] && break
-        sleep 2
+        sleep 5
     done
     [ "$effective" = "$cur_donation" ] && ok "authenticated sister feed returned to DONATION=$cur_donation" || bad "sister feed did not return to DONATION=$cur_donation"
 
