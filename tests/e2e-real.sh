@@ -508,13 +508,13 @@ verify() {
         bad "-v / --version didn't match the version verb"
     fi
     "$RIGFORGE" --help 2>&1 | grep -qi usage && ok "-h / --help alias the help verb" || bad "--help didn't print usage"
-    # doctor as the OPERATOR (non-root) must run clean — no abort (#89: non-root dmidecode)
     local nrdoc nrrc
     nrdoc=$(sudo -u "$op" "$RIGFORGE" doctor 2>&1) && nrrc=0 || nrrc=$?
     if [ "$nrrc" = 0 ] && ! printf '%s' "$nrdoc" | grep -qi aborted; then
         ok "doctor runs clean as the operator '$op' (non-root, #89)"
     else
         bad "doctor as the operator (non-root) aborted or exited non-zero (#89)"
+        printf '%s\n' "$nrdoc" >&2
     fi
     # status / logs are read-only
     "$RIGFORGE" status >/dev/null 2>&1 && ok "status reports the service" || bad "status failed"
