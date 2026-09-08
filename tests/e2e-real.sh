@@ -1046,6 +1046,7 @@ upgrade() {
             # refuses a downgrade POST, so this step can only happen this way, same as a genuinely
             # older rig got here. _upgrade_cleanup restores $UPG_ORIG_REF on ANY exit from here on.
             UPG_ORIG_REF="$(_hgit rev-parse HEAD)"
+            UPG_RESTORE_BUILD=1 # Returning to this ref alone does not restore its build artifacts.
             if _hgit checkout --quiet --force "$prev_tag" 2>/dev/null && "$RIGFORGE" upgrade >/tmp/e2e-upgrade-rewind.log 2>&1; then
                 ok "rewound the checkout to $prev_tag (a real prior release, to prove the forward leg from)"
                 rm -f "$stamp" 2>/dev/null || true # the rollback leg stamped; this is a fresh attempt

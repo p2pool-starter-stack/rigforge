@@ -172,7 +172,7 @@ REAL_UPG="$(sed -n '/^_upgrade_cleanup()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 upgrade_cleanup_case() { # checkout succeeds, rebuild fails twice
     (
         eval "$REAL_UPG"
-        UPG_ORIG_REF=original UPG_RESTORE_BUILD=0 HERE="$T491" RIGFORGE=false
+        UPG_ORIG_REF=original UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/retry-stamp" HERE="$T491" RIGFORGE=false
         _hgit() { case "$1" in rev-parse) printf '%s\n' "${head:-old}" ;; checkout) head=original ;; esac }
         _control_cleanup() { :; }
         _upgrade_cleanup >/dev/null 2>&1
@@ -182,6 +182,26 @@ upgrade_cleanup_case() { # checkout succeeds, rebuild fails twice
     )
 }
 assert_eq "upgrade cleanup retries rebuild and retains source ref until it succeeds" "$(upgrade_cleanup_case)" "1:1:original:1"
+UPG_ARM_BLOCK="$(sed -n '/^            UPG_ORIG_REF=.*rev-parse HEAD/,/^            if _hgit checkout/p' "$ROOT/tests/e2e-real.sh" | sed '$d')"
+upgrade_same_head_case491() {
+    (
+        eval "$REAL_UPG"
+        UPG_ORIG_REF="" UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/same-head-stamp" calls=0
+        RIGFORGE=rebuild491
+        _hgit() { [ "$1" != rev-parse ] || printf original; }
+        _control_cleanup() { :; }
+        rebuild491() {
+            calls=$((calls + 1))
+            [ "$calls" -gt 1 ]
+        }
+        eval "$UPG_ARM_BLOCK"
+        _upgrade_cleanup >/dev/null 2>&1
+        printf '%s:%s:%s:' "$?" "$UPG_ORIG_REF" "$UPG_RESTORE_BUILD"
+        _upgrade_cleanup >/dev/null 2>&1
+        printf '%s:%s:%s:%s\n' "$?" "$calls" "${UPG_ORIG_REF:-cleared}" "$UPG_RESTORE_BUILD"
+    )
+}
+assert_eq "upgrade cleanup rebuilds stale artifacts even when HEAD is already restored" "$(upgrade_same_head_case491)" "1:original:1:0:2:cleared:0"
 assert_eq "upgrade checkpoints guard setup, VERSION, noop, probe, and rollback" "$(grep -c 'continue_or_cleanup _upgrade_cleanup upgrade' "$ROOT/tests/e2e-real.sh")" "6"
 
 UPG_VERSION_BLOCK="$(sed -n '/^    installed=$(tr /,/^    phase "upgrade — rollback/p' "$ROOT/tests/e2e-real.sh")"
