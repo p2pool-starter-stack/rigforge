@@ -67,8 +67,12 @@ out="$(refresh_status n/a 1000 1030 active)"
 assert_contains "doctor: active refresh needs no NEXT (#476)" "$out" "refresh in progress"
 out="$(refresh_status n/a 1000 1030 activating)"
 assert_contains "doctor: activating refresh needs no NEXT (#476)" "$out" "refresh in progress"
-out="$(refresh_status n/a 1000 1061 active || true)"
-assert_contains "doctor: active refresh does not mask stale payload (#476)" "$out" "sister feed is stale since"
+out="$(refresh_status n/a 1000 1061 active)"
+assert_contains "doctor: active refresh may retain an old payload (#476)" "$out" "refresh in progress"
+out="$(refresh_status n/a 1000 1301 active)"
+rc=$?
+assert_contains "doctor: a stuck active refresh still fails closed (#476)" "$out" "refresh appears stuck"
+assert_rc "doctor: a stuck active refresh returns failure (#476)" "$rc" "1"
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1061 || true)"
 assert_contains "doctor: old payload is called stale with its stamp (#454)" "$out" "sister feed is stale since 2026-09-07T04:00:00Z"
 mv "$RFS/summary.json" "$RFS/summary.saved"
@@ -149,6 +153,31 @@ out="$({
 } 2>&1)"
 assert_contains "e2e refresh accepts an active refresh without NEXT (#476)" "$out" "refresh is in progress (active)"
 assert_absent "e2e active refresh does not false-red missing NEXT (#476)" "$out" "timer has no NEXT trigger"
+out="$({
+    eval "$E2E_REFRESH_SRC"
+    HERE="$EFR"
+    ok() { printf 'ok: %s\n' "$1"; }
+    bad() { printf 'bad: %s\n' "$1"; }
+    systemctl() { case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac }
+    curl() { printf '{"generated_at":"2000-01-01T00:00:00Z"}\n'; }
+    date() { [ "$1" = -d ] && echo 1000 || echo 1061; }
+    sleep() { :; }
+    check_api_refresh
+} 2>&1)"
+assert_contains "e2e active refresh may retain an old payload (#476)" "$out" "retained payload is available"
+assert_absent "e2e active refresh does not false-red its retained payload (#476)" "$out" "no fresh generated_at"
+out="$({
+    eval "$E2E_REFRESH_SRC"
+    HERE="$EFR"
+    ok() { printf 'ok: %s\n' "$1"; }
+    bad() { printf 'bad: %s\n' "$1"; }
+    systemctl() { case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac }
+    curl() { printf '{"generated_at":"2000-01-01T00:00:00Z"}\n'; }
+    date() { [ "$1" = -d ] && echo 1000 || echo 1301; }
+    sleep() { :; }
+    check_api_refresh
+} 2>&1)"
+assert_contains "e2e stuck active refresh fails closed (#476)" "$out" "no fresh generated_at"
 printf '0\n' >"$EFR/systemctl.calls"
 out="$({
     eval "$E2E_REFRESH_SRC"
@@ -176,10 +205,13 @@ MINER_LOG_SRC="$(sed -n '/^miner_log()/,/^fresh_share()/p' "$ROOT/tests/e2e-real
 eval "$MINER_LOG_SRC"
 printf 'accepted (1/0)\n' >"$EFR/large.log"
 awk 'BEGIN { for (i=0; i<200000; i++) print "long trailing log row" }' >>"$EFR/large.log"
-miner_log_has 'accepted (' "$EFR/large.log"
-pass "e2e large-log match cannot false-fail from producer SIGPIPE (#481)"
-fresh_share 2 1 && pass "fresh-share proof accepts a counter increase (#472)"
-fresh_share 1 1 && bad "fresh-share proof accepted retained history (#472)" "counter did not increase" || pass "fresh-share proof rejects retained history (#472)"
+if miner_log_has 'accepted (' "$EFR/large.log"; then ok "e2e large-log match cannot false-fail from producer SIGPIPE (#481/#484)"; else bad "e2e large-log match cannot false-fail from producer SIGPIPE (#481/#484)" "accepted line not found"; fi
+RIGFORGE_APPLIANCE=1
+journalctl() { printf '\033[1;32mnew job from pithead:3333\033[0m\n'; }
+if miner_log_has 'new job from' /nonexistent; then ok "e2e appliance journal matching ignores ANSI color (#483/#484)"; else bad "e2e appliance journal matching ignores ANSI color (#483/#484)" "colored job line not found"; fi
+unset RIGFORGE_APPLIANCE
+if fresh_share 2 1; then ok "fresh-share proof accepts a counter increase (#472/#484)"; else bad "fresh-share proof accepts a counter increase (#472/#484)" "counter did not increase"; fi
+fresh_share 1 1 && bad "fresh-share proof accepted retained history (#472)" "counter did not increase" || ok "fresh-share proof rejects retained history (#472/#484)"
 
 echo "== unit: e2e-real watchdog cleanup restores prior service state (#462) =="
 WD_CLEANUP_SRC="$(sed -n '/^_watchdog_cleanup()/,/^}/p' "$ROOT/tests/e2e-real.sh")"

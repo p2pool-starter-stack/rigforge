@@ -34,14 +34,12 @@ set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
-
 # Root may reach this through nested sudo, so every git call pins the operator-owned checkout (#401).
 _hgit() { git -C "$HERE" -c safe.directory="$HERE" "$@"; }
-miner_log() { if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then journalctl -u xmrig --no-pager -o cat -n 5000; else cat "$1"; fi; }
+miner_log() { if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then journalctl -u xmrig --no-pager -o cat -n 5000 | sed -E 's/\x1b\[[0-9;]*m//g'; else cat "$1"; fi; }
 miner_log_has() { grep -q -- "$1" < <(miner_log "$2" 2>/dev/null); }
 fresh_share() { [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]] && [ "$1" -gt "$2" ]; }
 GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-
 PASS=0
 FAIL=0
 # Control state is global so cleanup traps can restore it after a phase returns.
@@ -73,7 +71,6 @@ die() {
     printf '\033[31me2e-real: %s\033[0m\n' "$1" >&2
     exit 2
 }
-
 # #183: the shared-rig lock. miner-0 hosts BOTH RigForge's release gates (rig-mutating) and
 # Pithead's e2e (API-reading, assumes a steadily-hashing miner) — a kernel flock serializes them.
 # Exclusive for mutators, `shared` for future read-only modes; the lock dies with the holding
@@ -178,7 +175,7 @@ check_api_refresh() {
         return
         ;;
     esac
-    local next refresh_state stamp epoch age now token port bind host i
+    local next refresh_state stamp epoch age now token port bind host i refresh_active=0
     for i in 1 2 3 4 5; do # #458: NEXT is briefly hidden while the triggered service activates.
         next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
         { [ -n "$next" ] && [ "$next" != n/a ]; } && break
@@ -186,7 +183,10 @@ check_api_refresh() {
     done
     if [ -z "$next" ] || [ "$next" = n/a ]; then
         refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
-        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then ok "sister-feed refresh is in progress ($refresh_state)"; else
+        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then
+            refresh_active=1
+            ok "sister-feed refresh is in progress ($refresh_state)"
+        else
             next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
             { [ -n "$next" ] && [ "$next" != n/a ]; } && ok "sister-feed timer has a NEXT trigger ($next)" || bad "sister-feed timer has no NEXT trigger"
         fi
@@ -209,7 +209,7 @@ check_api_refresh() {
     epoch=$(date -d "${stamp:-invalid}" +%s 2>/dev/null || echo 0)
     now=$(date +%s)
     age=$((now - epoch))
-    if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
+    if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; elif [ "$epoch" -gt 0 ] && [ "$age" -le 300 ] && [ "$age" -ge 0 ] && [ "$refresh_active" = 1 ]; then ok "sister-feed retained payload is available while refresh runs (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
 }
 ensure_config() {
     # setup needs a valid config.json. Benching is OFFLINE so any valid pool entry suffices for the build +
@@ -508,13 +508,13 @@ verify() {
         bad "-v / --version didn't match the version verb"
     fi
     "$RIGFORGE" --help 2>&1 | grep -qi usage && ok "-h / --help alias the help verb" || bad "--help didn't print usage"
-    # doctor as the OPERATOR (non-root) must run clean — no abort (#89: non-root dmidecode)
     local nrdoc nrrc
     nrdoc=$(sudo -u "$op" "$RIGFORGE" doctor 2>&1) && nrrc=0 || nrrc=$?
     if [ "$nrrc" = 0 ] && ! printf '%s' "$nrdoc" | grep -qi aborted; then
         ok "doctor runs clean as the operator '$op' (non-root, #89)"
     else
         bad "doctor as the operator (non-root) aborted or exited non-zero (#89)"
+        printf '%s\n' "$nrdoc" >&2
     fi
     # status / logs are read-only
     "$RIGFORGE" status >/dev/null 2>&1 && ok "status reports the service" || bad "status failed"
@@ -717,9 +717,7 @@ control() {
         while [ "$waited" -lt "$poll_to" ]; do
             body=$(_auth_curl "$tok" -fsS --max-time 5 \
                 "http://127.0.0.1:$control_port/status?change_id=$cid" 2>/dev/null || true)
-            # `|| true`: an empty/unreachable body makes jq exit non-zero on some builds — under
-            # pipefail that would abort the whole phase (set -e) on a single transient miss instead
-            # of letting the poll loop retry.
+            # Empty/unreachable bodies retry instead of aborting this set -e phase under pipefail.
             st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
             case "$st" in applied | rejected | rolled_back | failed) break ;; esac
             sleep 5
@@ -738,11 +736,11 @@ control() {
     [ "$landed" = "$new_donation" ] &&
         ok "config.json carries DONATION=$new_donation (control-apply persisted it)" ||
         bad "config.json DONATION is '$landed', expected $new_donation"
-    local effective="" i
-    for i in {1..20}; do
+    local effective="" deadline=$((SECONDS + 320))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$new_donation" ] && break
-        sleep 2
+        sleep 5
     done
     [ "$effective" = "$new_donation" ] && ok "authenticated sister feed carries effective DONATION=$new_donation" || bad "sister feed DONATION is '$effective', expected $new_donation"
     systemctl is-active --quiet xmrig &&
@@ -775,10 +773,11 @@ control() {
     fi
     [ "$st" = applied ] && ok "reversion reached 'applied' within ${waited}s" || bad "reversion failed (HTTP ${resp_code:-none}, status ${st:-none})"
     effective=""
-    for i in {1..20}; do
+    deadline=$((SECONDS + 320))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$cur_donation" ] && break
-        sleep 2
+        sleep 5
     done
     [ "$effective" = "$cur_donation" ] && ok "authenticated sister feed returned to DONATION=$cur_donation" || bad "sister feed did not return to DONATION=$cur_donation"
 

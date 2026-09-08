@@ -4511,7 +4511,7 @@ echo "== unit: doctor control receiver health (#278) =="
 cat >"$DOC/config_ctl_on.json" <<EOF
 { "HOME_DIR": "$DOC/home", "pools": [{"url": "h:3333"}], "control": "enabled", "control_port": 8082, "ACCESS_TOKEN": "ctl-test-token", "api_allow_from": "10.0.0.5" }
 EOF
-run_ctl_doctor() { # <config_file> <rigforge-control active:y|n> <curl /status http code>
+run_ctl_doctor() { # <config_file> <rigforge-control active:y|n> <curl /status codes, comma-separated>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
@@ -4525,15 +4525,26 @@ run_ctl_doctor() { # <config_file> <rigforge-control active:y|n> <curl /status h
         CPUFREQ_MAX="/nonexistent"
         CPU_SYSFS="/nonexistent"
         _ACT="$2"
-        _CODE="$3"
+        _CODE_FILE="$DOC/control-codes"
+        _CALLS_FILE="$DOC/control-calls"
+        printf '%s' "$3" | tr ',' '\n' >"$_CODE_FILE"
+        : >"$_CALLS_FILE"
         systemctl() { case "$*" in *"is-active --quiet rigforge-control"*) [ "$_ACT" = y ] ;; *) return 0 ;; esac }
-        curl() { printf '%s' "$_CODE"; }
+        curl() {
+            case "$*" in *"127.0.0.1:8082/status"*) ;; *) return 1 ;; esac
+            printf 'x\n' >>"$_CALLS_FILE"
+            sed -n '1p' "$_CODE_FILE"
+            sed '1d' "$_CODE_FILE" >"$_CODE_FILE.next" && mv "$_CODE_FILE.next" "$_CODE_FILE"
+        }
+        sleep() { :; }
         set +e
         PATH="$STUBS:$PATH" doctor 2>&1
     )
 }
 out="$(run_ctl_doctor "$DOC/config_ctl_on.json" y 200)"
 assert_contains "control: enabled+active+200 -> ok (#278)" "$out" "control receiver is active and responding"
+out="$(run_ctl_doctor "$DOC/config_ctl_on.json" y 000,503)"
+assert_contains "control: active startup race retries to healthy (#278)" "$out" "control receiver is active and responding"
 assert_absent "control: token never appears in doctor output (#278)" "$out" "ctl-test-token"
 assert_eq "production curl never carries a Bearer in argv (#474)" "$(grep -Ec 'curl .*Authorization: Bearer|-H .*Authorization: Bearer' "$SCRIPT")" "0"
 out="$(run_ctl_doctor "$DOC/config_ctl_on.json" n 000)"
@@ -4541,6 +4552,8 @@ assert_contains "control: enabled+inactive -> warn (#278)" "$out" "control: enab
 assert_contains "control: enabled+inactive counts as an issue (#278)" "$out" "issue(s) found"
 out="$(run_ctl_doctor "$DOC/config_ctl_on.json" y 401)"
 assert_contains "control: enabled+active but not responding -> warn (#278)" "$out" "isn't responding"
+assert_contains "control: persistent failure counts as an issue (#278)" "$out" "issue(s) found"
+assert_eq "control: persistent failure exhausts five bounded probes (#278)" "$(wc -l <"$DOC/control-calls" | tr -d ' ')" "5"
 out="$(run_ctl_doctor "$DOC/config.json" y 200)"
 assert_absent "control: disabled prints no control-receiver ok line (#278)" "$out" "control receiver"
 assert_absent "control: disabled prints no control-receiver warn line either (#278)" "$out" "rigforge-control is inactive"
@@ -5176,7 +5189,7 @@ assert_contains "log status: missing file -> none (#66)" "$( (
 ))" "none"
 assert_contains "log status: appliance journal confirms MSR (#477)" "$( (
     source "$SCRIPT"
-    OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT='msr register values for "ryzen_19h" preset have been set successfully' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
+    OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT=$'\033[1;32mmsr register values for "ryzen_19h" preset have been set successfully\033[0m' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
 ))" "ok"
 # Unreadable registers are counted in _MSR_UNREAD, kept OUT of _MSR_BAD (so they don't read as mismatches).
 out="$( (
@@ -7224,6 +7237,7 @@ assert_eq "credential var survives the envsubst render un-expanded (#sec)" "$(gr
 assert_contains "server caps request-arrival time (slowloris) (#sec)" "$(cat "$ROOT/util/api-server.py")" "Handler.timeout"
 assert_contains "token compare is constant-time (#sec)" "$(cat "$ROOT/util/api-server.py")" "hmac.compare_digest"
 assert_eq "refresh runs at idle priority off the request path (#164)" "$(grep -c '^IOSchedulingClass=idle$' "$APS/systemd/rigforge-api-refresh.service")" "1"
+assert_contains "refresh cannot mask a frozen feed indefinitely (#476)" "$(cat "$APS/systemd/rigforge-api-refresh.service")" "TimeoutStartSec=300"
 assert_contains "refresh timer has an independent 15s wall-clock cadence (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnCalendar=*:*:0/15"
 assert_contains "refresh timer does not replay missed probes after downtime (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "Persistent=false"
 assert_absent "refresh cadence is not chained to the service's last activation (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnUnitActiveSec"
@@ -8370,11 +8384,12 @@ cdhst() { jq -r ".$1" "$CDH/state/status.json" 2>/dev/null; }
 # BSD `wc -l` right-pads its count ("       1"), GNU's does not, so the raw output is a string that
 # compares equal to the expected count on Linux and not on macOS. `tr -d ' '` is the idiom the rest of
 # this file uses for exactly that. The `|| echo 0` fallback cannot live on the pipeline — a missing
-# file fails the redirect, `tr` still exits 0, and the fallback would never fire — so the default is
+# file fails the redirect, `tr` still exits 0, and the fallback would never fire — so stderr is
+# silenced before that optional input is opened (#485) and the default is
 # applied to the captured value instead.
 cdh_calls() { # <name> -> how many calls were recorded, 0 when the file was never written
     local n
-    n=$(wc -l <"$CDH/$1-calls" 2>/dev/null | tr -d ' ')
+    n=$(wc -l 2>/dev/null <"$CDH/$1-calls" | tr -d ' ')
     printf '%s' "${n:-0}"
 }
 

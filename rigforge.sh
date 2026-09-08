@@ -5063,7 +5063,7 @@ _lockdown_blocks_msr() { # <level> -> 0 when MSR writes are denied
 # approach would miss the line entirely on a big file, so don't "optimize" this into one.
 _msr_log_status() { # <logfile>
     { if [ -f "$1" ]; then cat "$1"; elif [ "$OS_TYPE" = Linux ]; then journalctl -u "$SERVICE_NAME" --no-pager -o cat -n 5000 2>/dev/null; fi; } |
-        grep -E 'msr +register values for' | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
+        sed -E 's/\x1b\[[0-9;]*m//g' | grep -E 'msr +register values for' | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
 }
 
 # The (register, value, mask) triples XMRig writes per MSR preset — verified against XMRig v6.26.0
@@ -5337,8 +5337,7 @@ _api_control_json() {
 _api_rigforge_block() { # <hashrate|"">
     jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control}'
 }
-# Produce the sister API's response bodies atomically; the timer-driven idle refresh keeps every
-# probe off the persistent server's request path (#164).
+# Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     parse_config >/dev/null
@@ -5374,28 +5373,29 @@ _api_refresh_status() {
     [ "$age" -lt 0 ] && age=0
     if [ -z "$next" ] || [ "$next" = n/a ]; then
         refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
-        if [ "$refresh_state" != active ] && [ "$refresh_state" != activating ]; then
-            next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
-            if [ -z "$next" ] || [ "$next" = n/a ]; then
-                printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
+        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then
+            [ "$age" -le 300 ] || {
+                printf 'sister feed refresh appears stuck (last: %s; payload age: %ss)' "${last:-never}" "$age"
                 return 1
-            fi
+            }
+            printf 'sister feed refresh in progress (last: %s; payload age: %ss)' "${last:-never}" "$age"
+            return 0
+        fi
+        next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+        if [ -z "$next" ] || [ "$next" = n/a ]; then
+            printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
+            return 1
         fi
     fi
     if [ "$age" -gt 60 ]; then
         printf 'sister feed is stale since %s (next: %s; last: %s; payload age: %ss)' "${stamp:-unknown}" "${next:-none}" "${last:-never}" "$age"
         return 1
     fi
-    if [ -z "$next" ] || [ "$next" = n/a ]; then
-        printf 'sister feed refresh in progress (last: %s; payload age: %ss)' "${last:-never}" "$age"
-        return 0
-    fi
     printf 'sister feed refresh scheduled (next: %s; last: %s; payload age: %ss)' "$next" "${last:-never}" "$age"
 }
 # --- Doctor: one-stop health check ---
 # Pool-connection probe (#343), shared by doctor and apply.
-# The miner's own verdict on its pool connection, read from the local /2/summary (API_CMD test hook
-# + Bearer discipline via _read_api_summary). One TSV line:
+# The miner's own pool verdict from local /2/summary (API_CMD hook + _read_api_summary auth). One TSV line:
 #   connected <pool> <conn_uptime_s> <accepted>   — a stratum connection is live
 #   disconnected <pool> <failures>                — miner answers, but no live connection
 #   api-down                                      — no parseable summary (API unreachable)
@@ -5620,23 +5620,23 @@ EOF
         fi
     fi
 
-    # Control receiver health (#278): the writable control path (#236) has its own service and its own
-    # port — an operator (or Pithead) could believe it's live while rigforge-control is dead,
-    # crash-looping, or firewalled, and nothing would say so. Same treatment as the read API's posture
-    # above: quiet when control is disabled/absent, per parse_config's enabled-value synonyms.
+    # Control receiver health (#278): probe the writable service when enabled; retry briefly because
+    # systemd marks the Python service active before it binds its socket on a busy miner.
     if [ -f "$CONFIG_JSON" ]; then
         local cfg_control
         cfg_control=$(jq -r '.control // "disabled"' "$CONFIG_JSON" 2>/dev/null || true)
         case "$cfg_control" in
         enabled | true | on)
             if systemctl is-active --quiet rigforge-control 2>/dev/null; then
-                local ctl_port ctl_tok ctl_code
+                local ctl_port ctl_tok ctl_code i
                 ctl_port=$(jq -r '.control_port // 8082' "$CONFIG_JSON" 2>/dev/null || true)
                 ctl_tok=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)
-                # Probe like a client would: authed GET /status. 200 and 503 both mean "up and
-                # answering" — 503 just means no change has been applied yet (util/control-server.py).
-                # Never echo the token (mirrors the read API's Bearer discipline).
-                ctl_code=$(_bearer_curl "$ctl_tok" -sS --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ctl_port:-8082}/status" 2>/dev/null || true)
+                # 200/503 both mean answering; 503 only means no change has been applied yet.
+                for i in 1 2 3 4 5; do
+                    ctl_code=$(_bearer_curl "$ctl_tok" -sS --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ctl_port:-8082}/status" 2>/dev/null || true)
+                    case "$ctl_code" in 200 | 503) break ;; esac
+                    [ "$i" = 5 ] || sleep 1
+                done
                 case "$ctl_code" in
                 200 | 503) _ck_ok "control receiver is active and responding (rigforge-control, :${ctl_port:-8082})" ;;
                 *)

@@ -19,13 +19,19 @@ All notable changes to RigForge are documented here. The format is based on
   Appliance upgrades remove the legacy persistent XMRig log and route output only through the image-capped journal. The authenticated receiver bounds apply/upgrade requests, orphan spool temps, and pending-marker temps.
 
 - **An in-progress sister-feed refresh no longer looks unscheduled (#476).**
-  `doctor` and the real-hardware gate accept an active refresh while systemd temporarily hides the timer's next activation; payload freshness remains mandatory.
+  `doctor` and the real-hardware gate accept a retained payload while an active refresh temporarily hides the timer's next activation; missing payloads still fail.
+
+- **Appliance journal evidence ignores ANSI color codes (#483).**
+  `doctor` and the real-hardware gate can recognize healthy MSR setup and pool jobs in XMRig's colored systemd output.
+
+- **Dependency-free checks report their results cleanly on macOS (#484, #485).**
+  Extracted e2e helper checks use the suite's result counter, and an intentionally absent fixture no longer leaks a false shell diagnostic.
 
 - **Accepted control changes are no longer starved behind mining or a global filesystem flush (#472).**
   The privileged apply worker runs at normal priority and fsyncs only the changed config and backup.
 
-- **`doctor` no longer exposes the writable control bearer in curl's process arguments (#474).**
-  Its authenticated health probe now passes the header through curl's stdin configuration.
+- **`doctor` safely waits for the writable control receiver (#278, #474).**
+  Its authenticated health probe now passes the header through curl's stdin configuration and tolerates the brief socket-bind delay after systemd reports the receiver active.
 
 ## [1.17.2] - 2026-09-07
 
