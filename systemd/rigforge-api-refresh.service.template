@@ -7,6 +7,7 @@ Type=oneshot
 # latency requirement, so it must never compete with the miner.
 Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
 ExecStart=$SCRIPT_DIR/rigforge.sh api-refresh
+TimeoutStartSec=300
 Nice=19
 IOSchedulingClass=idle
 RuntimeDirectory=rigforge-api

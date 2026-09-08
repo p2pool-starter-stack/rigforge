@@ -5337,8 +5337,7 @@ _api_control_json() {
 _api_rigforge_block() { # <hashrate|"">
     jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control}'
 }
-# Produce the sister API's response bodies atomically; the timer-driven idle refresh keeps every
-# probe off the persistent server's request path (#164).
+# Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     parse_config >/dev/null
@@ -5375,6 +5374,10 @@ _api_refresh_status() {
     if [ -z "$next" ] || [ "$next" = n/a ]; then
         refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
         if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then
+            [ "$age" -le 300 ] || {
+                printf 'sister feed refresh appears stuck (last: %s; payload age: %ss)' "${last:-never}" "$age"
+                return 1
+            }
             printf 'sister feed refresh in progress (last: %s; payload age: %ss)' "${last:-never}" "$age"
             return 0
         fi
@@ -5392,8 +5395,7 @@ _api_refresh_status() {
 }
 # --- Doctor: one-stop health check ---
 # Pool-connection probe (#343), shared by doctor and apply.
-# The miner's own verdict on its pool connection, read from the local /2/summary (API_CMD test hook
-# + Bearer discipline via _read_api_summary). One TSV line:
+# The miner's own pool verdict from local /2/summary (API_CMD hook + _read_api_summary auth). One TSV line:
 #   connected <pool> <conn_uptime_s> <accepted>   — a stratum connection is live
 #   disconnected <pool> <failures>                — miner answers, but no live connection
 #   api-down                                      — no parseable summary (API unreachable)

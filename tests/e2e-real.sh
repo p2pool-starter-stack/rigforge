@@ -209,7 +209,7 @@ check_api_refresh() {
     epoch=$(date -d "${stamp:-invalid}" +%s 2>/dev/null || echo 0)
     now=$(date +%s)
     age=$((now - epoch))
-    if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; elif [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$refresh_active" = 1 ]; then ok "sister-feed retained payload is available while refresh runs (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
+    if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; elif [ "$epoch" -gt 0 ] && [ "$age" -le 300 ] && [ "$age" -ge 0 ] && [ "$refresh_active" = 1 ]; then ok "sister-feed retained payload is available while refresh runs (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
 }
 ensure_config() {
     # setup needs a valid config.json. Benching is OFFLINE so any valid pool entry suffices for the build +

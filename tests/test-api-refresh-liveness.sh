@@ -69,6 +69,10 @@ out="$(refresh_status n/a 1000 1030 activating)"
 assert_contains "doctor: activating refresh needs no NEXT (#476)" "$out" "refresh in progress"
 out="$(refresh_status n/a 1000 1061 active)"
 assert_contains "doctor: active refresh may retain an old payload (#476)" "$out" "refresh in progress"
+out="$(refresh_status n/a 1000 1301 active)"
+rc=$?
+assert_contains "doctor: a stuck active refresh still fails closed (#476)" "$out" "refresh appears stuck"
+assert_rc "doctor: a stuck active refresh returns failure (#476)" "$rc" "1"
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1061 || true)"
 assert_contains "doctor: old payload is called stale with its stamp (#454)" "$out" "sister feed is stale since 2026-09-07T04:00:00Z"
 mv "$RFS/summary.json" "$RFS/summary.saved"
@@ -162,6 +166,18 @@ out="$({
 } 2>&1)"
 assert_contains "e2e active refresh may retain an old payload (#476)" "$out" "retained payload is available"
 assert_absent "e2e active refresh does not false-red its retained payload (#476)" "$out" "no fresh generated_at"
+out="$({
+    eval "$E2E_REFRESH_SRC"
+    HERE="$EFR"
+    ok() { printf 'ok: %s\n' "$1"; }
+    bad() { printf 'bad: %s\n' "$1"; }
+    systemctl() { case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac }
+    curl() { printf '{"generated_at":"2000-01-01T00:00:00Z"}\n'; }
+    date() { [ "$1" = -d ] && echo 1000 || echo 1301; }
+    sleep() { :; }
+    check_api_refresh
+} 2>&1)"
+assert_contains "e2e stuck active refresh fails closed (#476)" "$out" "no fresh generated_at"
 printf '0\n' >"$EFR/systemctl.calls"
 out="$({
     eval "$E2E_REFRESH_SRC"
