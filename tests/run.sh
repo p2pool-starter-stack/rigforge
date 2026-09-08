@@ -4526,10 +4526,13 @@ run_ctl_doctor() { # <config_file> <rigforge-control active:y|n> <curl /status c
         CPU_SYSFS="/nonexistent"
         _ACT="$2"
         _CODE_FILE="$DOC/control-codes"
+        _CALLS_FILE="$DOC/control-calls"
         printf '%s' "$3" | tr ',' '\n' >"$_CODE_FILE"
+        : >"$_CALLS_FILE"
         systemctl() { case "$*" in *"is-active --quiet rigforge-control"*) [ "$_ACT" = y ] ;; *) return 0 ;; esac }
         curl() {
             case "$*" in *"127.0.0.1:8082/status"*) ;; *) return 1 ;; esac
+            printf 'x\n' >>"$_CALLS_FILE"
             sed -n '1p' "$_CODE_FILE"
             sed '1d' "$_CODE_FILE" >"$_CODE_FILE.next" && mv "$_CODE_FILE.next" "$_CODE_FILE"
         }
@@ -4549,6 +4552,8 @@ assert_contains "control: enabled+inactive -> warn (#278)" "$out" "control: enab
 assert_contains "control: enabled+inactive counts as an issue (#278)" "$out" "issue(s) found"
 out="$(run_ctl_doctor "$DOC/config_ctl_on.json" y 401)"
 assert_contains "control: enabled+active but not responding -> warn (#278)" "$out" "isn't responding"
+assert_contains "control: persistent failure counts as an issue (#278)" "$out" "issue(s) found"
+assert_eq "control: persistent failure exhausts five bounded probes (#278)" "$(wc -l <"$DOC/control-calls" | tr -d ' ')" "5"
 out="$(run_ctl_doctor "$DOC/config.json" y 200)"
 assert_absent "control: disabled prints no control-receiver ok line (#278)" "$out" "control receiver"
 assert_absent "control: disabled prints no control-receiver warn line either (#278)" "$out" "rigforge-control is inactive"
