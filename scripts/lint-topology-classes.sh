@@ -116,7 +116,7 @@ email_allow() {
     return 1
 }
 
-# --- scan: extract "path:line:match" from grep -HnoP output, drop what the allow-fn clears -----
+# --- scan: extract "path:line:match" with portable Perl regexes, drop allowed values -----------
 scan() { # <pattern> <allow-fn> <file...>
     local pattern="$1" allow_fn="$2"
     shift 2
@@ -129,7 +129,7 @@ scan() { # <pattern> <allow-fn> <file...>
         match=${BASH_REMATCH[3]}
         "$allow_fn" "$match" && continue
         printf '%s:%s: %s\n' "$path" "$line" "$match"
-    done < <(grep -HInoP -e "$pattern" -- "$@" 2>/dev/null)
+    done < <(perl -ne 'BEGIN {$re=shift @ARGV} while (/$re/g) {print "$ARGV:$.:$&\n"} close ARGV if eof' -- "$pattern" "$@" 2>/dev/null)
     return 0
 }
 
