@@ -4543,6 +4543,7 @@ run_ctl_doctor() { # <config_file> <rigforge-control active:y|n> <curl /status h
 out="$(run_ctl_doctor "$DOC/config_ctl_on.json" y 200)"
 assert_contains "control: enabled+active+200 -> ok (#278)" "$out" "control receiver is active and responding"
 assert_absent "control: token never appears in doctor output (#278)" "$out" "ctl-test-token"
+assert_eq "production curl never carries a Bearer in argv (#474)" "$(grep -Ec 'curl .*Authorization: Bearer|-H .*Authorization: Bearer' "$SCRIPT")" "0"
 out="$(run_ctl_doctor "$DOC/config_ctl_on.json" n 000)"
 assert_contains "control: enabled+inactive -> warn (#278)" "$out" "control: enabled but rigforge-control is inactive"
 assert_contains "control: enabled+inactive counts as an issue (#278)" "$out" "issue(s) found"
