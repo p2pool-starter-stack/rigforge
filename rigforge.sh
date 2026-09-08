@@ -5635,8 +5635,7 @@ EOF
                 # Probe like a client would: authed GET /status. 200 and 503 both mean "up and
                 # answering" — 503 just means no change has been applied yet (util/control-server.py).
                 # Never echo the token (mirrors the read API's Bearer discipline).
-                ctl_code=$(_bearer_curl "$ctl_tok" -sS --max-time 5 -o /dev/null -w '%{http_code}' \
-                    "http://127.0.0.1:${ctl_port:-8082}/status" 2>/dev/null || true)
+                ctl_code=$(_bearer_curl "$ctl_tok" -sS --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ctl_port:-8082}/status" 2>/dev/null || true)
                 case "$ctl_code" in
                 200 | 503) _ck_ok "control receiver is active and responding (rigforge-control, :${ctl_port:-8082})" ;;
                 *)
