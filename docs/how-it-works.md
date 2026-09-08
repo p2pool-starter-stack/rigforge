@@ -198,7 +198,8 @@ XMRig accordingly (and there's no systemd service, so you run the miner yourself
 - systemd unit. XMRig runs as the `xmrig` service, enabled at boot, restarting on failure.
 - `cpupower` performance governor. Pins the CPU to its performance frequency so it isn't throttled
   down mid-hash.
-- Log rotation. A `logrotate` policy compresses and archives `xmrig.log`.
+- Bounded logs. Ordinary installs compress and retain seven `xmrig.log` archives; appliance mode
+  omits the file log and uses the image-capped systemd journal.
 - Hardened unit. The service runs as root (required for the MSR mod and HugePages) but with
   defense-in-depth sandboxing: `NoNewPrivileges`, `ProtectSystem=full` (read-only `/usr`,`/etc`,…),
   `PrivateTmp`, `ProtectControlGroups`, `LockPersonality`, and `ReadWritePaths` limited to the worker

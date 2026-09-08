@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
 #
-# Dependency-free unit and black-box suite. PATH stubs isolate every external side effect and let
-# one macOS or Linux host exercise both platform paths. Run: tests/run.sh
-#
-# Suites run top to bottom; `grep -n 'echo "== ' tests/run.sh` is the index. A hand-kept list here
-#   went stale — it offered 29 topic phrases and named none of the control-path, contract-guard or
-#   e2e-harness groups. Do not re-add one; it goes stale the next test you add.
-#
-# We source the script-under-test from a dynamic path, and set many globals that the sourced rigforge
-# functions consume (shellcheck can't see across the source boundary). Disable the two warnings that
-# are inherent to that black-box pattern, file-wide (this directive must precede the first command).
+# Dependency-free unit/black-box suite with isolated PATH stubs. Run: tests/run.sh
+# The checker ignores globals consumed by the dynamically sourced script.
 # shellcheck disable=SC1090,SC2034
 set -uo pipefail
 
@@ -32,31 +24,18 @@ assert_contains() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "[$2] missing [$
 assert_absent() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contains [$3]" ;; *) ok "$1" ;; esac }
 assert_rc() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected rc $3, got $2"; fi; }
 
-# A throwaway sandbox, cleaned on exit.
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
+export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock"
 
-# #418: keep the suite's own bytecode cache out of the tracked tree. The two `python3 -m py_compile`
-# checks below write `util/__pycache__/*.pyc` next to the source, and that debris outlives the run:
-# `git status` then reads dirty on a clean checkout and the PR-opening warning cries wolf, in exactly
-# the signal a reader uses to decide whether it is safe to commit. `-B` / PYTHONDONTWRITEBYTECODE
-# does NOT suppress it — py_compile writes the cache file explicitly rather than through the import
-# machinery those disable. PYTHONPYCACHEPREFIX relocates the whole cache tree instead, so the compile
-# checks still compile and still write, but into the sandbox the trap above removes. Python < 3.8
-# ignores it, which leaves such a host exactly where it is today rather than breaking it.
+# Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
 
-# Read BEFORE anything else runs, so the tree-hygiene check at the end of this file judges what THIS
-# run created rather than what some earlier tool left behind.
+# Snapshot this before the suite for the final tree-hygiene check.
 PYCACHE_PRE=absent
 [ -e "$ROOT/util/__pycache__" ] && PYCACHE_PRE=present
 
-# HARDWARE INDEPENDENCE. The suite must give identical results on ANY machine — a cloud CI VM, a dev
-# laptop, or a real mining rig that actually has RAPL / DMI / SMT / reserved HugePages. So point every
-# hardware + firmware probe rigforge reads at a non-existent path (or a missing command) by default: a
-# test then reads NOTHING from the host's real hardware unless it explicitly supplies a fake. Individual
-# tests override these with controlled fakes where they need a specific value. Exported so the black-box
-# `bash "$SCRIPT" ...` runs inherit them; per-test `VAR=... run` prefixes and in-subshell sets still win.
+# Keep hardware probes deterministic and off the host unless a test supplies a fixture.
 NOHW="$SANDBOX/no-hardware" # nothing is created here on purpose — every path below is meant to not exist
 export MEMINFO="$NOHW/meminfo"
 export MSR_MODULE_DIR="$NOHW/msr-module"
@@ -133,6 +112,10 @@ EOF
 #!/usr/bin/env bash
 echo "${STUB_NPROC:-4}"
 EOF
+    cat >"$bin/stat" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
+EOF
     cat >"$bin/hostname" <<'EOF'
 #!/usr/bin/env bash
 echo "${STUB_HOSTNAME:-rigbox}"
@@ -165,7 +148,7 @@ EOF
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
-    -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
+    -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" -e "s|\$RIGFORGE_APPLIANCE|${RIGFORGE_APPLIANCE:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
     -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g" \
@@ -181,6 +164,11 @@ echo "[$cmd] \$*" >> "\${CALL_LOG:-/dev/null}"
 exit 0
 EOF
     done
+    cat >"$bin/journalctl" <<'EOF'
+#!/usr/bin/env bash
+echo "[journalctl] $*" >> "${CALL_LOG:-/dev/null}"
+printf '%s\n' "${STUB_JOURNAL_OUTPUT:-}"
+EOF
     printf '#!/usr/bin/env bash\n[ "$#" -gt 0 ]\n' >"$bin/sync" # control commits must never flush every filesystem (#472)
     # launchctl stub (macOS): records calls; `list <label>` emits a plist dict with a PID when
     # STUB_LAUNCHD_PID is set (so `status` can be exercised), else a dict without one.
@@ -213,6 +201,14 @@ EOF
 
 STUBS="$SANDBOX/stubs"
 make_stubs "$STUBS"
+RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing"
+mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING"
+export RIGFORGE_CONTROL_PROCESSING
+
+assert_rc "privileged consumers share a lock and refuse a planted processing symlink (#479)" "$(
+    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT"
+    echo $?
+)" "0"
 
 # Source rigforge with the given config + script dir, run parse_config, print one resulting variable.
 parse_and_print() { # <config_file> <script_dir> <var>
@@ -226,7 +222,6 @@ parse_and_print() { # <config_file> <script_dir> <var>
         printf '%s' "${!var}"
     )
 }
-# Convenience: the host of the first resolved pool (POOLS_JSON[0].url with the :port stripped), so the
 # host-resolution regression tests can assert a bare host.
 pool_host0() { # <config_file> <script_dir>
     parse_and_print "$1" "$2" POOLS_JSON | jq -r '.[0].url | sub(":[0-9]+$"; "")'
@@ -814,7 +809,6 @@ gen_config() { # echoes path to the dir containing config.json
     )
     echo "$d"
 }
-
 echo "== config-gen: generic Linux (default profile) =="
 export STUB_CPU_MODEL="Intel(R) Xeon(R) Silver 4310" STUB_NPROC=8 STUB_HOSTNAME=rigbox
 SIM_OS=Linux SIM_DON=5 SIM_TOK=tok123 SIM_ADDR=myrig.local
@@ -824,6 +818,7 @@ cfg="$d/config.json"
 # world-readable 0644 a root jq redirect would otherwise leave. stat differs GNU vs BSD, so branch on OS.
 if [ "$(uname -s)" = Darwin ]; then cfg_mode="$(stat -f '%Lp' "$cfg")"; else cfg_mode="$(stat -c '%a' "$cfg")"; fi
 assert_eq "generated config is owner-only (0600)" "$cfg_mode" "600"
+assert_eq "generic: persistent log remains configured outside appliance mode (#477)" "$(J "$cfg" '."log-file"')" "$d/xmrig.log"
 assert_eq "generic: rx auto (-1)" "$(J "$cfg" '.cpu.rx')" "-1"
 assert_eq "generic: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
 assert_eq "generic: numa on (XMRig default)" "$(J "$cfg" '.randomx.numa')" "true"
@@ -2112,7 +2107,6 @@ assert_contains "help lists restore" "$out" "restore"
 out="$(cd "$U" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$U" RIGFORGE_HOME="$PWD" bash "$SCRIPT" status </dev/null 2>&1)"
 assert_rc "status works on macOS" "$?" "0"
 assert_contains "macOS status reports miner state" "$out" "Miner is"
-
 # #11: `apply` regenerates the live config + restarts without rebuilding. The $U sandbox already has a
 # built worker (build dir + binary) and a config.json pointing at HOME_DIR=$U/home.
 echo "== black-box: apply / bench (#11) =="
@@ -2133,13 +2127,14 @@ LRF="$U/logrotate/xmrig"
 assert_eq "apply writes the logrotate policy" "$([ -f "$LRF" ] && echo y || echo n)" "y"
 assert_contains "logrotate uses copytruncate" "$(cat "$LRF")" "copytruncate"
 assert_contains "logrotate has a minsize guard" "$(cat "$LRF")" "minsize 50M"
+assert_contains "logrotate compresses archives for small disks (#477)" "$(cat "$LRF")" "compress"
+assert_contains "logrotate retains exactly seven archives (#477)" "$(cat "$LRF")" "rotate 7"
 # #16: the rotated log must be recreated owned by the real operator (SUDO_USER), not by `whoami` — which
 # is root under `sudo ./rigforge.sh` and would lock the operator out of a manual run. Drive a simulated
 # sudo (SUDO_USER set, effective user differs) and assert the operator owns the create line.
 out="$(cd "$U" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$U/logrotate" SUDO_USER=rfoperator \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" apply </dev/null 2>&1)"
 assert_contains "logrotate recreates the log owned by the operator, not whoami (#16)" "$(cat "$LRF")" "create 0644 rfoperator rfoperator"
-
 # #343: apply's post-reconcile summary asks the miner itself whether a pool connection came up.
 # Connected (the stock curl stub's body) reports it; a disconnected miner draws a WARN naming the
 # pool — but apply still exits 0 (warn, never refuse: the pool may be legitimately down); an
@@ -4095,7 +4090,6 @@ else
     assert_contains "service: unsupported on macOS" "$E2E_OUT" "not supported"
 fi
 cp "$BUILD/config.json" "$W/config-after-run1.json"
-
 echo "== black-box: re-run is idempotent (#5) =="
 e2e_run "$W" "$HOST_OS"
 rc=$?
@@ -4112,7 +4106,6 @@ else
     echo "  • macOS host: Linux /etc idempotency (fstab/limits/grub) is covered by the Docker E2E"
     echo "    (make test-e2e) and by the Linux CI job — the Linux deploy path needs GNU sed."
 fi
-
 # #cli: the opt-in. With "add_to_path": true in config.json, setup installs the symlink (into a per-test
 # BIN_DIR so it doesn't collide with the default-off run above). RIGFORGE_HOME=$CW -> target $CW/rigforge.sh.
 echo "== black-box: setup installs the CLI only when add_to_path is enabled (#cli) =="
@@ -4122,7 +4115,6 @@ CBIN="$CW/usr-local-bin"
 mkdir -p "$CBIN"
 BIN_DIR="$CBIN" e2e_run "$CW" "$HOST_OS"
 assert_eq "cli: add_to_path=true links rigforge onto PATH (#cli)" "$(readlink "$CBIN/rigforge" 2>/dev/null)" "$CW/rigforge.sh"
-
 # ---------------------------------------------------------------------------
 # Release metadata (#3): VERSION must be valid SemVer so it stays in lock-step with tags/CHANGELOG.
 # #45: doctor inspects read-only system state (overridable paths) and reports PASS/WARN.
@@ -5084,6 +5076,9 @@ out="$(run_doctor_cfg "$UNV/config.json")"
 assert_contains "doctor: MSR unverifiable names the missing log path (#367)" "$out" \
     "MSR unverifiable — no xmrig.log at $UNV/home/worker/xmrig.log"
 assert_absent "doctor: resolved-root-no-log is advisory, not a counted issue (#367)" "$out" "issue(s) found"
+mkdir -p "$UNV/home/worker/xmrig/build" && printf '{}\n' >"$UNV/home/worker/xmrig/build/config.json"
+out="$(run_doctor_cfg "$UNV/config.json")"
+assert_contains "doctor: an intentionally absent file log points to the bounded journal (#477)" "$out" "file-log confirmation is disabled"
 # (c) line present: once the log resolves and holds an msr line, neither unverifiable wording appears.
 msr_log ryzen_19h_zen4
 assert_absent "doctor: MSR unverifiable does not leak once the log has a line (#367)" \
@@ -5179,6 +5174,10 @@ assert_contains "log status: missing file -> none (#66)" "$( (
     source "$SCRIPT"
     _msr_log_status /nonexistent
 ))" "none"
+assert_contains "log status: appliance journal confirms MSR (#477)" "$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT='msr register values for "ryzen_19h" preset have been set successfully' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
+))" "ok"
 # Unreadable registers are counted in _MSR_UNREAD, kept OUT of _MSR_BAD (so they don't read as mismatches).
 out="$( (
     source "$SCRIPT"
@@ -6116,66 +6115,6 @@ assert_eq "throttled faster candidate not adopted (#62)" "$(J "$OVR" '.randomx.s
 out="$(throttle_run 0)"
 assert_eq "TUNE_MIN_FREQ_MHZ=0 disables the throttle skip (#62 control)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
 
-# #266: regression — a HEALTHY (~4.6 GHz) candidate whose clock jitters by 1 kHz between two reads gets a
-# fractional kHz median (4627500.5) that awk printed as 4.6275e+06; the consumer's `.`-floor mangled that
-# into "4" -> 0 MHz -> the #62 guard falsely flagged the candidate as throttled and refused to adopt it.
-# scaling_cur_freq is a FIFO fed exactly one odd-sum pair per bench window (reads block until fed), so the
-# window always sees an even sample count with a fractional median — no reliance on poll-loop timing.
-# Linux-gated (#292): same rationale as the #277 block above — Linux-sysfs plumbing, flaked on the slow
-# macOS CI runner; the deterministic freq-writer unit test above still runs everywhere.
-if [ "$(uname -s)" != Linux ]; then
-    echo "  SKIP: tune bench freq-median black-box runs in the Linux CI jobs (#292)"
-else
-    echo "== black-box: tune bench freq median doesn't false-trip the #62 throttle guard (#266) =="
-    mkdir -p "$TN/cpu266/cpu0/cpufreq"
-    FF266="$TN/cpu266/cpu0/cpufreq/scaling_cur_freq"
-    DONE266="$TN/done266"
-    # #424: the handshake below is a blocking FIFO and nothing in its path has a timeout. When the
-    # reader asks for one more sample than the feeder is positioned to serve, it parks in the FIFO's
-    # open()/read() and the enclosing `out="$( ... )"` never closes, because a command substitution
-    # ends only when every holder of the write end does. One run wedged that way for 53 minutes.
-    # T266 bounds the run under test so a wedge FAILS this block (rc 124) instead of hanging the
-    # suite. Killing the FEEDER is not an alternative and was tried: a reader blocked in open() waits
-    # for a writer to APPEAR, so dropping the last one leaves it exactly where it was.
-    T266="${T266:-120}"
-    rm -f "$FF266" "$DONE266"
-    mkfifo "$FF266"
-    # Feeder: serve the pair, then release the fake xmrig so the bench window closes after exactly 2 samples.
-    (while :; do printf '4627000\n' >"$FF266" && printf '4628001\n' >"$FF266" && touch "$DONE266" || exit; done) &
-    FEED266=$!
-    # #425: the feeder is a background job stopped only by the straight-line `kill` below, which sits
-    # AFTER the command substitution — so anything that leaves the block early skips it. It then
-    # blocks inside open() on a FIFO with no reader, and unlinking the FIFO does NOT wake a writer
-    # already blocked on it: the line-49 sandbox trap deletes the FIFO and leaves the process at 0%
-    # CPU with no live parent, invisible to every load, disk and pane-children check. Reap it from the
-    # EXIT trap, which every exit path that runs traps at all reaches; the kill below stays as the
-    # fast path and disarms this. The EXIT trap also runs when bash is KILLED by SIGTERM or SIGHUP,
-    # so `kill <suite>` and a dropped SSH are covered too — the realistic escalation path, and the
-    # reason this is worth more than an orderly-exit cleanup. SIGINT is the one that is not covered,
-    # and not because the trap skips it: with the shell blocked inside the command substitution a
-    # Ctrl-C does not terminate the suite at all, so there is nothing for a trap to run.
-    trap 'kill "$FEED266" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
-    cat >"$BD/xmrig" <<EOF
-#!/usr/bin/env bash
-echo "speed 1000.0 H/s max 1000.0 H/s"
-for _ in \$(seq 1 500); do [ -f "$DONE266" ] && break; sleep 0.02; done # bounded wait
-rm -f "$DONE266"
-echo "benchmark finished" # breaks the bench poll loop BEFORE a zombie-pid extra iteration samples a 3rd clock
-EOF
-    chmod +x "$BD/xmrig"
-    out="$(cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpu266" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ=4000 \
-        TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
-        RIGFORGE_HOME="$PWD" timeout "$T266" bash "$SCRIPT" tune </dev/null 2>&1)"
-    rc=$?
-    kill "$FEED266" 2>/dev/null
-    wait "$FEED266" 2>/dev/null
-    trap 'rm -rf "$SANDBOX"' EXIT
-    rm -f "$FF266" "$DONE266"
-    assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
-    assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
-    assert_eq "healthy candidate recorded as not throttled, eligible for adoption (#266)" "$(J "$TLOG" '.results[0].throttled')" "false"
-fi
-
 # #265: _seed_wr / _seed_g must keep an explicit base-config false instead of jq `//` flipping it to
 # the true default; with the key absent, the true default still applies.
 echo "== unit: tune seeds keep explicit false (#265) =="
@@ -6506,16 +6445,9 @@ out="$(run_ensure_hp398 "$SC" 200 0 0)"
 assert_contains "no headroom, no ceiling -> plain requirement, unchanged (#328 x #398)" "$(cat "$SC")" "vm.nr_hugepages=200"
 
 # ---------------------------------------------------------------------------
-# Appliance mode (pithead#797 R1): RIGFORGE_APPLIANCE=1 runs setup on the Pithead appliance image —
-# read-only root, volatile /etc overlay, a boot leg re-runs setup every boot. Under the flag setup
-# must: never install packages (fail naming missing tools instead), skip the GRUB leg, render units
-# into /run and enable them --runtime, mount hugetlbfs at runtime with no fstab/limits.conf writes —
-# while runtime tuning (modprobe msr, grow-only sysctl) stays byte-identical.
 echo "== black-box: appliance mode (pithead#797 R1) =="
 AP="$(mktemp -d "$SANDBOX/appliance.XXXXXX")"
 
-# The flag presets SYSTEMD_DIR to /run and flips enablement to --runtime; an explicit override and
-# the no-flag defaults are unchanged.
 out="$( (unset SYSTEMD_DIR && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
 assert_eq "flag presets /run/systemd/system + --runtime (#797)" "$out" "/run/systemd/system|--runtime"
 out="$( (unset SYSTEMD_DIR && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
@@ -6523,9 +6455,7 @@ assert_eq "no flag: /etc/systemd/system + persistent enable (#797)" "$out" "/etc
 out="$( (SYSTEMD_DIR="$AP/custom-sd" && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s' "$SYSTEMD_DIR"))"
 assert_eq "explicit SYSTEMD_DIR still wins under the flag (#797)" "$out" "$AP/custom-sd"
 
-# Dependency handling: tools verified (command -v), never installed. The toolchain is only required
-# while a build is pending; a prebuilt tree needs envsubst alone (the R0 bench re-ran with a broken
-# compiler). PATH is restricted to purpose-built bins so the host's real toolchain can't leak in.
+# Baked dependencies are verified against a restricted fixture PATH.
 mkbin_ap() { # <dir> <cmd...>: a dir of exit-0 fakes
     local d="$1" c
     shift
@@ -6655,8 +6585,6 @@ mkdir -p "$APS/run-systemd" "$APS/xmrig/build"
 assert_eq "unit rendered into the runtime systemd dir (#797)" "$([ -f "$APS/run-systemd/xmrig.service" ] && echo yes || echo no)" "yes"
 assert_contains "unit enabled with --runtime (#797)" "$(cat "$APS/calls.log")" "[systemctl] enable --runtime xmrig.service"
 
-# setup --dry-run previews the SAME appliance decisions (shared logic, #146): baked deps, GRUB skip,
-# runtime-only msr and mounts, --runtime enablement — and still covers every main() step.
 APDR="$AP/dryrun"
 mkdir -p "$APDR/etc" "$APDR/util"
 cp "$APK/util/proposed-grub.sh" "$APDR/util/proposed-grub.sh"
@@ -6682,14 +6610,18 @@ done
 while IFS= read -r step; do
     assert_contains "appliance plan covers main() step '$step' (#797/#146)" "$apdr_out" "$step"
 done <<<"$main_steps"
-
-# Full black-box setup with the flag, host-native OS path: proves the flag survives main() wiring
-# end to end. Portable asserts here; the Linux-only /etc assertions run on Linux hosts and in the
-# Linux CI job (the macOS path skips kernel/limits/service by OS, not by flag).
 APW="$(e2e_setup)"
 RIGFORGE_APPLIANCE=1 e2e_run "$APW" "$HOST_OS"
 rc=$?
 assert_rc "appliance full run exits 0 (#797)" "$rc" "0"
+assert_eq "appliance setup persists its identity (#477)" "$([ -d "$APW/.rigforge-appliance" ] && echo yes)" "yes"
+out="$( (
+    unset RIGFORGE_APPLIANCE
+    RIGFORGE_HOME="$APW"
+    source "$SCRIPT"
+    printf '%s|%s' "$RIGFORGE_APPLIANCE" "$ENABLE_RUNTIME"
+))"
+assert_eq "clean invocation reloads persisted appliance mode (#477)" "$out" "1|--runtime"
 assert_absent "appliance full run: no apt-get (#797)" "$(cat "$APW/calls.log")" "[apt-get]"
 assert_absent "appliance full run: no brew install (#797)" "$(cat "$APW/calls.log")" "[brew] install"
 assert_contains "appliance full run: says deps are baked (#797)" "$E2E_OUT" "dependencies are baked into the image"
@@ -6700,25 +6632,37 @@ if [ "$HOST_OS" = Linux ]; then
     assert_absent "appliance full run: no memlock append (#797)" "$(cat "$APW/etc/security/limits.conf")" "memlock"
     assert_eq "appliance full run: no msr.conf drop-in (#797)" "$([ -e "$APW/etc/modules-load.d/msr.conf" ] && echo present || echo absent)" "absent"
     assert_contains "appliance full run: unit enabled --runtime (#797)" "$(cat "$APW/calls.log")" "[systemctl] enable --runtime xmrig.service"
-    # Every enable under the flag must be --runtime — a persisted enable writes the volatile
-    # /etc overlay and silently vanishes on reboot. The xmrig assert above pins one site; this
-    # guards the other enable sites (timers, api, control) against a future call that forgets
-    # its ${ENABLE_RUNTIME:+...} expansion.
     assert_eq "appliance full run: every systemctl enable is --runtime (#797)" \
         "$(grep -F "[systemctl] enable" "$APW/calls.log" | grep -cv -- --runtime)" "0"
-    # /etc/logrotate.d is volatile on the appliance and the image runs no logrotate — the drop-in
-    # must not be written (log policy is the integration layer's, pithead#797 R2).
     assert_eq "appliance full run: no logrotate drop-in (#797)" "$([ -e "$APW/etc/logrotate.d/xmrig" ] && echo present || echo absent)" "absent"
+    assert_eq "appliance full run: no persistent XMRig file log (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
 fi
-# check_prerequisites under the flag: a missing jq is a hard, actionable failure — never an install
-# (the non-appliance path would apt/brew it; PATH without jq simulates an image that forgot to bake it).
+: >"$APW/home/worker/xmrig/build/xmrig"
+chmod +x "$APW/home/worker/xmrig/build/xmrig"
+jq '.autotune="performance" | .watchdog="enabled" | .watchdog_interval_min=5 | .max_temp_c=80 | .api="enabled" | .control="enabled" | .control_upgrade="enabled" | .ACCESS_TOKEN="test-token-test-token-test-token-00" | .api_allow_from="10.0.0.0/8"' "$APW/config.json" >"$APW/config.tmp" && mv "$APW/config.tmp" "$APW/config.json"
+mkdir -p "$APW/control/spool" "$APW/systemd-clean" "$APW/logrotate-clean"
+rmdir "$APW/.rigforge-appliance"
+printf 'legacy runtime unit\n' >"$APW/legacy-xmrig.service"
+printf 'legacy unbounded log\n' >"$APW/home/worker/xmrig.log"
+apu_out="$( (cd "$APW" && unset RIGFORGE_APPLIANCE && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux SYSTEMD_DIR="$APW/systemd-clean" LOGROTATE_DIR="$APW/logrotate-clean" RIGFORGE_LEGACY_APPLIANCE_UNIT="$APW/legacy-xmrig.service" RIGFORGE_CONTROL_STATE="$APW/control" XMRIG_VERSION=vTEST XMRIG_COMMIT=testcommit0000000000000000000000000000 RIGFORGE_HOME="$APW" bash "$SCRIPT" upgrade </dev/null) 2>&1)"
+assert_rc "legacy appliance upgrade succeeds (#477)" "$?" "0"
+assert_eq "legacy upgrade persists appliance identity (#477)" "$([ -d "$APW/.rigforge-appliance" ] && echo yes)" "yes"
+assert_eq "legacy upgrade keeps XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
+assert_eq "legacy upgrade removes the persistent XMRig log (#477)" "$([ -e "$APW/home/worker/xmrig.log" ] && echo present || echo absent)" "absent"
+assert_contains "legacy upgrade reinstalls appliance control posture (#477/#479)" "$(cat "$APW/systemd-clean/rigforge-control-apply.service")" "RIGFORGE_APPLIANCE=1"
+assert_contains "legacy upgrade reinstalls the root-only consumer runtime (#479)" "$(cat "$APW/systemd-clean/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
+assert_eq "legacy upgrade reconciles every optional service (#477)" "$([ -f "$APW/systemd-clean/rigforge-autotune.service" ] && [ -f "$APW/systemd-clean/rigforge-watchdog.service" ] && [ -f "$APW/systemd-clean/rigforge-api.service" ] && echo yes)" "yes"
+printf '{"DONATION":2}' >"$APW/control/spool/pending-0123456789abcdef.json"
+apc_out="$( (cd "$APW" && unset RIGFORGE_APPLIANCE && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux SYSTEMD_DIR="$APW/systemd-clean" LOGROTATE_DIR="$APW/logrotate-clean" APPLY_POOL_TRIES=1 APPLY_POOL_IVL=0 RIGFORGE_CONTROL_STATE="$APW/control" RIGFORGE_HOME="$APW" bash "$SCRIPT" control-apply </dev/null) 2>&1)"
+assert_rc "clean-environment appliance control-apply succeeds (#477)" "$?" "0"
+assert_eq "post-upgrade control request reaches applied (#477/#479)" "$(jq -r .status "$APW/control/status.json")" "applied"
+assert_eq "control-apply keeps appliance XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
+assert_contains "scheduled autotune preserves appliance mode (#477)" "$(cat "$APW/systemd-clean/rigforge-autotune.service")" "RIGFORGE_APPLIANCE=1"
 apjq_out="$( (
     source "$SCRIPT"
     RIGFORGE_APPLIANCE=1
     OS_TYPE=Linux
     set +e
-    # Sourcing ran jq, so bash hashed its real path — clear the table or `command -v jq`
-    # ignores the emptied PATH and the missing-tool branch never fires.
     hash -r
     PATH="/nonexistent" check_prerequisites 2>&1
 ))"
@@ -7336,6 +7280,10 @@ assert_eq "summary and health carry the same UTC generation stamp (#454)" "$(jq 
 assert_eq "generation stamp is RFC 3339 UTC (#454)" "$(jq -r .generated_at "$APIQ/data/summary.json" | grep -Ec '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')" "1"
 assert_eq "/health wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/health.json")" '["clock_pct_of_boost","firmware","generated_at","governor","hugepages_1g","hugepages_total","msr","ram","service_active","smt","throttling","watchdog","xmp"]'
 assert_eq "/tune wire contract: exact key set" "$(jq -cS 'keys' "$APIQ/data/tune.json")" '["applied","autotune","candidates_tried","last_best_hs","target"]'
+mkdir -p "$APIQ/home/worker/xmrig/build"
+printf '{}' >"$APIQ/home/worker/xmrig/build/config.json"
+run_refresh "export STUB_JOURNAL_OUTPUT='msr register values for \"ryzen_19h\" preset have been set successfully'"
+assert_eq "appliance journal feeds sister health MSR status (#477)" "$(jq -r .msr "$APIQ/data/health.json")" "ok"
 # #212: watchdog state on the wire. Disabled (no key in config) -> the one-field object.
 assert_eq "watchdog disabled -> {mode: disabled} (#212)" "$(jq -cS '.rigforge.watchdog' "$APIQ/data/summary.json")" '{"mode":"disabled"}'
 # Enabled with a thermal hold + one strike: the API must explain the stopped miner.
@@ -7611,6 +7559,8 @@ assert_contains "upgrade path globs upgrade-*.json" "$(cat "$CPS/systemd/rigforg
 assert_absent "upgrade path does NOT reuse the apply pending-*.json glob (#308)" "$(cat "$CPS/systemd/rigforge-control-upgrade.path")" "pending-*.json"
 assert_contains "upgrade oneshot runs control-upgrade" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "rigforge.sh control-upgrade"
 assert_contains "upgrade oneshot baked with the operator handback" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "RIGFORGE_OPERATOR=rfop"
+assert_contains "apply oneshot gets the shared root-only runtime (#479)" "$(cat "$CPS/systemd/rigforge-control-apply.service")" "RuntimeDirectory=rigforge-control"
+assert_contains "upgrade oneshot gets a root-only processing runtime (#479)" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
 out="$(CU=disabled run_control_install enabled)"
 assert_eq "control_upgrade off removes the upgrade oneshot" "$([ -f "$CPS/systemd/rigforge-control-upgrade.service" ] && echo y || echo n)" "n"
 assert_eq "control_upgrade off keeps the apply path (control still on)" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
@@ -8587,10 +8537,8 @@ ca_exec() {
             command mv "$@"
         }
         if [ "${CA_FSYNC_UNCERTAIN:-0}" = 1 ]; then
-            _ca_fsyncn=0
             _fsync_paths() {
-                _ca_fsyncn=$((_ca_fsyncn + 1))
-                [ "$_ca_fsyncn" -lt 2 ]
+                case " $* " in *" $CONFIG_JSON "*) return 1 ;; esac
             }
         fi
         OS_TYPE=Linux
@@ -8814,10 +8762,6 @@ assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "
 assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
 echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
-# The git fetch/checkout/reachability/build half (_control_upgrade_do) and the miner liveness check are
-# stubbed here — they need a real git remote + compiler + systemd, and are validated on miner-0. This
-# exercises the security-critical ORCHESTRATION: strict version whitelist, monotonic anti-rollback,
-# spool handoff, throttle, and the applied/rolled_back/failed status the receiver serves back.
 cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.json contents
     local d
     d=$(mktemp -d "$SANDBOX/cu.XXXXXX")
@@ -8835,9 +8779,6 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.js
         DO="$3"
         WML=0
         UDO=0
-        # forward checkout+build is call #1, the rollback checkout+build is call #2.
-        # 'buildfail' = the forward build fails but the rollback rebuild succeeds (-> rolled_back);
-        # 'fail' = both fail (-> terminal failed).
         _control_upgrade_do() {
             UDO=$((UDO + 1))
             case "$DO" in
@@ -8846,14 +8787,11 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.js
             esac
             return 0
         }
-        # 'down' = miner dead after the forward build but the rollback restores liveness (-> rolled_back).
         _wait_miner_live() {
             WML=$((WML + 1))
             { [ "$DO" = down ] && [ "$WML" -eq 1 ]; } && return 1
             return 0
         }
-        # Match the subcommand anywhere in the args: #308's `-c safe.directory=...` sits between
-        # `-C dir` and the subcommand, so positional ($3) matching broke when it landed.
         git() { case "$*" in *describe*) echo v0.0.1 ;; *rev-parse*) echo deadbeefcafe ;; *) return 0 ;; esac }
         set +e
         PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
@@ -8863,13 +8801,9 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.js
 st() { printf '%s' "$1" | jq -r .status 2>/dev/null; }
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" ok)"
 assert_eq "upgrade applied on a newer, buildable release" "$(st "$s")" "applied"
-# #320: the applied record must say which version landed — no cross-reading the miner API for it.
 assert_contains "applied reason echoes the landed version (#320)" "$s" "upgraded to v9.9.9"
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" down)"
 assert_eq "built but miner stays down -> rolled_back" "$(st "$s")" "rolled_back"
-# #308 security review (HIGH): a build failure AFTER checkout must roll the tree back to the prior
-# version, not leave it pinned to the unbuilt target (which would short-circuit all future retries and
-# run unverified code). A clean rollback reports rolled_back, never a false "no change applied".
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" buildfail)"
 assert_eq "build failure after checkout rolls back cleanly -> rolled_back" "$(st "$s")" "rolled_back"
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" fail)"
@@ -8879,8 +8813,6 @@ s="$(cu_run '{"version":"v1.0.0"}' "2.0.0" ok)"
 assert_eq "downgrade refused -> failed (never built)" "$(st "$s")" "failed"
 assert_contains "downgrade reason names anti-rollback" "$s" "not newer"
 s="$(cu_run '{"version":"v1.0.0"}' "1.0.0" ok)"
-# #320: already-on-target is an idempotent no-op, not a failure — a dashboard must not show red
-# for a rig sitting exactly where the operator wants it.
 assert_eq "same version -> noop, not failed (#320)" "$(st "$s")" "noop"
 assert_contains "noop reason still says already on" "$s" "already on v1.0.0"
 s="$(cu_run '{"version":"garbage"}' "1.0.0" ok)"
@@ -8889,7 +8821,6 @@ s="$(cu_run '{"version":"v9.9.9","evil":"x"}' "1.0.0" ok)"
 assert_contains "extra key beyond version refused (strict whitelist)" "$s" "malformed"
 s="$(cu_run "" "1.0.0" ok)"
 assert_eq "nothing staged -> no status file" "$s" ""
-# D8 spool handoff: a staged SYMLINK is refused before it's read.
 dsl=$(mktemp -d "$SANDBOX/cusl.XXXXXX")
 mkdir -p "$dsl/state/spool"
 printf '1.0.0' >"$dsl/VERSION"
@@ -8985,7 +8916,6 @@ assert_contains "D10 reachability guard pins origin/main (#318)" \
 assert_eq "D10 guard does not consult origin/HEAD (#318)" \
     "$(grep -c 'symbolic-ref' "$SCRIPT")" "0"
 
-# control_upgrade's throttle-blocked path: a fresh stamp inside the window -> failed(throttled).
 cuThr=$(mktemp -d "$SANDBOX/cuthr.XXXXXX")
 mkdir -p "$cuThr/state/spool"
 printf '1.0.0' >"$cuThr/VERSION"
@@ -9009,8 +8939,6 @@ sThr="$(
 assert_eq "control_upgrade within the throttle window -> status throttled (#308/#320)" "$(st "$sThr")" "throttled"
 assert_contains "throttled reason says why" "$sThr" "too soon"
 
-# #321: unusable throttle state (rc 2) is a fail-closed refusal, and must NOT read as "throttled"
-# — a consumer would retry-later forever against a rig whose state dir is actually broken.
 cuTs=$(mktemp -d "$SANDBOX/cuts.XXXXXX")
 mkdir -p "$cuTs/state/spool"
 printf '1.0.0' >"$cuTs/VERSION"
@@ -9034,9 +8962,6 @@ sTs="$(
 assert_eq "unusable throttle state -> failed, never built (#321)" "$(st "$sTs")" "failed"
 assert_contains "fail-closed reason names the throttle state, not 'throttled'" "$sTs" "throttle state unavailable"
 
-# #320: between the D8 claim and the terminal outcome the verb writes ONE non-terminal `started`
-# record, so a poller can tell "mid-run" (and "oneshot died mid-run": started never superseded)
-# from "queued, path unit hasn't fired" (previous change's terminal record still served).
 cuSt=$(mktemp -d "$SANDBOX/cust.XXXXXX")
 mkdir -p "$cuSt/state/spool"
 printf '1.0.0' >"$cuSt/VERSION"
@@ -9049,8 +8974,6 @@ printf '{"version":"v9.9.9"}\n' >"$cuSt/state/spool/upgrade-abc123def4567890.jso
     CONFIG_JSON="$cuSt/config.json"
     RIGFORGE_CONTROL_STATE="$cuSt/state"
     CONTROL_UPGRADE_MIN_INTERVAL=0
-    # Snapshot the status file at the moment the build half runs — the started record must already
-    # be there, and must carry this change's id (not the previous change's terminal record).
     _control_upgrade_do() {
         cp "$cuSt/state/status.json" "$cuSt/mid-status.json" 2>/dev/null
         return 0
@@ -9095,12 +9018,12 @@ echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
 assert_eq "control writable-keys match across rigforge.sh + control-server.py (#236)" "$bash_ckeys" "$py_ckeys"
-
 echo "== black-box: the control server (#236) =="
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the control-server wire suite runs in the other CI jobs"
 else
     python3 -m py_compile "$ROOT/util/control-server.py" && ok "control-server.py compiles" || bad "control-server.py does not compile" ""
+    python3 "$ROOT/tests/test-control-spool-cap.py" "$ROOT/util/control-server.py" && ok "control spool stays capped under concurrent apply+upgrade staging (#478)" || bad "control spool cap failed under concurrent staging (#478)" ""
     CSRV="$(mktemp -d "$SANDBOX/csrv.XXXXXX")"
     mkdir -p "$CSRV/state"
     CTOK="tok-ctl1"
@@ -9172,9 +9095,6 @@ else
     assert_eq "GET /status before any apply -> 503" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "503"
     printf '{"status":"applied","change_id":"z","applied_at":"2020-01-01T00:00:00Z"}' >"$CSRV/state/status.json"
     assert_eq "GET /status after an apply -> 200" "$(hc "$U/status" -H "Authorization: Bearer $CTOK")" "200"
-    # #344 item 3: the walkthrough that reported this — an 11-day-old record with no staleness cue,
-    # indistinguishable from a fresh one — reading the no-arg endpoint directly. age_seconds is
-    # ADDITIVE (applied_at itself is untouched) and computed at serve time, never persisted to disk.
     nbody="$(curl -sS --max-time 5 -H "Authorization: Bearer $CTOK" "$U/status" 2>/dev/null)"
     assert_contains "no-arg /status keeps its recorded-at stamp (#344 item 3)" "$nbody" '"applied_at": "2020-01-01T00:00:00Z"'
     assert_contains "no-arg /status gains a derived age signal (#344 item 3)" "$nbody" '"age_seconds"'
@@ -9197,8 +9117,6 @@ else
     assert_eq "POST /upgrade still requires the bearer (#308)" "$(hc -X POST "$U/upgrade" -H 'Content-Type: application/json' -d '{"version":"v9.9.9"}')" "401"
     kill "$CSRV_PID" 2>/dev/null || true
     wait "$CSRV_PID" 2>/dev/null || true
-    # #308: a dedicated server WITH control_upgrade enabled — /upgrade now accepts a well-formed version
-    # and stages it as upgrade-*.json (distinct from the apply path's pending-*.json).
     CSRV2="$(mktemp -d "$SANDBOX/csrv2.XXXXXX")"
     mkdir -p "$CSRV2/state"
     printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s", "control_upgrade":"enabled" }\n' "$CTOK" >"$CSRV2/config.json"
@@ -9219,6 +9137,31 @@ else
     assert_contains "POST /upgrade well-formed -> accepted (#308)" "$ubody" '"status": "accepted"'
     assert_eq "upgrade staged as upgrade-*.json (#308)" "$(ls "$CSRV2/state/spool"/upgrade-*.json 2>/dev/null | wc -l | tr -d ' ')" "1"
     assert_eq "upgrade did NOT stage a pending-*.json (distinct from apply #308)" "$(ls "$CSRV2/state/spool"/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+    rm "$CSRV2/state/spool"/*-*.json
+    queue_ok=1
+    for n in $(seq 1 20); do
+        if [ $((n % 2)) -eq 0 ]; then ep=upgrade body="{\"version\":\"v1.2.$n\"}"; else ep=apply body="{\"DONATION\":$((n % 10))}"; fi
+        [ "$(hc -X POST "$U2/$ep" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d "$body")" = 202 ] || queue_ok=0
+    done
+    assert_eq "both HTTP endpoints fill the shared queue to its cap (#478)" "$queue_ok:$(find "$CSRV2/state/spool" -name '*-*.json' | wc -l | tr -d ' ')" "1:20"
+    assert_eq "capped queue bytes stay below twenty max-size bodies (#478)" "$([ "$(find "$CSRV2/state/spool" -name '*-*.json' -exec wc -c {} + | awk 'END{print $1+0}')" -le 1310720 ] && echo yes)" "yes"
+    assert_eq "over-cap apply returns retryable 503 (#478)" "$(hc -X POST "$U2/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "503"
+    assert_eq "over-cap upgrade returns retryable 503 (#478)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.99"}')" "503"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        RIGFORGE_CONTROL_STATE="$CSRV2/state"
+        SCRIPT_DIR="$CSRV2"
+        CONFIG_JSON="$CSRV2/config.json"
+        parse_config() { :; }
+        _control_commit() { printf 'committed %s' "$CSRV2/backup"; }
+        _sweep_config_backups() { :; }
+        _control_fast_path_eligible() { return 1; }
+        _control_do_apply() { return 0; }
+        PATH="$STUBS:$PATH" control_apply >/dev/null
+    )
+    assert_eq "real control-apply consumption reaches applied (#478/#479)" "$(jq -r .status "$CSRV2/state/status.json")" "applied"
+    assert_eq "real control-apply consumption reopens the queue (#478)" "$(hc -X POST "$U2/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "202"
     assert_eq "POST /upgrade malformed version -> 400 (#308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"garbage"}')" "400"
     assert_eq "POST /upgrade extra key -> 400 (strict whitelist #308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.3","x":1}')" "400"
     assert_eq "POST /upgrade missing version -> 400 (#308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "400"

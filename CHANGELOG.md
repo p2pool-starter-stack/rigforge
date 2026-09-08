@@ -9,6 +9,18 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **Linux CI no longer hangs in the tune median regression fixture (#482).**
+  The blocking FIFO duplicate was removed; deterministic median conversion and tune throttle/adoption coverage remain.
+
+- **Privileged control consumers are isolated and serialized (#479, #480).**
+  Apply and upgrade share one root-owned lock, upgrades claim intents only in a systemd-created root-only runtime directory, and a post-rename sync error returns an accepted warning with the real change id instead of a false-negative `500`.
+
+- **Appliance and control logging/storage stay bounded (#477, #478).**
+  Appliance upgrades remove the legacy persistent XMRig log and route output only through the image-capped journal. The authenticated receiver bounds apply/upgrade requests, orphan spool temps, and pending-marker temps.
+
+- **An in-progress sister-feed refresh no longer looks unscheduled (#476).**
+  `doctor` and the real-hardware gate accept an active refresh while systemd temporarily hides the timer's next activation; payload freshness remains mandatory.
+
 - **Accepted control changes are no longer starved behind mining or a global filesystem flush (#472).**
   The privileged apply worker runs at normal priority and fsyncs only the changed config and backup.
 

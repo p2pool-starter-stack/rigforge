@@ -8,8 +8,6 @@
 # Run it before tagging a release; it is deliberately NOT a CI job (real build + HugePages + mining are
 # flaky-by-nature and against Actions' ToS).
 #
-# It drives every genuine phase end to end, including mining, control, upgrades and safe restoration.
-#
 # Env knobs:
 #   E2E_ALLOW_OFFLINE_POOL       1 = don't fail the connect check when the pool is unreachable
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
@@ -22,7 +20,6 @@
 #   E2E_UPGRADE_TARGET           vX.Y.Z = permanent explicit target instead of the auto-derived,
 #                                restored previous-tag -> current-tag pair
 #   E2E_UPGRADE_SKIP_REASON      explicit reason to skip the mandatory forward leg
-#
 # DynamicUser API/control units need a world-traversable checkout (#362); every phase preflights it.
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
@@ -33,9 +30,6 @@
 #   sudo bash tests/e2e-real.sh upgrade
 #   sudo bash tests/e2e-real.sh watchdog
 #   sudo bash tests/e2e-real.sh teardown
-# Or, when HugePages are already active (no reboot needed), one shot:
-#   sudo bash tests/e2e-real.sh all
-#
 set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +37,9 @@ RIGFORGE="$HERE/rigforge.sh"
 
 # Root may reach this through nested sudo, so every git call pins the operator-owned checkout (#401).
 _hgit() { git -C "$HERE" -c safe.directory="$HERE" "$@"; }
+miner_log() { if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then journalctl -u xmrig --no-pager -o cat -n 5000; else cat "$1"; fi; }
+miner_log_has() { grep -q -- "$1" < <(miner_log "$2" 2>/dev/null); }
+fresh_share() { [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]] && [ "$1" -gt "$2" ]; }
 GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 
 PASS=0
@@ -146,7 +143,6 @@ _set_boot() { # <enable|disable> <enabled|disabled>
     done
     return 1
 }
-
 # #362: rigforge-control.service and rigforge-api.service run as systemd DynamicUser (an
 # unprivileged, ephemeral UID) and must traverse every directory from / down to the checkout to open
 # util/*.py. A checkout under $HOME (typically mode 750) blocks that — the service dies in a restart
@@ -166,17 +162,14 @@ require_traversable_checkout() { # <path>
         _d="$(dirname "$_d")"
     done
 }
-
 require_linux_root() {
     [ "$(uname -s)" = "Linux" ] || die "Linux-only (this host is $(uname -s)) — run on the release rig."
     [ "$(id -u)" -eq 0 ] || die "must run as root (kernel tuning / modprobe / apt): sudo bash tests/e2e-real.sh $*"
     [ -x "$RIGFORGE" ] || die "$RIGFORGE not found or not executable."
     require_traversable_checkout "$HERE" # #362: called by every phase, not just provision
 }
-
 hugepages_total() { awk '/^HugePages_Total:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0; }
 find_worker_bin() { find "$HERE" -type f -path '*xmrig/build/xmrig' 2>/dev/null | head -1; }
-
 check_api_refresh() {
     case "$(jq -r '.api // "disabled"' "$HERE/config.json" 2>/dev/null)" in
     enabled | true | on) ;;
@@ -185,13 +178,21 @@ check_api_refresh() {
         return
         ;;
     esac
-    local next stamp epoch age now token port bind host i
+    local next refresh_state stamp epoch age now token port bind host i
     for i in 1 2 3 4 5; do # #458: NEXT is briefly hidden while the triggered service activates.
         next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
         { [ -n "$next" ] && [ "$next" != n/a ]; } && break
         sleep 1
     done
-    if [ -z "$next" ] || [ "$next" = n/a ]; then bad "sister-feed timer has no NEXT trigger"; else ok "sister-feed timer has a NEXT trigger ($next)"; fi
+    if [ -z "$next" ] || [ "$next" = n/a ]; then
+        refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
+        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then ok "sister-feed refresh is in progress ($refresh_state)"; else
+            next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+            { [ -n "$next" ] && [ "$next" != n/a ]; } && ok "sister-feed timer has a NEXT trigger ($next)" || bad "sister-feed timer has no NEXT trigger"
+        fi
+    else
+        ok "sister-feed timer has a NEXT trigger ($next)"
+    fi
     token=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null)
     port=$(jq -r '.api_port // 8081' "$HERE/config.json" 2>/dev/null)
     bind=$(jq -r '.api_bind // "0.0.0.0"' "$HERE/config.json" 2>/dev/null)
@@ -210,7 +211,6 @@ check_api_refresh() {
     age=$((now - epoch))
     if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
 }
-
 ensure_config() {
     # setup needs a valid config.json. Benching is OFFLINE so any valid pool entry suffices for the build +
     # bench + tune phases; default to an unroutable TEST-NET-3 (RFC 5737) host so the installed service
@@ -283,12 +283,9 @@ verify() {
     # Let a freshly rebooted miner initialize before doctor inspects its log, bounded at ~90s.
     local _w _hr _tok
     _tok=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null || true)
+    worker_summary() { if [ -n "$_tok" ]; then _auth_curl "$_tok" -fsS --max-time 4 http://127.0.0.1:8080/2/summary; else curl -fsS --max-time 4 http://127.0.0.1:8080/2/summary; fi; }
     for _w in $(seq 1 30); do
-        if [ -n "$_tok" ]; then
-            _hr=$(_auth_curl "$_tok" -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
-        else
-            _hr=$(curl -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
-        fi
+        _hr=$(worker_summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
         { [ -n "$_hr" ] && awk "BEGIN{exit !($_hr > 0)}" 2>/dev/null; } && break
         sleep 3
     done
@@ -302,18 +299,18 @@ verify() {
     # msr can be a loadable module OR built into the kernel; either way it shows under /sys/module
     # (lsmod only lists loadable modules, so a built-in msr would be a false negative) — match doctor.
     [ -d /sys/module/msr ] && ok "msr available (/sys/module/msr)" || bad "msr not available"
-    # #367: assert the MSR guard's INPUTS first — resolve the same worker root + log path doctor's MSR
-    # block requires (mirrors the #reown resolver below) — so a run where doctor SKIPPED the block
-    # (guard failed) fails HERE as "could not resolve xmrig.log", not as "MSR not applied" below. The
-    # #66 flake that broke both assertions on a healthy rig was exactly this: an absent block reading
-    # identically to a failed check.
+    # Resolve the same worker root and log source doctor uses (#367/#477).
     local msr_wr msr_raw_home msr_log
     msr_raw_home="$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$HERE/config.json" 2>/dev/null)"
     msr_wr="$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_for_home "$2"' _ "$RIGFORGE" "$msr_raw_home" 2>/dev/null || true)"
     msr_log="${msr_wr:+$msr_wr/xmrig.log}"
-    [ -n "$msr_log" ] && [ -f "$msr_log" ] &&
-        ok "resolved the worker's xmrig.log for doctor's MSR checks ($msr_log) (#367)" ||
-        bad "could not resolve xmrig.log for doctor's MSR checks (worker root '${msr_wr:-<unresolved>}', HOME_DIR='$msr_raw_home') (#367) — doctor's MSR block would have been SKIPPED, not failed"
+    if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then
+        [ -n "$msr_log" ] && [ ! -e "$msr_log" ] && [ -z "$(jq -r '."log-file" // empty' "$msr_wr/xmrig/build/config.json")" ] &&
+            ok "appliance uses the bounded journal with no persistent XMRig log (#477)" || bad "appliance XMRig config or disk still has a persistent log (#477)"
+    else
+        [ -n "$msr_log" ] && [ -f "$msr_log" ] && ok "resolved the worker's xmrig.log for doctor's MSR checks ($msr_log) (#367)" ||
+            bad "could not resolve xmrig.log for doctor's MSR checks (worker root '${msr_wr:-<unresolved>}', HOME_DIR='$msr_raw_home') (#367)"
+    fi
     # #66: doctor must confirm the MSR mod actually APPLIED (from XMRig's log) and — since setup installs
     # msr-tools — verify the prefetcher registers hold the preset's values via rdmsr. Hardware-agnostic:
     # it asserts on doctor's output (whatever per-family preset this CPU uses — e.g. ryzen_19h_zen4 on
@@ -337,13 +334,7 @@ verify() {
         bad "doctor printed no firmware context line (#78) — is /sys/class/dmi/id readable?"
 
     phase "verify — live pool (the worker actually connects and submits a share)"
-    # Proving the rig REALLY mines is the whole point of the gate, so this round-trip is MANDATORY by
-    # default. It needs a REACHABLE pool: ensure_config writes an unroutable TEST-NET-3 placeholder
-    # (203.0.113.x) when no config.json exists, so the installed service never mines to a real destination.
-    # If that placeholder is still in place the releaser simply forgot to point at a real pool — so FAIL
-    # loudly rather than silently skipping the one check that proves end-to-end mining. Point pools[0].url
-    # at a real reachable pool before tagging (see RELEASING.md). For a deliberate offline smoke run (no
-    # pool on hand), set E2E_ALLOW_OFFLINE_POOL=1 to turn this into an explicit, on-purpose skip.
+    # A reachable pool is mandatory unless the deliberate offline override is set.
     if grep -q '203\.0\.113\.' "$HERE/config.json" 2>/dev/null; then
         if [ "${E2E_ALLOW_OFFLINE_POOL:-0}" = 1 ]; then
             ok "SKIP live-pool round-trip — offline placeholder pool, E2E_ALLOW_OFFLINE_POOL=1 set (deliberate offline run)"
@@ -352,29 +343,32 @@ verify() {
         fi
     else
         systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
-        local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0
-        wlog="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
-        if [ -z "$wlog" ]; then
-            bad "could not find the worker's xmrig.log to check pool connectivity"
+        local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0 accepted_before accepted_now
+        wlog="$msr_log"
+        if [ "${RIGFORGE_APPLIANCE:-0}" != 1 ] && [ ! -f "$wlog" ]; then
+            bad "could not find the worker's log to check pool connectivity"
         else
             # Connection: a stratum job from the pool proves the worker reached and authed with it.
-            while [ "$waited" -lt 60 ] && ! grep -q 'new job from' "$wlog" 2>/dev/null; do
+            while [ "$waited" -lt 60 ] && ! miner_log_has 'new job from' "$wlog"; do
                 sleep 3
                 waited=$((waited + 3))
             done
-            grep -q 'new job from' "$wlog" 2>/dev/null &&
-                ok "connected to the pool ($(grep -oE 'new job from [^ ]+' "$wlog" | tail -1 | awk '{print $NF}'))" ||
+            miner_log_has 'new job from' "$wlog" &&
+                ok "connected to the pool ($(miner_log "$wlog" | grep -oE 'new job from [^ ]+' | tail -1 | awk '{print $NF}'))" ||
                 bad "no pool job in the log within 60s — is the pool reachable?"
-            # Share submission: an accepted share proves the full mining round-trip. Assumes a reachable
-            # pool with sane difficulty; raise E2E_SHARE_TIMEOUT for a high-difficulty pool.
+            # Require a new share during this gate; retained history cannot satisfy the release proof.
             waited=0
-            while [ "$waited" -lt "$share_to" ] && ! grep -q 'accepted (' "$wlog" 2>/dev/null; do
+            accepted_before=$(worker_summary 2>/dev/null | jq -r '.connection.accepted // 0')
+            while [ "$waited" -lt "$share_to" ]; do
+                accepted_now=$(worker_summary 2>/dev/null | jq -r '.connection.accepted // 0')
+                fresh_share "$accepted_now" "$accepted_before" && break
                 sleep 5
                 waited=$((waited + 5))
             done
-            grep -q 'accepted (' "$wlog" 2>/dev/null &&
-                ok "submitted an accepted share ($(grep -c 'accepted (' "$wlog") accepted so far)" ||
-                bad "no accepted share within ${share_to}s — check pool reachability / difficulty"
+            accepted_now=$(worker_summary 2>/dev/null | jq -r '.connection.accepted // 0')
+            fresh_share "$accepted_now" "$accepted_before" &&
+                ok "submitted a fresh accepted share (count $accepted_before -> $accepted_now)" ||
+                bad "no fresh accepted share within ${share_to}s — check pool reachability / difficulty"
         fi
     fi
 
@@ -695,6 +689,9 @@ control() {
     systemctl is-active --quiet rigforge-control &&
         ok "rigforge-control.service is active" ||
         bad "rigforge-control.service is not active after enabling control"
+    if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then
+        systemctl cat rigforge-control-apply.service | grep -q 'RuntimeDirectoryMode=0700' && systemctl cat rigforge-control-apply.service | grep -q 'RIGFORGE_APPLIANCE=1' && ok "appliance apply consumer is root-runtime isolated (#479)" || bad "appliance apply consumer lost its root-runtime posture (#479)"
+    fi
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
@@ -972,6 +969,9 @@ upgrade() {
     systemctl cat rigforge-control-upgrade.path >/dev/null 2>&1 &&
         ok "rigforge-control-upgrade.path is installed (the upgrade watcher rides on control)" ||
         bad "rigforge-control-upgrade.path is not installed"
+    if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then
+        systemctl cat rigforge-control-upgrade.service | grep -q 'RuntimeDirectoryMode=0700' && systemctl cat rigforge-control-upgrade.service | grep -q 'RIGFORGE_APPLIANCE=1' && ok "appliance upgrade consumer is root-runtime isolated (#479)" || bad "appliance upgrade consumer lost its root-runtime posture (#479)"
+    fi
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"

@@ -10,4 +10,8 @@ Type=oneshot
 # restart. Unlike background telemetry, an accepted operator request must not be starved behind the
 # miner; RIGFORGE_OPERATOR (baked at setup) is who the new config + backups get handed back to.
 Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
+Environment=RIGFORGE_APPLIANCE=$RIGFORGE_APPLIANCE
+RuntimeDirectory=rigforge-control
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ExecStart=$SCRIPT_DIR/rigforge.sh control-apply

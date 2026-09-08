@@ -1,28 +1,11 @@
 #!/usr/bin/env python3
-"""RigForge control server (#236): the writable counterpart to the read-only sister API.
+"""Unprivileged authenticated RigForge control receiver (#236).
 
-This is the UNPRIVILEGED receiver half of the control path. It authenticates a config change,
-validates it structurally, and STAGES it to a spool file — it never touches config.json, never
-restarts the miner, and holds no privilege. A separate root oneshot (`rigforge.sh control-apply`,
-triggered by a systemd.path watching the spool) does the privileged persist + apply. So a request
-here can never touch mining performance, and a compromise of this process can at most drop a
-staged change that the applier re-validates before it ever lands (see docs/adr/0001).
-
-Posture, deliberately paranoid because this one accepts writes:
-  - Bearer auth is MANDATORY. parse_config refuses to enable `control` without ACCESS_TOKEN and
-    api_allow_from, but if the token is somehow empty here we fail CLOSED (refuse everything).
-  - Only an allowlist of operationally-mutable keys is accepted; anything else is a 400. The
-    authoritative semantic validation is the applier's parse_config — this is the structural gate.
-  - Body size is capped; the staged file is written atomically (temp + rename + fsync) so the
-    path unit never sees a half-written request.
-
-Python3 stdlib only. GET /status returns the last recorded change record — a terminal outcome,
-control-upgrade's non-terminal `started` while the oneshot runs (#320), or POST /apply's own
-non-terminal `pending` from the instant it's accepted (#344, see stage_pending()). Every record
-served carries a derived `age_seconds` next to its own timestamp, so a poller (or a human reading a
-stale record days later) can tell fresh from stale without doing its own clock math (#344). POST
-/apply stages a config change; POST /upgrade stages a release upgrade (#308, gated by control_upgrade).
+It validates bounded apply/upgrade bodies and atomically stages them for separate root oneshots;
+the appliers revalidate every request. Bearer auth is mandatory and fails closed. GET /status
+serves pending, started, and terminal records with a derived age. Python stdlib only.
 """
+import fcntl
 import hmac
 import json
 import os
@@ -32,7 +15,6 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
 # The keys the control path may change. Operationally-mutable only — identity, trust, filesystem
 # paths, and the control path's own auth are NOT here (remote mutation of those is escalation).
 # Kept in lockstep with control_apply()'s CONTROL_WRITABLE_KEYS in rigforge.sh (a drift test guards it).
@@ -73,8 +55,15 @@ def unsafe_reasons(change):
     return out
 
 MAX_BODY = 65536  # a config change is small; cap the body so a large POST can't exhaust memory
+MAX_PENDING = 20  # shared apply+upgrade queue cap; bounds durable bytes while the applier is stalled
 
 
+class SpoolFull(OSError):
+    pass
+class DurabilityUncertain(OSError):
+    def __init__(self, cid, error):
+        super().__init__("staged but directory sync failed: %s" % error)
+        self.cid = cid
 def load_token(cfg_path):
     if not os.path.exists(cfg_path):
         return ""
@@ -107,18 +96,33 @@ def stage_change(spool, body_bytes, prefix="pending"):
     """
     cid = os.urandom(8).hex()
     os.makedirs(spool, exist_ok=True)
-    tmp = os.path.join(spool, ".tmp-" + cid)
-    final = os.path.join(spool, prefix + "-" + cid + ".json")
-    with open(tmp, "wb") as f:
-        f.write(body_bytes)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, final)
-    dfd = os.open(spool, os.O_RDONLY)
-    try:
-        os.fsync(dfd)
-    finally:
-        os.close(dfd)
+    with open(os.path.join(spool, ".queue.lock"), "a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        names = os.listdir(spool)
+        if sum(n.startswith(".tmp-") or (n.endswith(".json") and n.startswith(("pending-", "upgrade-"))) for n in names) >= MAX_PENDING:
+            raise SpoolFull("control queue is full")
+        tmp = os.path.join(spool, ".tmp-" + cid)
+        final = os.path.join(spool, prefix + "-" + cid + ".json")
+        try:
+            with open(tmp, "wb") as f:
+                f.write(body_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, final)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError as e:
+                    print("control spool temporary cleanup failed: %s" % e, file=sys.stderr)
+        try:
+            dfd = os.open(spool, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError as e:
+            raise DurabilityUncertain(cid, e)
     return cid
 
 
@@ -130,36 +134,27 @@ PENDING_KEEP = 20  # matches _control_status's cap on kept per-change records in
 
 
 def stage_pending(state_dir, cid):
-    """#344 (item 2): record <cid> as pending in its OWN dir the instant /apply accepts it — not
-    when control-apply gets around to running it, which can be tens of seconds away (see #344 item
-    1, the fast-path-apply issue this deliberately does not fix). This closes the "in progress vs.
-    never existed" gap: GET /status?change_id=<cid> now resolves here instead of falling through to
-    the unknown-id 404 for the whole window before control-apply's terminal write lands.
+    """Record an accepted apply as pending until its root consumer writes a terminal outcome.
 
-    A SEPARATE directory (not state/changes, where the terminal record ends up) is deliberate: this
-    process is unprivileged and DynamicUser-owned, while state/changes is created and written by the
-    root control-apply oneshot — writing into a dir root created first would hit a permission wall on
-    any rig that already has control-path history. state/pending is exclusively this process's own,
-    so there's no ownership race; do_GET checks state/changes first and falls back here, and
-    control_apply's _control_status deletes the matching state/pending/<cid>.json once it writes the
-    real outcome (best-effort — see there).
-
-    If control-apply crashes, or a newer change supersedes this one before control-apply ever reads
-    it (only the newest staged spool file survives — see control_apply() in rigforge.sh), no terminal
-    record is ever written and this pending one is what's left FOREVER. That is deliberate, not a bug
-    to fix later: a dead/lost run must read as honestly "pending", with a growing age_seconds a
-    poller can judge for itself, never guessed into a fabricated applied/failed/rolled_back outcome
-    it never actually reached.
+    This DynamicUser-owned directory stays separate from root-owned changes/. Lost runs remain
+    honestly pending with a growing age, while normal outcomes remove their matching marker.
     """
     pdir = os.path.join(state_dir, "pending")
     os.makedirs(pdir, exist_ok=True)
+    if sum(e.name.startswith(".tmp-") for e in os.scandir(pdir)) >= PENDING_KEEP:
+        raise OSError("pending marker temporary-file limit reached")
     body = json.dumps({"status": "pending", "change_id": cid, "accepted_at": _utcnow()}).encode()
     tmp = os.path.join(pdir, ".tmp-" + cid)
-    with open(tmp, "wb") as f:
-        f.write(body)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, os.path.join(pdir, cid + ".json"))
+    try:
+        with open(tmp, "wb") as f:
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, os.path.join(pdir, cid + ".json"))
+    finally:
+        if os.path.exists(tmp):
+            try: os.unlink(tmp)
+            except OSError as e: print("control pending-marker temporary cleanup failed: %s" % e, file=sys.stderr)
     # Prune to the newest PENDING_KEEP: normally control-apply clears these as it lands terminal
     # outcomes, but a run of crashes/supersessions (see above) would otherwise grow this dir forever.
     try:
@@ -312,10 +307,14 @@ class Handler(BaseHTTPRequestHandler):
         staged = json.dumps({"version": body["version"]}).encode()
         try:
             cid = stage_change(os.path.join(STATE_DIR, "spool"), staged, prefix="upgrade")
+        except DurabilityUncertain as e:
+            return self._send(202, "Accepted", dict(status="accepted", change_id=e.cid, warning=str(e), note="request is staged; do not retry now; poll GET /status?change_id=%s; if it remains unknown or pending, inspect the rig before resubmitting" % e.cid))
+        except SpoolFull:
+            return self._send(503, "Service Unavailable", {"error": "control queue is full; retry after pending work is processed"})
         except OSError as e:
             return self._send(500, "Internal Server Error", {"error": "could not stage upgrade: %s" % e})
-        self._send(202, "Accepted", {"status": "accepted", "change_id": cid,
-                                     "note": "queued; the rig refuses anything that isn't a real, reachable release newer than the one installed (posting the installed version ends 'noop'; it does not independently verify the target is the newest). poll GET /status"})
+        self._send(202, "Accepted", dict(status="accepted", change_id=cid,
+                                         note="queued; the rig refuses anything that isn't a real, reachable release newer than the one installed (posting the installed version ends 'noop'; it does not independently verify the target is the newest). poll GET /status"))
 
     def _handle_apply(self):
         change = self._read_json_body()
@@ -334,8 +333,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "Bad Request", {"error": "safety-critical change refused via the remote control path: %s; change it locally on the rig with rigforge.sh if intended" % "; ".join(unsafe)})
         # Re-serialize exactly the accepted keys (defence-in-depth: never stage a raw body) and hand off.
         staged = json.dumps({k: change[k] for k in change}).encode()
+        warning = None
         try:
             cid = stage_change(os.path.join(STATE_DIR, "spool"), staged)
+        except DurabilityUncertain as e:
+            cid = e.cid
+            warning = str(e)
+        except SpoolFull:
+            return self._send(503, "Service Unavailable", {"error": "control queue is full; retry after pending work is processed"})
         except OSError as e:
             return self._send(500, "Internal Server Error", {"error": "could not stage change: %s" % e})
         # #344 (item 2): record it pending now, not when control-apply eventually gets to it (see
@@ -346,8 +351,11 @@ class Handler(BaseHTTPRequestHandler):
             stage_pending(STATE_DIR, cid)
         except OSError:
             pass
-        self._send(202, "Accepted", {"status": "accepted", "change_id": cid,
-                                     "note": "queued for apply; poll GET /status and GET :%s/2/summary for the effective config" % os.environ.get("RIGFORGE_API_PORT", "8081")})
+        response = dict(status="accepted", change_id=cid,
+                        note="queued for apply; poll GET /status and GET :%s/2/summary for the effective config" % os.environ.get("RIGFORGE_API_PORT", "8081"))
+        if warning:
+            response.update(warning=warning, note="request is staged; do not retry now; poll GET /status?change_id=%s; if it remains unknown or pending, inspect the rig before resubmitting" % cid)
+        self._send(202, "Accepted", response)
 
     def _read_only(self):
         self._send(405, "Method Not Allowed", {"error": "method not allowed"})
