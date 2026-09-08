@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Worker ↔ stack contract gate (#114): drive a REAL provisioned RigForge worker against a LIVE
+# Worker ↔ stack contract gate (#114): a provisioned worker against a live Pithead stack.
 #   PITHEAD_URL=stack-host:3333 sudo bash tests/e2e-pithead.sh all
-#
 #   PITHEAD_URL                  (required) the stack's stratum host:port
-#   E2E_STRATUM_PASS             opt-in: run the stratum-auth phases. Set it ONLY to the stack's
-#   E2E_DASH_URL                 opt-in: dashboard workers payload URL — the stack's /api/state
+#   E2E_STRATUM_PASS             opt-in: the stack's actual enforced stratum password
+#   E2E_DASH_URL                 opt-in: dashboard /api/state URL (self-signed HTTPS accepted)
+#   E2E_DASH_AUTH                user:pass for the dashboard's basic auth
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
 #   E2E_DROPOFF_TIMEOUT          seconds for the dashboard to drop a stopped worker (default 300)
 #   E2E_API_IMPACT_TOLERANCE_PCT max hashrate loss under sister-API load (default 3)
