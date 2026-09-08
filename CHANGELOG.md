@@ -7,7 +7,12 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.17.3] - 2026-09-08
+
 ### Fixed
+
+- **The topology leak scanner and its self-test now run on macOS (#487).**
+  Its regex extraction no longer depends on GNU grep, while binary files remain excluded.
 
 - **Linux CI no longer hangs in the tune median regression fixture (#482).**
   The blocking FIFO duplicate was removed; deterministic median conversion and tune throttle/adoption coverage remain.
