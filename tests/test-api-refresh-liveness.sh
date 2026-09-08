@@ -3,12 +3,12 @@
 # separately because this dependency-free suite must also run on macOS.
 RFS="$(mktemp -d "$SANDBOX/refresh-status.XXXXXX")"
 printf '%s' '{"generated_at":"2026-09-07T04:00:00Z"}' >"$RFS/summary.json"
-refresh_status() { # <next> <mtime> <now>
+refresh_status() { # <next> <mtime> <now> [refresh state]
     (
-        _next="$1" _mtime="$2" _now="$3"
+        _next="$1" _mtime="$2" _now="$3" _refresh_state="${4:-inactive}"
         source "$SCRIPT"
         RIGFORGE_API_DATA="$RFS"
-        systemctl() { case "$*" in *NextElapse*) printf '%s\n' "$_next" ;; *LastTrigger*) echo 'Sun 2026-09-06 23:59:45 CDT' ;; esac }
+        systemctl() { case "$*" in *NextElapse*) printf '%s\n' "$_next" ;; *LastTrigger*) echo 'Sun 2026-09-06 23:59:45 CDT' ;; *ActiveState*) echo "$_refresh_state" ;; esac }
         stat() { echo "$_mtime"; }
         date() { if [ "$1" = -d ]; then echo "$_mtime"; else echo "$_now"; fi; }
         sleep() { :; }
@@ -41,11 +41,19 @@ assert_contains "doctor: timer activation is retried (#460)" "$out" "refresh sch
 assert_eq "doctor: delayed timer schedule took three reads (#460)" "$(cat "$RFS/systemctl.calls")" "3"
 out="$(refresh_status n/a 1000 1030 || true)"
 assert_contains "doctor: missing timer schedule is an issue (#454)" "$out" "has no next refresh"
+out="$(refresh_status n/a 1000 1030 active)"
+assert_contains "doctor: active refresh needs no NEXT (#476)" "$out" "refresh in progress"
+out="$(refresh_status n/a 1000 1030 activating)"
+assert_contains "doctor: activating refresh needs no NEXT (#476)" "$out" "refresh in progress"
+out="$(refresh_status n/a 1000 1061 active || true)"
+assert_contains "doctor: active refresh does not mask stale payload (#476)" "$out" "sister feed is stale since"
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1061 || true)"
 assert_contains "doctor: old payload is called stale with its stamp (#454)" "$out" "sister feed is stale since 2026-09-07T04:00:00Z"
 mv "$RFS/summary.json" "$RFS/summary.saved"
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1030 || true)"
 assert_contains "doctor: missing payload is stale, not healthy (#454)" "$out" "payload missing"
+out="$(refresh_status n/a 1000 1030 active || true)"
+assert_contains "doctor: active refresh does not mask missing payload (#476)" "$out" "payload missing"
 mv "$RFS/summary.saved" "$RFS/summary.json"
 
 printf '{ "api": "enabled", "HOME_DIR": "%s/home", "pools": [{"url": "h:3333"}] }\n' "$DOC" >"$RFS/config.json"
@@ -105,6 +113,20 @@ out="$({
     check_api_refresh
 } 2>&1)"
 assert_contains "e2e refresh still rejects a persistently absent NEXT (#458)" "$out" "timer has no NEXT trigger"
+out="$({
+    eval "$E2E_REFRESH_SRC"
+    HERE="$EFR"
+    ok() { printf 'ok: %s\n' "$1"; }
+    bad() { printf 'bad: %s\n' "$1"; }
+    systemctl() {
+        case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac
+    }
+    curl() { printf '{"generated_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
+    sleep() { :; }
+    check_api_refresh
+} 2>&1)"
+assert_contains "e2e refresh accepts an active refresh without NEXT (#476)" "$out" "refresh is in progress (active)"
+assert_absent "e2e active refresh does not false-red missing NEXT (#476)" "$out" "timer has no NEXT trigger"
 
 echo "== unit: e2e-real watchdog cleanup restores prior service state (#462) =="
 WD_CLEANUP_SRC="$(sed -n '/^_watchdog_cleanup()/,/^}/p' "$ROOT/tests/e2e-real.sh")"

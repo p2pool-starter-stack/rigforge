@@ -390,8 +390,9 @@ Output is colored only when stdout is a terminal; set `NO_COLOR=1` to disable co
 sudo journalctl -u xmrig -f     # live service logs
 ```
 
-- Log file: `<WORKER_ROOT>/xmrig.log` (e.g. `data/worker/xmrig.log`).
-- Rotation: a `logrotate` policy is installed automatically to compress and archive logs.
+- Log file: ordinary installs write `<WORKER_ROOT>/xmrig.log` (e.g. `data/worker/xmrig.log`) and
+  automatically compress and retain seven archives. Appliance mode omits this persistent file and
+  uses the image-capped systemd journal instead.
 - Build log: the XMRig compile output is captured to `<WORKER_ROOT>/build.log` (e.g.
   `data/worker/build.log`) during setup, so a failed build is diagnosable after the fact. On any
   unexpected failure the script also names the step that failed and prints the last lines of the build
@@ -604,12 +605,16 @@ How a change flows:
    (a rig's thermal protection) is refused with `400` — remove thermal protection locally with
    `rigforge.sh` if that's really intended (#257). The receiver validates the shape, stages the
    change, and returns `202 Accepted` with a change id. It holds no privilege and never touches the
-   miner, so a write cannot cost hashrate. The token is write-capable and travels in cleartext HTTP —
+   miner, so a write cannot cost hashrate. Apply and upgrade share a 20-request durable queue; a full
+   queue returns retryable `503` without staging another file. The token is write-capable and travels
+   in cleartext HTTP —
    isolate the mining LAN (#256; see [Security](../SECURITY.md#what-rigforge-exposes-and-what-it-doesnt)).
-2. A path-triggered root oneshot picks up the staged change, snapshots the current `config.json` to
+2. A path-triggered root oneshot takes the shared privileged-control lock, picks up the staged change, snapshots the current `config.json` to
    `config-backups/config-<UTC-stamp>.json`, merges only the allowlisted keys, and re-validates the
    result with the same rules `apply` uses. An invalid change is rejected and **nothing is written**.
-3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied. If that
+3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied. If the final
+   directory sync fails after the rename made it visible, the receiver still returns `202` with the
+   change id and a durability warning so callers poll status rather than duplicate the request. If that
    write cannot be completed — the mode cannot be pinned to `0600`, or the rename fails — the
    outcome is recorded as `failed` and **nothing is applied** (#434). The rename lands in
    `config.json`'s own directory, so it either replaces the file wholly or leaves it alone: the

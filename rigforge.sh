@@ -1045,7 +1045,8 @@ generate_xmrig_config() {
         # like "...  Unknown CPU @ 4.2GHz"), and an unanchored grep would concatenate both into one line.
         CPU_MODEL=$(lscpu | grep -E '^Model name:' | cut -d':' -f2 | xargs)
     fi
-    LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
+    LOG_FILE_PATH=""
+    [ "$RIGFORGE_APPLIANCE" != 1 ] && LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
 
     # Default optimization profile.
     #
@@ -1188,9 +1189,8 @@ generate_xmrig_config() {
                 restricted: $restricted
             },
             opencl: false,
-            cuda: false,
-            "log-file": $log
-        }' >config.json
+            cuda: false
+        } + (if $log == "" then {} else {"log-file": $log} end)' >config.json
 
     # Overlay any tuned knobs (#46) on top — kept in a separate file (written by `tune`) so the user's
     # config.json is never touched. A recursive merge lets tuning win for just the keys it sets.
@@ -4576,6 +4576,11 @@ _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
     fi
 }
 
+_with_control_lock() {
+    exec 8>"${RIGFORGE_CONTROL_LOCK:-/run/rigforge-control/consumer.lock}" || error "Could not open the privileged control lock."
+    flock -x 8 || error "Could not take the privileged control lock."
+    "$@"
+}
 # control-apply (#236): the privileged half of the writable control path, run by the
 # rigforge-control-apply.path unit when the receiver stages a change. Applies the NEWEST staged
 # change (older staged ones are superseded, so we never restart twice), reconciles the live miner,
@@ -4771,7 +4776,7 @@ control_upgrade() {
     local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status proc
     spool="$state/spool"
     status="$state/status.json"
-    proc="$state/processing"
+    proc="${RIGFORGE_CONTROL_PROCESSING:-/run/rigforge-control}"
     local newest older cid target installed old_tag
     newest=$(ls -t "$spool"/upgrade-*.json 2>/dev/null | head -1) || true
     if [ -z "$newest" ]; then
@@ -4782,12 +4787,17 @@ control_upgrade() {
     [ -n "$older" ] && printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
     cid=$(basename "$newest" .json)
     cid="${cid#upgrade-}"
+    if [ -L "$proc" ] || [ ! -d "$proc" ] || [ "$(stat -c '%u:%g:%a' "$proc" 2>/dev/null)" != "0:0:700" ]; then
+        rm -f "$newest"
+        _control_status "$status" failed "$cid" version "root-owned processing directory unavailable — refused" ""
+        warn "control-upgrade: safe processing directory unavailable — refused."
+        return 0
+    fi
     # D8 spool handoff: MOVE the intent into a root-owned 0700 dir the receiver's DynamicUser cannot
     # write — freezing it against any swap — and ONLY THEN refuse a symlink and read it. Checking BEFORE
     # the move would be a TOCTOU: the DynamicUser owns the spool and could swap the file for a symlink in
     # the window between check and move. `mv` renames the link itself, so a symlink survives the move as
     # a symlink and is caught here, in the root-only dir where it can no longer be swapped.
-    mkdir -p "$proc" && chmod 700 "$proc"
     local staged="$proc/$cid.json"
     if ! mv -f "$newest" "$staged" 2>/dev/null; then
         rm -f "$newest"
@@ -5049,21 +5059,14 @@ _lockdown_blocks_msr() { # <level> -> 0 when MSR writes are denied
 # read-back (when msr-tools is installed), which catches a write a hypervisor / kernel-lockdown silently
 # dropped even though XMRig reported success.
 
-# Parse the worker's xmrig.log for XMRig's MSR-write confirmation. Per (re)start XMRig logs
-# 'msr register values for "<preset>" preset have been set successfully' (or a failure). Echoes
-# "<ok|fail|none>\t<preset>" for the LAST msr line. One-line awk so kcov attributes it correctly.
+# Return the last XMRig MSR result from its file log or bounded journal.
 # #367: the line is written at miner START, so on a long-lived worker it sits near the BEGINNING of a
 # log that can reach 100MB+ — `awk` scanning the whole file on every `doctor` got expensive. `grep`
 # (C-speed) finds every match and `tail -1` keeps the same last-match semantics; a naive `tail`-first
 # approach would miss the line entirely on a big file, so don't "optimize" this into one.
 _msr_log_status() { # <logfile>
-    if [ ! -f "$1" ]; then
-        printf 'none\t'
-        return 0
-    fi
-    # `|| true`: under pipefail, grep finding zero matches (no msr line yet — a healthy, common state)
-    # would otherwise make the whole pipeline — and this function — exit non-zero.
-    grep -E 'msr +register values for' "$1" 2>/dev/null | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
+    { if [ -f "$1" ]; then cat "$1"; elif [ "$OS_TYPE" = Linux ]; then journalctl -u "$SERVICE_NAME" --no-pager -o cat -n 5000 2>/dev/null; fi; } |
+        grep -E 'msr +register values for' | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
 }
 
 # The (register, value, mask) triples XMRig writes per MSR preset — verified against XMRig v6.26.0
@@ -5223,8 +5226,7 @@ _api_tune_json() {
     jq -n --argjson applied "$applied" --argjson target "$target" --argjson best "$best" --argjson n "$n" --argjson aten "$aten" --arg atgt "$atgt" --arg asched "$asched" --arg anext "$anext" '{applied: $applied, target: $target, last_best_hs: $best, candidates_tried: $n, autotune: {enabled: $aten, target: (if $atgt == "" then null else $atgt end), schedule: (if $asched == "" then null else $asched end), next: (if $anext == "" then null else $anext end)}}'
 }
 
-# Health probes as JSON — reuses doctor's probe helpers and comparison expressions verbatim so the
-# wire and the human report can never disagree; doctor stays the judgmental formatter.
+# Health probes reuse doctor's helpers so wire and human reports agree.
 _health_json() {
     local sa=false hp_total="" hp1g="" gov="" msr_st="" wr="" logf="" mem pop nch spd rated smt="" bv="" bn="" pct="" thr=null xmp=null effk maxk
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then sa=true; fi
@@ -5232,7 +5234,7 @@ _health_json() {
     hp1g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || true)
     gov=$(cat "$GOVERNOR_FILE" 2>/dev/null || true)
     wr=$(_worker_root_from_config)
-    [ -n "$wr" ] && logf="$wr/xmrig.log"
+    [ -n "$wr" ] && logf=$(jq -r '."log-file" // empty' "$wr/xmrig/build/config.json" 2>/dev/null || true)
     msr_st=$(_msr_log_status "${logf:-/nonexistent}" | cut -f1)
     mem=$(_mem_summary)
     read -r pop nch spd rated <<<"${mem:-0 0 0 0}"
@@ -5330,17 +5332,14 @@ _api_config_meta_json() {
         jq -n --arg rev "$rev" '{revision: $rev, changed_at: null, source: null, last_change_id: null}'
     fi
 }
-
 # #346: mirror the last control outcome because a slow rollback can outlast Pithead's synchronous
 # status poll. Missing, unreadable, or malformed status.json -> null, never a broken feed.
 _api_control_json() {
     jq -c '{change_id, status, reason}' "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/status.json" 2>/dev/null || echo null
 }
-
 _api_rigforge_block() { # <hashrate|"">
     jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control}'
 }
-
 # Produce the sister API's response bodies atomically; the timer-driven idle refresh keeps every
 # probe off the persistent server's request path (#164).
 api_refresh() {
@@ -5359,9 +5358,8 @@ api_refresh() {
     printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
     printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
 }
-
 _api_refresh_status() {
-    local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last stamp mtime now age i
+    local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last refresh_state stamp mtime now age i
     for i in 1 2 3 4 5; do
         next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
         { [ -n "$next" ] && [ "$next" != n/a ]; } && break
@@ -5378,18 +5376,23 @@ _api_refresh_status() {
     age=$((now - mtime))
     [ "$age" -lt 0 ] && age=0
     if [ -z "$next" ] || [ "$next" = n/a ]; then
-        printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
-        return 1
+        refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
+        if [ "$refresh_state" != active ] && [ "$refresh_state" != activating ]; then
+            printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
+            return 1
+        fi
     fi
     if [ "$age" -gt 60 ]; then
-        printf 'sister feed is stale since %s (next: %s; last: %s; payload age: %ss)' "${stamp:-unknown}" "$next" "${last:-never}" "$age"
+        printf 'sister feed is stale since %s (next: %s; last: %s; payload age: %ss)' "${stamp:-unknown}" "${next:-none}" "${last:-never}" "$age"
         return 1
+    fi
+    if [ -z "$next" ] || [ "$next" = n/a ]; then
+        printf 'sister feed refresh in progress (last: %s; payload age: %ss)' "${last:-never}" "$age"
+        return 0
     fi
     printf 'sister feed refresh scheduled (next: %s; last: %s; payload age: %ss)' "$next" "${last:-never}" "$age"
 }
-
 # --- Doctor: one-stop health check ---
-
 # Pool-connection probe (#343), shared by doctor and apply.
 # The miner's own verdict on its pool connection, read from the local /2/summary (API_CMD test hook
 # + Bearer discipline via _read_api_summary). One TSV line:
@@ -5536,14 +5539,14 @@ EOF
         grep -q '^flags' "$CPUINFO" 2>/dev/null && _ck_ok "CPU supports AES-NI (hardware RandomX path)" || true
     fi
     [[ " $miss_isa " == *" avx2 "* ]] && _ck_info "CPU has no AVX2 — dataset init is slower (steady-state hashrate unaffected)"
-
-    # Resolve the worker's xmrig.log once — the MSR-applied (#66) and HUGE PAGES checks both read it.
-    local wr="" log_file=""
+    # Resolve the configured log once — appliance mode intentionally has no persistent file log (#477).
+    local wr="" log_file="" live_log_cfg=""
     if [ -f "$CONFIG_JSON" ]; then
         wr=$(_worker_root_from_config)
         log_file="$wr/xmrig.log"
+        live_log_cfg="$wr/xmrig/build/config.json"
+        [ -f "$live_log_cfg" ] && log_file=$(jq -r '."log-file" // empty' "$live_log_cfg" 2>/dev/null || true)
     fi
-
     # Privilege separation (#140): when the config asks for an unprivileged miner, the unit must
     # actually say so (a stale unit from before the change would still run root). Quiet when
     # systemctl can't answer (non-systemd test envs).
@@ -5572,7 +5575,6 @@ EOF
             fi
         fi
     fi
-
     # Binary tamper evidence (#141): the artifact that runs 24/7 as root should still be the one we
     # built. Recompute and compare against the build-time record; a missing record (older build) is
     # advisory only — the next rebuild writes one.
@@ -5587,7 +5589,6 @@ EOF
             issues=$((issues + 1))
         fi
     fi
-
     # Read-only API posture (#135): exposing the HTTP API on 0.0.0.0:8080 is safe ONLY because the
     # generated config pins http.restricted=true — assert the live file still does, so a hand-edit
     # or a bad merge can't silently turn the read-only API into a control plane. Quiet when there is
@@ -5679,7 +5680,7 @@ EOF
         _ck_warn "msr module not loaded — the MSR mod won't apply; check 'sudo modprobe msr' and $MODULES_LOAD_DIR/msr.conf"
         issues=$((issues + 1))
     fi
-    if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+    if [ -n "$wr" ]; then
         local msrstat="" preset=""
         IFS="$(printf '\t')" read -r msrstat preset <<EOF
 $(_msr_log_status "$log_file")
@@ -5725,18 +5726,18 @@ EOF
             fi
             issues=$((issues + 1))
             ;;
-        # not-found is not proof of not-applied (miner hasn't started a RandomX job yet, or a
+            # not-found is not proof of not-applied (miner hasn't started a RandomX job yet, or a
         # copytruncate rotation just cleared the live log) — stay quiet.
         *) : ;;
         esac
-    elif [ -z "$log_file" ]; then
+        if [ "$msrstat" = none ]; then
+            [ -z "$log_file" ] && _ck_info "MSR file-log confirmation is disabled; the bounded systemd journal has no confirmation yet"
+            [ -n "$log_file" ] && [ ! -f "$log_file" ] && _ck_info "MSR unverifiable — no xmrig.log at $log_file and no journal confirmation"
+        fi
+    elif [ -z "$wr" ]; then
         # #367: no config.json, so the worker root above never resolved. Distinct wording from the
         # "resolved but no log" case below — an absent block must not read as a failed check.
         _ck_info "MSR unverifiable — no config.json, so the worker root couldn't be resolved"
-    else
-        # #367: the worker root DID resolve, but nothing is logged at that path yet — a miner that
-        # hasn't started, or a copytruncate rotation window, both look like this on a healthy rig.
-        _ck_info "MSR unverifiable — no xmrig.log at $log_file"
     fi
 
     # CPU governor
@@ -6269,8 +6270,8 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     api-refresh) api_refresh ;;
     msr-apply) msr_apply ;;
-    control-apply) control_apply ;;
-    control-upgrade) control_upgrade ;;
+    control-apply) _with_control_lock control_apply ;;
+    control-upgrade) _with_control_lock control_upgrade ;;
     status) svc_status ;;
     logs) svc_logs ;;
     start | up) svc_start ;;
