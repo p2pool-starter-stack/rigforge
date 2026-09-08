@@ -8537,10 +8537,8 @@ ca_exec() {
             command mv "$@"
         }
         if [ "${CA_FSYNC_UNCERTAIN:-0}" = 1 ]; then
-            _ca_fsyncn=0
             _fsync_paths() {
-                _ca_fsyncn=$((_ca_fsyncn + 1))
-                [ "$_ca_fsyncn" -lt 2 ]
+                case " $* " in *" $CONFIG_JSON "*) return 1 ;; esac
             }
         fi
         OS_TYPE=Linux

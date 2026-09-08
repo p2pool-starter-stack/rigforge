@@ -63,3 +63,15 @@ _sweep_config_backups() { :; }
 OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_apply >/dev/null 2>&1
 [ "$(jq -r .status "$D/state/status.json")" = applied ]
 [ ! -e "$D/processing/fedcba9876543210.json" ]
+
+for kind in directory fifo; do
+    src="$D/state/spool/pending-$kind.json"
+    [ "$kind" = directory ] && mkdir "$src" || mkfifo "$src"
+    ! _control_claim_staged "$src" "$kind" >/dev/null
+done
+printf '{"DONATION":2}' >"$D/state/spool/pending-frozen.json"
+exec 7<>"$D/state/spool/pending-frozen.json"
+frozen=$(_control_claim_staged "$D/state/spool/pending-frozen.json" frozen)
+printf '{"DONATION":99}' >&7
+exec 7>&-
+[ "$(jq -r .DONATION "$frozen")" = 2 ]

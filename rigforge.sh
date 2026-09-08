@@ -4572,12 +4572,8 @@ _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
         printf '%s' "$body" >"$cdir/$cid.json.tmp.$$" 2>/dev/null && mv -f "$cdir/$cid.json.tmp.$$" "$cdir/$cid.json" && chmod 644 "$cdir/$cid.json" 2>/dev/null || true
         # shellcheck disable=SC2012  # names are controlled 16-hex; ls -t orders by recency
         ls -t "$cdir"/*.json 2>/dev/null | tail -n +21 | while IFS= read -r old; do [ -n "$old" ] && rm -f "$old"; done
-        # #344: this terminal record supersedes the receiver's own pending/<cid>.json (written the
-        # instant POST /apply accepted the change, before this run even started — see stage_pending()
-        # in control-server.py). Clear it so state/pending doesn't keep one stale file per change
-        # forever; root can unlink here regardless of that dir's ownership, so this is never a
-        # permission problem, only a "nothing to remove" no-op on a run that never had one (e.g. a
-        # control-upgrade cid, which doesn't stage a pending/ record).
+        # A terminal apply record supersedes the receiver's pending marker (#344).
+        # Upgrade IDs have no pending marker, so their unlink is a no-op.
         rm -f "$(dirname "$f")/pending/$cid.json" 2>/dev/null || true
     fi
 }
@@ -4588,18 +4584,23 @@ _with_control_lock() {
     "$@"
 }
 _control_claim_staged() { # <untrusted spool file> <change id>: echo frozen root-only path
-    local src="$1" cid="$2" proc="${RIGFORGE_CONTROL_PROCESSING:-/run/rigforge-control}" staged
-    if [ -L "$proc" ] || [ ! -d "$proc" ] || [ "$(stat -c '%u:%g:%a' "$proc" 2>/dev/null)" != "0:0:700" ]; then
-        rm -f "$src"
-        return 1
-    fi
+    local src="$1" cid="$2" proc="${RIGFORGE_CONTROL_PROCESSING:-/run/rigforge-control}" staged claim
     staged="$proc/$cid.json"
-    if ! mv -f "$src" "$staged" 2>/dev/null; then
-        rm -f "$src"
+    claim="$proc/.claim-$cid"
+    if [ -L "$proc" ] || [ ! -d "$proc" ] || [ "$(stat -c '%u:%g:%a' "$proc" 2>/dev/null)" != "0:0:700" ] || [ -e "$claim" ] || [ -L "$claim" ] || [ -e "$staged" ] || [ -L "$staged" ]; then
+        rm -rf -- "$src"
         return 1
     fi
-    if [ -L "$staged" ]; then
-        rm -f "$staged"
+    if ! mv -f "$src" "$claim" 2>/dev/null; then
+        rm -rf -- "$src"
+        return 1
+    fi
+    if [ -L "$claim" ] || [ ! -f "$claim" ]; then
+        rm -rf -- "$claim"
+        return 1
+    fi
+    if ! (umask 077 && head -c 65537 "$claim" >"$staged") || [ "$(wc -c <"$staged" 2>/dev/null || echo 65537)" -gt 65536 ] || ! chmod 600 "$staged" || ! _fsync_paths "$staged" || ! rm -f "$claim" || ! _fsync_paths "$proc"; then
+        rm -rf -- "$claim" "$staged"
         return 1
     fi
     printf '%s' "$staged"
@@ -4801,7 +4802,6 @@ control_upgrade() {
     [ -n "$older" ] && printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
     cid=$(basename "$newest" .json)
     cid="${cid#upgrade-}"
-    # Freeze the DynamicUser-owned intent before any read; apply and upgrade share this D8 boundary.
     if ! staged=$(_control_claim_staged "$newest" "$cid"); then
         _control_status "$status" failed "$cid" version "could not secure staged upgrade (processing directory, move, or symlink)" ""
         warn "control-upgrade: could not freeze $cid in the root-only processing directory."
