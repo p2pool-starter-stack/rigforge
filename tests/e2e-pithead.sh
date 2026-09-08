@@ -1,30 +1,14 @@
 #!/usr/bin/env bash
 # Worker ↔ stack contract gate (#114): drive a REAL provisioned RigForge worker against a LIVE
-# Pithead stack and assert the integration contract documented in docs/pithead-integration.md.
-# Release-gated and manual, like e2e-real.sh — GitHub runners can't reach a LAN stack.
-#
 #   PITHEAD_URL=stack-host:3333 sudo bash tests/e2e-pithead.sh all
 #
-# Env knobs:
 #   PITHEAD_URL                  (required) the stack's stratum host:port
 #   E2E_STRATUM_PASS             opt-in: run the stratum-auth phases. Set it ONLY to the stack's
-#                                actual enforced stratum password — on a stack with password auth
-#                                off, any value here makes the auth phases run and honestly report
-#                                that a wrong pass still mined, which reads as a product failure
-#                                when it is a harness misconfiguration (#390).
 #   E2E_DASH_URL                 opt-in: dashboard workers payload URL — the stack's /api/state
-#                                (worker must appear in it). The dashboard sits behind Caddy:
-#                                HTTPS with the stack's self-signed cert and basic auth; the leg
-#                                follows redirects and skips cert verification for it (#390).
-#   E2E_DASH_AUTH                user:pass for the dashboard's basic auth (curl -u form); without
-#                                it a hardened dashboard answers 401 and the leg cannot pass.
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
 #   E2E_DROPOFF_TIMEOUT          seconds for the dashboard to drop a stopped worker (default 300)
 #   E2E_API_IMPACT_TOLERANCE_PCT max hashrate loss under sister-API load (default 3)
 #   E2E_API_LATENCY_S            responsiveness budget for /health under full load (default 15)
-#
-# Preconditions: a provisioned worker on this rig (`setup` has run; the miner may be running).
-# The operator's config.json is snapshotted and restored (+ `apply`) on exit, whatever happens.
 
 set -Eeuo pipefail
 
@@ -110,24 +94,40 @@ require_preflight() {
     [ -n "$GEN_CFG" ] || die "no generated worker config found — run setup first."
 }
 
-SAVED_CFG=""
+SAVED_CFG="" SAVED_XMRIG_ACTIVE=0
 HAMMER_PIDS=""
+_restore_xmrig() {
+    local active=0
+    if [ "$SAVED_XMRIG_ACTIVE" = 1 ]; then
+        systemctl is-active --quiet xmrig 2>/dev/null || "$RIGFORGE" start >/dev/null 2>&1 || true
+    else
+        systemctl is-active --quiet xmrig 2>/dev/null && "$RIGFORGE" stop >/dev/null 2>&1 || true
+    fi
+    systemctl is-active --quiet xmrig 2>/dev/null && active=1 || true
+    [ "$active" = "$SAVED_XMRIG_ACTIVE" ]
+}
 _cleanup() {
     local cleanup_ok=1 p
     for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
         "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
-        rm -f "$SAVED_CFG"
+        :
     else
         echo "e2e-pithead: WARNING: config restoration failed; snapshot retained at ${SAVED_CFG:-<missing>}" >&2
         cleanup_ok=0
     fi
+    _restore_xmrig || {
+        echo "e2e-pithead: WARNING: xmrig runtime restoration failed" >&2
+        cleanup_ok=0
+    }
+    [ "$cleanup_ok" != 1 ] || rm -f "$SAVED_CFG" || cleanup_ok=0
     rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" || true
     [ "$cleanup_ok" = 1 ]
 }
 snapshot_config() {
     SAVED_CFG="$(mktemp)"
     cp "$CFG" "$SAVED_CFG"
+    systemctl is-active --quiet xmrig 2>/dev/null && SAVED_XMRIG_ACTIVE=1 || SAVED_XMRIG_ACTIVE=0
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; exit "$E2E_EXIT_RC"' EXIT
 }
 

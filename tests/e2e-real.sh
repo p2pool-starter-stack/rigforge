@@ -50,6 +50,7 @@ CTL_CONTROL_ACTIVE=0 CTL_CONTROL_ENABLED=0
 # E2E_UPGRADE_TARGET override, which stays deliberately PERMANENT). Same script-global reasoning as
 # above — _upgrade_cleanup must see it from a late trap fire too.
 UPG_ORIG_REF="" UPG_RESTORE_BUILD=0
+UPG_STAMP="/var/lib/rigforge-control/upgrade-last"
 # #349: script-global watchdog state remains visible to a late EXIT trap.
 WD_SAVED_CFG="" WD_CLEANUP_DONE=0 WD_WORKER_ROOT="" WD_WAS_ACTIVE=0
 E2E_EXIT_RC=0
@@ -840,8 +841,7 @@ _control_cleanup() {
         echo "  WARNING: miner did not report a live hashrate post-revert within 30s — check the rig by hand" >&2
         cleanup_ok=0
     fi
-    if [ "$cleanup_ok" = 1 ]; then
-        rm -f "$CTL_SAVED_CFG"
+    if [ "$cleanup_ok" = 1 ] && rm -f "$CTL_SAVED_CFG"; then
         CTL_CLEANUP_DONE=1
         return 0
     fi
@@ -850,8 +850,6 @@ _control_cleanup() {
 
 #   POST /upgrade (receiver, DynamicUser) -> spool upgrade-*.json -> rigforge-control-upgrade.path
 #   -> rigforge-control-upgrade.service (root oneshot: rigforge.sh control-upgrade)
-#   noop     : POST the installed version -> terminal `noop` (#320). Proves the wire, path unit,
-#              oneshot, and status round trip without touching the tree (never dials GitHub).
 #   rollback : POST v99.99.99 from a locally-forged tag on a commit NOT reachable from origin/main
 #              -> the D10 ancestry guard refuses the forward leg, the verb rolls back to the running
 #              ref -> terminal `rolled_back`, checkout + VERSION unchanged, throttle stamp written.
@@ -907,8 +905,9 @@ _upg_post_and_poll() { # <token> <port> <vX.Y.Z> <timeout-s> -> terminal status 
 # control flags off, re-applies, and checks the miner comes back). Idempotent like its parts.
 _upgrade_cleanup() {
     local cleanup_ok=1
-    _hgit tag -d v99.99.99 >/dev/null 2>&1 || true
-    rm -f /var/lib/rigforge-control/upgrade-last 2>/dev/null || true
+    _hgit tag -d v99.99.99 >/dev/null 2>&1 || ! _hgit show-ref --verify --quiet refs/tags/v99.99.99 || cleanup_ok=0
+    rm -f "$UPG_STAMP" 2>/dev/null
+    [ ! -e "$UPG_STAMP" ] || cleanup_ok=0
     # #350: the auto-derived forward leg rewinds the checkout to a real previous tag to prove the
     # forward step for real, then must land back on the exact ref this phase started from — on ANY
     # exit, success or a hard abort mid-leg. A release gate must never leave the rig pinned to an
@@ -941,7 +940,7 @@ upgrade() {
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _upgrade_cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true; exit "$E2E_EXIT_RC"' EXIT
 
     local tok control_port tmp installed st
-    local stamp="/var/lib/rigforge-control/upgrade-last"
+    local stamp="$UPG_STAMP"
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
     tmp="$(mktemp)"
     if jq --arg tok "$tok" '.control = "enabled" | .control_upgrade = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
@@ -970,24 +969,20 @@ upgrade() {
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
     continue_or_cleanup _upgrade_cleanup upgrade
-    # A stale stamp (a previous run, or a real recent upgrade) would throttle the rollback leg into
-    # `throttled` — this run holds the rig_lock, so clearing our own guard here keeps the phase
-    # repeatable inside the 6h window without touching CONTROL_UPGRADE_MIN_INTERVAL in the baked unit.
     rm -f "$stamp" 2>/dev/null || true
 
     installed=$(tr -d '[:space:]' <"$HERE/VERSION" 2>/dev/null || true)
     [ -n "$installed" ] && ok "installed version reads v$installed" || bad "could not read $HERE/VERSION"
+    continue_or_cleanup _upgrade_cleanup upgrade
 
     phase "upgrade — noop leg: POST the installed v$installed, poll to terminal"
     st=$(_upg_post_and_poll "$tok" "$control_port" "v$installed" 120)
     [ "$st" = noop ] &&
         ok "already-on-target reached terminal 'noop' (path unit -> root oneshot -> /status, #320)" ||
         bad "noop leg ended '$st' (expected noop)"
+    continue_or_cleanup _upgrade_cleanup upgrade
 
     phase "upgrade — rollback leg: POST a tag the D10 ancestry guard must refuse"
-    # A commit provably NOT reachable from origin/main, without moving HEAD or dirtying the tree:
-    # commit-tree forges a throwaway child of HEAD and a local tag names it (fetch --tags never
-    # prunes local-only tags). -f survives a leftover tag from a crashed run; cleanup deletes it.
     local probe probe_err rev_before
     # git's stderr is CAPTURED, not discarded. When this step failed under a nested sudo it reported
     # only "could not forge the probe tag" and threw away the single line naming the cause (#401).
@@ -1000,6 +995,7 @@ upgrade() {
         bad "could not forge the probe tag: $(head -1 "$probe_err" 2>/dev/null || true)"
     fi
     rm -f "$probe_err"
+    continue_or_cleanup _upgrade_cleanup upgrade
     rev_before=$(_hgit rev-parse HEAD 2>/dev/null || true)
     st=$(_upg_post_and_poll "$tok" "$control_port" "v99.99.99" 420)
     [ "$st" = rolled_back ] &&
@@ -1095,35 +1091,23 @@ _watchdog_cleanup() {
         cleanup_ok=0
     fi
     if [ -n "$WD_WORKER_ROOT" ]; then
-        rm -f "$WD_WORKER_ROOT/watchdog.thermal-hold" "$WD_WORKER_ROOT/watchdog.fails" 2>/dev/null || cleanup_ok=0
+        rm -f "$WD_WORKER_ROOT/watchdog.thermal-hold" "$WD_WORKER_ROOT/watchdog.fails" 2>/dev/null
+        [ ! -e "$WD_WORKER_ROOT/watchdog.thermal-hold" ] && [ ! -e "$WD_WORKER_ROOT/watchdog.fails" ] || cleanup_ok=0
     fi
     if [ "$WD_WAS_ACTIVE" = 1 ]; then
         systemctl is-active --quiet xmrig 2>/dev/null || "$RIGFORGE" start >/dev/null 2>&1 || true
-        if systemctl is-active --quiet xmrig 2>/dev/null; then
-            echo "  restored service 'xmrig' to active"
-            [ "$cleanup_ok" = 1 ] && {
-                rm -f "$WD_SAVED_CFG"
-                WD_CLEANUP_DONE=1
-            }
-            [ "$cleanup_ok" = 1 ]
-            return
-        fi
-        echo "  WARNING: service 'xmrig' is not active after the revert — check the rig by hand" >&2
-        return 1
+        systemctl is-active --quiet xmrig 2>/dev/null || cleanup_ok=0
     else
         systemctl is-active --quiet xmrig 2>/dev/null && "$RIGFORGE" stop >/dev/null 2>&1 || true
-        if systemctl is-active --quiet xmrig 2>/dev/null; then
-            echo "  WARNING: service 'xmrig' is active although it entered stopped" >&2
-            return 1
-        fi
-        echo "  restored service 'xmrig' to inactive"
-        [ "$cleanup_ok" = 1 ] && {
-            rm -f "$WD_SAVED_CFG"
-            WD_CLEANUP_DONE=1
-        }
-        [ "$cleanup_ok" = 1 ]
-        return
+        systemctl is-active --quiet xmrig 2>/dev/null && cleanup_ok=0
     fi
+    if [ "$cleanup_ok" = 1 ] && rm -f "$WD_SAVED_CFG"; then
+        WD_CLEANUP_DONE=1
+        echo "  restored service 'xmrig' to $([ "$WD_WAS_ACTIVE" = 1 ] && echo active || echo inactive)"
+        return 0
+    fi
+    echo "  WARNING: watchdog runtime or recovery-file restoration failed" >&2
+    return 1
 }
 
 watchdog() {
