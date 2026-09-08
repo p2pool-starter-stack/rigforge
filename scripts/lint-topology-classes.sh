@@ -116,7 +116,7 @@ email_allow() {
     return 1
 }
 
-# --- scan: extract "path:line:match" from grep -HnoP output, drop what the allow-fn clears -----
+# --- scan: extract "path:line:match" with portable Perl regexes, drop allowed values -----------
 scan() { # <pattern> <allow-fn> <file...>
     local pattern="$1" allow_fn="$2"
     shift 2
@@ -129,7 +129,7 @@ scan() { # <pattern> <allow-fn> <file...>
         match=${BASH_REMATCH[3]}
         "$allow_fn" "$match" && continue
         printf '%s:%s: %s\n' "$path" "$line" "$match"
-    done < <(grep -HInoP -e "$pattern" -- "$@" 2>/dev/null)
+    done < <(perl -ne 'BEGIN {$re=shift @ARGV; $file=""} if ($ARGV ne $file) {$file=$ARGV; if (-B $ARGV) {close ARGV; next}} while (/$re/g) {print "$ARGV:$.:$&\n"} close ARGV if eof' -- "$pattern" "$@" 2>/dev/null)
     return 0
 }
 
@@ -248,6 +248,8 @@ if [ "${1:-}" = "--self-test" ]; then
         "$(printf 'a%.0s' $(seq 1 40))" >"$tmp/email-clean.txt"
     expect "placeholders, example.com, a SHA pin, a package pin, a bot mention, and Go's bare @v syntax are not flagged" clean \
         "$(scan "$EMAIL_RE" email_allow "$tmp/email-clean.txt")"
+    printf '\0NODE_IP=10.4.5.6\n' >"$tmp/binary-clean.bin"
+    expect "binary files remain excluded from every scanner" clean "$(scan "$IPV4_RE" ipv4_allow "$tmp/binary-clean.bin")"
 
     SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     emptyrepo="$tmp/emptyrepo"
