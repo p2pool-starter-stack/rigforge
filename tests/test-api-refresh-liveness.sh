@@ -189,14 +189,12 @@ MINER_LOG_SRC="$(sed -n '/^miner_log()/,/^fresh_share()/p' "$ROOT/tests/e2e-real
 eval "$MINER_LOG_SRC"
 printf 'accepted (1/0)\n' >"$EFR/large.log"
 awk 'BEGIN { for (i=0; i<200000; i++) print "long trailing log row" }' >>"$EFR/large.log"
-miner_log_has 'accepted (' "$EFR/large.log"
-ok "e2e large-log match cannot false-fail from producer SIGPIPE (#481/#484)"
+if miner_log_has 'accepted (' "$EFR/large.log"; then ok "e2e large-log match cannot false-fail from producer SIGPIPE (#481/#484)"; else bad "e2e large-log match cannot false-fail from producer SIGPIPE (#481/#484)" "accepted line not found"; fi
 RIGFORGE_APPLIANCE=1
 journalctl() { printf '\033[1;32mnew job from pithead:3333\033[0m\n'; }
-miner_log_has 'new job from' /nonexistent
-ok "e2e appliance journal matching ignores ANSI color (#483/#484)"
+if miner_log_has 'new job from' /nonexistent; then ok "e2e appliance journal matching ignores ANSI color (#483/#484)"; else bad "e2e appliance journal matching ignores ANSI color (#483/#484)" "colored job line not found"; fi
 unset RIGFORGE_APPLIANCE
-fresh_share 2 1 && ok "fresh-share proof accepts a counter increase (#472/#484)"
+if fresh_share 2 1; then ok "fresh-share proof accepts a counter increase (#472/#484)"; else bad "fresh-share proof accepts a counter increase (#472/#484)" "counter did not increase"; fi
 fresh_share 1 1 && bad "fresh-share proof accepted retained history (#472)" "counter did not increase" || ok "fresh-share proof rejects retained history (#472/#484)"
 
 echo "== unit: e2e-real watchdog cleanup restores prior service state (#462) =="
