@@ -99,7 +99,7 @@ def stage_change(spool, body_bytes, prefix="pending"):
     with open(os.path.join(spool, ".queue.lock"), "a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         names = os.listdir(spool)
-        if sum(n.endswith(".json") and n.startswith(("pending-", "upgrade-")) for n in names) >= MAX_PENDING:
+        if sum(n.startswith(".tmp-") or (n.endswith(".json") and n.startswith(("pending-", "upgrade-"))) for n in names) >= MAX_PENDING:
             raise SpoolFull("control queue is full")
         tmp = os.path.join(spool, ".tmp-" + cid)
         final = os.path.join(spool, prefix + "-" + cid + ".json")
@@ -113,8 +113,8 @@ def stage_change(spool, body_bytes, prefix="pending"):
             if os.path.exists(tmp):
                 try:
                     os.unlink(tmp)
-                except OSError:
-                    pass
+                except OSError as e:
+                    print("control spool temporary cleanup failed: %s" % e, file=sys.stderr)
         try:
             dfd = os.open(spool, os.O_RDONLY)
             try:

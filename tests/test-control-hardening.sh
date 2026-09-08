@@ -7,16 +7,24 @@ trap 'rm -rf "$D"' EXIT
 source "$SCRIPT"
 
 export RIGFORGE_CONTROL_LOCK="$D/control.lock"
-exec 7>"$RIGFORGE_CONTROL_LOCK"
-flock -x 7
+flock -x "$RIGFORGE_CONTROL_LOCK" sh -c 'touch "$1"; while [ ! -e "$2" ]; do sleep .02; done' _ "$D/locked" "$D/release" &
+HOLDER=$!
+while [ ! -e "$D/locked" ]; do sleep .02; done
 RIGFORGE_HOME="$D" bash "$SCRIPT" control-apply >/dev/null 2>&1 &
 P1=$!
 RIGFORGE_HOME="$D" bash "$SCRIPT" control-upgrade >/dev/null 2>&1 &
 P2=$!
 sleep .1
 kill -0 "$P1" "$P2"
-flock -u 7
-wait "$P1" "$P2" || true
+touch "$D/release"
+wait "$HOLDER"
+set +e
+wait "$P1"
+R1=$?
+wait "$P2"
+R2=$?
+set -e
+[ "$R1" -ne 0 ] && [ "$R2" -ne 0 ]
 
 mkdir -p "$D/state/spool" "$D/target"
 printf '1.0.0' >"$D/VERSION"

@@ -94,8 +94,14 @@ with tempfile.TemporaryDirectory() as spool:
     finally:
         stage.__globals__["os"].replace = real_replace
         stage.__globals__["os"].unlink = real_unlink
-        for tmp in Path(spool).glob(".tmp-*"):
-            tmp.unlink()
+    assert len(list(Path(spool).glob(".tmp-*"))) == 1
+    for _ in range(limit - 1):
+        stage(spool, b"{}")
+    try:
+        stage(spool, b"{}")
+        raise AssertionError("orphan temp did not count toward the queue cap")
+    except full:
+        pass
 
 with tempfile.TemporaryDirectory() as spool:
     real_fsync = stage.__globals__["os"].fsync
