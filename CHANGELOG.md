@@ -9,6 +9,9 @@ All notable changes to RigForge are documented here. The format is based on
 
 ### Fixed
 
+- **Linux CI no longer hangs in the tune median regression fixture (#482).**
+  The blocking FIFO duplicate was removed; deterministic median conversion and tune throttle/adoption coverage remain.
+
 - **Privileged control consumers are isolated and serialized (#479, #480).**
   Apply and upgrade share one root-owned lock, upgrades claim intents only in a systemd-created root-only runtime directory, and a post-rename sync error returns an accepted warning with the real change id instead of a false-negative `500`.
 

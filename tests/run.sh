@@ -222,7 +222,6 @@ parse_and_print() { # <config_file> <script_dir> <var>
         printf '%s' "${!var}"
     )
 }
-# Convenience: the host of the first resolved pool (POOLS_JSON[0].url with the :port stripped), so the
 # host-resolution regression tests can assert a bare host.
 pool_host0() { # <config_file> <script_dir>
     parse_and_print "$1" "$2" POOLS_JSON | jq -r '.[0].url | sub(":[0-9]+$"; "")'
@@ -6116,66 +6115,6 @@ assert_eq "throttled faster candidate not adopted (#62)" "$(J "$OVR" '.randomx.s
 out="$(throttle_run 0)"
 assert_eq "TUNE_MIN_FREQ_MHZ=0 disables the throttle skip (#62 control)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
 
-# #266: regression — a HEALTHY (~4.6 GHz) candidate whose clock jitters by 1 kHz between two reads gets a
-# fractional kHz median (4627500.5) that awk printed as 4.6275e+06; the consumer's `.`-floor mangled that
-# into "4" -> 0 MHz -> the #62 guard falsely flagged the candidate as throttled and refused to adopt it.
-# scaling_cur_freq is a FIFO fed exactly one odd-sum pair per bench window (reads block until fed), so the
-# window always sees an even sample count with a fractional median — no reliance on poll-loop timing.
-# Linux-gated (#292): same rationale as the #277 block above — Linux-sysfs plumbing, flaked on the slow
-# macOS CI runner; the deterministic freq-writer unit test above still runs everywhere.
-if [ "$(uname -s)" != Linux ]; then
-    echo "  SKIP: tune bench freq-median black-box runs in the Linux CI jobs (#292)"
-else
-    echo "== black-box: tune bench freq median doesn't false-trip the #62 throttle guard (#266) =="
-    mkdir -p "$TN/cpu266/cpu0/cpufreq"
-    FF266="$TN/cpu266/cpu0/cpufreq/scaling_cur_freq"
-    DONE266="$TN/done266"
-    # #424: the handshake below is a blocking FIFO and nothing in its path has a timeout. When the
-    # reader asks for one more sample than the feeder is positioned to serve, it parks in the FIFO's
-    # open()/read() and the enclosing `out="$( ... )"` never closes, because a command substitution
-    # ends only when every holder of the write end does. One run wedged that way for 53 minutes.
-    # T266 bounds the run under test so a wedge FAILS this block (rc 124) instead of hanging the
-    # suite. Killing the FEEDER is not an alternative and was tried: a reader blocked in open() waits
-    # for a writer to APPEAR, so dropping the last one leaves it exactly where it was.
-    T266="${T266:-120}"
-    rm -f "$FF266" "$DONE266"
-    mkfifo "$FF266"
-    # Feeder: serve the pair, then release the fake xmrig so the bench window closes after exactly 2 samples.
-    (while :; do printf '4627000\n' >"$FF266" && printf '4628001\n' >"$FF266" && touch "$DONE266" || exit; done) &
-    FEED266=$!
-    # #425: the feeder is a background job stopped only by the straight-line `kill` below, which sits
-    # AFTER the command substitution — so anything that leaves the block early skips it. It then
-    # blocks inside open() on a FIFO with no reader, and unlinking the FIFO does NOT wake a writer
-    # already blocked on it: the line-49 sandbox trap deletes the FIFO and leaves the process at 0%
-    # CPU with no live parent, invisible to every load, disk and pane-children check. Reap it from the
-    # EXIT trap, which every exit path that runs traps at all reaches; the kill below stays as the
-    # fast path and disarms this. The EXIT trap also runs when bash is KILLED by SIGTERM or SIGHUP,
-    # so `kill <suite>` and a dropped SSH are covered too — the realistic escalation path, and the
-    # reason this is worth more than an orderly-exit cleanup. SIGINT is the one that is not covered,
-    # and not because the trap skips it: with the shell blocked inside the command substitution a
-    # Ctrl-C does not terminate the suite at all, so there is nothing for a trap to run.
-    trap 'kill "$FEED266" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
-    cat >"$BD/xmrig" <<EOF
-#!/usr/bin/env bash
-echo "speed 1000.0 H/s max 1000.0 H/s"
-for _ in \$(seq 1 500); do [ -f "$DONE266" ] && break; sleep 0.02; done # bounded wait
-rm -f "$DONE266"
-echo "benchmark finished" # breaks the bench poll loop BEFORE a zombie-pid extra iteration samples a 3rd clock
-EOF
-    chmod +x "$BD/xmrig"
-    out="$(cd "$TN" && PATH="$STUBS:$PATH" CPU_SYSFS="$TN/cpu266" CPUFREQ_MAX="$TN/cpu_max" TUNE_MIN_FREQ_MHZ=4000 \
-        TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_PREFETCH_MODES=1 TUNE_YIELDS=false TUNE_THREADS=-1 \
-        RIGFORGE_HOME="$PWD" timeout "$T266" bash "$SCRIPT" tune </dev/null 2>&1)"
-    rc=$?
-    kill "$FEED266" 2>/dev/null
-    wait "$FEED266" 2>/dev/null
-    trap 'rm -rf "$SANDBOX"' EXIT
-    rm -f "$FF266" "$DONE266"
-    assert_rc "healthy fractional-median tune exits 0 (#266)" "$rc" "0"
-    assert_absent "healthy candidate NOT flagged as throttled (#266)" "$out" "throttled to"
-    assert_eq "healthy candidate recorded as not throttled, eligible for adoption (#266)" "$(J "$TLOG" '.results[0].throttled')" "false"
-fi
-
 # #265: _seed_wr / _seed_g must keep an explicit base-config false instead of jq `//` flipping it to
 # the true default; with the key absent, the true default still applies.
 echo "== unit: tune seeds keep explicit false (#265) =="
@@ -9221,8 +9160,9 @@ else
         _sweep_config_backups() { :; }
         _control_fast_path_eligible() { return 1; }
         _control_do_apply() { return 0; }
-        control_apply >/dev/null
+        PATH="$STUBS:$PATH" control_apply >/dev/null
     )
+    assert_eq "real control-apply consumption reaches applied (#478/#479)" "$(jq -r .status "$CSRV2/state/status.json")" "applied"
     assert_eq "real control-apply consumption reopens the queue (#478)" "$(hc -X POST "$U2/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "202"
     assert_eq "POST /upgrade malformed version -> 400 (#308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"garbage"}')" "400"
     assert_eq "POST /upgrade extra key -> 400 (strict whitelist #308)" "$(hc -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.3","x":1}')" "400"
