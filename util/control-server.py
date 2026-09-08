@@ -317,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             cid = stage_change(os.path.join(STATE_DIR, "spool"), staged, prefix="upgrade")
         except DurabilityUncertain as e:
-            return self._send(202, "Accepted", dict(status="accepted", change_id=e.cid, warning=str(e)))
+            return self._send(202, "Accepted", dict(status="accepted", change_id=e.cid, warning=str(e), note="request is staged; do not retry; poll GET /status"))
         except SpoolFull:
             return self._send(503, "Service Unavailable", {"error": "control queue is full; retry after pending work is processed"})
         except OSError as e:
@@ -363,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
         response = dict(status="accepted", change_id=cid,
                         note="queued for apply; poll GET /status and GET :%s/2/summary for the effective config" % os.environ.get("RIGFORGE_API_PORT", "8081"))
         if warning:
-            response["warning"] = warning
+            response.update(warning=warning, note="request is staged; do not retry; poll GET /status")
         self._send(202, "Accepted", response)
 
     def _read_only(self):

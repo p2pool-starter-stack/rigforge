@@ -144,10 +144,12 @@ try:
     mod["Handler"]._handle_apply(apply)
     assert apply.sent[0] == 202 and apply.sent[2]["change_id"] == "0123456789abcdef"
     assert apply.sent[2]["warning"].startswith("staged but directory sync failed")
+    assert "do not retry" in apply.sent[2]["note"] and "poll GET /status" in apply.sent[2]["note"]
     stage.__globals__["UPGRADE_ENABLED"] = True
     upgrade = FakeHandler({"version": "v1.2.3"})
     mod["Handler"]._handle_upgrade(upgrade)
     assert upgrade.sent[0] == 202 and upgrade.sent[2]["change_id"] == "0123456789abcdef"
     assert upgrade.sent[2]["warning"].startswith("staged but directory sync failed")
+    assert "do not retry" in upgrade.sent[2]["note"] and "poll GET /status" in upgrade.sent[2]["note"]
 finally:
     stage.__globals__["stage_change"] = real_stage
