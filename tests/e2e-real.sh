@@ -34,14 +34,12 @@ set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
-
 # Root may reach this through nested sudo, so every git call pins the operator-owned checkout (#401).
 _hgit() { git -C "$HERE" -c safe.directory="$HERE" "$@"; }
-miner_log() { if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then journalctl -u xmrig --no-pager -o cat -n 5000; else cat "$1"; fi; }
+miner_log() { if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then journalctl -u xmrig --no-pager -o cat -n 5000 | sed -E 's/\x1b\[[0-9;]*m//g'; else cat "$1"; fi; }
 miner_log_has() { grep -q -- "$1" < <(miner_log "$2" 2>/dev/null); }
 fresh_share() { [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]] && [ "$1" -gt "$2" ]; }
 GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-
 PASS=0
 FAIL=0
 # Control state is global so cleanup traps can restore it after a phase returns.
@@ -73,7 +71,6 @@ die() {
     printf '\033[31me2e-real: %s\033[0m\n' "$1" >&2
     exit 2
 }
-
 # #183: the shared-rig lock. miner-0 hosts BOTH RigForge's release gates (rig-mutating) and
 # Pithead's e2e (API-reading, assumes a steadily-hashing miner) — a kernel flock serializes them.
 # Exclusive for mutators, `shared` for future read-only modes; the lock dies with the holding
@@ -178,7 +175,7 @@ check_api_refresh() {
         return
         ;;
     esac
-    local next refresh_state stamp epoch age now token port bind host i
+    local next refresh_state stamp epoch age now token port bind host i refresh_active=0
     for i in 1 2 3 4 5; do # #458: NEXT is briefly hidden while the triggered service activates.
         next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
         { [ -n "$next" ] && [ "$next" != n/a ]; } && break
@@ -186,7 +183,10 @@ check_api_refresh() {
     done
     if [ -z "$next" ] || [ "$next" = n/a ]; then
         refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
-        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then ok "sister-feed refresh is in progress ($refresh_state)"; else
+        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then
+            refresh_active=1
+            ok "sister-feed refresh is in progress ($refresh_state)"
+        else
             next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
             { [ -n "$next" ] && [ "$next" != n/a ]; } && ok "sister-feed timer has a NEXT trigger ($next)" || bad "sister-feed timer has no NEXT trigger"
         fi
@@ -209,7 +209,7 @@ check_api_refresh() {
     epoch=$(date -d "${stamp:-invalid}" +%s 2>/dev/null || echo 0)
     now=$(date +%s)
     age=$((now - epoch))
-    if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
+    if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; elif [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$refresh_active" = 1 ]; then ok "sister-feed retained payload is available while refresh runs (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
 }
 ensure_config() {
     # setup needs a valid config.json. Benching is OFFLINE so any valid pool entry suffices for the build +

@@ -5063,7 +5063,7 @@ _lockdown_blocks_msr() { # <level> -> 0 when MSR writes are denied
 # approach would miss the line entirely on a big file, so don't "optimize" this into one.
 _msr_log_status() { # <logfile>
     { if [ -f "$1" ]; then cat "$1"; elif [ "$OS_TYPE" = Linux ]; then journalctl -u "$SERVICE_NAME" --no-pager -o cat -n 5000 2>/dev/null; fi; } |
-        grep -E 'msr +register values for' | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
+        sed -E 's/\x1b\[[0-9;]*m//g' | grep -E 'msr +register values for' | tail -1 | awk '{p="";if(match($0,/"[^"]+"/))p=substr($0,RSTART+1,RLENGTH-2);if(index($0,"set successfully")>0){st="ok";pr=p}else if(index($0,"FAILED")>0||index($0,"failed")>0||index($0,"cannot")>0){st="fail";pr=p}else{st="none";pr=p}} END{if(NR==0)printf "none\t";else printf "%s\t%s",st,pr}' || true
 }
 
 # The (register, value, mask) triples XMRig writes per MSR preset — verified against XMRig v6.26.0
@@ -5374,21 +5374,19 @@ _api_refresh_status() {
     [ "$age" -lt 0 ] && age=0
     if [ -z "$next" ] || [ "$next" = n/a ]; then
         refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
-        if [ "$refresh_state" != active ] && [ "$refresh_state" != activating ]; then
-            next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
-            if [ -z "$next" ] || [ "$next" = n/a ]; then
-                printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
-                return 1
-            fi
+        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then
+            printf 'sister feed refresh in progress (last: %s; payload age: %ss)' "${last:-never}" "$age"
+            return 0
+        fi
+        next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+        if [ -z "$next" ] || [ "$next" = n/a ]; then
+            printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
+            return 1
         fi
     fi
     if [ "$age" -gt 60 ]; then
         printf 'sister feed is stale since %s (next: %s; last: %s; payload age: %ss)' "${stamp:-unknown}" "${next:-none}" "${last:-never}" "$age"
         return 1
-    fi
-    if [ -z "$next" ] || [ "$next" = n/a ]; then
-        printf 'sister feed refresh in progress (last: %s; payload age: %ss)' "${last:-never}" "$age"
-        return 0
     fi
     printf 'sister feed refresh scheduled (next: %s; last: %s; payload age: %ss)' "$next" "${last:-never}" "$age"
 }

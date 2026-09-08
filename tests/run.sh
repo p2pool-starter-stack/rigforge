@@ -5176,7 +5176,7 @@ assert_contains "log status: missing file -> none (#66)" "$( (
 ))" "none"
 assert_contains "log status: appliance journal confirms MSR (#477)" "$( (
     source "$SCRIPT"
-    OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT='msr register values for "ryzen_19h" preset have been set successfully' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
+    OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT=$'\033[1;32mmsr register values for "ryzen_19h" preset have been set successfully\033[0m' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
 ))" "ok"
 # Unreadable registers are counted in _MSR_UNREAD, kept OUT of _MSR_BAD (so they don't read as mismatches).
 out="$( (
@@ -8370,11 +8370,12 @@ cdhst() { jq -r ".$1" "$CDH/state/status.json" 2>/dev/null; }
 # BSD `wc -l` right-pads its count ("       1"), GNU's does not, so the raw output is a string that
 # compares equal to the expected count on Linux and not on macOS. `tr -d ' '` is the idiom the rest of
 # this file uses for exactly that. The `|| echo 0` fallback cannot live on the pipeline — a missing
-# file fails the redirect, `tr` still exits 0, and the fallback would never fire — so the default is
+# file fails the redirect, `tr` still exits 0, and the fallback would never fire — so stderr is
+# silenced before that optional input is opened (#485) and the default is
 # applied to the captured value instead.
 cdh_calls() { # <name> -> how many calls were recorded, 0 when the file was never written
     local n
-    n=$(wc -l <"$CDH/$1-calls" 2>/dev/null | tr -d ' ')
+    n=$(wc -l 2>/dev/null <"$CDH/$1-calls" | tr -d ' ')
     printf '%s' "${n:-0}"
 }
 
