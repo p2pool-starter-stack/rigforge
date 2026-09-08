@@ -30,8 +30,8 @@ All notable changes to RigForge are documented here. The format is based on
 - **Accepted control changes are no longer starved behind mining or a global filesystem flush (#472).**
   The privileged apply worker runs at normal priority and fsyncs only the changed config and backup.
 
-- **`doctor` no longer exposes the writable control bearer in curl's process arguments (#474).**
-  Its authenticated health probe now passes the header through curl's stdin configuration.
+- **`doctor` safely waits for the writable control receiver (#278, #474).**
+  Its authenticated health probe now passes the header through curl's stdin configuration and tolerates the brief socket-bind delay after systemd reports the receiver active.
 
 ## [1.17.2] - 2026-09-07
 
