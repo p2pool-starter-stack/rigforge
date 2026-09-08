@@ -8585,6 +8585,13 @@ ca_exec() {
             fi
             command mv "$@"
         }
+        if [ "${CA_FSYNC_UNCERTAIN:-0}" = 1 ]; then
+            _ca_fsyncn=0
+            _fsync_paths() {
+                _ca_fsyncn=$((_ca_fsyncn + 1))
+                [ "$_ca_fsyncn" -lt 2 ]
+            }
+        fi
         OS_TYPE=Linux
         SCRIPT_DIR="$CA"
         CONFIG_JSON="$CA/config.json"
@@ -8657,6 +8664,9 @@ assert_eq "a commit that never landed records NO backup (#434)" "$(cst backup)" 
 assert_eq "a failed install leaves the old config live (donation 1) (#434)" "$(jq -r .DONATION "$CA/config.json")" "1"
 assert_eq "a failed install still drains the spool (#434)" "$(ls "$CA"/state/spool/pending-*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "a failed install never restarts the miner (#434)" "$([ -f "$CA/full-apply-called" ] && echo called || echo not-called)" "not-called"
+CA_FSYNC_UNCERTAIN=1 ca_run "$CFG_236" '{"DONATION":42}' 1
+assert_eq "an uncertain post-install fsync writes terminal failed (#472)" "$(cst status)" "failed"
+assert_contains "an uncertain fsync hands back its durable backup (#472)" "$(cst backup)" "/config-backups/config-"
 # #438: same path, one layer down — its snapshot copies a config that was never replaced, and the
 # sweep ran on the success branch alone. Seeded 3 under KEEP=2: only an orphan can hold DONATION.
 CA_COMMIT_MV_FAIL=1 CA_SEED_BACKUPS=3 KEEP_CONFIG_BACKUPS=2 ca_run "$CFG_236" '{"DONATION":42}' 1
@@ -8741,14 +8751,7 @@ assert_contains "control-apply rejects extra args" "$cb_out" "Unexpected argumen
 cb_out="$( (RIGFORGE_HOME="$ROOT" bash "$SCRIPT" control-upgrade --extra </dev/null) 2>&1 || true)"
 assert_contains "control-upgrade rejects extra args (#312)" "$cb_out" "Unexpected argument for control-upgrade"
 
-# #426: the REJECTION branch through the REAL dispatch — errexit and the ERR trap live. Every
-# rejection assertion above runs control_apply SOURCED under `set +e` (ca_exec), which is the one
-# shape that cannot see this defect, so those rows stayed green while it shipped.
-# Separate bash process on purpose, for the #364 reason above: a subshell would inherit this
-# suite's errexit context instead of a clean top-level one.
-# `invalid-config` is the trigger reachable over HTTP — a WRITABLE key whose value parse_config
-# refuses. control-server.py screens non-writable and unsafe keys with a 400 before staging, so
-# most of _control_commit's other rejection branches never get here.
+# #426: drive an HTTP-reachable invalid writable value through real top-level dispatch.
 CAB="$(mktemp -d "$SANDBOX/cab.XXXXXX")"
 CAB_CID=00000000000000ab # 16 hex: _control_status only writes the changes/<cid>.json index for these
 mkdir -p "$CAB/state/spool"
@@ -8769,16 +8772,7 @@ assert_eq "a rejected change drains the spool (#426)" "$(ls "$CAB"/state/spool/p
 # Unchanged by the fix, asserted so a future rewrite of this branch cannot quietly lose it.
 assert_eq "a rejected change leaves config.json untouched (#426)" "$(jq -r .DONATION "$CAB/config.json")" "1"
 
-# #435: the ACCEPTED branch through the REAL dispatch — the counterpart to the #426 rejection row
-# above, and for the same reason. Every applied/rolled_back/fast-path assertion in this section runs
-# control_apply SOURCED under `set +e` (ca_exec) with apply() stubbed to a marker write, which is the
-# one shape that can see neither an errexit abort on the accepted branch nor anything the real apply
-# pipeline does with the change. Measured before this row was written: seeding the #426 defect class
-# onto the accepted branch — `backup="${result#committed }"` rewritten as a bare assignment from a
-# substitution that exits non-zero — leaves EVERY ca_exec row green and still recording `applied`,
-# while this row goes rc 1 with no status file written and "aborted while" on stderr.
-# Separate bash process on purpose, for the #364 reason above: a subshell would inherit this suite's
-# errexit context instead of a clean top-level one, which disarms the failure under test on bash 5.2.
+# #435: drive an accepted change through real top-level dispatch and apply pipeline.
 CAA="$(mktemp -d "$SANDBOX/caa.XXXXXX")"
 CAA_CID=00000000000000ac # 16 hex, so _control_status writes the changes/<cid>.json index too
 mkdir -p "$CAA/state/spool" "$CAA/home/worker/xmrig/build" "$CAA/logrotate" "$CAA/etc-systemd"
