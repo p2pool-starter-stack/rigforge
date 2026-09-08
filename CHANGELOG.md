@@ -7,6 +7,12 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release e2e gates fail closed when mutation or restoration fails (#491).** Later mutation phases
+  stop after a failed prerequisite, cleanup errors reach the exit status, and recovery snapshots and
+  original upgrade refs remain available until config, source, apply, and runtime restoration succeed.
+
 ## [1.17.3] - 2026-09-08
 
 ### Fixed

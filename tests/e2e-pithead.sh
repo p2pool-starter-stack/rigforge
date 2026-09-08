@@ -32,8 +32,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 
-PASS=0
-FAIL=0
+PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
     PASS=$((PASS + 1))
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
@@ -41,6 +40,7 @@ ok() {
 bad() {
     FAIL=$((FAIL + 1))
     printf '  \033[1;31m✗\033[0m %s\n' "$1" >&2
+    return 1
 }
 skip() { printf '  \033[1;33m∙\033[0m SKIP: %s\n' "$1"; }
 phase() { printf '\n\033[1m== e2e-pithead: %s ==\033[0m\n' "$1"; }
@@ -110,31 +110,34 @@ require_preflight() {
     [ -n "$GEN_CFG" ] || die "no generated worker config found — run setup first."
 }
 
-# --- operator-config snapshot: whatever happens, the rig leaves this gate as it entered it ---
 SAVED_CFG=""
 HAMMER_PIDS=""
 _cleanup() {
-    # Stop any API load generators first, then put the operator's config back and re-apply it.
-    local p
+    local cleanup_ok=1 p
     for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
-    if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ]; then
-        cp "$SAVED_CFG" "$CFG"
-        "$RIGFORGE" apply >/dev/null 2>&1 || true
+    if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
+        "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
+        rm -f "$SAVED_CFG"
+    else
+        echo "e2e-pithead: WARNING: config restoration failed; snapshot retained at ${SAVED_CFG:-<missing>}" >&2
+        cleanup_ok=0
     fi
-    rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" # #183: the rig lock's display-only sidecar
+    rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" || true
+    [ "$cleanup_ok" = 1 ]
 }
 snapshot_config() {
     SAVED_CFG="$(mktemp)"
     cp "$CFG" "$SAVED_CFG"
-    trap '_cleanup' EXIT
+    trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; exit "$E2E_EXIT_RC"' EXIT
 }
 
-# Edit the operator config with a jq program and roll it out (apply = regenerate + restart).
 set_cfg() { # <jq program>
     local tmp
     tmp="$(mktemp)"
-    jq "$1" "$CFG" >"$tmp" && mv "$tmp" "$CFG"
-    "$RIGFORGE" apply >/dev/null 2>&1 || true
+    if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" &&
+        "$RIGFORGE" apply >/dev/null 2>&1; then return 0; fi
+    rm -f "$tmp"
+    return 1
 }
 
 api8080() { # [curl args...] -> body (empty on failure); token-aware like rigforge's own reader
@@ -171,14 +174,14 @@ wait_for_job() { # <timeout_s> -> 0 when the log shows a stratum job
 phase_connect() {
     phase "connect — worker mines against the live stack ($PITHEAD_URL)"
     set_cfg ".pools[0].url = \"$PITHEAD_URL\""
-    systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
+    systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1
     [ -n "$WLOG" ] || WLOG="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
     if [ -z "$WLOG" ]; then
         bad "could not find the worker's xmrig.log"
         return 0
     fi
     : >"$WLOG" || true # truncate so every assertion below is about THIS stack, not an old pool
-    "$RIGFORGE" restart >/dev/null 2>&1 || true
+    "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
         ok "connected — stratum job from $(grep -oE 'new job from [^ ]+' "$WLOG" | tail -1 | awk '{print $NF}')"
     else
@@ -208,8 +211,6 @@ phase_connect() {
 
 phase_worker_api() {
     phase "worker-api — the :8080 contract (open read-only by default; Bearer when ACCESS_TOKEN set)"
-    # Normalize first: the operator's config may carry its own ACCESS_TOKEN (miner-0 does), and this
-    # phase tests the CONTRACT in both modes — the EXIT trap restores the operator's token afterwards.
     set_cfg '.ACCESS_TOKEN = ""'
     sleep 3 # give the restarted miner a beat to bind
     local body code
@@ -418,7 +419,7 @@ phase_stratum_auth() {
     fi
     set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\""
     : >"$WLOG" || true
-    "$RIGFORGE" restart >/dev/null 2>&1 || true
+    "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
         ok "right pass: worker mines"
     else
@@ -426,7 +427,7 @@ phase_stratum_auth() {
     fi
     set_cfg '.pools[0].pass = "wrong-114"'
     : >"$WLOG" || true
-    "$RIGFORGE" restart >/dev/null 2>&1 || true
+    "$RIGFORGE" restart >/dev/null 2>&1
     local waited=0
     while [ "$waited" -lt 60 ] && ! grep -qi 'permission denied\|login error' "$WLOG" 2>/dev/null; do
         sleep 3
@@ -444,7 +445,7 @@ phase_stratum_auth() {
     fi
     set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\"" # the #113 rotation runbook, proven mechanically
     : >"$WLOG" || true
-    "$RIGFORGE" restart >/dev/null 2>&1 || true
+    "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
         ok "rotation runbook: re-pasting the right pass recovers the worker"
     else
@@ -476,7 +477,7 @@ phase_dashboard() {
         skip "offline check skipped: the worker was never online, so its later state proves nothing"
         return 0
     fi
-    "$RIGFORGE" stop >/dev/null 2>&1 || true
+    "$RIGFORGE" stop >/dev/null 2>&1
     local to="${E2E_DROPOFF_TIMEOUT:-300}" waited=0
     while [ "$waited" -lt "$to" ]; do
         payload=$(dash_curl)
@@ -494,7 +495,7 @@ phase_dashboard() {
     else
         bad "worker did not become offline in a valid workers array during the ${to}s window"
     fi
-    "$RIGFORGE" start >/dev/null 2>&1 || true
+    "$RIGFORGE" start >/dev/null 2>&1
 }
 
 phase_dev_fee() {
@@ -550,14 +551,13 @@ stratum-auth) phase_stratum_auth ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
 all)
-    phase_connect
-    phase_worker_api
-    phase_api_impact
-    phase_network
-    phase_stratum_auth
-    phase_dashboard
-    phase_dev_fee
+    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee; do
+        "$run_phase"
+        [ "$FAIL" -eq 0 ] || break
+    done
     ;;
 *) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)" ;;
 esac
+_cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
+trap - EXIT
 summary
