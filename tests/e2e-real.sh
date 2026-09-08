@@ -736,7 +736,7 @@ control() {
     [ "$landed" = "$new_donation" ] &&
         ok "config.json carries DONATION=$new_donation (control-apply persisted it)" ||
         bad "config.json DONATION is '$landed', expected $new_donation"
-    local effective="" deadline=$((SECONDS + 330))
+    local effective="" deadline=$((SECONDS + 320))
     while [ "$SECONDS" -lt "$deadline" ]; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$new_donation" ] && break
@@ -773,7 +773,7 @@ control() {
     fi
     [ "$st" = applied ] && ok "reversion reached 'applied' within ${waited}s" || bad "reversion failed (HTTP ${resp_code:-none}, status ${st:-none})"
     effective=""
-    deadline=$((SECONDS + 330))
+    deadline=$((SECONDS + 320))
     while [ "$SECONDS" -lt "$deadline" ]; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$cur_donation" ] && break
