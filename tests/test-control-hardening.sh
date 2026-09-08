@@ -6,17 +6,17 @@ D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
 source "$SCRIPT"
 
-RIGFORGE_CONTROL_LOCK="$D/control.lock"
-_with_control_lock bash -c 'touch "$1/first"; while [ ! -e "$1/release" ]; do sleep .02; done' _ "$D" &
+export RIGFORGE_CONTROL_LOCK="$D/control.lock"
+exec 7>"$RIGFORGE_CONTROL_LOCK"
+flock -x 7
+RIGFORGE_HOME="$D" bash "$SCRIPT" control-apply >/dev/null 2>&1 &
 P1=$!
-while [ ! -e "$D/first" ]; do sleep .02; done
-_with_control_lock touch "$D/second" &
+RIGFORGE_HOME="$D" bash "$SCRIPT" control-upgrade >/dev/null 2>&1 &
 P2=$!
 sleep .1
-[ ! -e "$D/second" ]
-touch "$D/release"
-wait "$P1" "$P2"
-[ -e "$D/second" ]
+kill -0 "$P1" "$P2"
+flock -u 7
+wait "$P1" "$P2" || true
 
 mkdir -p "$D/state/spool" "$D/target"
 printf '1.0.0' >"$D/VERSION"
@@ -27,3 +27,12 @@ ln -s "$D/target" "$D/processing"
 OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_upgrade >/dev/null 2>&1
 [ "$(jq -r .status "$D/state/status.json")" = failed ]
 [ "$before" = "$(ls -ld "$D/target")" ]
+
+rm "$D/processing"
+mkdir -m 700 "$D/processing"
+for stat_result in 0:0:755 1:0:700; do
+    printf '{"version":"v9.9.9"}' >"$D/state/spool/upgrade-abc123def4567890.json"
+    stat() { printf '%s\n' "$stat_result"; }
+    OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_upgrade >/dev/null 2>&1
+    [ "$(jq -r .status "$D/state/status.json")" = failed ]
+done

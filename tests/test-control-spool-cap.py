@@ -45,6 +45,59 @@ with tempfile.TemporaryDirectory() as spool:
     assert not list(Path(spool).glob(".tmp-*"))
 
 with tempfile.TemporaryDirectory() as spool:
+    real_open = open
+
+    class WriteFail:
+        def __init__(self, path):
+            self.file = real_open(path, "wb")
+
+        def __enter__(self):
+            return self
+
+        def write(self, _body):
+            raise OSError("failed write")
+
+        def __exit__(self, *_):
+            self.file.close()
+
+    try:
+        stage.__globals__["open"] = lambda path, mode="r", **kwargs: WriteFail(path) if mode == "wb" else real_open(path, mode, **kwargs)
+        stage(spool, b"{}")
+        raise AssertionError("write failure was hidden")
+    except OSError as e:
+        assert str(e) == "failed write"
+    finally:
+        del stage.__globals__["open"]
+    assert not list(Path(spool).glob(".tmp-*")) and not list(Path(spool).glob("*-*.json"))
+
+with tempfile.TemporaryDirectory() as spool:
+    real_fsync = stage.__globals__["os"].fsync
+    try:
+        stage.__globals__["os"].fsync = lambda _fd: (_ for _ in ()).throw(OSError("failed file sync"))
+        stage(spool, b"{}")
+        raise AssertionError("file sync failure was hidden")
+    except OSError as e:
+        assert str(e) == "failed file sync"
+    finally:
+        stage.__globals__["os"].fsync = real_fsync
+    assert not list(Path(spool).glob(".tmp-*")) and not list(Path(spool).glob("*-*.json"))
+
+with tempfile.TemporaryDirectory() as spool:
+    real_replace = stage.__globals__["os"].replace
+    real_unlink = stage.__globals__["os"].unlink
+    try:
+        stage.__globals__["os"].replace = lambda *_: (_ for _ in ()).throw(OSError("original rename failure"))
+        stage.__globals__["os"].unlink = lambda *_: (_ for _ in ()).throw(OSError("cleanup failure"))
+        stage(spool, b"{}")
+    except OSError as e:
+        assert str(e) == "original rename failure"
+    finally:
+        stage.__globals__["os"].replace = real_replace
+        stage.__globals__["os"].unlink = real_unlink
+        for tmp in Path(spool).glob(".tmp-*"):
+            tmp.unlink()
+
+with tempfile.TemporaryDirectory() as spool:
     real_fsync = stage.__globals__["os"].fsync
     calls = 0
 
@@ -83,10 +136,12 @@ try:
     stage.__globals__["STATE_DIR"] = tempfile.mkdtemp()
     apply = FakeHandler({"DONATION": 2})
     mod["Handler"]._handle_apply(apply)
-    assert apply.sent[0] == 202 and apply.sent[2]["change_id"] == "0123456789abcdef" and "warning" in apply.sent[2]
+    assert apply.sent[0] == 202 and apply.sent[2]["change_id"] == "0123456789abcdef"
+    assert apply.sent[2]["warning"].startswith("staged but directory sync failed")
     stage.__globals__["UPGRADE_ENABLED"] = True
     upgrade = FakeHandler({"version": "v1.2.3"})
     mod["Handler"]._handle_upgrade(upgrade)
-    assert upgrade.sent[0] == 202 and upgrade.sent[2]["change_id"] == "0123456789abcdef" and "warning" in upgrade.sent[2]
+    assert upgrade.sent[0] == 202 and upgrade.sent[2]["change_id"] == "0123456789abcdef"
+    assert upgrade.sent[2]["warning"].startswith("staged but directory sync failed")
 finally:
     stage.__globals__["stage_change"] = real_stage

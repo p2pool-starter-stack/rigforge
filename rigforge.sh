@@ -68,8 +68,8 @@ SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 # Operator for root-written files; timer units bake it into RIGFORGE_OPERATOR when SUDO_USER is absent.
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
-# #254 config provenance sidecar; overridable for tests.
-CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$SCRIPT_DIR/.rigforge-config-meta.json}"
+APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
+CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$SCRIPT_DIR/.rigforge-config-meta.json}" # #254 provenance sidecar
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
@@ -82,11 +82,8 @@ XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
 # recompile and the service restart — making re-runs idempotent (#4).
 XMRIG_REBUILD=true
 
-# Appliance mode (pithead#797 R1) is an environment preset because the image boot path owns it.
-# The read-only-root path verifies baked tools, skips image-owned GRUB, renders runtime systemd
-# units, and mounts hugetlbfs without persistent /etc writes. Runtime MSR, HugePages, and governor
-# tuning remain unchanged.
-RIGFORGE_APPLIANCE="${RIGFORGE_APPLIANCE:-0}" # every consumer tests `= 1`; anything else is off
+# Persist appliance image-owned/runtime-only behavior across clean invocations (pithead#797 R1).
+RIGFORGE_APPLIANCE="${RIGFORGE_APPLIANCE:-$([ -d "$APPLIANCE_MARKER" ] && printf 1 || printf 0)}"
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
     # Preset only — an explicit SYSTEMD_DIR in the environment (the test sandbox) still wins, and
     # the non-appliance default below keeps this value because it is now set.
@@ -1331,11 +1328,9 @@ install_autotune() {
         return 0
     fi
     log "Enabling periodic autotune: $(_autotune_desc "$AUTOTUNE_MODE"), runs ${AUTOTUNE_ONCALENDAR:-monthly}..."
-    # Render the unit templates from systemd/ (kept alongside xmrig.service.template, not inline). The
-    # service bakes in RIGFORGE_OPERATOR=$REAL_USER so the root timer hands files back to the operator,
-    # and AUTOTUNE_TARGET (#95) so the scheduled run optimizes for the target the operator chose.
-    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" AUTOTUNE_TARGET="${AUTOTUNE_TARGET:-perf}" \
-        envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR $AUTOTUNE_TARGET' \
+    # Bake operator, appliance posture, and target into the scheduled root run.
+    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" AUTOTUNE_TARGET="${AUTOTUNE_TARGET:-perf}" \
+        envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR $AUTOTUNE_TARGET' \
         <"$SCRIPT_DIR/systemd/rigforge-autotune.service.template" | sudo tee "$svc" >/dev/null
     AUTOTUNE_ONCALENDAR="${AUTOTUNE_ONCALENDAR:-monthly}" \
         envsubst '$AUTOTUNE_ONCALENDAR' \
@@ -1490,16 +1485,16 @@ install_control() {
     CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" \
         envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT' \
         <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null
-    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
-        envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' \
+    RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
+        envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
         <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null
     sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null
     # #308: the remote-upgrade units ride ON TOP of the control path — installed only when
     # control_upgrade is ALSO enabled, removed otherwise, so `control` alone never carries a
     # code-update surface. Same envsubst/operator handback as the apply oneshot.
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
-        RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
-            envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' \
+        RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
+            envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
             <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null
         sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
@@ -1999,6 +1994,11 @@ main() {
         *) error "Unknown option for setup: '$_arg' (use --dry-run). Run '$0 help'." ;;
         esac
     done
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+        mkdir -m 700 "$APPLIANCE_MARKER" 2>/dev/null || [ -d "$APPLIANCE_MARKER" ] || error "Could not persist appliance mode at $APPLIANCE_MARKER."
+    else
+        rmdir "$APPLIANCE_MARKER" 2>/dev/null || [ ! -e "$APPLIANCE_MARKER" ] || error "Could not clear stale appliance mode at $APPLIANCE_MARKER."
+    fi
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
     CURRENT_STEP="ensuring config exists"
@@ -2158,10 +2158,9 @@ upgrade() {
     check_prerequisites
     parse_config
     decide_rebuild
-    # #413: an upgrade is not a recompile. An early return used to sit here, taken whenever the XMRig
-    # pin was unchanged — which is EVERY published release pair, the pin being byte-identical at all 25
-    # tags v1.0.0..v1.16.0 — so config regeneration, unit reinstall, the post-upgrade re-tune and the
-    # re-own were skipped on every upgrade any rig has ever run, and it still reported success. The
+    # #413: an upgrade is not a recompile. A prior early return skipped config and unit regeneration
+    # whenever the XMRig pin was unchanged, including every then-published release pair. Config
+    # regeneration, unit reinstall, post-upgrade re-tune, and re-own were skipped despite success. The
     # sequence below is the same ungated one every `setup` re-run takes, and it is safe for the same
     # reason: the two steps that must not repeat carry their OWN XMRIG_REBUILD guard internally rather
     # than relying on a caller to gate them — prepare_workspace archives the existing install only on a
@@ -2338,6 +2337,7 @@ uninstall() {
         sudo rm -rf "$worker_root"
         log "Removed worker build/logs at $worker_root."
     fi
+    rmdir "$APPLIANCE_MARKER" 2>/dev/null || true
 
     # 9. the `rigforge` CLI symlink — only if it's still ours (never touch a file we didn't create)
     if [ -L "$BIN_DIR/rigforge" ] && [ "$(readlink "$BIN_DIR/rigforge" 2>/dev/null)" = "$SCRIPT_DIR/rigforge.sh" ]; then

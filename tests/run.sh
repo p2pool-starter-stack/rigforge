@@ -148,7 +148,7 @@ EOF
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
-    -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" \
+    -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" -e "s|\$RIGFORGE_APPLIANCE|${RIGFORGE_APPLIANCE:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
     -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g" \
@@ -6506,11 +6506,6 @@ out="$(run_ensure_hp398 "$SC" 200 0 0)"
 assert_contains "no headroom, no ceiling -> plain requirement, unchanged (#328 x #398)" "$(cat "$SC")" "vm.nr_hugepages=200"
 
 # ---------------------------------------------------------------------------
-# Appliance mode (pithead#797 R1): RIGFORGE_APPLIANCE=1 runs setup on the Pithead appliance image —
-# read-only root, volatile /etc overlay, a boot leg re-runs setup every boot. Under the flag setup
-# must: never install packages (fail naming missing tools instead), skip the GRUB leg, render units
-# into /run and enable them --runtime, mount hugetlbfs at runtime with no fstab/limits.conf writes —
-# while runtime tuning (modprobe msr, grow-only sysctl) stays byte-identical.
 echo "== black-box: appliance mode (pithead#797 R1) =="
 AP="$(mktemp -d "$SANDBOX/appliance.XXXXXX")"
 
@@ -6523,9 +6518,7 @@ assert_eq "no flag: /etc/systemd/system + persistent enable (#797)" "$out" "/etc
 out="$( (SYSTEMD_DIR="$AP/custom-sd" && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s' "$SYSTEMD_DIR"))"
 assert_eq "explicit SYSTEMD_DIR still wins under the flag (#797)" "$out" "$AP/custom-sd"
 
-# Dependency handling: tools verified (command -v), never installed. The toolchain is only required
-# while a build is pending; a prebuilt tree needs envsubst alone (the R0 bench re-ran with a broken
-# compiler). PATH is restricted to purpose-built bins so the host's real toolchain can't leak in.
+# Baked dependencies are verified against a restricted fixture PATH.
 mkbin_ap() { # <dir> <cmd...>: a dir of exit-0 fakes
     local d="$1" c
     shift
@@ -6655,8 +6648,7 @@ mkdir -p "$APS/run-systemd" "$APS/xmrig/build"
 assert_eq "unit rendered into the runtime systemd dir (#797)" "$([ -f "$APS/run-systemd/xmrig.service" ] && echo yes || echo no)" "yes"
 assert_contains "unit enabled with --runtime (#797)" "$(cat "$APS/calls.log")" "[systemctl] enable --runtime xmrig.service"
 
-# setup --dry-run previews the SAME appliance decisions (shared logic, #146): baked deps, GRUB skip,
-# runtime-only msr and mounts, --runtime enablement — and still covers every main() step.
+# Dry-run previews the same appliance decisions and every main step (#146).
 APDR="$AP/dryrun"
 mkdir -p "$APDR/etc" "$APDR/util"
 cp "$APK/util/proposed-grub.sh" "$APDR/util/proposed-grub.sh"
@@ -6682,13 +6674,19 @@ done
 while IFS= read -r step; do
     assert_contains "appliance plan covers main() step '$step' (#797/#146)" "$apdr_out" "$step"
 done <<<"$main_steps"
-# Full black-box setup with the flag, host-native OS path: proves the flag survives main() wiring
-# end to end. Portable asserts here; the Linux-only /etc assertions run on Linux hosts and in the
-# Linux CI job (the macOS path skips kernel/limits/service by OS, not by flag).
+# Full black-box setup proves appliance mode survives main() end to end.
 APW="$(e2e_setup)"
 RIGFORGE_APPLIANCE=1 e2e_run "$APW" "$HOST_OS"
 rc=$?
 assert_rc "appliance full run exits 0 (#797)" "$rc" "0"
+assert_eq "appliance setup persists its identity (#477)" "$([ -d "$APW/.rigforge-appliance" ] && echo yes)" "yes"
+out="$( (
+    unset RIGFORGE_APPLIANCE
+    RIGFORGE_HOME="$APW"
+    source "$SCRIPT"
+    printf '%s|%s' "$RIGFORGE_APPLIANCE" "$ENABLE_RUNTIME"
+))"
+assert_eq "clean invocation reloads persisted appliance mode (#477)" "$out" "1|--runtime"
 assert_absent "appliance full run: no apt-get (#797)" "$(cat "$APW/calls.log")" "[apt-get]"
 assert_absent "appliance full run: no brew install (#797)" "$(cat "$APW/calls.log")" "[brew] install"
 assert_contains "appliance full run: says deps are baked (#797)" "$E2E_OUT" "dependencies are baked into the image"
@@ -6710,6 +6708,13 @@ if [ "$HOST_OS" = Linux ]; then
     assert_eq "appliance full run: no logrotate drop-in (#797)" "$([ -e "$APW/etc/logrotate.d/xmrig" ] && echo present || echo absent)" "absent"
     assert_eq "appliance full run: no persistent XMRig file log (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
 fi
+jq '.autotune="performance"' "$APW/config.json" >"$APW/config.tmp" && mv "$APW/config.tmp" "$APW/config.json"
+mkdir -p "$APW/control/spool" "$APW/systemd-clean" "$APW/logrotate-clean"
+printf '{"DONATION":2}' >"$APW/control/spool/pending-0123456789abcdef.json"
+apc_out="$( (cd "$APW" && unset RIGFORGE_APPLIANCE && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux SYSTEMD_DIR="$APW/systemd-clean" LOGROTATE_DIR="$APW/logrotate-clean" APPLY_POOL_TRIES=1 APPLY_POOL_IVL=0 RIGFORGE_CONTROL_STATE="$APW/control" RIGFORGE_HOME="$APW" bash "$SCRIPT" control-apply </dev/null) 2>&1)"
+assert_rc "clean-environment appliance control-apply succeeds (#477)" "$?" "0"
+assert_eq "control-apply keeps appliance XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
+assert_contains "scheduled autotune preserves appliance mode (#477)" "$(cat "$APW/systemd-clean/rigforge-autotune.service")" "RIGFORGE_APPLIANCE=1"
 # check_prerequisites under the flag: a missing jq is a hard, actionable failure — never an install
 # (the non-appliance path would apt/brew it; PATH without jq simulates an image that forgot to bake it).
 apjq_out="$( (

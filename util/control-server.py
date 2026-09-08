@@ -60,14 +60,10 @@ MAX_PENDING = 20  # shared apply+upgrade queue cap; bounds durable bytes while t
 
 class SpoolFull(OSError):
     pass
-
-
 class DurabilityUncertain(OSError):
     def __init__(self, cid, error):
         super().__init__("staged but directory sync failed: %s" % error)
         self.cid = cid
-
-
 def load_token(cfg_path):
     if not os.path.exists(cfg_path):
         return ""
@@ -115,7 +111,10 @@ def stage_change(spool, body_bytes, prefix="pending"):
             os.replace(tmp, final)
         finally:
             if os.path.exists(tmp):
-                os.unlink(tmp)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
         try:
             dfd = os.open(spool, os.O_RDONLY)
             try:
