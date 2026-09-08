@@ -7,6 +7,8 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.17.4] - 2026-09-08
+
 ### Fixed
 
 - **Release e2e gates fail closed when mutation or restoration fails (#491).** Later mutation phases
