@@ -6700,7 +6700,7 @@ if [ "$HOST_OS" = Linux ]; then
 fi
 : >"$APW/home/worker/xmrig/build/xmrig"
 chmod +x "$APW/home/worker/xmrig/build/xmrig"
-jq '.autotune="performance" | .watchdog="enabled" | .watchdog_interval_min=5 | .max_temp_c=80 | .api="enabled" | .control="enabled" | .control_upgrade="enabled" | .ACCESS_TOKEN="0123456789abcdef0123456789abcdef" | .api_allow_from="10.0.0.0/8"' "$APW/config.json" >"$APW/config.tmp" && mv "$APW/config.tmp" "$APW/config.json"
+jq '.autotune="performance" | .watchdog="enabled" | .watchdog_interval_min=5 | .max_temp_c=80 | .api="enabled" | .control="enabled" | .control_upgrade="enabled" | .ACCESS_TOKEN="test-token-test-token-test-token-00" | .api_allow_from="10.0.0.0/8"' "$APW/config.json" >"$APW/config.tmp" && mv "$APW/config.tmp" "$APW/config.json"
 mkdir -p "$APW/control/spool" "$APW/systemd-clean" "$APW/logrotate-clean"
 rmdir "$APW/.rigforge-appliance"
 printf 'legacy runtime unit\n' >"$APW/legacy-xmrig.service"
