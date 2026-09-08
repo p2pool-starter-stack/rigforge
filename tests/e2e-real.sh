@@ -8,8 +8,6 @@
 # Run it before tagging a release; it is deliberately NOT a CI job (real build + HugePages + mining are
 # flaky-by-nature and against Actions' ToS).
 #
-# It drives every genuine phase end to end, including mining, control, upgrades and safe restoration.
-#
 # Env knobs:
 #   E2E_ALLOW_OFFLINE_POOL       1 = don't fail the connect check when the pool is unreachable
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
@@ -22,7 +20,6 @@
 #   E2E_UPGRADE_TARGET           vX.Y.Z = permanent explicit target instead of the auto-derived,
 #                                restored previous-tag -> current-tag pair
 #   E2E_UPGRADE_SKIP_REASON      explicit reason to skip the mandatory forward leg
-#
 # DynamicUser API/control units need a world-traversable checkout (#362); every phase preflights it.
 #
 # Linux-only and root-only (kernel tuning, modprobe, apt). Typical flow on the release rig:
@@ -33,9 +30,6 @@
 #   sudo bash tests/e2e-real.sh upgrade
 #   sudo bash tests/e2e-real.sh watchdog
 #   sudo bash tests/e2e-real.sh teardown
-# Or, when HugePages are already active (no reboot needed), one shot:
-#   sudo bash tests/e2e-real.sh all
-#
 set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,6 +38,8 @@ RIGFORGE="$HERE/rigforge.sh"
 # Root may reach this through nested sudo, so every git call pins the operator-owned checkout (#401).
 _hgit() { git -C "$HERE" -c safe.directory="$HERE" "$@"; }
 miner_log() { if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then journalctl -u xmrig --no-pager -o cat -n 5000; else cat "$1"; fi; }
+miner_log_has() { grep -q -- "$1" < <(miner_log "$2" 2>/dev/null); }
+fresh_share() { [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]] && [ "$1" -gt "$2" ]; }
 GOVERNOR_FILE="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 
 PASS=0
@@ -190,7 +186,10 @@ check_api_refresh() {
     done
     if [ -z "$next" ] || [ "$next" = n/a ]; then
         refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
-        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then ok "sister-feed refresh is in progress ($refresh_state)"; else bad "sister-feed timer has no NEXT trigger"; fi
+        if [ "$refresh_state" = active ] || [ "$refresh_state" = activating ]; then ok "sister-feed refresh is in progress ($refresh_state)"; else
+            next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+            { [ -n "$next" ] && [ "$next" != n/a ]; } && ok "sister-feed timer has a NEXT trigger ($next)" || bad "sister-feed timer has no NEXT trigger"
+        fi
     else
         ok "sister-feed timer has a NEXT trigger ($next)"
     fi
@@ -284,12 +283,9 @@ verify() {
     # Let a freshly rebooted miner initialize before doctor inspects its log, bounded at ~90s.
     local _w _hr _tok
     _tok=$(jq -r '.ACCESS_TOKEN // empty' "$HERE/config.json" 2>/dev/null || true)
+    worker_summary() { if [ -n "$_tok" ]; then _auth_curl "$_tok" -fsS --max-time 4 http://127.0.0.1:8080/2/summary; else curl -fsS --max-time 4 http://127.0.0.1:8080/2/summary; fi; }
     for _w in $(seq 1 30); do
-        if [ -n "$_tok" ]; then
-            _hr=$(_auth_curl "$_tok" -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
-        else
-            _hr=$(curl -fsS --max-time 4 http://127.0.0.1:8080/2/summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
-        fi
+        _hr=$(worker_summary 2>/dev/null | jq -r '.hashrate.total[0] // 0' 2>/dev/null)
         { [ -n "$_hr" ] && awk "BEGIN{exit !($_hr > 0)}" 2>/dev/null; } && break
         sleep 3
     done
@@ -347,29 +343,32 @@ verify() {
         fi
     else
         systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1 || true
-        local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0
+        local wlog share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0 accepted_before accepted_now
         wlog="$msr_log"
         if [ "${RIGFORGE_APPLIANCE:-0}" != 1 ] && [ ! -f "$wlog" ]; then
             bad "could not find the worker's log to check pool connectivity"
         else
             # Connection: a stratum job from the pool proves the worker reached and authed with it.
-            while [ "$waited" -lt 60 ] && ! miner_log "$wlog" 2>/dev/null | grep -q 'new job from'; do
+            while [ "$waited" -lt 60 ] && ! miner_log_has 'new job from' "$wlog"; do
                 sleep 3
                 waited=$((waited + 3))
             done
-            miner_log "$wlog" 2>/dev/null | grep -q 'new job from' &&
+            miner_log_has 'new job from' "$wlog" &&
                 ok "connected to the pool ($(miner_log "$wlog" | grep -oE 'new job from [^ ]+' | tail -1 | awk '{print $NF}'))" ||
                 bad "no pool job in the log within 60s — is the pool reachable?"
-            # Share submission: an accepted share proves the full mining round-trip. Assumes a reachable
-            # pool with sane difficulty; raise E2E_SHARE_TIMEOUT for a high-difficulty pool.
+            # Require a new share during this gate; retained history cannot satisfy the release proof.
             waited=0
-            while [ "$waited" -lt "$share_to" ] && ! miner_log "$wlog" 2>/dev/null | grep -q 'accepted ('; do
+            accepted_before=$(worker_summary 2>/dev/null | jq -r '.connection.accepted // 0')
+            while [ "$waited" -lt "$share_to" ]; do
+                accepted_now=$(worker_summary 2>/dev/null | jq -r '.connection.accepted // 0')
+                fresh_share "$accepted_now" "$accepted_before" && break
                 sleep 5
                 waited=$((waited + 5))
             done
-            miner_log "$wlog" 2>/dev/null | grep -q 'accepted (' &&
-                ok "submitted an accepted share ($(miner_log "$wlog" | grep -c 'accepted (') accepted so far)" ||
-                bad "no accepted share within ${share_to}s — check pool reachability / difficulty"
+            accepted_now=$(worker_summary 2>/dev/null | jq -r '.connection.accepted // 0')
+            fresh_share "$accepted_now" "$accepted_before" &&
+                ok "submitted a fresh accepted share (count $accepted_before -> $accepted_now)" ||
+                bad "no fresh accepted share within ${share_to}s — check pool reachability / difficulty"
         fi
     fi
 
@@ -690,6 +689,9 @@ control() {
     systemctl is-active --quiet rigforge-control &&
         ok "rigforge-control.service is active" ||
         bad "rigforge-control.service is not active after enabling control"
+    if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then
+        systemctl cat rigforge-control-apply.service | grep -q 'RuntimeDirectoryMode=0700' && systemctl cat rigforge-control-apply.service | grep -q 'RIGFORGE_APPLIANCE=1' && ok "appliance apply consumer is root-runtime isolated (#479)" || bad "appliance apply consumer lost its root-runtime posture (#479)"
+    fi
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
@@ -967,6 +969,9 @@ upgrade() {
     systemctl cat rigforge-control-upgrade.path >/dev/null 2>&1 &&
         ok "rigforge-control-upgrade.path is installed (the upgrade watcher rides on control)" ||
         bad "rigforge-control-upgrade.path is not installed"
+    if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then
+        systemctl cat rigforge-control-upgrade.service | grep -q 'RuntimeDirectoryMode=0700' && systemctl cat rigforge-control-upgrade.service | grep -q 'RIGFORGE_APPLIANCE=1' && ok "appliance upgrade consumer is root-runtime isolated (#479)" || bad "appliance upgrade consumer lost its root-runtime posture (#479)"
+    fi
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"

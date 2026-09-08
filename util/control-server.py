@@ -134,36 +134,27 @@ PENDING_KEEP = 20  # matches _control_status's cap on kept per-change records in
 
 
 def stage_pending(state_dir, cid):
-    """#344 (item 2): record <cid> as pending in its OWN dir the instant /apply accepts it — not
-    when control-apply gets around to running it, which can be tens of seconds away (see #344 item
-    1, the fast-path-apply issue this deliberately does not fix). This closes the "in progress vs.
-    never existed" gap: GET /status?change_id=<cid> now resolves here instead of falling through to
-    the unknown-id 404 for the whole window before control-apply's terminal write lands.
+    """Record an accepted apply as pending until its root consumer writes a terminal outcome.
 
-    A SEPARATE directory (not state/changes, where the terminal record ends up) is deliberate: this
-    process is unprivileged and DynamicUser-owned, while state/changes is created and written by the
-    root control-apply oneshot — writing into a dir root created first would hit a permission wall on
-    any rig that already has control-path history. state/pending is exclusively this process's own,
-    so there's no ownership race; do_GET checks state/changes first and falls back here, and
-    control_apply's _control_status deletes the matching state/pending/<cid>.json once it writes the
-    real outcome (best-effort — see there).
-
-    If control-apply crashes, or a newer change supersedes this one before control-apply ever reads
-    it (only the newest staged spool file survives — see control_apply() in rigforge.sh), no terminal
-    record is ever written and this pending one is what's left FOREVER. That is deliberate, not a bug
-    to fix later: a dead/lost run must read as honestly "pending", with a growing age_seconds a
-    poller can judge for itself, never guessed into a fabricated applied/failed/rolled_back outcome
-    it never actually reached.
+    This DynamicUser-owned directory stays separate from root-owned changes/. Lost runs remain
+    honestly pending with a growing age, while normal outcomes remove their matching marker.
     """
     pdir = os.path.join(state_dir, "pending")
     os.makedirs(pdir, exist_ok=True)
+    if sum(e.name.startswith(".tmp-") for e in os.scandir(pdir)) >= PENDING_KEEP:
+        raise OSError("pending marker temporary-file limit reached")
     body = json.dumps({"status": "pending", "change_id": cid, "accepted_at": _utcnow()}).encode()
     tmp = os.path.join(pdir, ".tmp-" + cid)
-    with open(tmp, "wb") as f:
-        f.write(body)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, os.path.join(pdir, cid + ".json"))
+    try:
+        with open(tmp, "wb") as f:
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, os.path.join(pdir, cid + ".json"))
+    finally:
+        if os.path.exists(tmp):
+            try: os.unlink(tmp)
+            except OSError as e: print("control pending-marker temporary cleanup failed: %s" % e, file=sys.stderr)
     # Prune to the newest PENDING_KEEP: normally control-apply clears these as it lands terminal
     # outcomes, but a run of crashes/supersessions (see above) would otherwise grow this dir forever.
     try:
@@ -317,7 +308,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             cid = stage_change(os.path.join(STATE_DIR, "spool"), staged, prefix="upgrade")
         except DurabilityUncertain as e:
-            return self._send(202, "Accepted", dict(status="accepted", change_id=e.cid, warning=str(e), note="request is staged; do not retry; poll GET /status"))
+            return self._send(202, "Accepted", dict(status="accepted", change_id=e.cid, warning=str(e), note="request is staged; do not retry now; poll GET /status?change_id=%s; if it remains unknown or pending, inspect the rig before resubmitting" % e.cid))
         except SpoolFull:
             return self._send(503, "Service Unavailable", {"error": "control queue is full; retry after pending work is processed"})
         except OSError as e:
@@ -363,7 +354,7 @@ class Handler(BaseHTTPRequestHandler):
         response = dict(status="accepted", change_id=cid,
                         note="queued for apply; poll GET /status and GET :%s/2/summary for the effective config" % os.environ.get("RIGFORGE_API_PORT", "8081"))
         if warning:
-            response.update(warning=warning, note="request is staged; do not retry; poll GET /status")
+            response.update(warning=warning, note="request is staged; do not retry now; poll GET /status?change_id=%s; if it remains unknown or pending, inspect the rig before resubmitting" % cid)
         self._send(202, "Accepted", response)
 
     def _read_only(self):

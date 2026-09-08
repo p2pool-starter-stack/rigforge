@@ -69,6 +69,7 @@ SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
+LEGACY_APPLIANCE_UNIT="${RIGFORGE_LEGACY_APPLIANCE_UNIT:-/run/systemd/system/xmrig.service}"
 CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$SCRIPT_DIR/.rigforge-config-meta.json}" # #254 provenance sidecar
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
@@ -82,8 +83,8 @@ XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
 # recompile and the service restart — making re-runs idempotent (#4).
 XMRIG_REBUILD=true
 
-# Persist appliance image-owned/runtime-only behavior across clean invocations (pithead#797 R1).
-RIGFORGE_APPLIANCE="${RIGFORGE_APPLIANCE:-$([ -d "$APPLIANCE_MARKER" ] && printf 1 || printf 0)}"
+# Persist appliance behavior; recognize pre-marker Pithead installs by their runtime-only miner unit.
+RIGFORGE_APPLIANCE="${RIGFORGE_APPLIANCE:-$({ [ -d "$APPLIANCE_MARKER" ] || { [ -f "$LEGACY_APPLIANCE_UNIT" ] && [ ! -e /etc/systemd/system/xmrig.service ]; }; } && printf 1 || printf 0)}"
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
     # Preset only — an explicit SYSTEMD_DIR in the environment (the test sandbox) still wins, and
     # the non-appliance default below keeps this value because it is now set.
@@ -1043,7 +1044,11 @@ generate_xmrig_config() {
         CPU_MODEL=$(lscpu | grep -E '^Model name:' | cut -d':' -f2 | xargs)
     fi
     LOG_FILE_PATH=""
-    [ "$RIGFORGE_APPLIANCE" != 1 ] && LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+        sudo rm -f "$WORKER_ROOT/xmrig.log"
+    else
+        LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
+    fi
 
     # Default optimization profile.
     #
@@ -1983,6 +1988,13 @@ _setup_plan() {
     echo "Dry run — nothing was changed. Run 'sudo $0 setup' to apply."
 }
 
+_persist_appliance_mode() {
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
+        mkdir -m 700 "$APPLIANCE_MARKER" 2>/dev/null || [ -d "$APPLIANCE_MARKER" ] || error "Could not persist appliance mode at $APPLIANCE_MARKER."
+    else
+        rmdir "$APPLIANCE_MARKER" 2>/dev/null || [ ! -e "$APPLIANCE_MARKER" ] || error "Could not clear stale appliance mode at $APPLIANCE_MARKER."
+    fi
+}
 main() {
     local _arg
     for _arg in "$@"; do
@@ -1994,11 +2006,7 @@ main() {
         *) error "Unknown option for setup: '$_arg' (use --dry-run). Run '$0 help'." ;;
         esac
     done
-    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
-        mkdir -m 700 "$APPLIANCE_MARKER" 2>/dev/null || [ -d "$APPLIANCE_MARKER" ] || error "Could not persist appliance mode at $APPLIANCE_MARKER."
-    else
-        rmdir "$APPLIANCE_MARKER" 2>/dev/null || [ ! -e "$APPLIANCE_MARKER" ] || error "Could not clear stale appliance mode at $APPLIANCE_MARKER."
-    fi
+    _persist_appliance_mode
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
     CURRENT_STEP="ensuring config exists"
@@ -2155,17 +2163,11 @@ upgrade() {
         *) error "Unknown option for upgrade: '$arg' (use --check). Run '$0 help'." ;;
         esac
     done
+    _persist_appliance_mode
     check_prerequisites
     parse_config
     decide_rebuild
-    # #413: an upgrade is not a recompile. A prior early return skipped config and unit regeneration
-    # whenever the XMRig pin was unchanged, including every then-published release pair. Config
-    # regeneration, unit reinstall, post-upgrade re-tune, and re-own were skipped despite success. The
-    # sequence below is the same ungated one every `setup` re-run takes, and it is safe for the same
-    # reason: the two steps that must not repeat carry their OWN XMRIG_REBUILD guard internally rather
-    # than relying on a caller to gate them — prepare_workspace archives the existing install only on a
-    # rebuild, and compile_xmrig returns immediately, after cd-ing to the build dir so the regenerated
-    # (relative) config.json lands where the unit actually reads it.
+    # #413: reinstall the whole release even when the XMRig pin (and therefore build) is unchanged.
     local was_active=no
     if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         was_active=yes
@@ -2175,7 +2177,11 @@ upgrade() {
     compile_xmrig
     generate_xmrig_config
     install_service
+    install_autotune
+    install_watchdog
     install_api
+    install_control
+    install_api_firewall
     if [ "$XMRIG_REBUILD" = true ]; then
         log "Upgraded to XMRig $XMRIG_VERSION."
     else
@@ -4581,6 +4587,23 @@ _with_control_lock() {
     flock -x 8 || error "Could not take the privileged control lock."
     "$@"
 }
+_control_claim_staged() { # <untrusted spool file> <change id>: echo frozen root-only path
+    local src="$1" cid="$2" proc="${RIGFORGE_CONTROL_PROCESSING:-/run/rigforge-control}" staged
+    if [ -L "$proc" ] || [ ! -d "$proc" ] || [ "$(stat -c '%u:%g:%a' "$proc" 2>/dev/null)" != "0:0:700" ]; then
+        rm -f "$src"
+        return 1
+    fi
+    staged="$proc/$cid.json"
+    if ! mv -f "$src" "$staged" 2>/dev/null; then
+        rm -f "$src"
+        return 1
+    fi
+    if [ -L "$staged" ]; then
+        rm -f "$staged"
+        return 1
+    fi
+    printf '%s' "$staged"
+}
 # control-apply (#236): the privileged half of the writable control path, run by the
 # rigforge-control-apply.path unit when the receiver stages a change. Applies the NEWEST staged
 # change (older staged ones are superseded, so we never restart twice), reconciles the live miner,
@@ -4593,7 +4616,7 @@ control_apply() {
     spool="$state/spool"
     status="$state/status.json"
     backups="$SCRIPT_DIR/config-backups"
-    local newest older cid change_keys result rc backup
+    local newest older cid change_keys result rc backup staged
     newest=$(ls -t "$spool"/pending-*.json 2>/dev/null | head -1) || true
     if [ -z "$newest" ]; then
         log "control-apply: nothing staged."
@@ -4605,25 +4628,17 @@ control_apply() {
     fi
     cid=$(basename "$newest" .json)
     cid="${cid#pending-}"
-    change_keys=$(jq -r 'keys | join(",")' "$newest" 2>/dev/null || echo "?")
-    # #426: a BARE assignment's status IS the substitution's, and it is not a tested context — so
-    # errexit aborted here on every rejection, taking `rc=$?`, the spool drain and the `rejected`
-    # write below with it, and the undrained spool then re-triggered the .path unit into systemd's
-    # start limit. `||` is the tested context errexit exempts; `$?` on its right is still the
-    # substitution's status. `rc` is already `local` above, so initialise it, don't re-declare it.
-    # The INNER `|| exit $?` is bash 3.2 (#364's split again): 3.2 does not carry the outer tested
-    # context into the subshell, so the ERR trap fires in there and prints a spurious "aborted while"
-    # on a correctly-rejected change. Tested on both sides is silent on both shells.
+    if ! staged=$(_control_claim_staged "$newest" "$cid"); then
+        _control_status "$status" failed "$cid" "?" "could not secure the staged change" ""
+        warn "control-apply: could not freeze change $cid in the root-only processing directory."
+        return 0
+    fi
+    change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
+    # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
-    result=$(_control_commit "$newest" "$backups" || exit $?) || rc=$?
-    rm -f "$newest"
-    # #434: rc 2 is a valid change whose INSTALL failed, which is not the same outcome as a change
-    # that must not land. `rejected` is documented (docs/operations.md) as an invalid change with
-    # nothing written, so reporting one here would send the operator to fix a change that was fine;
-    # `failed` is the rig-side terminal ADR 0002 already gives this class on the upgrade path. The
-    # rename is atomic in config.json's own directory: the old config is live, the miner untouched,
-    # nothing to roll back and no backup to hand back.
-    # #438: the sweep runs here too — the only outcome that repeats without ever reaching success.
+    result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
+    rm -f "$staged"
+    # A valid change whose install failed is `failed`, not an invalid-input `rejected` (#434/#438).
     if [ "$rc" -eq 2 ]; then
         _sweep_config_backups "$backups" || true # never abort before the terminal status (#434)
         _control_status "$status" failed "$cid" "$change_keys" "$result" ""
@@ -4773,11 +4788,10 @@ _control_upgrade_do() { # <ref>
 control_upgrade() {
     [ "$OS_TYPE" != "Linux" ] && error "control-upgrade is driven by the rigforge-control-upgrade.path unit and is Linux-only."
     parse_config # need API_PORT etc. so the post-build liveness check can read the miner
-    local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status proc
+    local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status
     spool="$state/spool"
     status="$state/status.json"
-    proc="${RIGFORGE_CONTROL_PROCESSING:-/run/rigforge-control}"
-    local newest older cid target installed old_tag
+    local newest older cid target installed old_tag staged
     newest=$(ls -t "$spool"/upgrade-*.json 2>/dev/null | head -1) || true
     if [ -z "$newest" ]; then
         log "control-upgrade: nothing staged."
@@ -4787,27 +4801,10 @@ control_upgrade() {
     [ -n "$older" ] && printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
     cid=$(basename "$newest" .json)
     cid="${cid#upgrade-}"
-    if [ -L "$proc" ] || [ ! -d "$proc" ] || [ "$(stat -c '%u:%g:%a' "$proc" 2>/dev/null)" != "0:0:700" ]; then
-        rm -f "$newest"
-        _control_status "$status" failed "$cid" version "root-owned processing directory unavailable — refused" ""
-        warn "control-upgrade: safe processing directory unavailable — refused."
-        return 0
-    fi
-    # D8 spool handoff: MOVE the intent into a root-owned 0700 dir the receiver's DynamicUser cannot
-    # write — freezing it against any swap — and ONLY THEN refuse a symlink and read it. Checking BEFORE
-    # the move would be a TOCTOU: the DynamicUser owns the spool and could swap the file for a symlink in
-    # the window between check and move. `mv` renames the link itself, so a symlink survives the move as
-    # a symlink and is caught here, in the root-only dir where it can no longer be swapped.
-    local staged="$proc/$cid.json"
-    if ! mv -f "$newest" "$staged" 2>/dev/null; then
-        rm -f "$newest"
-        _control_status "$status" failed "$cid" version "could not secure the staged upgrade" ""
-        return 0
-    fi
-    if [ -L "$staged" ]; then
-        rm -f "$staged"
-        _control_status "$status" failed "$cid" version "staged upgrade was a symlink — refused" ""
-        warn "control-upgrade: $cid was a symlink — refused."
+    # Freeze the DynamicUser-owned intent before any read; apply and upgrade share this D8 boundary.
+    if ! staged=$(_control_claim_staged "$newest" "$cid"); then
+        _control_status "$status" failed "$cid" version "could not secure staged upgrade (processing directory, move, or symlink)" ""
+        warn "control-upgrade: could not freeze $cid in the root-only processing directory."
         return 0
     fi
     # #320: one NON-terminal record now that the intent is claimed (D8 move done, nothing can swap it).
@@ -5378,8 +5375,11 @@ _api_refresh_status() {
     if [ -z "$next" ] || [ "$next" = n/a ]; then
         refresh_state=$(systemctl show rigforge-api-refresh.service -p ActiveState --value 2>/dev/null || true)
         if [ "$refresh_state" != active ] && [ "$refresh_state" != activating ]; then
-            printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
-            return 1
+            next=$(systemctl show rigforge-api-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+            if [ -z "$next" ] || [ "$next" = n/a ]; then
+                printf 'sister feed has no next refresh (last: %s; payload age: %ss)' "${last:-never}" "$age"
+                return 1
+            fi
         fi
     fi
     if [ "$age" -gt 60 ]; then

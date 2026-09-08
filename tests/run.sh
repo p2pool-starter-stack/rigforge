@@ -6509,8 +6509,6 @@ assert_contains "no headroom, no ceiling -> plain requirement, unchanged (#328 x
 echo "== black-box: appliance mode (pithead#797 R1) =="
 AP="$(mktemp -d "$SANDBOX/appliance.XXXXXX")"
 
-# The flag presets SYSTEMD_DIR to /run and flips enablement to --runtime; an explicit override and
-# the no-flag defaults are unchanged.
 out="$( (unset SYSTEMD_DIR && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
 assert_eq "flag presets /run/systemd/system + --runtime (#797)" "$out" "/run/systemd/system|--runtime"
 out="$( (unset SYSTEMD_DIR && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
@@ -6648,7 +6646,6 @@ mkdir -p "$APS/run-systemd" "$APS/xmrig/build"
 assert_eq "unit rendered into the runtime systemd dir (#797)" "$([ -f "$APS/run-systemd/xmrig.service" ] && echo yes || echo no)" "yes"
 assert_contains "unit enabled with --runtime (#797)" "$(cat "$APS/calls.log")" "[systemctl] enable --runtime xmrig.service"
 
-# Dry-run previews the same appliance decisions and every main step (#146).
 APDR="$AP/dryrun"
 mkdir -p "$APDR/etc" "$APDR/util"
 cp "$APK/util/proposed-grub.sh" "$APDR/util/proposed-grub.sh"
@@ -6674,7 +6671,6 @@ done
 while IFS= read -r step; do
     assert_contains "appliance plan covers main() step '$step' (#797/#146)" "$apdr_out" "$step"
 done <<<"$main_steps"
-# Full black-box setup proves appliance mode survives main() end to end.
 APW="$(e2e_setup)"
 RIGFORGE_APPLIANCE=1 e2e_run "$APW" "$HOST_OS"
 rc=$?
@@ -6697,33 +6693,37 @@ if [ "$HOST_OS" = Linux ]; then
     assert_absent "appliance full run: no memlock append (#797)" "$(cat "$APW/etc/security/limits.conf")" "memlock"
     assert_eq "appliance full run: no msr.conf drop-in (#797)" "$([ -e "$APW/etc/modules-load.d/msr.conf" ] && echo present || echo absent)" "absent"
     assert_contains "appliance full run: unit enabled --runtime (#797)" "$(cat "$APW/calls.log")" "[systemctl] enable --runtime xmrig.service"
-    # Every enable under the flag must be --runtime — a persisted enable writes the volatile
-    # /etc overlay and silently vanishes on reboot. The xmrig assert above pins one site; this
-    # guards the other enable sites (timers, api, control) against a future call that forgets
-    # its ${ENABLE_RUNTIME:+...} expansion.
     assert_eq "appliance full run: every systemctl enable is --runtime (#797)" \
         "$(grep -F "[systemctl] enable" "$APW/calls.log" | grep -cv -- --runtime)" "0"
-    # /etc/logrotate.d is volatile on the appliance and the image runs no logrotate — the drop-in
-    # must not be written (log policy is the integration layer's, pithead#797 R2).
     assert_eq "appliance full run: no logrotate drop-in (#797)" "$([ -e "$APW/etc/logrotate.d/xmrig" ] && echo present || echo absent)" "absent"
     assert_eq "appliance full run: no persistent XMRig file log (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
 fi
-jq '.autotune="performance"' "$APW/config.json" >"$APW/config.tmp" && mv "$APW/config.tmp" "$APW/config.json"
+: >"$APW/home/worker/xmrig/build/xmrig"
+chmod +x "$APW/home/worker/xmrig/build/xmrig"
+jq '.autotune="performance" | .watchdog="enabled" | .watchdog_interval_min=5 | .max_temp_c=80 | .api="enabled" | .control="enabled" | .control_upgrade="enabled" | .ACCESS_TOKEN="0123456789abcdef0123456789abcdef" | .api_allow_from="10.0.0.0/8"' "$APW/config.json" >"$APW/config.tmp" && mv "$APW/config.tmp" "$APW/config.json"
 mkdir -p "$APW/control/spool" "$APW/systemd-clean" "$APW/logrotate-clean"
+rmdir "$APW/.rigforge-appliance"
+printf 'legacy runtime unit\n' >"$APW/legacy-xmrig.service"
+printf 'legacy unbounded log\n' >"$APW/home/worker/xmrig.log"
+apu_out="$( (cd "$APW" && unset RIGFORGE_APPLIANCE && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux SYSTEMD_DIR="$APW/systemd-clean" LOGROTATE_DIR="$APW/logrotate-clean" RIGFORGE_LEGACY_APPLIANCE_UNIT="$APW/legacy-xmrig.service" RIGFORGE_CONTROL_STATE="$APW/control" XMRIG_VERSION=vTEST XMRIG_COMMIT=testcommit0000000000000000000000000000 RIGFORGE_HOME="$APW" bash "$SCRIPT" upgrade </dev/null) 2>&1)"
+assert_rc "legacy appliance upgrade succeeds (#477)" "$?" "0"
+assert_eq "legacy upgrade persists appliance identity (#477)" "$([ -d "$APW/.rigforge-appliance" ] && echo yes)" "yes"
+assert_eq "legacy upgrade keeps XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
+assert_eq "legacy upgrade removes the persistent XMRig log (#477)" "$([ -e "$APW/home/worker/xmrig.log" ] && echo present || echo absent)" "absent"
+assert_contains "legacy upgrade reinstalls appliance control posture (#477/#479)" "$(cat "$APW/systemd-clean/rigforge-control-apply.service")" "RIGFORGE_APPLIANCE=1"
+assert_contains "legacy upgrade reinstalls the root-only consumer runtime (#479)" "$(cat "$APW/systemd-clean/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
+assert_eq "legacy upgrade reconciles every optional service (#477)" "$([ -f "$APW/systemd-clean/rigforge-autotune.service" ] && [ -f "$APW/systemd-clean/rigforge-watchdog.service" ] && [ -f "$APW/systemd-clean/rigforge-api.service" ] && echo yes)" "yes"
 printf '{"DONATION":2}' >"$APW/control/spool/pending-0123456789abcdef.json"
 apc_out="$( (cd "$APW" && unset RIGFORGE_APPLIANCE && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux SYSTEMD_DIR="$APW/systemd-clean" LOGROTATE_DIR="$APW/logrotate-clean" APPLY_POOL_TRIES=1 APPLY_POOL_IVL=0 RIGFORGE_CONTROL_STATE="$APW/control" RIGFORGE_HOME="$APW" bash "$SCRIPT" control-apply </dev/null) 2>&1)"
 assert_rc "clean-environment appliance control-apply succeeds (#477)" "$?" "0"
+assert_eq "post-upgrade control request reaches applied (#477/#479)" "$(jq -r .status "$APW/control/status.json")" "applied"
 assert_eq "control-apply keeps appliance XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
 assert_contains "scheduled autotune preserves appliance mode (#477)" "$(cat "$APW/systemd-clean/rigforge-autotune.service")" "RIGFORGE_APPLIANCE=1"
-# check_prerequisites under the flag: a missing jq is a hard, actionable failure — never an install
-# (the non-appliance path would apt/brew it; PATH without jq simulates an image that forgot to bake it).
 apjq_out="$( (
     source "$SCRIPT"
     RIGFORGE_APPLIANCE=1
     OS_TYPE=Linux
     set +e
-    # Sourcing ran jq, so bash hashed its real path — clear the table or `command -v jq`
-    # ignores the emptied PATH and the missing-tool branch never fires.
     hash -r
     PATH="/nonexistent" check_prerequisites 2>&1
 ))"

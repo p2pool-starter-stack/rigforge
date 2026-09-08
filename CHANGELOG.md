@@ -13,7 +13,7 @@ All notable changes to RigForge are documented here. The format is based on
   Apply and upgrade share one root-owned lock, upgrades claim intents only in a systemd-created root-only runtime directory, and a post-rename sync error returns an accepted warning with the real change id instead of a false-negative `500`.
 
 - **Appliance and control logging/storage stay bounded (#477, #478).**
-  Appliance mode now routes XMRig output only through the image-capped journal, and the authenticated apply/upgrade receiver rejects staging beyond a shared 20-request durable queue.
+  Appliance upgrades remove the legacy persistent XMRig log and route output only through the image-capped journal. The authenticated receiver bounds apply/upgrade requests, orphan spool temps, and pending-marker temps.
 
 - **An in-progress sister-feed refresh no longer looks unscheduled (#476).**
   `doctor` and the real-hardware gate accept an active refresh while systemd temporarily hides the timer's next activation; payload freshness remains mandatory.
