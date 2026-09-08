@@ -43,6 +43,9 @@ ln -s "$D/target" "$D/processing"
 OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_upgrade >/dev/null 2>&1
 [ "$(jq -r .status "$D/state/status.json")" = failed ]
 [ "$before" = "$(ls -ld "$D/target")" ]
+printf '{"DONATION":2}' >"$D/state/spool/pending-fedcba9876543210.json"
+OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_apply >/dev/null 2>&1
+[ "$(jq -r .status "$D/state/status.json")" = failed ]
 
 rm "$D/processing"
 mkdir -m 700 "$D/processing"
