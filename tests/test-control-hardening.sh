@@ -6,6 +6,7 @@ SCRIPT="$1"
 D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
 source "$SCRIPT"
+if ! command -v python3 >/dev/null; then _fsync_paths() { :; }; fi
 
 export RIGFORGE_CONTROL_LOCK="$D/control.lock"
 flock -x "$RIGFORGE_CONTROL_LOCK" sh -c 'touch "$1"; while [ ! -e "$2" ]; do sleep .02; done' _ "$D/locked" "$D/release" &
