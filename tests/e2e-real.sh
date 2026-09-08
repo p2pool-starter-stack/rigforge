@@ -717,9 +717,7 @@ control() {
         while [ "$waited" -lt "$poll_to" ]; do
             body=$(_auth_curl "$tok" -fsS --max-time 5 \
                 "http://127.0.0.1:$control_port/status?change_id=$cid" 2>/dev/null || true)
-            # `|| true`: an empty/unreachable body makes jq exit non-zero on some builds — under
-            # pipefail that would abort the whole phase (set -e) on a single transient miss instead
-            # of letting the poll loop retry.
+            # Empty/unreachable bodies retry instead of aborting this set -e phase under pipefail.
             st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
             case "$st" in applied | rejected | rolled_back | failed) break ;; esac
             sleep 5
@@ -738,8 +736,8 @@ control() {
     [ "$landed" = "$new_donation" ] &&
         ok "config.json carries DONATION=$new_donation (control-apply persisted it)" ||
         bad "config.json DONATION is '$landed', expected $new_donation"
-    local effective="" i
-    for i in {1..66}; do
+    local effective="" deadline=$((SECONDS + 330))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$new_donation" ] && break
         sleep 5
@@ -775,7 +773,8 @@ control() {
     fi
     [ "$st" = applied ] && ok "reversion reached 'applied' within ${waited}s" || bad "reversion failed (HTTP ${resp_code:-none}, status ${st:-none})"
     effective=""
-    for i in {1..66}; do
+    deadline=$((SECONDS + 330))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         effective=$(_auth_curl "$read_tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null | jq -r '.rigforge.config.DONATION // empty' 2>/dev/null || true)
         [ "$effective" = "$cur_donation" ] && break
         sleep 5
