@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1090,SC2034
 set -euo pipefail
 SCRIPT="$1"
 D=$(mktemp -d)
