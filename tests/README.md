@@ -23,6 +23,8 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 The first four run automatically on every push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
 The last two are deliberately kept out of CI, because a real build, HugePages, and live mining are
 flaky by nature and against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
+Both stop at a failed mutation prerequisite and make restoration failure fail the process; recovery
+snapshots remain on disk when cleanup cannot prove the original config bytes and runtime were restored.
 
 ### The shared rig (miner-0)
 
