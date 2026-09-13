@@ -106,9 +106,10 @@ RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-st
 2. Make your change and confirm `shellcheck` passes.
 3. Open a PR against `develop` and fill out the template.
 4. A PR into `develop` merges on green required checks plus the `adversarial-review`
-   status recorded on its head SHA by a session that did not author it. Merges are
-   explicit, never automatic. Only the owner's account merges; a PR into `main`
-   also needs the code owner's review.
+   status recorded on its head SHA by a session that did not author it, human-driven
+   or automated. Merges are explicit, never automatic: bring the branch up to date
+   with `develop`, get the review at that head, then `gh pr merge --squash`. Only the
+   owner's account merges; a PR into `main` also needs the code owner's review.
 
 Keep PRs focused and the description clear about what changed and why. Small,
 reviewable changes get merged faster.
