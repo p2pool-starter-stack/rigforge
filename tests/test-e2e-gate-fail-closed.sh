@@ -278,7 +278,7 @@ watchdog_cleanup_case491() {
         _watchdog_cleanup >/dev/null 2>&1
         printf '%s:' "$?"
         _watchdog_cleanup >/dev/null 2>&1
-        printf '%s:%s:%s\n' "$?" "$WD_CLEANUP_DONE" "$(wc -l <"$CALL_LOG")"
+        printf '%s:%s:%s\n' "$?" "$WD_CLEANUP_DONE" "$(wc -l <"$CALL_LOG" | tr -d ' ')"
     )
 }
 assert_eq "watchdog cleanup propagates apply failure and remains retryable" "$(watchdog_cleanup_case491)" "1:1:0:2"
