@@ -11,7 +11,8 @@ custom miner. This page describes what the script does, step by step.
 A `setup` run executes these stages in order. Each is idempotent, so re-running skips work that's
 already done.
 
-1. Prerequisites: detect the OS (Linux vs. macOS) and install `jq` if it's missing. Privileged
+1. Prerequisites: detect the OS (Linux vs. macOS — macOS is **deprecated, unsupported and untested
+   since 2026-09-14**) and install `jq` if it's missing. Privileged
    steps use `sudo` as needed, so run the script with `sudo` (or as root).
 2. Config: create a minimal `config.json` interactively if none exists, then parse and validate
    it (see [Configuration](configuration.md)).
@@ -187,8 +188,9 @@ These are why a reboot is needed on Linux:
   `fstab` and `limits.conf` so XMRig can pin memory. These edits are applied once (append-only,
   deduplicated) so re-runs don't accumulate duplicate lines.
 
-macOS doesn't expose HugePages or MSRs, so those stages are skipped there; the macOS path sets
-XMRig accordingly (and there's no systemd service, so you run the miner yourself). See
+macOS (**deprecated, unsupported and untested since 2026-09-14**) doesn't expose HugePages or MSRs,
+so those stages are skipped there; the macOS path sets XMRig accordingly (and there's no systemd
+service, so you run the miner yourself). See
 [Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
