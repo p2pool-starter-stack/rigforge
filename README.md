@@ -13,9 +13,13 @@
 [![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 
 RigForge provisions a tuned [XMRig](https://github.com/xmrig/xmrig) mining worker on a fresh
-Ubuntu/Debian (or macOS) machine. It installs the toolchain, compiles XMRig from source, applies
+Ubuntu/Debian machine. It installs the toolchain, compiles XMRig from source, applies
 kernel- and CPU-level tuning for RandomX hashrate, and runs it as a managed service. Point it at a
 pool to start mining.
+
+macOS support is **deprecated as of 2026-09-14**: unsupported and untested going forward (no CI
+coverage, no bench). The Darwin code paths still work but get no further investment — see
+[Running on macOS](docs/operations.md#running-on-macos).
 
 It works against any RandomX Stratum pool, and it's the companion miner for
 [Pithead](https://github.com/p2pool-starter-stack/pithead). Connect as many RigForge workers as
@@ -185,7 +189,7 @@ CI jobs, so `make test` locally is what CI checks.
 make lint        # shellcheck + shfmt the script, utilities, and test scripts
 make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
-make test-e2e-macos # native macOS e2e: real rigforge.sh, real launchctl/nohup/BSD tools (macOS only)
+make test-e2e-macos # native macOS e2e: real rigforge.sh, real launchctl/nohup/BSD tools (macOS only, deprecated, not run in CI)
 make coverage    # measure rigforge.sh + util coverage via kcov, enforce the floor (needs Docker)
 make smoke       # release pre-tag gate (quick): real xmrig --bench proves the built worker hashes (manual)
 make e2e-real    # release pre-tag gate (full): real build+tune+bench+doctor+uninstall on a rig (root)
@@ -196,7 +200,7 @@ every external/privileged command (`git`, `make`, `cmake`, `sudo`, `systemctl`, 
 `apt-get`, …) and all hardware detection (`uname`, `lscpu`, `sysctl`, `nproc`, `hostname`) replaced by
 fakes on `PATH`. Because the hardware is faked, one run on any machine simulates every supported
 platform. It asserts the generated XMRig config for EPYC / Ryzen X3D / generic-Linux inputs and the
-macOS path, plus config parsing, `DONATION` validation, host resolution, and a full stubbed
+deprecated macOS path, plus config parsing, `DONATION` validation, host resolution, and a full stubbed
 deployment run (executed twice to prove idempotency).
 
 **What `make test-e2e` adds.** It runs the *real* `rigforge.sh` end-to-end inside a throwaway

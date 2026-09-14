@@ -296,7 +296,9 @@ reboot).
 
 ## Running on macOS
 
-macOS is a development / light-use target; Ubuntu is the supported deployment platform. On macOS,
+**Deprecated as of 2026-09-14: macOS is unsupported and untested going forward** (no CI, no bench).
+Ubuntu is the supported deployment platform. The instructions below describe the Darwin code paths,
+which still work but get no further investment. On macOS,
 `sudo ./rigforge.sh` still does the core work: it installs dependencies (via Homebrew), compiles XMRig
 from source, and writes a tuned `config.json`. What it doesn't do is the Linux-only system integration:
 

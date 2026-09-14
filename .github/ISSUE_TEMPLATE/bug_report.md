@@ -12,7 +12,7 @@ A clear description of the bug: what you expected and what actually happened.
 
 ## Environment
 
-- **OS / version:** (e.g. Ubuntu 22.04, Debian 12, macOS 14)
+- **OS / version:** (e.g. Ubuntu 22.04, Debian 12; macOS is deprecated/best-effort)
 - **CPU:** (e.g. AMD Ryzen 9 7950X3D, EPYC 7402)
 - **RigForge commit:** (output of `git rev-parse --short HEAD`)
 - **Pool / stack:** (Pithead, or another RandomX pool)

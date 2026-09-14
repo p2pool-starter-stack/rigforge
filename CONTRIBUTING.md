@@ -15,7 +15,9 @@ repo may be the better home for it.
 
 ## Making changes
 
-RigForge is portable Bash that has to run on Ubuntu/Debian and macOS:
+RigForge is portable Bash that has to run on Ubuntu/Debian. macOS is deprecated (#493): unsupported
+and untested — no CI, no bench — but the Darwin code paths still work and stay working, so don't
+break them gratuitously:
 
 - Keep it portable. Avoid GNU-only flags and other Linux-isms where a
   POSIX-friendly alternative exists, and guard platform-specific code paths.

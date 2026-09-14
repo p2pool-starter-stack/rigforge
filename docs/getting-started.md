@@ -21,7 +21,7 @@ whole process, and most of it is automated.
 
 | Requirement | Recommendation |
 |---|---|
-| **Operating system** | Ubuntu Server **22.04+** (or Debian 12) is the officially supported target. macOS works for development and light use; other Linux distros are courtesy. |
+| **Operating system** | Ubuntu Server **22.04+** (or Debian 12) is the officially supported target. macOS is **deprecated** (unsupported, untested since 2026-09-14; see [Running on macOS](operations.md#running-on-macos)); other Linux distros are courtesy. |
 | **CPU** | 64-bit x86 with **AVX2** is strongly recommended for RandomX performance. More and faster cores mean more hashrate. |
 | **RAM** | **~2.3 GB free** for RandomX fast mode (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread. **4 GB+** recommended. |
 | **Privileges** | `root` for `setup` (it installs packages and tunes the kernel, so run it with `sudo`). Looking is free: `status`, `logs`, and `backup` never need root. |
