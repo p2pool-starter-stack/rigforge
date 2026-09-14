@@ -114,37 +114,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # zizmor: artipacked
-      # Ubuntu is RigForge's supported target. The suite still exercises the macOS code path here via
-      # stubs (OS_TYPE=Darwin + faked sysctl), so the macOS config profile is covered without a Mac
-      # runner; contributors on macOS can also run `make test` locally. jq is preinstalled on the runner.
+      # Ubuntu is RigForge's supported target. macOS is deprecated (#493): no Mac runner, no native
+      # macOS job below. The suite still exercises the Darwin code paths here via stubs (OS_TYPE=Darwin
+      # + faked sysctl/launchctl) — kept deliberately, since it's the only remaining regression
+      # coverage for the deprecated-but-still-working Darwin paths and costs nothing extra to run on
+      # this Ubuntu job. It proves logic only, not real macOS behavior (BSD sed/stat/date, real
+      # launchd) — contributors on macOS can still run `make test` locally for that.
       - name: Run test suite
         run: make test-suite
-
-  test-macos:
-    name: Test suite (macOS)
-    runs-on: macos-14 # Apple silicon; pinned (not macos-latest) to avoid image drift
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false # zizmor: artipacked
-      # The Linux job only SIMULATES macOS (STUB_UNAME_S=Darwin + stubbed sed/launchctl). Here the suite
-      # runs on real macOS, natively exercising the Darwin paths — BSD `sed` (the donate.h patch), the
-      # macOS config profile, `mac_*` process control + the launchd login agent, and BSD `tar`/`date`
-      # backup/restore (#69). Also run under Apple's bash 3.2 (/bin/bash) to hold the line on the
-      # bash-3.2 portability CONTRIBUTING promises — our bash-5 Ubuntu CI can't catch that.
-      - name: Install jq
-        run: brew list jq >/dev/null 2>&1 || brew install jq
-      - name: Run test suite
-        run: make test-suite
-      # Stays raw on purpose: the make recipe says `bash`, which resolves to a modern PATH bash —
-      # only an explicit /bin/bash pins Apple's 3.2 for the portability check.
-      - name: Run test suite under Apple's bash 3.2
-        run: /bin/bash tests/run.sh
-      # Native macOS e2e (#69 layer 2): the REAL rigforge.sh end to end with only brew/git/cmake/make
-      # stubbed — real BSD sed, the macOS config profile, real nohup/PID control, real launchctl
-      # enable/disable (headless-tolerant), and BSD tar/date backup/restore.
-      - name: Run native macOS e2e
-        run: make test-e2e-macos
 
   e2e:
     name: End-to-end (Docker)

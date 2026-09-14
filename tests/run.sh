@@ -7357,8 +7357,8 @@ else
     assert_contains "api-refresh refuses off-Linux" "$out" "Linux-only"
 fi
 echo "== black-box: the persistent api server (#164, the xmrig model) =="
-# The kcov container lacks this Python runtime; the suite still enforces the block in ordinary CI,
-# the macOS job, and locally.
+# The kcov container lacks this Python runtime; the suite still enforces the block in ordinary CI
+# and locally.
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the api-server wire suite runs in the other CI jobs"
     APISRV_SKIP=1

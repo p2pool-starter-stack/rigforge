@@ -22,7 +22,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
 
-test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) — BSD sed, launchd, nohup (macOS only)
+test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) — BSD sed, launchd, nohup (macOS only, deprecated, not run in CI)
 	bash tests/e2e/macos.sh
 
 smoke: ## Release pre-tag gate (quick): real xmrig --bench proves the built worker hashes (manual, Linux-only)

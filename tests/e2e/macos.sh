@@ -4,7 +4,8 @@
 # heavy/privileged bits stubbed (Homebrew, git/cmake/make), and asserts the macOS deploy path with
 # GENUINE tools the Linux CI can only stub: BSD `sed` (the donate.h patch), the macOS config profile,
 # `mac_*` process control (real `nohup` + PID file), the launchd login agent (real `launchctl`), and
-# `backup`/`restore` (BSD `tar`/`date`/`mktemp`). Run on a macos-* runner (or any Mac). CI-only.
+# `backup`/`restore` (BSD `tar`/`date`/`mktemp`). Run on any Mac by hand — macOS is deprecated
+# (#493), so this no longer runs in CI; there is no macos-* runner job left to run it on.
 #
 # It never compiles XMRig or brew-installs for real (slow/flaky) — those are stubbed, like the Linux
 # e2e. A tiny sleeping fake `xmrig` stands in for the binary so start/stop/status are real.

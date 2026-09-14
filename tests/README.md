@@ -14,15 +14,17 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 |---|---|---|---|---|
 | **Unit + black-box suite** | [`run.sh`](run.sh) | Any host (macOS/Linux), no Docker. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `bash tests/run.sh` |
 | **Linux container e2e** | [`e2e/linux.sh`](e2e/linux.sh) → [`e2e/in-container.sh`](e2e/in-container.sh) | Disposable Ubuntu container, **needs Docker**. **In CI.** | The genuine Linux deploy path against a real (throwaway) `/etc` with real GNU tools (`sed -i`, `tee`, `envsubst`) + idempotency on re-run. Only the heavy/privileged bits (compile, package install, `systemctl`/`mount`) are stubbed. A second pass re-runs the container with `RIGFORGE_APPLIANCE=1` (#348) and proves the appliance contracts on that real `/etc`: units land in `/run/systemd/system`, no package installs, no fstab/limits.conf/logrotate writes, every enable carries `--runtime`. | `make test-e2e` |
-| **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **CI-only** (runs as a step in the macOS job). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
+| **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is deprecated, #493). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
 | **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
 | **Release smoke (quick)** | [`smoke.sh`](smoke.sh) | Real Linux rig, **manual**. Not in CI. | The compiled binary actually starts and hashes (`xmrig --bench`, fully offline). Fast pre-tag confidence that the worker we ship runs. | `make smoke` |
 | **Release e2e (full)** | [`e2e-real.sh`](e2e-real.sh) | Real Linux rig, **manual, root**. Not in CI. | The real thing end to end: build + tune + kernel tuning + service + a real hash, the writable control path (#236) against real systemd (`control` phase), the remote-upgrade chain with real git as the root oneshot (`upgrade` phase, #322), then a clean uninstall. **The release gate.** | `make e2e-real` (see [`RELEASING.md`](../RELEASING.md)) |
 | **Release e2e (worker↔stack)** | [`e2e-pithead.sh`](e2e-pithead.sh) | Real rig + a **live Pithead stack**, **manual, root**. Not in CI. | The integration contract: mining round-trip against the stack, the `:8080` API posture (open/token/`restricted`), stratum auth accept/reject + rotation, dashboard visibility/drop-off, dev-fee independence, and the sister-API **hashrate-impact guard** (#99 must not shave H/s under polling load). | `PITHEAD_URL=host:3333 sudo -E make e2e-pithead` (see [`RELEASING.md`](../RELEASING.md)) |
 
-The first four run automatically on every push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
-The last two are deliberately kept out of CI, because a real build, HugePages, and live mining are
-flaky by nature and against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
+The unit + black-box suite, the Linux container e2e, and the coverage gate run automatically on every
+push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). The native macOS e2e is
+manual and local-only — macOS is deprecated (#493), so it never runs in CI. The last two are
+deliberately kept out of CI, because a real build, HugePages, and live mining are flaky by nature and
+against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
 Both stop at a failed mutation prerequisite and make restoration failure fail the process; recovery
 snapshots remain on disk when cleanup cannot prove the original config bytes and runtime were restored.
 
@@ -56,8 +58,9 @@ holds it from off-box: `ssh miner-0 'flock -n -x /var/lock/rig-e2e.lock true || 
 - It's hardware-independent on purpose: all hardware-probe env hooks are pointed at non-existent
   paths up top, so the same run exercises EPYC / Ryzen-X3D / macOS inputs back to back and gives the
   same result on any host. Don't read real `/sys` or `/proc`; drive behaviour through the stubs.
-- The suite must pass under both modern bash and Apple's bash 3.2 (CI runs `/bin/bash tests/run.sh`
-  on macOS); avoid bash-4-only syntax.
+- The suite should still pass under Apple's bash 3.2, not just modern bash — that's no longer CI-
+  enforced (macOS is deprecated, #493, and no CI job runs `/bin/bash tests/run.sh` anymore), just a
+  courtesy for the deprecated Darwin path. Avoid bash-4-only syntax.
 - Lint everything: `make lint` (shellcheck + shfmt). The file list lives in the Makefile's
   `SHELL_FILES` so CI and local stay in sync — add new `tests/*.sh` there.
 

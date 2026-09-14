@@ -120,12 +120,13 @@ port-forwarding) is a stack-host concern, handled by Pithead, not the miner.
 
 ## Is macOS supported?
 
-macOS works for development and light use (RigForge builds and configures XMRig there), but Ubuntu is the
-supported deployment target. The Linux-only tuning (HugePages, MSR, systemd, governor) doesn't apply on
-macOS, which the macOS CPU profile accounts for, so the hashrate is lower than a tuned Linux box. There's
-no systemd service either, so the miner doesn't auto-start; launch it with `./rigforge.sh start` (the same
-`start`/`stop`/`restart`/`status`/`logs` verbs work on macOS). What differs, how to run it, and which
-commands are Linux-only are in [Operations › Running on macOS](operations.md#running-on-macos).
+**Deprecated as of 2026-09-14: unsupported and untested going forward** — no CI coverage, no bench.
+Ubuntu is the supported deployment target. The Darwin code paths still work today (RigForge builds
+and configures XMRig there): the Linux-only tuning (HugePages, MSR, systemd, governor) doesn't apply
+on macOS, which the macOS CPU profile accounts for, so the hashrate is lower than a tuned Linux box.
+There's no systemd service either, so the miner doesn't auto-start; launch it with `./rigforge.sh
+start` (the same `start`/`stop`/`restart`/`status`/`logs` verbs work on macOS). What differs, how to
+run it, and which commands are Linux-only are in [Operations › Running on macOS](operations.md#running-on-macos).
 
 ---
 

@@ -49,7 +49,7 @@ on_err() {
 }
 
 # --- Global Variables ---
-OS_TYPE="$(uname -s)"
+OS_TYPE="$(uname -s)" # Darwin: DEPRECATED 2026-09-14, unsupported/untested going forward (#493)
 # Resolve symlinks to the real script directory, so an on-PATH link still finds config and assets.
 # Portable (no `readlink -f`, which BSD/macOS lacks): follow links one hop at a time.
 _script_dir() {
@@ -3846,7 +3846,7 @@ support_bundle() {
     log "Review the extracted contents before attaching it to a public issue."
 }
 
-# --- Commands: macOS & systemd service control (#11) ---
+# --- Commands: macOS (DEPRECATED 2026-09-14, unsupported/untested — #493) & systemd service control (#11) ---
 
 # Service-control verbs. On Linux they wrap the systemd unit; on macOS (no systemd) start/stop/restart/
 # status/logs manage XMRig directly, so the same commands work on both. `enable`/`disable` install/remove
