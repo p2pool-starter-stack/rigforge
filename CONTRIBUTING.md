@@ -75,7 +75,8 @@ cut that makes room for it — never a follow-on PR, which cannot raise the ceil
 
 **Regenerate the budget file rather than merging it**, and never resolve a conflict in it by taking a
 side: both sides are measurements of different trees, and taking one bakes in a count that was never
-true of the merged result.
+true of the merged result. The gate never rewrites this baseline: `--generate` prints a proposed copy
+to stdout, and a contributor deliberately redirects and reviews it.
 
 ### Config & docs linting
 

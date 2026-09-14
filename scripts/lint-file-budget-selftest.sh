@@ -83,6 +83,22 @@ expect_fail() { # <desc> <repo> <needle the message must carry>
     fi
 }
 
+expect_budget_unchanged() { # <desc> <repo> <expected rc> [message needle]
+    local before
+    before=$(mktemp "$TMP/budget.XXXXXX")
+    cp "$2/docs/dev/file-budget.tsv" "$before"
+    run_gate_in "$2"
+    if ! cmp -s "$before" "$2/docs/dev/file-budget.tsv"; then
+        fail "$1 (the gate rewrote docs/dev/file-budget.tsv)"
+    elif [ "$RC" -ne "$3" ]; then
+        fail "$1 (expected rc $3, got rc $RC: $OUT)"
+    elif [ -n "${4:-}" ] && [[ "$OUT" != *"$4"* ]]; then
+        fail "$1 (refused, but not for the stated reason; wanted [$4], got: $OUT)"
+    else
+        pass "$1"
+    fi
+}
+
 budget() { # <repo> <rows...>  — writes docs/dev/file-budget.tsv
     local d="$1"
     shift
@@ -98,7 +114,18 @@ R=$(mkrepo)
 mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
-expect_pass "a tree whose over-target file has a matching ceiling passes" "$R"
+expect_budget_unchanged "a passing gate leaves the budget byte-identical" "$R" 0
+
+# Prove the byte-identity assertion can give the other answer instead of decorating a green run.
+BEFORE=$(mktemp "$TMP/budget.XXXXXX")
+cp "$R/docs/dev/file-budget.tsv" "$BEFORE"
+printf '# firing control\n' >>"$R/docs/dev/file-budget.tsv"
+if cmp -s "$BEFORE" "$R/docs/dev/file-budget.tsv"; then
+    fail "the budget byte-identity firing control did not detect a deliberate write"
+else
+    pass "the budget byte-identity assertion detects a deliberate write"
+fi
+cp "$BEFORE" "$R/docs/dev/file-budget.tsv"
 
 # --- rule 1: an over-target file with no row ----------------------------------------------------
 R=$(mkrepo)
@@ -118,7 +145,7 @@ mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 mklines "$R/big.sh" 501 # one line over: the ratchet's whole point is that one is enough
-expect_fail "growing a budgeted file by ONE line past its ceiling is refused" "$R" "over its recorded ceiling"
+expect_budget_unchanged "a failing gate leaves the budget byte-identical" "$R" 1 "over its recorded ceiling"
 
 # --- rule 2: a file that shrank back under target must drop its row -----------------------------
 R=$(mkrepo)
@@ -164,7 +191,20 @@ budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 mklines "$R/big.sh" 600
 budget "$R" "$(printf 'big.sh\t600')" # record the growth AND raise the ceiling: still refused
-expect_fail "raising a recorded ceiling is refused even when it matches the file" "$R" "Ceilings only go down"
+expect_budget_unchanged "a monotonic refusal leaves the budget byte-identical" "$R" 1 "Ceilings only go down"
+
+# --- --generate produces a proposed baseline on stdout and never creates one itself -------------
+R=$(mkrepo)
+mklines "$R/big.sh" 500
+commit_all "$R" base
+OUT=$(cd "$R" && bash scripts/lint-file-budget.sh --generate)
+if [ -e "$R/docs/dev/file-budget.tsv" ]; then
+    fail "--generate wrote docs/dev/file-budget.tsv instead of printing to stdout"
+elif [[ "$OUT" != *"$(printf 'big.sh\t500')"* ]]; then
+    fail "--generate did not print the over-target row to stdout (got: $OUT)"
+else
+    pass "--generate prints the proposed baseline to stdout without writing it"
+fi
 
 # --- monotonic: a first appearance must record the real count, not reserve headroom --------------
 R=$(mkrepo)
