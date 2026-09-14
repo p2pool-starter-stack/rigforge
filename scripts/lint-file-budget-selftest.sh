@@ -64,7 +64,14 @@ commit_all() { # <repo> <msg>
 # environment is not a fixture. Every case here states its own condition — the one case that WANTS
 # strict mode sets it explicitly on its own command line.
 run_gate_in() { # <repo>
-    OUT=$(cd "$1" && env -u FILE_BUDGET_REQUIRE_BASE bash scripts/lint-file-budget.sh 2>&1) && RC=0 || RC=$?
+    if [ "${SELFTEST_REQUIRE_BASE:-0}" = 1 ]; then
+        OUT=$(cd "$1" && FILE_BUDGET_REQUIRE_BASE=1 bash scripts/lint-file-budget.sh 2>&1) && RC=0 || RC=$?
+    else
+        OUT=$(cd "$1" && env -u FILE_BUDGET_REQUIRE_BASE bash scripts/lint-file-budget.sh 2>&1) && RC=0 || RC=$?
+    fi
+    if [ "${SEED_BUDGET_WRITE:-0}" = 1 ]; then
+        printf '# firing control\n' >>"$1/docs/dev/file-budget.tsv"
+    fi
 }
 
 expect_pass() { # <desc> <repo>
@@ -83,12 +90,16 @@ expect_fail() { # <desc> <repo> <needle the message must carry>
     fi
 }
 
-expect_budget_unchanged() { # <desc> <repo> <expected rc> [message needle]
+budget_unchanged_after_gate() { # <repo>
     local before
     before=$(mktemp "$TMP/budget.XXXXXX")
-    cp "$2/docs/dev/file-budget.tsv" "$before"
-    run_gate_in "$2"
-    if ! cmp -s "$before" "$2/docs/dev/file-budget.tsv"; then
+    cp "$1/docs/dev/file-budget.tsv" "$before"
+    run_gate_in "$1"
+    cmp -s "$before" "$1/docs/dev/file-budget.tsv"
+}
+
+expect_budget_unchanged() { # <desc> <repo> <expected rc> [message needle]
+    if ! budget_unchanged_after_gate "$2"; then
         fail "$1 (the gate rewrote docs/dev/file-budget.tsv)"
     elif [ "$RC" -ne "$3" ]; then
         fail "$1 (expected rc $3, got rc $RC: $OUT)"
@@ -116,16 +127,12 @@ budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 expect_budget_unchanged "a passing gate leaves the budget byte-identical" "$R" 0
 
-# Prove the byte-identity assertion can give the other answer instead of decorating a green run.
-BEFORE=$(mktemp "$TMP/budget.XXXXXX")
-cp "$R/docs/dev/file-budget.tsv" "$BEFORE"
-printf '# firing control\n' >>"$R/docs/dev/file-budget.tsv"
-if cmp -s "$BEFORE" "$R/docs/dev/file-budget.tsv"; then
+# Prove the same byte-identity assertion can give the other answer instead of decorating a green run.
+if SEED_BUDGET_WRITE=1 budget_unchanged_after_gate "$R"; then
     fail "the budget byte-identity firing control did not detect a deliberate write"
 else
     pass "the budget byte-identity assertion detects a deliberate write"
 fi
-cp "$BEFORE" "$R/docs/dev/file-budget.tsv"
 
 # --- rule 1: an over-target file with no row ----------------------------------------------------
 R=$(mkrepo)
@@ -267,14 +274,8 @@ mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 git -C "$R" branch -m develop other
-run_gate_in "$R"
-if [ "$RC" -ne 0 ]; then
-    fail "with no base ref the gate should still run its other rules (got rc $RC: $OUT)"
-elif [[ "$OUT" == *"skipping the"* ]]; then
-    pass "with no base ref resolvable the monotonic check is skipped with a visible note"
-else
-    fail "with no base ref the monotonic check was skipped SILENTLY (got: $OUT)"
-fi
+expect_budget_unchanged "with no base ref the gate leaves the budget byte-identical and emits a visible note" \
+    "$R" 0 "skipping the"
 
 # --- ...and under FILE_BUDGET_REQUIRE_BASE=1 the same situation is FATAL, not a note --------------
 # This is the pair that matters: the row above proves the gate keeps working without a base ref, and
@@ -284,14 +285,9 @@ mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 git -C "$R" branch -m develop other
-OUT=$(cd "$R" && FILE_BUDGET_REQUIRE_BASE=1 bash scripts/lint-file-budget.sh 2>&1) && RC=0 || RC=$?
-if [ "$RC" -eq 0 ]; then
-    fail "FILE_BUDGET_REQUIRE_BASE=1 with no base ref should be fatal, but the gate passed"
-elif [[ "$OUT" == *"FILE_BUDGET_REQUIRE_BASE=1"* ]]; then
-    pass "FILE_BUDGET_REQUIRE_BASE=1 turns a missing base ref into a refusal, not a skip"
-else
-    fail "FILE_BUDGET_REQUIRE_BASE=1 refused, but not for the missing base ref (got: $OUT)"
-fi
+SELFTEST_REQUIRE_BASE=1 expect_budget_unchanged \
+    "strict mode leaves the budget byte-identical while refusing a missing base ref" \
+    "$R" 1 "FILE_BUDGET_REQUIRE_BASE=1"
 
 if [ "$st_fail" -eq 0 ]; then
     echo "lint-file-budget self-test OK"
