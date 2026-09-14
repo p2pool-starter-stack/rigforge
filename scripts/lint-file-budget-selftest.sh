@@ -55,6 +55,23 @@ commit_all() { # <repo> <msg>
     git -C "$1" commit -qm "$2"
 }
 
+snapshot_budget() { # <repo>
+    BUDGET_BEFORE=$(mktemp "$TMP/budget.XXXXXX")
+    BUDGET_EXISTED=0
+    if [ -e "$1/docs/dev/file-budget.tsv" ]; then
+        BUDGET_EXISTED=1
+        cp "$1/docs/dev/file-budget.tsv" "$BUDGET_BEFORE"
+    fi
+}
+
+budget_preserved() { # <repo>
+    if [ "$BUDGET_EXISTED" -eq 1 ]; then
+        cmp -s "$BUDGET_BEFORE" "$1/docs/dev/file-budget.tsv"
+    else
+        [ ! -e "$1/docs/dev/file-budget.tsv" ]
+    fi
+}
+
 # Run the gate in <repo>; sets RC and OUT.
 #
 # `env -u FILE_BUDGET_REQUIRE_BASE` is load-bearing, not tidiness. CI sets that variable at JOB level,
@@ -64,6 +81,7 @@ commit_all() { # <repo> <msg>
 # environment is not a fixture. Every case here states its own condition — the one case that WANTS
 # strict mode sets it explicitly on its own command line.
 run_gate_in() { # <repo>
+    snapshot_budget "$1"
     if [ "${SELFTEST_REQUIRE_BASE:-0}" = 1 ]; then
         OUT=$(cd "$1" && FILE_BUDGET_REQUIRE_BASE=1 bash scripts/lint-file-budget.sh 2>&1) && RC=0 || RC=$?
     else
@@ -76,35 +94,25 @@ run_gate_in() { # <repo>
 
 expect_pass() { # <desc> <repo>
     run_gate_in "$2"
-    if [ "$RC" -eq 0 ]; then pass "$1"; else fail "$1 (expected pass, got rc $RC: $OUT)"; fi
-}
-
-expect_fail() { # <desc> <repo> <needle the message must carry>
-    run_gate_in "$2"
-    if [ "$RC" -eq 0 ]; then
-        fail "$1 (expected a refusal, the gate PASSED — this fixture may have stopped arming)"
-    elif [[ "$OUT" != *"$3"* ]]; then
-        fail "$1 (refused, but not for the stated reason; wanted [$3], got: $OUT)"
+    if ! budget_preserved "$2"; then
+        fail "$1 (the gate created, removed, or rewrote docs/dev/file-budget.tsv)"
+    elif [ "$RC" -ne 0 ]; then
+        fail "$1 (expected pass, got rc $RC: $OUT)"
+    elif [ -n "${3:-}" ] && [[ "$OUT" != *"$3"* ]]; then
+        fail "$1 (passed without the stated message; wanted [$3], got: $OUT)"
     else
         pass "$1"
     fi
 }
 
-budget_unchanged_after_gate() { # <repo>
-    local before
-    before=$(mktemp "$TMP/budget.XXXXXX")
-    cp "$1/docs/dev/file-budget.tsv" "$before"
-    run_gate_in "$1"
-    cmp -s "$before" "$1/docs/dev/file-budget.tsv"
-}
-
-expect_budget_unchanged() { # <desc> <repo> <expected rc> [message needle]
-    if ! budget_unchanged_after_gate "$2"; then
-        fail "$1 (the gate rewrote docs/dev/file-budget.tsv)"
-    elif [ "$RC" -ne "$3" ]; then
-        fail "$1 (expected rc $3, got rc $RC: $OUT)"
-    elif [ -n "${4:-}" ] && [[ "$OUT" != *"$4"* ]]; then
-        fail "$1 (refused, but not for the stated reason; wanted [$4], got: $OUT)"
+expect_fail() { # <desc> <repo> <needle the message must carry>
+    run_gate_in "$2"
+    if ! budget_preserved "$2"; then
+        fail "$1 (the gate created, removed, or rewrote docs/dev/file-budget.tsv)"
+    elif [ "$RC" -eq 0 ]; then
+        fail "$1 (expected a refusal, the gate PASSED — this fixture may have stopped arming)"
+    elif [[ "$OUT" != *"$3"* ]]; then
+        fail "$1 (refused, but not for the stated reason; wanted [$3], got: $OUT)"
     else
         pass "$1"
     fi
@@ -125,10 +133,11 @@ R=$(mkrepo)
 mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
-expect_budget_unchanged "a passing gate leaves the budget byte-identical" "$R" 0
+expect_pass "a passing gate leaves the budget byte-identical" "$R"
 
 # Prove the same byte-identity assertion can give the other answer instead of decorating a green run.
-if SEED_BUDGET_WRITE=1 budget_unchanged_after_gate "$R"; then
+SEED_BUDGET_WRITE=1 run_gate_in "$R"
+if budget_preserved "$R"; then
     fail "the budget byte-identity firing control did not detect a deliberate write"
 else
     pass "the budget byte-identity assertion detects a deliberate write"
@@ -152,7 +161,7 @@ mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 mklines "$R/big.sh" 501 # one line over: the ratchet's whole point is that one is enough
-expect_budget_unchanged "a failing gate leaves the budget byte-identical" "$R" 1 "over its recorded ceiling"
+expect_fail "a failing gate leaves the budget byte-identical" "$R" "over its recorded ceiling"
 
 # --- rule 2: a file that shrank back under target must drop its row -----------------------------
 R=$(mkrepo)
@@ -198,7 +207,7 @@ budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 mklines "$R/big.sh" 600
 budget "$R" "$(printf 'big.sh\t600')" # record the growth AND raise the ceiling: still refused
-expect_budget_unchanged "a monotonic refusal leaves the budget byte-identical" "$R" 1 "Ceilings only go down"
+expect_fail "a monotonic refusal leaves the budget byte-identical" "$R" "Ceilings only go down"
 
 # --- --generate produces a proposed baseline on stdout and never creates one itself -------------
 R=$(mkrepo)
@@ -251,11 +260,15 @@ R=$(mkrepo)
 mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
-if OUT=$(cd "$R" && PATH="$TMP/nogit:$PATH" bash -c '
+snapshot_budget "$R"
+OUT=$(cd "$R" && PATH="$TMP/nogit:$PATH" bash -c '
     mkdir -p "'"$TMP"'/nogit"
     printf "#!/usr/bin/env bash\nexit 0\n" > "'"$TMP"'/nogit/git"
     chmod +x "'"$TMP"'/nogit/git"
-    PATH="'"$TMP"'/nogit:$PATH" env -u FILE_BUDGET_REQUIRE_BASE bash scripts/lint-file-budget.sh' 2>&1); then
+    PATH="'"$TMP"'/nogit:$PATH" env -u FILE_BUDGET_REQUIRE_BASE bash scripts/lint-file-budget.sh' 2>&1) && RC=0 || RC=$?
+if ! budget_preserved "$R"; then
+    fail "the empty-enumeration gate run changed docs/dev/file-budget.tsv"
+elif [ "$RC" -eq 0 ]; then
     fail "an empty git-ls-files enumeration did not fail loudly"
 elif [[ "$OUT" == *"enumerated zero tracked files"* ]]; then
     pass "an empty git-ls-files enumeration fails loudly instead of reading as clean"
@@ -274,8 +287,8 @@ mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 git -C "$R" branch -m develop other
-expect_budget_unchanged "with no base ref the gate leaves the budget byte-identical and emits a visible note" \
-    "$R" 0 "skipping the"
+expect_pass "with no base ref the gate leaves the budget byte-identical and emits a visible note" \
+    "$R" "skipping the"
 
 # --- ...and under FILE_BUDGET_REQUIRE_BASE=1 the same situation is FATAL, not a note --------------
 # This is the pair that matters: the row above proves the gate keeps working without a base ref, and
@@ -285,9 +298,9 @@ mklines "$R/big.sh" 500
 budget "$R" "$(printf 'big.sh\t500')"
 commit_all "$R" base
 git -C "$R" branch -m develop other
-SELFTEST_REQUIRE_BASE=1 expect_budget_unchanged \
+SELFTEST_REQUIRE_BASE=1 expect_fail \
     "strict mode leaves the budget byte-identical while refusing a missing base ref" \
-    "$R" 1 "FILE_BUDGET_REQUIRE_BASE=1"
+    "$R" "FILE_BUDGET_REQUIRE_BASE=1"
 
 if [ "$st_fail" -eq 0 ]; then
     echo "lint-file-budget self-test OK"
