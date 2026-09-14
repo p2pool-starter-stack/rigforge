@@ -21,5 +21,5 @@ Other approaches you thought about, and why they fall short.
 
 ## Additional context
 
-Anything else: links, related issues, or notes on portability across
-Ubuntu/Debian/macOS.
+Anything else: links, related issues, or notes on portability across Ubuntu/Debian (macOS is
+deprecated/best-effort).
