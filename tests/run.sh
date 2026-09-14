@@ -9337,11 +9337,7 @@ EOF
     assert_absent "a fully-traversable path never dies (#362)" "$out2" "DIE:"
     assert_contains "a fully-traversable path returns cleanly (#362)" "$out2" "rc=0"
 fi
-echo "== unit: e2e in-container apt prereqs — the abort names a cause only where apt named one (#442) =="
-assert_eq "e2e: a hash/size mismatch is named as a mirror mid-sync, NOT the network (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Failed to fetch x  Hash Sum mismatch") 2>/dev/null)" "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)"
-assert_eq "e2e: apt's other mirror-desync string is the same class (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Failed to fetch y  File has unexpected size (10 != 12)") 2>/dev/null)" "the archive served an index that does not match its Release file (a mirror mid-sync; it clears on a re-run)"
-assert_eq "e2e: near-miss control — 'unexpected size' outside apt's own sentence is not a mirror (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: rsync reported an unexpected size for /x") 2>/dev/null)" "see the apt output above for the cause"
-assert_eq "e2e: control — every other failure defers to apt's own output (#442)" "$( (E2E_LIB_ONLY=1 source "$ROOT/tests/e2e/in-container.sh" && _apt_failure_reason "E: Unable to locate package jq") 2>/dev/null)" "see the apt output above for the cause"
+source "$ROOT/tests/test-e2e-apt-prereqs.sh"
 echo "== unit: e2e-pithead dashboard leg — hardened curl + no vacuous offline pass (#390/#466) =="
 DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PD_SRC="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
