@@ -15,3 +15,12 @@ RuntimeDirectory=rigforge-control
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 ExecStart=$SCRIPT_DIR/rigforge.sh control-apply
+# #509: systemd's implicit DefaultTimeoutStartSec is 90s, and a full-path change (anything outside
+# CONTROL_FAST_PATH_KEYS — DONATION, pools, autotune, watchdog) spends most of that before it can
+# record anything: restart XMRig, then _apply_pool_check (~15s) and _wait_miner_live
+# (CONTROL_LIVE_TRIES=20 x 3s = ~60s) while the RandomX dataset reallocates — and a failed attempt
+# runs both again for the rollback. Being killed there loses the run silently (the trap in
+# control_apply now records a `failed`, but a change that was merely SLOW is not a failure). The
+# path's own retry counts are the real bound; this only stops systemd cutting in under them.
+# tests/e2e-real.sh's control phase polls 300s for the same reason: "big-page hosts can take ~150s".
+TimeoutStartSec=600

@@ -8511,6 +8511,10 @@ ca_exec() {
         # regenerates xmrig's config and restarts it — was (or, #381, was deliberately NOT) reached.
         apply() {
             echo called >"$CA/full-apply-called" 2>/dev/null || true
+            # #509: error() is a bare `exit 1` and apply()'s pipeline is full of reachable ones (a
+            # missing build dir, an unrenderable unit). CA_APPLY_HARD_EXIT reproduces that: the run
+            # dies BETWEEN control_apply's branches, so nothing there can record an outcome.
+            [ "${CA_APPLY_HARD_EXIT:-0}" = 1 ] && exit 1
             return 0
         }
         # #381: the fast-path counterpart, stubbed the same way — not _control_fast_path_eligible
@@ -8658,6 +8662,20 @@ printf '%s' '{"status":"pending","change_id":"'"$CID344"'","accepted_at":"2020-0
 CA_APPLY_OK=1 ca_exec
 assert_eq "control_apply writes the terminal changes/<cid>.json (#344)" "$([ -f "$CA/state/changes/$CID344.json" ] && echo y || echo n)" "y"
 assert_eq "control_apply clears the now-superseded pending/<cid>.json (#344)" "$([ -f "$CA/state/pending/$CID344.json" ] && echo y || echo n)" "n"
+
+# #509: a full-path change (DONATION) whose apply step takes the process down mid-run — error()'s bare
+# `exit 1`, or systemd's SIGTERM at TimeoutStartSec — used to leave NO record at all: the spool entry is
+# already claimed, so nothing re-drives it and the poller sits on `pending` forever. That is the #344
+# contract broken, and it is why a rig-side DONATION apply read `accepted` for its whole window while
+# the fast-path keys (which never call apply()) terminated fine. The floor is a terminal record.
+CA_APPLY_HARD_EXIT=1 ca_run "$CFG_236" '{"DONATION":7}' 1
+assert_eq "apply: a hard exit inside apply() still records a terminal outcome (#509)" "$([ -f "$CA/state/status.json" ] && echo y || echo n)" "y"
+assert_eq "apply: that outcome is terminal, not pending/started (#509/#344)" "$(cst status)" "failed"
+assert_eq "apply: the lost run names itself in the reason (#509)" "$(cst reason | grep -c 'before recording an outcome')" "1"
+assert_eq "apply: the lost run keeps its change_id and keys for the poller (#509/#255)" "$(cst change_id)|$(cst 'changed_keys|join(",")')" "abc123|DONATION"
+# The control: a normal full-path run still records exactly one honest outcome, unchanged by the trap.
+ca_run "$CFG_236" '{"DONATION":7}' 1
+assert_eq "apply: an ordinary full-path apply is still 'applied', not the guard's failed (#509)" "$(cst status)" "applied"
 
 # #381 (from #344 item 1): control_apply must route a change through _control_do_apply_fast instead
 # of the full, xmrig-restarting apply() IFF every changed key is on the closed CONTROL_FAST_PATH_KEYS
