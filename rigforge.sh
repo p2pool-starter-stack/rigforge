@@ -696,7 +696,7 @@ parse_config() {
     _control=$(jq -r '.control // "disabled"' "$CONFIG_JSON")
     case "$_control" in
     disabled | false | off | none | null | "") CONTROL_MODE=disabled ;;
-    enabled | true | on) CONTROL_MODE=enabled ;;
+    enabled | true | on) CONTROL_MODE=enabled API_MODE=enabled ;; # #507: control implies api (unobservable without the read feed) — never the reverse, and api stays out of CONTROL_WRITABLE_KEYS below so it's never remote-settable
     *) error "Invalid \"control\" value '$_control' in config.json — use \"disabled\" or \"enabled\"." ;;
     esac
     CONTROL_PORT=$(jq -r '.control_port // 8082' "$CONFIG_JSON")
@@ -5445,7 +5445,7 @@ doctor() {
     log "Checking the worker (read-only)..."
     local issues=0
 
-    case "$(jq -r '.api // "disabled"' "$CONFIG_JSON" 2>/dev/null || true)" in
+    case "$(jq -r 'if (.control | tostring) | test("^(enabled|true|on)$") then "enabled" else (.api // "disabled") end' "$CONFIG_JSON" 2>/dev/null || true)" in # #507: doctor has no parse_config, so it re-derives control's api implication here
     enabled | true | on)
         local refresh_state
         if refresh_state=$(_api_refresh_status); then _ck_ok "$refresh_state"; else
