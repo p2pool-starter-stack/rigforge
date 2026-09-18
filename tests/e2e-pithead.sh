@@ -132,10 +132,10 @@ snapshot_config() {
 }
 
 set_cfg() { # <jq program>
-    local tmp
+    local tmp err
     tmp="$(mktemp)"
-    if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" &&
-        "$RIGFORGE" apply >/dev/null 2>&1; then return 0; fi
+    if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" && err=$("$RIGFORGE" apply 2>&1 >/dev/null); then return 0; fi
+    [ -n "${err:-}" ] && echo "set_cfg: apply failed: $err" >&2
     rm -f "$tmp"
     return 1
 }
@@ -211,8 +211,8 @@ phase_connect() {
 
 phase_worker_api() {
     phase "worker-api — the :8080 contract (open read-only by default; Bearer when ACCESS_TOKEN set)"
-    set_cfg '.ACCESS_TOKEN = ""'
-    sleep 3 # give the restarted miner a beat to bind
+    set_cfg '.control = "disabled" | .ACCESS_TOKEN = ""' # #514: the rig may arrive with control (and its token) already on from pithead's own tests; clearing the token alone would trip control's fail-closed guard
+    sleep 3                                              # give the restarted miner a beat to bind
     local body code
     body=$(curl -fsS --max-time 5 http://127.0.0.1:8080/2/summary 2>/dev/null || true)
     if [ -n "$body" ] && printf '%s' "$body" | jq -e '.hashrate' >/dev/null 2>&1; then
