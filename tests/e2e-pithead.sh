@@ -357,6 +357,9 @@ phase_network() {
     else
         bad "no established xmrig connections found to inspect"
     fi
+    set_cfg '.control = "enabled" | .ACCESS_TOKEN = "tok-507" | .api_allow_from = "127.0.0.1/32"'
+    sleep 3
+    ss -Htln 2>/dev/null | grep -q ':8081 ' && ok ":8081 listening from control alone, api never set (#507)" || bad ":8081 not listening though control implies api (#507)"
     set_cfg '.api = "enabled"'
     sleep 3
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
@@ -398,7 +401,7 @@ phase_network() {
     *pass-net1*) bad "leak: the stratum pass appears in a response" ;;
     *) ok "leak sweep: pools[].pass never appears in any response" ;;
     esac
-    set_cfg '.api = "disabled" | .ACCESS_TOKEN = "" | .pools[0].pass = "x"'
+    set_cfg '.api = "disabled" | .control = "disabled" | .ACCESS_TOKEN = "" | .pools[0].pass = "x"'
     sleep 3
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
         bad ":8081 still listening after api disabled"
@@ -533,12 +536,9 @@ summary() {
 }
 
 require_preflight "$@"
-case "${1:-all}" in
-connect | worker-api | api-impact | network | stratum-auth | dashboard | dev-fee | all) ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)" ;;
-esac
 # #183: serialize the shared rig — taken after arg parsing, before snapshot_config (its _cleanup
-# runs `apply`, a service restart) and before the first API touch.
+# runs `apply`, a service restart) and before the first API touch. An unknown phase name still dies
+# below, in the dispatch case's own `*)` arm — one validated list, not two.
 rig_lock rigforge e2e-pithead
 
 snapshot_config
