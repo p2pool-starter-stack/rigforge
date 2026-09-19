@@ -31,5 +31,7 @@ phase_control() {
     [ "$(jq -r '.DONATION' "$CFG")" = "$new" ] &&
         ok "config.json carries DONATION=$new (control-apply persisted it)" ||
         bad "config.json DONATION is '$(jq -r '.DONATION' "$CFG")', expected $new"
-    set_cfg '.ACCESS_TOKEN = ""' # the snapshot/_cleanup EXIT trap restores DONATION + control state
+    # No token blanking here: _cleanup's EXIT trap restores DONATION, the token and the control
+    # state from the snapshot, and blanking ACCESS_TOKEN while control is enabled is #514's own
+    # fail-closed abort (rigforge.sh refuses that apply) — the bug this phase must not re-enact.
 }
