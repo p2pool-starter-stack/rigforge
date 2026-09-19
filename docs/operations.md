@@ -649,9 +649,13 @@ How a change flows:
    enabling control surfacing an 11-day-old record with no staleness cue (#344). `GET
    :8082/status?change_id=<16hex>` returns a **specific** change's outcome (or `404`) so a concurrent
    change can't steal your confirmation (#255) — while a change is still in flight (steps 2/3 above)
-   it reads `pending` instead (#344); a run that crashes, or gets superseded by a newer change before
-   the oneshot ever reaches it, is left `pending` forever rather than guessed into a fake outcome — its
-   growing `age_seconds` is the signal something didn't finish. The new effective config shows up on
+   it reads `pending` instead (#344); a change superseded by a newer one before the oneshot ever
+   reaches it is left `pending` forever rather than guessed into a fake outcome, its growing
+   `age_seconds` the signal something didn't finish. A claimed run that dies mid-apply — `error()`'s
+   bare `exit 1` reachable throughout `apply()`, or a `TimeoutStartSec` kill — instead records a
+   terminal `failed` naming the loss: an EXIT floor arms the moment the change is claimed, since the
+   spool entry is already consumed and nothing else will re-drive it (#509). The new effective config
+   shows up on
    the read API as `rigforge.config`, with a `rigforge.config_meta.revision` that bumps whenever it
    changes (#253/#254), on `/1/summary` (= `/2/summary`) once apply completes.
 
