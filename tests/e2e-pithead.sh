@@ -15,6 +15,7 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" # phase_control (#509)
 
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
@@ -94,8 +95,7 @@ require_preflight() {
     [ -n "$GEN_CFG" ] || die "no generated worker config found — run setup first."
 }
 
-SAVED_CFG="" SAVED_XMRIG_ACTIVE=0
-HAMMER_PIDS=""
+SAVED_CFG="" SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS=""
 _restore_xmrig() {
     local active=0
     if [ "$SAVED_XMRIG_ACTIVE" = 1 ]; then
@@ -510,7 +510,6 @@ phase_dev_fee() {
     local want got minlvl src eff
     want=$(jq -r '.DONATION // 1' "$CFG")
     src=$(find "$HERE" -path '*worker*/xmrig/src/donate.h' 2>/dev/null | head -1)
-    minlvl=""
     [ -n "$src" ] && minlvl=$(sed -nE 's/.*kMinimumDonateLevel *= *([0-9]+).*/\1/p' "$src" | head -1)
     minlvl="${minlvl:-1}"
     eff="$want"
@@ -538,7 +537,7 @@ summary() {
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)"
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|all)"
 rig_lock rigforge e2e-pithead
 
 snapshot_config
@@ -550,13 +549,14 @@ network) phase_network ;;
 stratum-auth) phase_stratum_auth ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
+control) phase_control ;;
 all)
-    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee; do
+    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control; do
         "$run_phase"
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT

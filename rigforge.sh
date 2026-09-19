@@ -4387,8 +4387,8 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "rejected backup-failed"
         return 1
     fi
-    # Pin the secret-bearing candidate to 0600 before mv inherits its mode (#434). rc 2 means a
-    # valid change could not be installed but the old config remains live; rc 3 means uncertain.
+    # Pin the secret-bearing candidate to 0600 before mv inherits its mode (#434). rc 2: a valid change
+    # could not be installed, old config still live. rc 3: uncertain.
     if ! chmod 600 "$cand"; then
         rm -f "$cand" "$backup"
         echo "failed commit-chmod-failed"
@@ -4441,15 +4441,12 @@ _sweep_config_backups() { # <backups-dir>
 # (a watchdog unit that would not write) still reported success. Gate on it: a failed apply is a
 # failed apply, and control_apply's rollback branch is the designed response to one.
 _control_do_apply() {
-    # #396: sampled BEFORE the apply, for the same reason _control_do_apply_fast samples its own — a rig
-    # can be LEGITIMATELY stopped when a change lands (a watchdog thermal hold, an operator's manual
-    # stop), and `apply` now leaves it that way. Without this the liveness wait below would read the
-    # operator's own decision as this change's failure and roll a perfectly good change back — and the
-    # rollback's re-apply would leave the rig held too, so the record would then blame a "liveness
-    # failure" nobody could have observed. Success is "the run-state did not DEGRADE", the same
-    # criterion and the same wording as the fast path; only a rig that WAS live must come back live.
-    # Sampled here rather than read back out of _apply_runtime so this function stays checkable on its
-    # own, exactly like its fast-path sibling.
+    # #396: sampled BEFORE the apply, like its fast-path sibling — a rig can be LEGITIMATELY stopped when
+    # a change lands (thermal hold, manual stop) and `apply` leaves it that way. Without this the wait
+    # below would read the operator's own decision as this change's failure, roll a good change back, and
+    # then blame a "liveness failure" nobody could observe (the rollback re-apply leaves it held too).
+    # Success is "the run-state did not DEGRADE": only a rig that WAS live must come back live. Sampled
+    # here, not read out of _apply_runtime, so this function stays checkable on its own.
     local was_held=no
     _miner_deliberately_stopped && was_held=yes
     apply >/dev/null 2>&1 || return 1
@@ -4484,12 +4481,10 @@ RIGFORGE_APPLY_FAIL_REASON=""
 #     max_temp_c ... edit needs no unit rewrite". The watchdog verb picks it up on its next scheduled
 #     run; nothing beyond the config.json write _control_commit already did is needed here.
 #
-# pools/DONATION change xmrig's OWN generated config — restarting it is the only way xmrig serves the
-# new values — and autotune/watchdog (the enable/disable flag, not the interval) govern install_*
-# paths this issue has not audited for restart-freedom. All four stay on the full path. Never widen
-# this list without the same kind of evidence trail (a grep proving the key never reaches
-# generate_xmrig_config or a unit template); the closed-set-subset design means an unaudited key's
-# safe default is already "restart", not "skip".
+# pools/DONATION change xmrig's OWN generated config (restarting it is the only way xmrig serves the new
+# values) and autotune/watchdog (the flag, not the interval) govern install_* paths this issue has not
+# audited for restart-freedom. All four stay on the full path. Never widen this list without the same
+# evidence trail (a grep proving the key reaches neither generate_xmrig_config nor a unit template).
 CONTROL_FAST_PATH_KEYS="watchdog_interval_min max_temp_c"
 
 # True (rc 0) iff <keys-csv> is non-empty and every key in it is in CONTROL_FAST_PATH_KEYS. A single
@@ -4537,11 +4532,10 @@ _control_do_apply_fast() {
     was_active=1
     systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && was_active=0
     parse_config
-    # #395: install_watchdog IS this path's entire effect — both fast-path keys reach the rig only
-    # through it. Swallowing its failure recorded "applied" for a change that never landed, which is
-    # the precise lie the status contract exists to prevent. Bail before stamping provenance: a
-    # change that did not take effect must not be stamped as the config in force. The caller then
-    # routes to the same full-pipeline rollback the comment above already promises for this case.
+    # #395: install_watchdog IS this path's entire effect — both fast-path keys reach the rig only through
+    # it. Swallowing its failure recorded "applied" for a change that never landed, the precise lie the
+    # status contract exists to prevent. Bail before stamping provenance (a change that did not take
+    # effect is not the config in force); the caller then takes the same full-pipeline rollback.
     if ! install_watchdog >/dev/null 2>&1; then
         RIGFORGE_APPLY_FAIL_REASON="could not re-render the watchdog units"
         return 1
@@ -4553,29 +4547,41 @@ _control_do_apply_fast() {
     [ "$is_active" -eq 0 ]
 }
 
-# Record a status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it
-# back) — a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
+# A status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it back) —
+# a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
 _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
     local f="$1" cid="$3" body cdir
     mkdir -p "$(dirname "$f")"
     # #257: warnings[] flags a safety-relevant change (watchdog / max_temp_c = thermal protection) even
-    # when it was allowed, so the operator and the dashboard see it and can require an extra confirm.
-    # Additive to the /status shape (a new warnings[] is a backward-compatible extension of the contract).
+    # when allowed, so the operator and dashboard can require an extra confirm. Additive to the shape.
     body=$(jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end), warnings: ($k | split(",") | map(select(. == "watchdog" or . == "max_temp_c")) | map("thermal protection changed: " + .))}')
     printf '%s' "$body" >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
-    # #255: also index this outcome by change_id so a caller can GET /status?change_id=<cid> even after
-    # a concurrent change overwrote the most-recent status.json. cid is server-generated 16-hex; guard it
-    # anyway (it becomes a filename). Keep only the last ~20 outcomes.
+    [ "$2" = started ] || RIGFORGE_CONTROL_TERMINAL_WRITTEN=1 # #509: `started` (#320) is the one non-terminal status written here
+    # #255: also index by change_id, so a caller can GET /status?change_id=<cid> after a concurrent
+    # change overwrote status.json. cid is server-generated 16-hex; guard it anyway (it becomes a
+    # filename). Keep only the last ~20 outcomes.
     if [[ "$cid" =~ ^[0-9a-f]{16}$ ]]; then
         cdir="$(dirname "$f")/changes"
         mkdir -p "$cdir"
         printf '%s' "$body" >"$cdir/$cid.json.tmp.$$" 2>/dev/null && mv -f "$cdir/$cid.json.tmp.$$" "$cdir/$cid.json" && chmod 644 "$cdir/$cid.json" 2>/dev/null || true
         # shellcheck disable=SC2012  # names are controlled 16-hex; ls -t orders by recency
         ls -t "$cdir"/*.json 2>/dev/null | tail -n +21 | while IFS= read -r old; do [ -n "$old" ] && rm -f "$old"; done
-        # A terminal apply record supersedes the receiver's pending marker (#344).
-        # Upgrade IDs have no pending marker, so their unlink is a no-op.
+        # A terminal apply record supersedes the receiver's pending marker (#344); an upgrade id has none.
         rm -f "$(dirname "$f")/pending/$cid.json" 2>/dev/null || true
     fi
+}
+
+# #509: control_apply's branches each record an outcome, but the apply step between them can still take
+# the process down (error() is a bare `exit 1`, reachable all over apply()) — leaving a claimed change
+# with nothing recorded, nothing to re-drive it, and a poller stuck on `pending`: the #344 contract,
+# broken. This EXIT floor says so instead. Globals, not control_apply's locals: those are out of scope
+# once the trap fires, and reaching for one under `set -u` would fail it and make the verb's rc 1.
+RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=()
+_control_apply_incomplete() {
+    [ -n "${RIGFORGE_CONTROL_TERMINAL_WRITTEN:-}" ] && return 0
+    [ "${#RIGFORGE_CONTROL_RUN[@]}" -eq 3 ] || return 0
+    _control_status "${RIGFORGE_CONTROL_RUN[0]}" failed "${RIGFORGE_CONTROL_RUN[1]}" "${RIGFORGE_CONTROL_RUN[2]}" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply" ""
+    return 0
 }
 
 _with_control_lock() {
@@ -4606,10 +4612,10 @@ _control_claim_staged() { # <untrusted spool file> <change id>: echo frozen root
     printf '%s' "$staged"
 }
 # control-apply (#236): the privileged half of the writable control path, run by the
-# rigforge-control-apply.path unit when the receiver stages a change. Applies the NEWEST staged
-# change (older staged ones are superseded, so we never restart twice), reconciles the live miner,
-# and rolls back to the pre-change snapshot if it doesn't come back live. Every failure path
-# returns 0 with a recorded status — a bad request must not wedge the oneshot.
+# rigforge-control-apply.path unit when the receiver stages a change. Applies the NEWEST staged change
+# (older ones are superseded, so we never restart twice), reconciles the live miner, and rolls back to
+# the pre-change snapshot if it doesn't come back live. Every path records a status and returns 0 — a
+# bad request must not wedge the oneshot, and #509's EXIT floor holds that true when one dies mid-apply.
 control_apply() {
     [ "$OS_TYPE" != "Linux" ] && error "control-apply is driven by the rigforge-control-apply.path unit and is Linux-only."
     parse_config
@@ -4635,6 +4641,8 @@ control_apply() {
         return 0
     fi
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
+    RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys")
+    trap _control_apply_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
     # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
@@ -4659,17 +4667,15 @@ control_apply() {
     fi
     backup="${result#committed }"
     _sweep_config_backups "$backups" || true # same guard; pre-existing exposure on this path
-    # #254: attribute this (and the rollback re-apply) to the control path with its change_id — the
-    # nested apply()'s _stamp_config_meta reads these via dynamic scope.
+    # #254: attribute this (and the rollback re-apply) to the control path with its change_id, which the
+    # nested apply()'s _stamp_config_meta reads via dynamic scope.
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
-    # #381: dispatch on the closed fast-path allowlist. Only the CLASSIFICATION differs between the
-    # two branches below — a success writes the same "applied" status either way, and a failure of
-    # EITHER path falls through to the same full-pipeline rollback, so a wrong "eligible" verdict (or
-    # the fast path failing for an unrelated reason) still ends up restart-safe, never silently stuck.
+    # #381: dispatch on the closed fast-path allowlist. Only the CLASSIFICATION differs — both write the
+    # same "applied", and EITHER failing falls through to the same full-pipeline rollback, so a wrong
+    # "eligible" verdict (or a fast path failing for an unrelated reason) stays restart-safe.
     local fast=0 apply_ok=0 fail_reason=""
-    # #395: clear before the attempt so a stale cause from an earlier change can never be attributed
-    # to this one, and snapshot it straight after so the ROLLBACK's own apply cannot overwrite the
-    # reason the change failed in the first place.
+    # #395: cleared before the attempt (no stale cause from an earlier change) and snapshotted straight
+    # after (the ROLLBACK's own apply must not overwrite why this change failed).
     RIGFORGE_APPLY_FAIL_REASON=""
     if _control_fast_path_eligible "$change_keys"; then
         fast=1
@@ -4689,30 +4695,24 @@ control_apply() {
         fi
     else
         warn "control-apply: change $cid ${fail_reason:-did not come back live} — rolling back to $backup."
-        # #276: the backup must be readable to restore it — guard the cp explicitly (not just -e/ERR)
-        # so an unreadable backup still writes a terminal status instead of ERR-trapping the oneshot
-        # out silently, which would leave the receiver serving the stale previous outcome forever.
+        # #276: guard the cp explicitly (not just -e/ERR) — an unreadable backup must still write a
+        # terminal status, not ERR-trap the oneshot into serving the stale previous outcome forever.
         if ! cp "$backup" "$CONFIG_JSON" 2>/dev/null; then
             _control_status "$status" failed "$cid" "$change_keys" "rollback backup unreadable: $backup" "$backup"
             return 0
         fi
-        # #276: distinguish "rolled back and live" from "rolled back, rig still down" — both restore
-        # config.json, but only one leaves the miner hashing; the reason string pins which happened.
+        # #276: both restore config.json; only one leaves the miner hashing. The reason pins which.
         local why="${fail_reason:-miner did not return to a live hashrate}"
         if _control_do_apply; then
-            # #396: "and live" is only true when the rig actually came back to a hashrate. Since the
-            # re-apply now leaves a deliberately stopped rig stopped — and _control_do_apply succeeds
-            # on that outcome by design — the unconditional wording would assert a liveness nobody
-            # checked, the same lie #395 removed from the arm below.
+            # #396: the re-apply leaves a deliberately stopped rig stopped (and succeeds by design), so
+            # unconditional "and live" would assert a liveness nobody checked — the #395 lie, again.
             local back="rolled back and live"
             _miner_deliberately_stopped && back="rolled back; the rig was already stopped and stays stopped"
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; $back" "$backup"
         elif [ -n "$fail_reason" ]; then
             # #395: the re-apply failed for the SAME reason the change did (units that still will not
-            # write), so the liveness wording below would assert something nobody checked — a failed
-            # apply short-circuits before _wait_miner_live runs, and the miner may be hashing fine
-            # throughout. Say what is known instead. The wording below is untouched for every
-            # pre-existing case, where the liveness wait genuinely is what returned the verdict.
+            # write). A failed apply short-circuits before _wait_miner_live, so the miner may be hashing
+            # fine throughout: say what is known. The arm below keeps the liveness wording it earned.
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; config rolled back, but the re-apply hit the same failure" "$backup"
         else
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; rollback re-apply also failed to restore liveness" "$backup"

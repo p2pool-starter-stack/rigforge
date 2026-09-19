@@ -225,10 +225,12 @@ vocabulary (non-terminal `started`, terminal `noop`/`throttled` alongside the ab
 Between your `POST` and a terminal outcome, `?change_id` reads `status: "pending"` with an
 `accepted_at` stamp — recorded the instant `/apply` accepted the change, not once the (possibly
 tens-of-seconds) apply pipeline gets around to it — so a poll during that window resolves to
-`pending` instead of the same `404` an id that was never issued gets (#344). A run that crashes, or
-gets superseded by a newer change before ever being picked up, stays `pending` forever rather than
-being guessed into a fake outcome; its `age_seconds` (see next paragraph) growing without bound is
-the tell that it isn't coming back — don't treat `pending` as automatically transient. Every
+`pending` instead of the same `404` an id that was never issued gets (#344). A change superseded by a
+newer one before ever being picked up stays `pending` forever rather than being guessed into a fake
+outcome; a claimed run that dies mid-apply instead records a terminal `failed` naming the loss (#509)
+— an EXIT floor armed the moment the oneshot claims the change, since nothing else will re-drive it.
+`age_seconds` (see next paragraph) growing without bound on a still-`pending` id is the tell that it
+isn't coming back — don't treat `pending` as automatically transient. Every
 `/status` response, `?change_id` or no-arg alike, carries a derived `age_seconds` next to whichever
 timestamp it has (`accepted_at` while pending, `applied_at` once terminal), computed fresh on each
 request — this is what closed a real rig's first no-arg `/status` after enabling control surfacing an
