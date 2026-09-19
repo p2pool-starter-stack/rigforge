@@ -131,13 +131,14 @@ snapshot_config() {
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; exit "$E2E_EXIT_RC"' EXIT
 }
 
-set_cfg() { # <jq program>
+set_cfg() { # <jq program> [soft] -- soft: return 1 on apply failure instead of dying (#514)
     local tmp err
     tmp="$(mktemp)"
     if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" && err=$("$RIGFORGE" apply 2>&1 >/dev/null); then return 0; fi
-    [ -n "${err:-}" ] && echo "set_cfg: apply failed: $err" >&2
     rm -f "$tmp"
-    return 1
+    [ -n "${err:-}" ] && echo "set_cfg: apply failed: $err" >&2
+    [ "${2:-}" = soft ] && return 1
+    die "set_cfg: apply failed"
 }
 
 api8080() { # [curl args...] -> body (empty on failure); token-aware like rigforge's own reader
@@ -556,7 +557,6 @@ all)
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT

@@ -9,7 +9,7 @@ phase_control() {
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur=$(jq -r '.DONATION // 1' "$CFG")
     new=$(((cur + 1) % 101))
-    set_cfg ".api=\"enabled\" | .control=\"enabled\" | .ACCESS_TOKEN=\"$tok\" | .api_allow_from=\"127.0.0.1/32\"" || bad "could not enable the control path"
+    set_cfg ".api=\"enabled\" | .control=\"enabled\" | .ACCESS_TOKEN=\"$tok\" | .api_allow_from=\"127.0.0.1/32\"" soft || bad "could not enable the control path"
     sleep 3 # let rigforge-control.service (restarted by install_control) settle
     port=$(jq -r '.control_port // 8082' "$CFG")
     resp="$(mktemp)"

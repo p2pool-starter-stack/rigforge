@@ -5,17 +5,18 @@ echo "== unit: release e2e gates fail closed (#491) =="
 T491="$(mktemp -d "$SANDBOX/gate491.XXXXXX")"
 
 PIT_SET="$(sed -n '/^set_cfg()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+PIT_DIE="$(sed -n '/^die()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PIT_CLEAN="$(sed -n '/^_cleanup()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PIT_RESTORE="$(sed -n '/^_restore_xmrig()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 PIT_SNAPSHOT="$(sed -n '/^snapshot_config()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 printf '{"v":1}\n' >"$T491/config.json"
 printf '#!/usr/bin/env bash\n[ -z "${CALL_LOG:-}" ] || printf "%%s\n" "$*" >>"$CALL_LOG"\n[ "${FAIL_APPLY:-0}" != 1 ]\n' >"$T491/rigforge"
 chmod +x "$T491/rigforge"
-pit_set_case() { # jq replacement, apply failure -> rc:config
+pit_set_case() { # jq replacement, apply failure -> rc:config (soft mode, does not die)
     (
         eval "$PIT_SET"
         CFG="$T491/config.json" RIGFORGE="$T491/rigforge"
-        FAIL_APPLY="$2" set_cfg "$1"
+        FAIL_APPLY="$2" set_cfg "$1" soft
         printf '%s:%s\n' "$?" "$(jq -c . "$CFG")"
     )
 }
@@ -28,7 +29,23 @@ chmod +x "$T491/bin/mv"
 printf '{"v":1}\n' >"$T491/config.json"
 assert_eq "set_cfg propagates mv failure without replacing config" "$(PATH="$T491/bin:$PATH" pit_set_case '.v=4' 0)" '1:{"v":1}'
 printf '{"v":1}\n' >"$T491/config.json"
-assert_eq "set_cfg propagates apply failure" "$(pit_set_case '.v=3' 1)" '1:{"v":3}'
+assert_eq "set_cfg (soft) propagates apply failure instead of dying" "$(pit_set_case '.v=3' 1)" '1:{"v":3}'
+
+# #514: the default (hard) mode dies with the same exit 2 as every other die(), instead of
+# leaving set -e to abort with the apply's own rc — a failed apply must be readable, not silent.
+printf '{"v":1}\n' >"$T491/config.json"
+pit_set_hard_case() {
+    (
+        eval "$PIT_SET"
+        eval "$PIT_DIE"
+        CFG="$T491/config.json" RIGFORGE="$T491/rigforge"
+        FAIL_APPLY=1 set_cfg '.v=5'
+    )
+}
+hard_err="$(pit_set_hard_case 2>&1 >/dev/null)"
+hard_rc=$?
+assert_rc "set_cfg (hard) dies with exit 2 on apply failure" "$hard_rc" 2
+assert_contains "set_cfg (hard) death message names the failure" "$hard_err" "set_cfg: apply failed"
 
 pit_cleanup_case() { # apply failure -> rc:config:snapshot
     local d="$T491/cleanup-$1"
