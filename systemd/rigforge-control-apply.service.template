@@ -23,4 +23,4 @@ ExecStart=$SCRIPT_DIR/rigforge.sh control-apply
 # control_apply now records a `failed`, but a change that was merely SLOW is not a failure). The
 # path's own retry counts are the real bound; this only stops systemd cutting in under them.
 # tests/e2e-real.sh's control phase polls 300s for the same reason: "big-page hosts can take ~150s".
-TimeoutStartSec=600
+TimeoutStartSec=90
