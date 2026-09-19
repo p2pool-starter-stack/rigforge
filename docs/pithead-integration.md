@@ -94,11 +94,13 @@ pithead#235):
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
   matters.
 
-When `ACCESS_TOKEN` is set, `:8081` accepts either the exact bearer for existing clients or the
+When a token is set, `:8081` accepts either the exact bearer for existing clients or the
 lowercase hex HMAC-SHA256 derived with that token as the key and `rigforge:api-read:v1` as the
-message. The derived bearer grants reads only: `:8082` rejects it and continues to require the exact
+message. The derived bearer grants reads only: `:8082` rejects it and continues to require an exact
 control token. Derivation requires a random token of at least 32 ASCII characters; generate one with
-`openssl rand -hex 16`. When `ACCESS_TOKEN` is unset, `:8081` remains open. The release gate's
+`openssl rand -hex 16`. This rule applies per token: `ACCESS_TOKEN` and every named `ACCESS_TOKENS`
+entry each get their own derived read bearer, and `:8081`/`:8082` accept any of them (see
+[one token per stack](#one-token-per-stack) below). When no token is set at all, `:8081` remains open. The release gate's
 `network` phase enforces the boundary on the wire: the miner's only TCP peers are the configured
 pool, `:8081` exists exactly while enabled, and no response byte ever contains `ACCESS_TOKEN` or a
 pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
@@ -163,7 +165,7 @@ stack-side:
 | Port | `8080` | Pithead reads `GET http://<rig>:8080/1/summary`; the port is fixed dashboard-side. |
 | Bind | `0.0.0.0` (all interfaces) | The dashboard polls each worker from the stack host over the LAN. |
 | Mode | `restricted: true` (read-only) | The API can be read but not used to control the miner remotely. |
-| Auth token | none (open) by default; set `ACCESS_TOKEN` to require a Bearer token | Pithead's stock probe is no-auth, so an open, read-only API works without extra config. Setting `ACCESS_TOKEN` turns auth on; see below. |
+| Auth token | none (open) by default; set `ACCESS_TOKEN` to require a Bearer token | Pithead's stock probe is no-auth, so an open, read-only API works without extra config. Setting `ACCESS_TOKEN` turns auth on; see below. This port takes **only** the master `ACCESS_TOKEN` — XMRig allows exactly one `http.access-token`, so named `ACCESS_TOKENS` entries are not accepted here. |
 
 Pithead discovers workers from the stratum proxy's connection list (the pool `user` label, which is the
 rig name), so there's nothing to register stack-side. Workers run on a trusted LAN and need no Tor.
@@ -185,6 +187,46 @@ Pithead 2.0 derives a separate read bearer for an adopted RigForge 1.17.2+ rig a
 token on the host for control. An adopted token-protected 1.17.0/1.17.1 rig must be upgraded before
 its enriched feed can be read without giving the dashboard its control capability; use the remote
 upgrade when enabled or upgrade locally otherwise.
+
+### One token per stack
+
+A rig can serve more than one Pithead stack — production, which it mines to, and a bench that borrows
+it for hardware tests. Give each stack its own token with `ACCESS_TOKENS` instead of sharing
+`ACCESS_TOKEN`, so rotating one stack's credential never touches the other's and no stack has to be
+handed the rig's master token:
+
+```json
+{
+  "ACCESS_TOKEN": "<master, 32+ random hex>",
+  "ACCESS_TOKENS": { "prod": "<prod's own>", "bench": "<bench's own>" }
+}
+```
+
+Which token a stack must hold depends only on what it reads:
+
+| The stack reads | Token it must hold |
+|---|---|
+| XMRig's own `:8080/1/summary` (the stock Pithead probe) | **`ACCESS_TOKEN`, the master.** XMRig takes exactly one `http.access-token`, so a named entry is not accepted there. |
+| The enriched sister feed on `:8081` | `ACCESS_TOKEN` **or** any named `ACCESS_TOKENS` entry — raw, or that same token's derived read bearer. |
+| The writable control path on `:8082` | `ACCESS_TOKEN` **or** any named `ACCESS_TOKENS` entry, raw (derived read bearers are rejected here, as always). |
+
+Stack-side this needs no new Pithead setting: `workers.list[].token` is already per worker per stack,
+so each stack simply carries the value you gave it. A stack whose probe still hits `:8080` directly
+stays on the master; move it to the `:8081` feed first if you want it off the master token.
+
+Two consequences worth knowing before you rely on it:
+
+- **`ACCESS_TOKEN` is still privileged.** Beyond `:8080`, it is the credential RigForge's own
+  liveness/rollback probe uses when the control path restores `pools` after a failed apply. Enabling
+  `control` therefore still requires `ACCESS_TOKEN` (and `api_allow_from`); a rig cannot run the
+  control path on named tokens alone.
+- **A named entry is a full control credential, not a read-only one.** Any entry that authenticates
+  `:8081` also authenticates `:8082`, which is the point for a bench that must apply config during a
+  test run. Hand out a derived read bearer instead when a consumer should only ever read.
+
+Tokens are read once when the services start, so adding or revoking an entry takes effect on the next
+`sudo rigforge.sh apply`. `sudo rigforge.sh doctor` reports how many tokens are configured and which
+one XMRig carries.
 
 Likewise, don't bind the API to localhost only and don't change the port without matching it on the stack
 side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host than the one it
@@ -277,6 +319,7 @@ the token in flight, so isolate the mining LAN — see
 ## See also
 
 - [Configuration › ACCESS_TOKEN](configuration.md#configuration-reference) — the token default and rule.
+- [One token per stack](#one-token-per-stack) — `ACCESS_TOKENS`, and which token each stack must hold.
 - [Getting Started](getting-started.md) — provisioning a worker pointed at the stack.
 - [Pithead docs](https://github.com/p2pool-starter-stack/pithead/tree/main/docs) — the stack side of
   the contract.
