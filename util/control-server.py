@@ -64,14 +64,21 @@ class DurabilityUncertain(OSError):
     def __init__(self, cid, error):
         super().__init__("staged but directory sync failed: %s" % error)
         self.cid = cid
-def load_token(cfg_path):
+def load_tokens(cfg_path):
+    """The master ACCESS_TOKEN plus every named ACCESS_TOKENS entry (#516): one token per consuming
+    Pithead stack, so a bench borrow never needs prod's credential. Every entry authenticates the
+    writable control path identically (raw match only — no derived read-only bearer here)."""
     if not os.path.exists(cfg_path):
-        return ""
+        return set()
     try:
         with open(cfg_path) as f:
-            return (json.load(f).get("ACCESS_TOKEN") or "").strip()
+            cfg = json.load(f)
     except Exception:
         sys.exit("control-server: %s is unreadable — refusing to start without a known token posture" % cfg_path)
+    tokens = {(cfg.get("ACCESS_TOKEN") or "").strip()}
+    tokens.update(t.strip() for t in (cfg.get("ACCESS_TOKENS") or {}).values() if isinstance(t, str))
+    tokens.discard("")
+    return tokens
 
 
 def load_upgrade_enabled(cfg_path):
@@ -206,11 +213,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _authed(self):
         # Fail closed: no token configured means the writable path refuses everyone, never opens.
-        if not TOKEN:
+        if not TOKENS:
             self._send(403, "Forbidden", {"error": "control requires ACCESS_TOKEN"})
             return False
         auth = (self.headers.get("Authorization") or "").strip()
-        if not hmac.compare_digest(auth.encode(), ("Bearer " + TOKEN).encode()):
+        # Any configured token authenticates (#516: master ACCESS_TOKEN or a named ACCESS_TOKENS
+        # entry) — a bench token grants the same control access prod's does, just not prod's secret.
+        if not any(hmac.compare_digest(auth.encode(), ("Bearer " + t).encode()) for t in TOKENS):
             self._send(401, "Unauthorized", {"error": "unauthorized"})
             return False
         return True
@@ -367,7 +376,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 5:
         sys.exit("usage: control-server.py <bind> <port> <state-dir> <config.json>")
     bind, port, STATE_DIR, cfg = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
-    TOKEN = load_token(cfg)
+    TOKENS = load_tokens(cfg)
     UPGRADE_ENABLED = load_upgrade_enabled(cfg)  # #308: /upgrade stays 403 unless control_upgrade is on
     os.makedirs(os.path.join(STATE_DIR, "spool"), exist_ok=True)
     # Single-threaded like the read server: staging is microseconds, concurrency would only add ways
