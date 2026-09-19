@@ -536,9 +536,9 @@ summary() {
 }
 
 require_preflight "$@"
-# #183: serialize the shared rig — taken after arg parsing, before snapshot_config (its _cleanup
-# runs `apply`, a service restart) and before the first API touch. An unknown phase name still dies
-# below, in the dispatch case's own `*)` arm — one validated list, not two.
+# Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
+# #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)"
 rig_lock rigforge e2e-pithead
 
 snapshot_config

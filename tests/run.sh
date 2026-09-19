@@ -7510,6 +7510,10 @@ c="$(mkconf ctl_p8080 "{ $POOL, \"control_port\": 8080 }")"
 assert_contains "control_port 8080 (XMRig) rejected" "$(parse_fails "$c")" "collides with XMRig"
 c="$(mkconf ctl_pcol "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"api\": \"enabled\", \"api_port\": 8082, \"control_port\": 8082 }")"
 assert_contains "control_port colliding with the sister API rejected" "$(parse_fails "$c")" "collides with the sister API"
+# #507 widened when this fires: control implies api, so the collision is now real (and refused) with
+# api never set — before the implication this config came up, with the feed simply never served.
+c="$(mkconf ctl_pcol_implied "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"api_port\": 8082, \"control_port\": 8082 }")"
+assert_contains "control_port colliding with the IMPLIED sister API rejected (#507)" "$(parse_fails "$c")" "collides with the sister API"
 c="$(mkconf ctl_bind "{ $POOL, \"control_bind\": \"nope\" }")"
 assert_contains "control_bind non-IP rejected" "$(parse_fails "$c")" "control_bind must be"
 c="$(mkconf ctl_keys "{ $POOL, \"control\": \"disabled\", \"control_port\": 8082, \"control_bind\": \"0.0.0.0\" }")"
