@@ -132,10 +132,10 @@ snapshot_config() {
 }
 
 set_cfg() { # <jq program>
-    local tmp
+    local tmp err
     tmp="$(mktemp)"
-    if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" &&
-        "$RIGFORGE" apply >/dev/null 2>&1; then return 0; fi
+    if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" && err=$("$RIGFORGE" apply 2>&1 >/dev/null); then return 0; fi
+    [ -n "${err:-}" ] && echo "set_cfg: apply failed: $err" >&2
     rm -f "$tmp"
     return 1
 }
@@ -211,8 +211,8 @@ phase_connect() {
 
 phase_worker_api() {
     phase "worker-api — the :8080 contract (open read-only by default; Bearer when ACCESS_TOKEN set)"
-    set_cfg '.ACCESS_TOKEN = ""'
-    sleep 3 # give the restarted miner a beat to bind
+    set_cfg '.control_upgrade = "disabled" | .control = "disabled" | .ACCESS_TOKEN = ""' # #514: the rig may arrive with control (+ control_upgrade) and its token already on from pithead's own tests; leaving control_upgrade enabled while control clears trips control_upgrade's OWN fail-closed guard
+    sleep 3                                                                              # give the restarted miner a beat to bind
     local body code
     body=$(curl -fsS --max-time 5 http://127.0.0.1:8080/2/summary 2>/dev/null || true)
     if [ -n "$body" ] && printf '%s' "$body" | jq -e '.hashrate' >/dev/null 2>&1; then
@@ -357,6 +357,9 @@ phase_network() {
     else
         bad "no established xmrig connections found to inspect"
     fi
+    set_cfg '.control = "enabled" | .ACCESS_TOKEN = "tok-507" | .api_allow_from = "127.0.0.1/32"'
+    sleep 3
+    ss -Htln 2>/dev/null | grep -q ':8081 ' && ok ":8081 listening from control alone, api never set (#507)" || bad ":8081 not listening though control implies api (#507)"
     set_cfg '.api = "enabled"'
     sleep 3
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
@@ -398,7 +401,7 @@ phase_network() {
     *pass-net1*) bad "leak: the stratum pass appears in a response" ;;
     *) ok "leak sweep: pools[].pass never appears in any response" ;;
     esac
-    set_cfg '.api = "disabled" | .ACCESS_TOKEN = "" | .pools[0].pass = "x"'
+    set_cfg '.api = "disabled" | .control_upgrade = "disabled" | .control = "disabled" | .ACCESS_TOKEN = "" | .pools[0].pass = "x"'
     sleep 3
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
         bad ":8081 still listening after api disabled"
@@ -533,12 +536,9 @@ summary() {
 }
 
 require_preflight "$@"
-case "${1:-all}" in
-connect | worker-api | api-impact | network | stratum-auth | dashboard | dev-fee | all) ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)" ;;
-esac
-# #183: serialize the shared rig — taken after arg parsing, before snapshot_config (its _cleanup
-# runs `apply`, a service restart) and before the first API touch.
+# Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
+# #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|all)"
 rig_lock rigforge e2e-pithead
 
 snapshot_config

@@ -4212,6 +4212,19 @@ printf '{ "http": { "restricted": false } }\n' >"$DOC/home/worker/xmrig/build/co
 out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
 assert_contains "doctor: restricted=false warns (#135)" "$out" "NOT read-only"
 assert_contains "doctor: restricted=false counts as an issue (#135)" "$out" "issue(s) found"
+# #507: control implies the sister feed, so doctor's check must follow control too. doctor runs
+# without parse_config, so it re-derives that implication from config.json itself.
+echo "== unit: doctor's sister-feed check follows control's api implication (#507) =="
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_absent "doctor: neither control nor api -> no sister-feed check (#507)" "$out" "sister feed"
+cat >"$DOC/config.json" <<EOF
+{ "HOME_DIR": "$DOC/home", $POOL, "control": "enabled", "ACCESS_TOKEN": "tok-1", "api_allow_from": "10.0.0.5" }
+EOF
+out="$(run_doctor "$DOC/meminfo_ok" "$DOC/msrmod" "$DOC/gov_perf" "$DOC/nr1g")"
+assert_contains "doctor: control enabled with api unset -> sister-feed check runs (#507)" "$out" "sister feed"
+cat >"$DOC/config.json" <<EOF
+{ "HOME_DIR": "$DOC/home", "pools": [{"url": "h:3333"}] }
+EOF
 # #141: binary tamper evidence — matching sha OK, changed binary is a counted issue, no record is
 # advisory only.
 mkdir -p "$DOC/home/worker/xmrig/build"
@@ -7478,6 +7491,15 @@ c="$(mkconf ctl_ok "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1
 assert_eq "control enabled w/ token + source -> enabled" "$(cm236 "$c")" "enabled"
 c="$(mkconf ctl_true "{ $POOL, \"control\": true, \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\" }")"
 assert_eq "control legacy true -> enabled" "$(cm236 "$c")" "enabled"
+# #507: control is unobservable without the read feed — Pithead applies through control but can only
+# confirm the result via the sister API's enriched feed, so control implies api. api never implies
+# control, and stays out of CONTROL_WRITABLE_KEYS so a Pithead stack can never turn it on remotely.
+c="$(mkconf ctl_implies_api "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\" }")"
+assert_eq "control enabled w/o api set implies API_MODE=enabled (#507)" "$(parse_and_print "$c" "$ROOT" API_MODE)" "enabled"
+c="$(mkconf ctl_implies_api_over "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"api\": \"disabled\" }")"
+assert_eq "control enabled overrides an explicit api:disabled (#507)" "$(parse_and_print "$c" "$ROOT" API_MODE)" "enabled"
+c="$(mkconf ctl_off_no_api "{ $POOL, \"control\": \"disabled\" }")"
+assert_eq "control disabled leaves api at its own default (#507)" "$(parse_and_print "$c" "$ROOT" API_MODE)" "disabled"
 c="$(mkconf ctl_badval "{ $POOL, \"control\": \"maybe\" }")"
 assert_contains "control typo hard-errors" "$(parse_fails "$c")" 'Invalid "control" value'
 c="$(mkconf ctl_p0 "{ $POOL, \"control_port\": 0 }")"
@@ -7488,6 +7510,10 @@ c="$(mkconf ctl_p8080 "{ $POOL, \"control_port\": 8080 }")"
 assert_contains "control_port 8080 (XMRig) rejected" "$(parse_fails "$c")" "collides with XMRig"
 c="$(mkconf ctl_pcol "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"api\": \"enabled\", \"api_port\": 8082, \"control_port\": 8082 }")"
 assert_contains "control_port colliding with the sister API rejected" "$(parse_fails "$c")" "collides with the sister API"
+# #507 widened when this fires: control implies api, so the collision is now real (and refused) with
+# api never set — before the implication this config came up, with the feed simply never served.
+c="$(mkconf ctl_pcol_implied "{ $POOL, \"control\": \"enabled\", \"ACCESS_TOKEN\": \"tok-1\", \"api_allow_from\": \"10.0.0.5\", \"api_port\": 8082, \"control_port\": 8082 }")"
+assert_contains "control_port colliding with the IMPLIED sister API rejected (#507)" "$(parse_fails "$c")" "collides with the sister API"
 c="$(mkconf ctl_bind "{ $POOL, \"control_bind\": \"nope\" }")"
 assert_contains "control_bind non-IP rejected" "$(parse_fails "$c")" "control_bind must be"
 c="$(mkconf ctl_keys "{ $POOL, \"control\": \"disabled\", \"control_port\": 8082, \"control_bind\": \"0.0.0.0\" }")"
