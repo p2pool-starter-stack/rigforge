@@ -14,9 +14,11 @@ phase_access_tokens() {
     sleep 3 # let the sister API + control services (restarted by apply) settle
     port=$(jq -r '.control_port // 8082' "$CFG")
 
-    # :8080 stays master-only — a named entry must not reach xmrig's own API.
+    # :8080 stays master-only — a named entry must not reach xmrig's own API. The refusal code is a
+    # present-but-wrong Bearer, not a missing one, and varies by xmrig version (same reasoning as
+    # e2e-pithead.sh's phase_worker_api restricted-PUT check); != 200 is the contract.
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $bench" http://127.0.0.1:8080/2/summary 2>/dev/null || true)
-    [ "$code" = 401 ] && ok "the bench entry is refused on :8080 (master-only, #516)" || bad ":8080 answered $code to a non-master entry (expected 401)"
+    [ -n "$code" ] && [ "$code" != 200 ] && ok "the bench entry is refused on :8080 (master-only, $code, #516)" || bad ":8080 answered $code to a non-master entry (expected refusal)"
 
     # :8081 — the sister API accepts the bench entry raw, and its own derived read bearer.
     body=$(curl -fsS --max-time 10 -H "Authorization: Bearer $bench" "http://127.0.0.1:$(jq -r '.api_port // 8081' "$CFG")/health" 2>/dev/null || true)
