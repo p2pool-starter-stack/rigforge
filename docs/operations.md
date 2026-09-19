@@ -581,6 +581,11 @@ counterpart (#236): it lets a Pithead stack **apply config changes through RigFo
 `config.json` stays the single source of truth (the producer for pithead's Worker Inspect). It is
 off by default and deliberately paranoid, because it is the one endpoint that accepts writes.
 
+Control has no read side of its own: enabling it (#507) also enables the sister API above, so
+Pithead can confirm an applied change through the enriched feed — there's nothing to set for `api`
+by hand. That implication only runs local -> remote; `api` is not a key the control path can write,
+so a Pithead stack can never flip it on by itself.
+
 Turn it on by setting three things in `config.json` and running `sudo ./rigforge.sh apply`:
 
 ```jsonc

@@ -667,7 +667,9 @@ control() {
 
     # Every request is local, so restrict the temporary receiver to loopback.
     tmp="$(mktemp)"
-    if jq --arg tok "$tok" '.api = "enabled" | .control = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
+    # api is deliberately left unset here (#507): control implies it, so the sister feed this phase
+    # reads from below must come up without api ever being set explicitly.
+    if jq --arg tok "$tok" '.control = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
         "$HERE/config.json" >"$tmp" && [ -s "$tmp" ]; then
         mv "$tmp" "$HERE/config.json"
     else
@@ -690,6 +692,10 @@ control() {
     systemctl is-active --quiet rigforge-control &&
         ok "rigforge-control.service is active" ||
         bad "rigforge-control.service is not active after enabling control"
+    # #507: control implies api — the sister API must come up even though api was never set.
+    systemctl is-active --quiet rigforge-api &&
+        ok "rigforge-api.service is active — control implied api (#507)" ||
+        bad "rigforge-api.service is not active — control enabled without exposing the enriched feed (#507)"
     if [ "${RIGFORGE_APPLIANCE:-0}" = 1 ]; then
         systemctl cat rigforge-control-apply.service | grep -q 'RuntimeDirectoryMode=0700' && systemctl cat rigforge-control-apply.service | grep -q 'RIGFORGE_APPLIANCE=1' && ok "appliance apply consumer is root-runtime isolated (#479)" || bad "appliance apply consumer lost its root-runtime posture (#479)"
     fi
