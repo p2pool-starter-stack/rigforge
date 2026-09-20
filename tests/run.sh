@@ -23,6 +23,13 @@ assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3], go
 assert_contains() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "[$2] missing [$3]" ;; esac }
 assert_absent() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contains [$3]" ;; *) ok "$1" ;; esac }
 assert_rc() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected rc $3, got $2"; fi; }
+_poll_up() {
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        curl -s -o /dev/null --max-time 2 "$@" 2>/dev/null && return 0
+        sleep 0.3
+    done
+    return 1
+} # <curl args...>: retry a just-started server for up to 3s
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -569,6 +576,19 @@ c="$(mkconf at_bad "{ \"ACCESS_TOKEN\": \"bad token\", $POOL }")"
 parse_rc "$c" "$ROOT"
 assert_rc "ACCESS_TOKEN with space rejected" "$?" "1"
 
+# ACCESS_TOKENS (#516): a named map of additional Bearer tokens, one per consuming Pithead stack.
+ats_fails() { (source "$SCRIPT" && CONFIG_JSON="$1" SCRIPT_DIR="$ROOT" && set +e && parse_config 2>&1); }
+c="$(mkconf ats_ok "{ $POOL, \"ACCESS_TOKENS\": {\"bench\": \"bench-tok-1\", \"prod\": \"prod-tok-1\"} }")"
+assert_eq "ACCESS_TOKENS parses as its own JSON object" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKENS_JSON | jq -r '.bench')" "bench-tok-1"
+c="$(mkconf ats_absent "{ $POOL }")"
+assert_eq "ACCESS_TOKENS absent -> empty object" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKENS_JSON)" "{}"
+c="$(mkconf ats_notobj "{ $POOL, \"ACCESS_TOKENS\": \"nope\" }")"
+assert_contains "ACCESS_TOKENS must be an object" "$(ats_fails "$c")" "must be a JSON object mapping names to string tokens"
+c="$(mkconf ats_notstring "{ $POOL, \"ACCESS_TOKENS\": {\"bench\": 1} }")"
+assert_contains "ACCESS_TOKENS values must be strings" "$(ats_fails "$c")" "must be a JSON object mapping names to string tokens"
+c="$(mkconf ats_badchars "{ $POOL, \"ACCESS_TOKENS\": {\"bench\": \"bad token\"} }")"
+assert_contains "ACCESS_TOKENS entry with a space rejected" "$(ats_fails "$c")" 'ACCESS_TOKENS."bench" has invalid characters'
+
 # #138: unknown keys warn (never error) with a case-insensitive did-you-mean; `_`-prefixed keys and
 # the reserved RIG_NAME never warn; warnings carry key NAMES only, never values.
 lint_out() { # <config> -> parse_config's stderr+stdout
@@ -598,7 +618,7 @@ assert_absent "the value never appears in the warning (#138)" "$out" "supersecre
 c="$(mkconf lint_pool "{ \"pools\": [{\"url\":\"h:3333\",\"keepAlive\":true}] }")"
 out="$(lint_out "$c")"
 assert_contains "pool-field typo warns with a did-you-mean (#138)" "$out" 'unknown pool field "keepAlive" is ignored — did you mean "keepalive"?'
-c="$(mkconf lint_quiet "{ $POOL, \"_note\": \"comment\", \"RIG_NAME\": \"rig9\", \"api\": \"enabled\" }")"
+c="$(mkconf lint_quiet "{ $POOL, \"_note\": \"comment\", \"RIG_NAME\": \"rig9\", \"api\": \"enabled\", \"ACCESS_TOKENS\": {\"bench\": \"bench-tok-1\"} }")"
 out="$(lint_out "$c")"
 assert_absent "underscore keys, RIG_NAME, and known keys stay quiet (#138)" "$out" "unknown key"
 # #400: socks5 is a KNOWN pool field now — the warning that used to tell operators it was ignored
@@ -3033,7 +3053,7 @@ echo "== black-box: support-bundle collects + redacts (#147) =="
 SB="$(mktemp -d "$SANDBOX/support.XXXXXX")"
 mkdir -p "$SB/home/worker/xmrig/build"
 cat >"$SB/config.json" <<EOF
-{ "HOME_DIR": "$SB/home", "ACCESS_TOKEN": "FAKETOKEN_ce7a11", "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
+{ "HOME_DIR": "$SB/home", "ACCESS_TOKEN": "FAKETOKEN_ce7a11", "ACCESS_TOKENS": {"bench": "FAKEBENCHTOKEN_9f21"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
 EOF
 cat >"$SB/home/worker/xmrig/build/config.json" <<EOF
 { "http": {"access-token": "FAKETOKEN_ce7a11"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
@@ -3050,7 +3070,9 @@ SBX="$SB/extracted"
 mkdir -p "$SBX"
 tar -xzf "$sb_archive" -C "$SBX"
 assert_eq "CRITICAL: token appears nowhere in the bundle (#147)" "$(grep -rl "FAKETOKEN_ce7a11" "$SBX" | wc -l | tr -d ' ')" "0"
+assert_eq "CRITICAL: a named ACCESS_TOKENS entry appears nowhere in the bundle (#516)" "$(grep -rl "FAKEBENCHTOKEN_9f21" "$SBX" | wc -l | tr -d ' ')" "0"
 assert_eq "CRITICAL: pool pass appears nowhere in the bundle (#147)" "$(grep -rl "FAKEPASS_b0a7" "$SBX" | wc -l | tr -d ' ')" "0"
+assert_eq "ACCESS_TOKENS redacted structurally (#516)" "$(J "$SBX/config.redacted.json" '.ACCESS_TOKENS.bench')" "<redacted>"
 assert_eq "wallet masked to first-4…last-4 (#147)" "$(J "$SBX/config.redacted.json" '.pools[0].user')" "4AbC…xyz9"
 assert_eq "generated config token redacted structurally (#147)" "$(J "$SBX/xmrig-config.redacted.json" '.http."access-token"')" "<redacted>"
 assert_eq "log tail collected (#147)" "$([ -f "$SBX/xmrig.log.tail" ] && echo y || echo n)" "y"
@@ -5179,6 +5201,11 @@ out="$(exp_doctor "{ \"HOME_DIR\": \"$EXP/home\", \"ACCESS_TOKEN\": \"tok-sec\",
 assert_contains "doctor: a token flips the posture line to ok (#sec)" "$out" "API exposure is limited (token)"
 out="$(exp_doctor "{ \"HOME_DIR\": \"$EXP/home\", \"api_allow_from\": \"10.0.0.9\", \"pools\": [{\"url\": \"h:3333\"}] }")"
 assert_contains "doctor: a firewall scope flips the posture line to ok (#sec)" "$out" "API exposure is limited (firewall scope)"
+# #516: doctor names how many tokens are configured and which one xmrig itself carries.
+out="$(exp_doctor "{ \"HOME_DIR\": \"$EXP/home\", \"pools\": [{\"url\": \"h:3333\"}] }")"
+assert_contains "doctor: no tokens configured -> 0 total, xmrig open (#516)" "$out" "0 access token(s) configured (0 master + 0 named in ACCESS_TOKENS); xmrig's own :8080 API carries no token (open)"
+out="$(exp_doctor "{ \"HOME_DIR\": \"$EXP/home\", \"ACCESS_TOKEN\": \"tok-sec\", \"ACCESS_TOKENS\": {\"bench\": \"bench-tok-1\"}, \"pools\": [{\"url\": \"h:3333\"}] }")"
+assert_contains "doctor: master + one named token counted, xmrig carries the master (#516)" "$out" "2 access token(s) configured (1 master + 1 named in ACCESS_TOKENS); xmrig's own :8080 API carries ACCESS_TOKEN (the master)"
 
 # #66: the preset table is the SOURCE OF TRUTH for register verification — assert the exact
 # (register value mask) triples against XMRig v6.26.0 (RxConfig.cpp), so a typo fails a test rather
@@ -7387,18 +7414,16 @@ if [ "$APISRV_SKIP" = 0 ]; then
     printf '%s' '{"applied":null}' >"$APISRV/tune.json"
     STOK="0123456789abcdef0123456789abcdef"
     SREAD="79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8"
-    printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "%s" }\n' "$STOK" >"$APISRV/config.json"
+    # #516: a named ACCESS_TOKENS entry (a bench stack's own credential) authenticates alongside the
+    # master ACCESS_TOKEN, raw or derived, without ever needing the master token itself.
+    BTOK="fedcba9876543210fedcba9876543210"
+    BREAD="246dfe871817d9ec44160b9badcc46f898410c95dbe467311a3f94a0897b774a"
+    printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "%s", "ACCESS_TOKENS": {"bench": "%s"} }\n' "$STOK" "$BTOK" >"$APISRV/config.json"
     APIPORT=$((20000 + RANDOM % 20000))
     python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" &
     APISRV_PID=$!
     srv_up=0
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$APIPORT/health" 2>/dev/null; then
-            srv_up=1
-            break
-        fi
-        sleep 0.3
-    done
+    _poll_up "http://127.0.0.1:$APIPORT/health" && srv_up=1
     assert_eq "server comes up" "$srv_up" "1"
     hdrs="$(curl -isS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/tune" 2>/dev/null | tr -d '\r' | sed -n '1,/^$/p')"
     assert_contains "server: 200 with the exact status line" "$hdrs" "HTTP/1.1 200 OK"
@@ -7409,6 +7434,8 @@ if [ "$APISRV_SKIP" = 0 ]; then
     body="$(curl -fsS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
     assert_eq "server: serves the produced summary verbatim" "$(printf '%s' "$body" | jq -r '.hashrate.total[0]')" "1234.5"
     assert_eq "server: derived read bearer -> 200" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $SREAD" "http://127.0.0.1:$APIPORT/2/summary")" "200"
+    assert_eq "server: a named ACCESS_TOKENS entry authenticates raw (#516)" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $BTOK" "http://127.0.0.1:$APIPORT/2/summary")" "200"
+    assert_eq "server: a named entry's derived read bearer also authenticates (#516)" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $BREAD" "http://127.0.0.1:$APIPORT/2/summary")" "200"
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$APIPORT/2/summary")"
     assert_eq "server: unauthed -> 401" "$code" "401"
     resp="$(curl -sS --max-time 5 "http://127.0.0.1:$APIPORT/2/summary" 2>/dev/null)"
@@ -7427,6 +7454,10 @@ if [ "$APISRV_SKIP" = 0 ]; then
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/health")"
     assert_eq "server: missing state file -> 503 warming up" "$code" "503"
     kill "$APISRV_PID" 2>/dev/null || true
+    # #516: revoking a named entry (dropping it from ACCESS_TOKENS, then reloading — the same effect
+    # a restart after a real rotation has) drops it from the accepted set; the master is unaffected.
+    printf '{ "pools": [{"url": "h:3333"}], "ACCESS_TOKEN": "%s" }\n' "$STOK" >"$APISRV/config.json.revoked"
+    python3 -c 'import runpy,sys; d=runpy.run_path(sys.argv[1]); assert d["load_tokens"](sys.argv[2]) == {sys.argv[3]}' "$ROOT/util/api-server.py" "$APISRV/config.json.revoked" "$STOK" && ok "revoked ACCESS_TOKENS entry drops out of load_tokens, master unaffected (#516)" || bad "revoked entry still authenticates" ""
     # Fail-closed: a config that exists but cannot be parsed must refuse to start (a dropped token
     # would silently open the API).
     printf '{broken' >"$APISRV/config.json"
@@ -7452,13 +7483,7 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import socket; s=socket.soc
     python3 "$ROOT/util/api-server.py" "::" "$V6PORT" "$V6" "$V6/config.json" &
     V6PID=$!
     v6up=0
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        curl -s -g -o /dev/null --max-time 2 -H "Authorization: Bearer tok-v6" "http://[::1]:$V6PORT/health" 2>/dev/null && {
-            v6up=1
-            break
-        }
-        sleep 0.3
-    done
+    _poll_up -g -H "Authorization: Bearer tok-v6" "http://[::1]:$V6PORT/health" && v6up=1
     assert_eq "api-server binds :: and is reachable over IPv6 (#243)" "$v6up" "1"
     assert_eq "IPv6-reachable api-server serves the summary (#243)" "$(curl -fsS -g --max-time 5 -H 'Authorization: Bearer tok-v6' "http://[::1]:$V6PORT/2/summary" 2>/dev/null | jq -r '.hashrate.total[0]')" "4242.5"
     # IPV6_V6ONLY=0 -> the same :: socket also answers IPv4 loopback (v4-mapped), so v4 clients still reach it.
@@ -9090,19 +9115,14 @@ else
     CSRV="$(mktemp -d "$SANDBOX/csrv.XXXXXX")"
     mkdir -p "$CSRV/state"
     CTOK="tok-ctl1"
-    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s" }\n' "$CTOK" >"$CSRV/config.json"
+    CBTOK="tok-bench1" # #516: a named ACCESS_TOKENS entry (its own stack's control credential)
+    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s", "ACCESS_TOKENS":{"bench":"%s"} }\n' "$CTOK" "$CBTOK" >"$CSRV/config.json"
     CPORT=$((20000 + RANDOM % 20000))
     python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT" "$CSRV/state" "$CSRV/config.json" &
     CSRV_PID=$!
     U="http://127.0.0.1:$CPORT"
     cup=0
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        if curl -s -o /dev/null --max-time 2 -H "Authorization: Bearer $CTOK" "$U/status" 2>/dev/null; then
-            cup=1
-            break
-        fi
-        sleep 0.3
-    done
+    _poll_up -H "Authorization: Bearer $CTOK" "$U/status" && cup=1
     assert_eq "control server comes up" "$cup" "1"
     hc() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
     assert_eq "POST unauthed -> 401" "$(hc -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
@@ -9110,6 +9130,7 @@ else
     assert_eq "POST derived read bearer -> 401" "$(hc -X POST "$U/apply" -H 'Authorization: Bearer 61cac658219a7ff9907d30270c6703abce35fdbe6b00d8a4ca92762c995eae49' -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
     resp="$(curl -sS --max-time 5 -X POST "$U/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"
     assert_absent "401 body never echoes the token" "$resp" "$CTOK"
+    assert_eq "POST /status: a named ACCESS_TOKENS entry authenticates too (#516)" "$(hc "$U/status" -H "Authorization: Bearer $CBTOK")" "503"
     body="$(curl -sS --max-time 5 -X POST "$U/apply" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"DONATION":2}' 2>/dev/null)"
     assert_contains "POST allowed key -> accepted" "$body" '"status": "accepted"'
     assert_contains "accepted returns a change_id" "$body" '"change_id"'
@@ -9179,7 +9200,10 @@ else
     assert_eq "POST /upgrade with control_upgrade off -> 403 (#308)" "$(hc -X POST "$U/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v9.9.9"}')" "403"
     assert_eq "POST /upgrade still requires the bearer (#308)" "$(hc -X POST "$U/upgrade" -H 'Content-Type: application/json' -d '{"version":"v9.9.9"}')" "401"
     kill "$CSRV_PID" 2>/dev/null || true
-    wait "$CSRV_PID" 2>/dev/null || true
+    # #516: revoking a named entry (dropping it from ACCESS_TOKENS, then reloading — the same effect
+    # a restart after a real rotation has) drops it from the accepted set; the master is unaffected.
+    printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s" }\n' "$CTOK" >"$CSRV/config.json.revoked"
+    python3 -c 'import runpy,sys; d=runpy.run_path(sys.argv[1]); assert d["load_tokens"](sys.argv[2]) == {sys.argv[3]}' "$ROOT/util/control-server.py" "$CSRV/config.json.revoked" "$CTOK" && ok "revoked ACCESS_TOKENS entry drops out of load_tokens, master unaffected (#516)" || bad "revoked entry still authenticates" ""
     CSRV2="$(mktemp -d "$SANDBOX/csrv2.XXXXXX")"
     mkdir -p "$CSRV2/state"
     printf '{ "pools":[{"url":"h:3333"}], "ACCESS_TOKEN":"%s", "control_upgrade":"enabled" }\n' "$CTOK" >"$CSRV2/config.json"
@@ -9188,13 +9212,7 @@ else
     CSRV2_PID=$!
     U2="http://127.0.0.1:$CPORT2"
     cup2=0
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        if curl -s -o /dev/null --max-time 2 -H "Authorization: Bearer $CTOK" "$U2/status" 2>/dev/null; then
-            cup2=1
-            break
-        fi
-        sleep 0.3
-    done
+    _poll_up -H "Authorization: Bearer $CTOK" "$U2/status" && cup2=1
     assert_eq "upgrade-enabled control server comes up" "$cup2" "1"
     ubody="$(curl -sS --max-time 5 -X POST "$U2/upgrade" -H "Authorization: Bearer $CTOK" -H 'Content-Type: application/json' -d '{"version":"v1.2.3"}' 2>/dev/null)"
     assert_contains "POST /upgrade well-formed -> accepted (#308)" "$ubody" '"status": "accepted"'
@@ -9235,14 +9253,7 @@ else
     python3 "$ROOT/util/control-server.py" 127.0.0.1 "$CPORT" "$CSRV/state" "$CSRV/config.json" &
     NT_PID=$!
     ntup=0
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -X POST "$U/apply" -H 'Content-Type: application/json' -d '{}' 2>/dev/null)"
-        [ -n "$code" ] && [ "$code" != "000" ] && {
-            ntup=1
-            break
-        }
-        sleep 0.3
-    done
+    _poll_up -X POST "$U/apply" -H 'Content-Type: application/json' -d '{}' && ntup=1
     assert_eq "no-token control server bound" "$ntup" "1"
     assert_eq "no-token control server: POST -> 403 (fail closed)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer anything" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "403"
     kill "$NT_PID" 2>/dev/null || true
@@ -9258,13 +9269,7 @@ else
         python3 "$ROOT/util/control-server.py" "::" "$C6PORT" "$CSRV/state" "$CSRV/config.json" &
         C6_PID=$!
         c6up=0
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-            curl -s -g -o /dev/null --max-time 2 -H "Authorization: Bearer $CTOK" "http://[::1]:$C6PORT/status" 2>/dev/null && {
-                c6up=1
-                break
-            }
-            sleep 0.3
-        done
+        _poll_up -g -H "Authorization: Bearer $CTOK" "http://[::1]:$C6PORT/status" && c6up=1
         assert_eq "control-server binds :: and answers over IPv6 (#243)" "$c6up" "1"
         assert_eq "IPv6 control-server: authed GET /status -> 200 (#243)" "$(hc -g -H "Authorization: Bearer $CTOK" "http://[::1]:$C6PORT/status")" "200"
         assert_eq "IPv6 control-server: unauthed POST -> 401 (#243)" "$(hc -g -X POST "http://[::1]:$C6PORT/apply" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "401"
@@ -9683,13 +9688,7 @@ else
     CGSRV_PID=$!
     CGU="http://127.0.0.1:$CGPORT"
     cgup=0
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        curl -s -o /dev/null --max-time 2 -H "Authorization: Bearer $CGTOK" "$CGU/status" 2>/dev/null && {
-            cgup=1
-            break
-        }
-        sleep 0.3
-    done
+    _poll_up -H "Authorization: Bearer $CGTOK" "$CGU/status" && cgup=1
     assert_eq "contract-guard control server comes up (#351)" "$cgup" "1"
 
     # 503 no-history: do_GET's OWN fallback when state/status.json has never been written — invisible
