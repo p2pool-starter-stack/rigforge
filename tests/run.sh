@@ -7629,6 +7629,7 @@ assert_contains "apply oneshot gets the shared root-only runtime (#479)" "$(cat 
 # and liveness wait alone can outlast it, twice over on a rollback), and a killed run is reported as a
 # failure. The rendered value is the contract — assert it here, not just in the template.
 assert_contains "apply oneshot raises TimeoutStartSec past the 90s default (#509)" "$(cat "$CPS/systemd/rigforge-control-apply.service")" "TimeoutStartSec=600"
+assert_contains "upgrade oneshot opts out of the 90s start timeout, a rebuild has no safe fixed bound (#510)" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "TimeoutStartSec=infinity"
 assert_contains "upgrade oneshot gets a root-only processing runtime (#479)" "$(cat "$CPS/systemd/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
 out="$(CU=disabled run_control_install enabled)"
 assert_eq "control_upgrade off removes the upgrade oneshot" "$([ -f "$CPS/systemd/rigforge-control-upgrade.service" ] && echo y || echo n)" "n"

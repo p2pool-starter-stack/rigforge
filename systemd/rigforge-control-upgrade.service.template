@@ -22,3 +22,11 @@ RuntimeDirectoryPreserve=yes
 ExecStart=$SCRIPT_DIR/rigforge.sh control-upgrade
 Nice=19
 IOSchedulingClass=idle
+# #510: systemd's implicit DefaultTimeoutStartSec is 90s, and this oneshot fetches, checks out and
+# REBUILDS XMRig (ADR 0002 puts one stop-then-build cycle at "~10 min of zero hashrate", and that is
+# hardware-dependent — longer on a slower rig), then waits for the miner to come back live; a failed
+# forward attempt repeats the whole thing for the rollback ref in this same run. #509 raised the same
+# 90s gap on the control-apply oneshot, whose budget is bounded; a compile is not, so no fixed number
+# is safe here and this one opts out rather than be SIGKILLed mid-checkout/build. The D6 throttle
+# (_control_upgrade_throttle_ok) is what bounds how often this path fetches and builds at all.
+TimeoutStartSec=infinity
