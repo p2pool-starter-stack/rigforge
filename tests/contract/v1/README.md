@@ -108,4 +108,5 @@ This is `v1`. A backward-incompatible change to either shape (a key removed, a t
 status renamed rather than added) gets a new `v2/` directory alongside this one rather than an
 in-place edit, so a sibling repo pinned to `v1` keeps working until it moves. A purely additive
 change (a new key, a new status word) stays in `v1` — see `feed.json`'s own history for a real
-example: `config`/`config_meta` (#253/#254) and `control` (#346) all landed as additive keys.
+example: `config`/`config_meta` (#253/#254), `control` (#346) and `control_history` (#519) all
+landed as additive keys.

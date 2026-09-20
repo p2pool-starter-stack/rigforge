@@ -244,3 +244,10 @@ assert_eq "watchdog cleanup restarts a previously active miner (#462)" "$(watchd
 assert_eq "watchdog cleanup preserves a previously stopped miner (#462)" "$(watchdog_cleanup_case 0 1)" "0:inactive"
 assert_eq "watchdog cleanup stops a previously stopped miner that became active (#462)" "$(watchdog_cleanup_case 0 1 active)" "0:inactive"
 assert_eq "watchdog cleanup fails when prior active state cannot be restored (#462)" "$(watchdog_cleanup_case 1 0)" "1:inactive"
+# #519: the control_history helper's `for ... done | jq` pipeline returns the LOOP's rc under
+# `pipefail` when the glob matches nothing, so a rig with no changes/ ring tripped `set -Eeuo` and the
+# on_err trap on the real api-refresh path. run_refresh above cannot see this class of fault (it runs
+# `set +e` with stderr discarded, and a sourced script installs no ERR trap), so drive the verb as a
+# subprocess and assert it stays silent. Red before the `|| true` guard: two on_err blocks on stderr.
+APIERR="$(mktemp -d "$SANDBOX/apierr.XXXXXX")"
+assert_eq "api-refresh: no control changes/ ring does not trip errexit or the ERR trap (#519)" "$(RIGFORGE_HOME="$APIQ" RIGFORGE_API_DATA="$APIERR" RIGFORGE_CONTROL_STATE="$APIERR/ctl" PATH="$STUBS:$PATH" bash "$SCRIPT" api-refresh 2>&1 >/dev/null)" ""
