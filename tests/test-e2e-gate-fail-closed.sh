@@ -33,19 +33,49 @@ assert_eq "set_cfg (soft) propagates apply failure instead of dying" "$(pit_set_
 
 # #514: the default (hard) mode dies with the same exit 2 as every other die(), instead of
 # leaving set -e to abort with the apply's own rc — a failed apply must be readable, not silent.
+# The message names the stage that actually failed: "apply" only once apply ran, "edit" before it.
 printf '{"v":1}\n' >"$T491/config.json"
-pit_set_hard_case() {
+pit_set_hard_case() { # <jq program> <fail_apply> -> dies; caller reads stderr and $?
     (
         eval "$PIT_SET"
         eval "$PIT_DIE"
         CFG="$T491/config.json" RIGFORGE="$T491/rigforge"
-        FAIL_APPLY=1 set_cfg '.v=5'
+        FAIL_APPLY="$2" set_cfg "$1"
     )
 }
-hard_err="$(pit_set_hard_case 2>&1 >/dev/null)"
+hard_err="$(pit_set_hard_case '.v=5' 1 2>&1 >/dev/null)"
 hard_rc=$?
 assert_rc "set_cfg (hard) dies with exit 2 on apply failure" "$hard_rc" 2
-assert_contains "set_cfg (hard) death message names the failure" "$hard_err" "set_cfg: apply failed"
+assert_contains "set_cfg (hard) death message names the apply stage" "$hard_err" "set_cfg: apply failed"
+printf '{"v":1}\n' >"$T491/config.json"
+edit_err="$(pit_set_hard_case 'invalid(' 0 2>&1 >/dev/null)"
+edit_rc=$?
+assert_rc "set_cfg (hard) dies with exit 2 when the edit fails before apply" "$edit_rc" 2
+assert_contains "set_cfg (hard) names the edit stage when jq never reached apply" "$edit_err" "set_cfg: edit failed"
+assert_absent "set_cfg (hard) never blames apply for a failure before apply ran" "$edit_err" "apply failed"
+
+# #514: the dispatch case needs its `*)` backstop. `declare -F "phase_${1//-/_}"` accepts a name
+# that is already underscored, so `worker_api` passes the guard above the lock, matches no dashed
+# case arm, and without `*)` the gate falls through, runs no phase and exits 0 — a false green.
+PIT_DISPATCH="$(sed -n '/^case "${1:-all}" in/,/^esac/p' "$ROOT/tests/e2e-pithead.sh")"
+pit_dispatch_case() { # <phase arg> -> what-ran:rc
+    local out rc
+    out="$(
+        eval "$PIT_DIE"
+        FAIL=0
+        for p in connect worker_api api_impact network stratum_auth dashboard dev_fee control access_tokens; do
+            eval "phase_$p() { printf '%s ' $p; }"
+        done
+        set -- "$1"
+        eval "$PIT_DISPATCH" 2>/dev/null
+    )"
+    rc=$?
+    printf '%s:%s\n' "${out:-nothing}" "$rc"
+}
+assert_eq "dispatch runs the named phase" "$(pit_dispatch_case worker-api)" "worker_api :0"
+assert_eq "dispatch runs every phase for 'all'" "$(pit_dispatch_case all)" "connect worker_api api_impact network stratum_auth dashboard dev_fee control access_tokens :0"
+assert_eq "an underscored typo dies instead of silently passing with nothing run" "$(pit_dispatch_case worker_api)" "nothing:2"
+assert_eq "an unknown phase dies instead of silently passing" "$(pit_dispatch_case bogus)" "nothing:2"
 
 pit_cleanup_case() { # apply failure -> rc:config:snapshot
     local d="$T491/cleanup-$1"
