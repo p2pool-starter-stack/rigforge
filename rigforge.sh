@@ -5329,13 +5329,13 @@ _api_config_meta_json() {
         jq -n --arg rev "$rev" '{revision: $rev, changed_at: null, source: null, last_change_id: null}'
     fi
 }
-# #346: mirror the last control outcome because a slow rollback can outlast Pithead's synchronous
-# status poll. Missing, unreadable, or malformed status.json -> null, never a broken feed.
+# #346: mirror the last control outcome; missing, unreadable or malformed status.json -> null, never a broken feed.
 _api_control_json() {
     jq -c '{change_id, status, reason}' "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/status.json" 2>/dev/null || echo null
 }
-_api_rigforge_block() { # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control}'
+_api_control_history_json() { jq -c '{change_id, status, reason}' "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/changes"/*.json 2>/dev/null | jq -cs '.'; } # #519: the changes/ ring (_control_status, rigforge.sh:4558), so an older change_id survives being superseded in `control`
+_api_rigforge_block() {                                                                                                                                             # <hashrate|"">
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
 }
 # Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {

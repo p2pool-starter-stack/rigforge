@@ -7348,6 +7348,8 @@ assert_eq "control mirror: no status.json -> null (#346)" "$(jq -c '.rigforge.co
 printf '{broken' >"$CTL346/status.json"
 run_refresh "RIGFORGE_CONTROL_STATE=$CTL346"
 assert_eq "control mirror: malformed status.json -> null, refresh survives (#346)" "$(jq -c '.rigforge.control' "$APIQ/data/summary.json")" "null"
+rm -f "$CTL346/status.json" && mkdir -p "$CTL346/changes" && printf '%s' '{"status":"applied","change_id":"1111111111111111","reason":null}' >"$CTL346/changes/1111111111111111.json" && printf '{broken' >"$CTL346/changes/2222222222222222.json" && run_refresh "RIGFORGE_CONTROL_STATE=$CTL346" # #519: changes/ ring (rigforge.sh:4558) mirrored so a change_id superseded in `control` survives; a malformed entry just drops out
+assert_eq "control_history: superseded change_id survives, malformed entry dropped (#519)" "$(jq -cS '.rigforge.control_history' "$APIQ/data/summary.json")" '[{"change_id":"1111111111111111","reason":null,"status":"applied"}]'
 # #276 (item 5): each `printf | jq ... && mv` (rigforge.sh:4233-4235) is independently atomic — a jq
 # failure on ONE file must not corrupt or block the others. Break _api_rigforge_block so specifically
 # health.json's own extraction (`.health + {watchdog: .watchdog}`) fails (health is a string, not an

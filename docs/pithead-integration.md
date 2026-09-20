@@ -84,10 +84,14 @@ pithead#235):
   the prefill note in §3), and
   `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a content hash of the
   writable config that changes iff that config changes, so a poller can detect a change made directly
-  on the rig; `source` is `control`/`local`/`restore`; see §3), and `control` (the last control-path
+  on the rig; `source` is `control`/`local`/`restore`; see §3), `control` (the last control-path
   outcome, `{change_id, status, reason}` mirrored from the control status file, so a poller that
   missed a slow rollback catches the terminal outcome here without dialing the control port; `null`
-  when the rig has never taken a control change or the status file is unreadable).
+  when the rig has never taken a control change or the status file is unreadable), and
+  `control_history` (the same `{change_id, status, reason}` shape, one entry per outcome in the
+  control path's own `changes/` ring — up to the last ~20, unordered — so a caller with only this
+  feed and no control token can still resolve an OLDER change_id that a later change on the same
+  rig has since overwritten in `control`; `[]` when the rig has never taken a control change).
 - `GET /health` and `GET /tune` — the `rigforge.health` / `rigforge.tune` objects bare; `/health`
   carries the same `generated_at` timestamp as the summaries from that refresh pass.
 - When XMRig's own API is unreachable the response is still `200` with
