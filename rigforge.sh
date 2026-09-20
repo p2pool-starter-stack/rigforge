@@ -556,12 +556,9 @@ parse_config() {
         done
     done < <(jq -c '.[]' <<<"$POOLS_JSON")
 
-    # HTTP API token (OPTIONAL). By default the rig's read-only xmrig API is left OPEN — no token.
-    # Pithead's stock contract is a no-auth probe of GET http://<rig>:8080/1/summary, so an
-    # untokened, `restricted` (read-only) API works out of the box. Set ACCESS_TOKEN to require a
-    # Bearer token instead — then match it on the dashboard side (Pithead `workers.api_auth: token`
-    # + `workers.api_token`; or `name` if you set ACCESS_TOKEN to the rig name). See
-    # docs/pithead-integration.md.
+    # HTTP API token (OPTIONAL). By default the rig's read-only xmrig API is left OPEN — no token,
+    # matching Pithead's stock no-auth probe of GET http://<rig>:8080/1/summary. Set ACCESS_TOKEN to
+    # require a Bearer token instead and match it dashboard-side; see docs/pithead-integration.md.
     ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
 
     # Opt-in firewall scoping (#142): restrict the read-only API port(s) to one source + loopback.
@@ -597,6 +594,14 @@ parse_config() {
     if [ -n "$ACCESS_TOKEN" ] && ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
         error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
     fi
+
+    # ACCESS_TOKENS (#516): an OPTIONAL name -> token map, one per consuming Pithead stack, so a bench
+    # borrow never needs prod's ACCESS_TOKEN. Every entry authenticates :8081/:8082 like it does; only xmrig's :8080 stays master-only.
+    ACCESS_TOKENS_JSON=$(jq -c '.ACCESS_TOKENS // {}' "$CONFIG_JSON" 2>/dev/null)
+    jq -e 'type == "object" and all(.[]; type == "string")' <<<"$ACCESS_TOKENS_JSON" >/dev/null 2>&1 || error "ACCESS_TOKENS in $CONFIG_JSON must be a JSON object mapping names to string tokens."
+    while IFS=$'\t' read -r _atn _att; do
+        [[ "$_att" =~ ^[A-Za-z0-9._:@+-]+$ ]] || error "ACCESS_TOKENS.\"$_atn\" has invalid characters (allowed: letters, digits, . _ - : @ +): '$_att'."
+    done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$ACCESS_TOKENS_JSON")
 
     # Opt-in periodic live auto-tuning (#46, #95): tri-state. "disabled" (default) installs no timer;
     # "performance" schedules a periodic tune for raw H/s; "efficiency" schedules one for hashrate-per-watt.
@@ -675,8 +680,7 @@ parse_config() {
 
     # Opt-in read-only sister API (#99): serves XMRig's /2/summary enriched with RigForge state
     # (tune/power/health/provenance) on its own port. Same posture as :8080 — read-only, LAN-bound,
-    # gated by the SAME ACCESS_TOKEN (a second token would re-open the Pithead token-coordination
-    # problem for no gain).
+    # gated by ACCESS_TOKEN or any named ACCESS_TOKENS entry (#516).
     _api=$(jq -r '.api // "disabled"' "$CONFIG_JSON")
     case "$_api" in
     disabled | false | off | none | null | "") API_MODE=disabled ;;
@@ -690,9 +694,7 @@ parse_config() {
     [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
 
     # Opt-in WRITABLE control path (#236): a SEPARATE authenticated endpoint that lets the stack
-    # (pithead #185) apply validated config changes THROUGH RigForge, so config.json stays the
-    # source of truth. Distinct from the read-only sister API — its own port, its own units, an
-    # unprivileged receiver decoupled from the privileged applier (see docs/adr/0001). Default off.
+    # apply config changes THROUGH RigForge (see docs/adr/0001), authenticated by ACCESS_TOKEN or any ACCESS_TOKENS entry (#516).
     _control=$(jq -r '.control // "disabled"' "$CONFIG_JSON")
     case "$_control" in
     disabled | false | off | none | null | "") CONTROL_MODE=disabled ;;
@@ -708,18 +710,15 @@ parse_config() {
         if [ "${API_MODE:-disabled}" = enabled ] && [ "$CONTROL_PORT" = "$API_PORT" ]; then
             error "control_port ($CONTROL_PORT) collides with the sister API port — pick another port."
         fi
-        # Fail-closed dual auth: the writable path demands BOTH a Bearer token AND a pinned source.
-        # Missing either would expose an unauthenticated remote config write, so this is a hard
-        # error, not a warning — a writable control surface must never come up open by omission.
+        # Fail-closed dual auth: the writable path demands BOTH a Bearer token AND a pinned source —
+        # missing either would expose an unauthenticated remote config write.
         [ -n "${ACCESS_TOKEN:-}" ] || error "control: \"enabled\" requires ACCESS_TOKEN — a writable API with no token is an open remote config write. Set ACCESS_TOKEN in config.json."
         [ -n "${API_ALLOW_FROM:-}" ] || error "control: \"enabled\" requires api_allow_from — the writable path must be pinned to the stack host. Set api_allow_from in config.json."
     fi
 
     # Opt-in REMOTE UPGRADE (#308, ADR 0002): a SECOND switch, layered on control:"enabled", that lets
-    # the stack trigger a rig to upgrade its own RigForge to the latest release — i.e. fetch and run new
-    # root code on a remote trigger. Default off, and it does NOT come up just because `control` is on:
-    # enabling remote tuning must never silently grant a remote code-update surface. It rides the control
-    # channel's existing Bearer token + api_allow_from pin, so it needs no auth of its own.
+    # the stack trigger a rig to upgrade its own RigForge to the latest release. Default off, and it
+    # does NOT come up just because `control` is on. Rides the control channel's own auth, no auth of its own.
     _cu=$(jq -r '.control_upgrade // "disabled"' "$CONFIG_JSON")
     case "$_cu" in
     disabled | false | off | none | null | "") CONTROL_UPGRADE=disabled ;;
@@ -757,7 +756,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads"
+    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -3766,12 +3765,11 @@ restore() {
 }
 
 # Structural secret redaction for the support bundle (#147): jq path operations only — NEVER sed
-# over secret values (a regex that misses one quoting variant leaks; deleting/replacing a JSON path
-# can't). Tokens and pool passwords go entirely; the pool user (usually a wallet — pseudonymous but
-# it publicly links every rig and payout to one identity) keeps first-4…last-4 so a maintainer can
-# still tell rigs apart and spot the same-wallet-wrong-field misconfig.
+# over secret values (a regex that misses one quoting variant leaks; a JSON path can't). Tokens and
+# pool passwords go entirely; the pool user (usually a wallet) keeps first-4…last-4 so a maintainer
+# can still tell rigs apart and spot the same-wallet-wrong-field misconfig.
 _redact_config() {
-    jq 'def mask: if length > 12 then .[0:4] + "…" + .[-4:] else "<redacted>" end; (if (.ACCESS_TOKEN // "") != "" then .ACCESS_TOKEN = "<redacted>" else . end) | (if .http?."access-token" != null then .http."access-token" = "<redacted>" else . end) | (if .pools then .pools = (.pools | map((if (.pass // "") != "" then .pass = "<redacted>" else . end) | (if (.user // "") != "" then .user = (.user | mask) else . end))) else . end)'
+    jq 'def mask: if length > 12 then .[0:4] + "…" + .[-4:] else "<redacted>" end; (if (.ACCESS_TOKEN // "") != "" then .ACCESS_TOKEN = "<redacted>" else . end) | (if (.ACCESS_TOKENS // {}) != {} then .ACCESS_TOKENS = (.ACCESS_TOKENS | map_values("<redacted>")) else . end) | (if .http?."access-token" != null then .http."access-token" = "<redacted>" else . end) | (if .pools then .pools = (.pools | map((if (.pass // "") != "" then .pass = "<redacted>" else . end) | (if (.user // "") != "" then .user = (.user | mask) else . end))) else . end)'
 }
 
 # support-bundle (#147): everything a maintainer needs to debug a miner, nothing secret, one local
@@ -5605,19 +5603,21 @@ EOF
         fi
     fi
 
-    # Combined exposure posture: open (tokenless) AND unscoped (no api_allow_from firewall) is the
-    # designed default for a trusted LAN — but it deserves one loud advisory line, because it's
-    # exactly the combination that must not leave the LAN. Advisory, not a counted issue: on the
-    # designed topology it is correct.
+    # Combined exposure posture: open (tokenless) AND unscoped is the designed LAN default, but it
+    # deserves one loud advisory line. Advisory, not a counted issue.
     if [ -f "$CONFIG_JSON" ]; then
-        local cfg_tok cfg_scope
+        local cfg_tok cfg_scope cfg_extra_n
         cfg_tok=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)
         cfg_scope=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON" 2>/dev/null || true)
+        cfg_extra_n=$(jq -r '(.ACCESS_TOKENS // {}) | length' "$CONFIG_JSON" 2>/dev/null || echo 0)
         if [ -z "$cfg_tok" ] && [ -z "$cfg_scope" ]; then
             _ck_info "API is open (no ACCESS_TOKEN) and unscoped (no api_allow_from) — fine on a trusted LAN; set one of them before this rig faces anything else"
         else
             _ck_ok "API exposure is limited (${cfg_tok:+token}${cfg_tok:+${cfg_scope:+ + }}${cfg_scope:+firewall scope})"
         fi
+        # #516: xmrig's :8080 is master-only; :8081/:8082 take any configured token. Never interpolate
+        # cfg_tok itself here — this line is a NAME/COUNT report, not a value one.
+        _ck_info "$(($([ -n "$cfg_tok" ] && echo 1 || echo 0) + cfg_extra_n)) access token(s) configured ($([ -n "$cfg_tok" ] && echo 1 || echo 0) master + $cfg_extra_n named in ACCESS_TOKENS); xmrig's own :8080 API carries $([ -n "$cfg_tok" ] && echo "ACCESS_TOKEN (the master)" || echo "no token (open)")"
     fi
 
     # Control receiver health (#278): probe the writable service when enabled; retry briefly because

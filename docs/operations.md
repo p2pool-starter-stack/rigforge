@@ -689,7 +689,11 @@ Polling an upgrade works like polling a config change, with a slightly richer vo
 the intent (so a poller can tell "mid-build" from "queued" — and a `started` that outlives the
 oneshot means the run was lost), then one terminal outcome: `applied` (the `reason` names the
 landed version), `rolled_back`, `noop` (already on the requested version — idempotent, not an
-error), `throttled` (inside the anti-beacon window — retry later), or `failed` (with `reason`).
+error), `throttled` (inside the anti-beacon window — retry later), or `failed` (with `reason`). The
+oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent and can run well past
+ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt rebuilds the rollback ref
+in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
+unbounded by it: the D6 throttle is what bounds how often this path fetches and builds at all.
 
 `"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
 The design and the decisions behind it are recorded in

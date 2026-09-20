@@ -28,14 +28,21 @@ ROUTES = {
 READ_SCOPE = b"rigforge:api-read:v1"
 
 
-def load_token(cfg_path):
+def load_tokens(cfg_path):
+    """The master ACCESS_TOKEN plus every named ACCESS_TOKENS entry (#516): one token per consuming
+    Pithead stack, so a bench borrow never needs prod's credential. All of them authenticate here
+    identically — only xmrig's own :8080 API is master-only."""
     if not os.path.exists(cfg_path):
-        return ""
+        return set()
     try:
         with open(cfg_path) as f:
-            return (json.load(f).get("ACCESS_TOKEN") or "").strip()
+            cfg = json.load(f)
     except Exception:
         sys.exit("api-server: %s is unreadable — refusing to start without a known token posture" % cfg_path)
+    tokens = {(cfg.get("ACCESS_TOKEN") or "").strip()}
+    tokens.update(t.strip() for t in (cfg.get("ACCESS_TOKENS") or {}).values() if isinstance(t, str))
+    tokens.discard("")
+    return tokens
 
 
 def derive_read_token(token):
@@ -63,14 +70,13 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_GET(self):
-        if TOKEN:
+        if TOKENS:
             auth = (self.headers.get("Authorization") or "").strip()
-            # Compare both candidates before deciding. The raw token remains accepted for existing
-            # clients; the derived bearer grants this GET-only API without granting :8082 control.
-            raw_ok = hmac.compare_digest(auth.encode(), ("Bearer " + TOKEN).encode())
-            read_ok = bool(READ_TOKEN) and hmac.compare_digest(
-                auth.encode(), ("Bearer " + READ_TOKEN).encode()
-            )
+            # Compare every candidate before deciding. Each token's raw form remains accepted for
+            # existing clients; each token's derived bearer grants this GET-only API without granting
+            # :8082 control — same rule, applied per entry (#516).
+            raw_ok = any(hmac.compare_digest(auth.encode(), ("Bearer " + t).encode()) for t in TOKENS)
+            read_ok = any(hmac.compare_digest(auth.encode(), ("Bearer " + t).encode()) for t in READ_TOKENS)
             if not (raw_ok or read_ok):
                 return self._send(401, "Unauthorized", b'{"error":"unauthorized"}')
         name = ROUTES.get(self.path.split("?", 1)[0])
@@ -93,8 +99,8 @@ if __name__ == "__main__":
     if len(sys.argv) != 5:
         sys.exit("usage: api-server.py <bind> <port> <data-dir> <config.json>")
     bind, port, DATA_DIR, cfg = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
-    TOKEN = load_token(cfg)
-    READ_TOKEN = derive_read_token(TOKEN)
+    TOKENS = load_tokens(cfg)
+    READ_TOKENS = {t for t in (derive_read_token(tok) for tok in TOKENS) if t}
     # Single-threaded on purpose: requests serialize naturally, and serving pre-built bytes takes
     # microseconds — concurrency would only add ways to compete with the miner. The flip side of
     # single-threaded is that one held-open connection would block everyone (slowloris), so cap

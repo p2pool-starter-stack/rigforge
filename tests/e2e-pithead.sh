@@ -15,7 +15,7 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" # phase_control (#509)
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
 
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
@@ -34,12 +34,10 @@ die() {
     exit 2
 }
 
-# #183: the shared-rig lock — see tests/e2e-real.sh for the full story. The function is duplicated
-# verbatim there on purpose: the same helper against the same path IS the cross-project contract
-# with Pithead's harness (tests/run.sh guards the two copies against drift). FD 9 is inherited by
-# children — that is what keeps the lock held for the whole run; do not close it. NOTE: rig_lock's
-# own EXIT trap is later REPLACED by snapshot_config's `trap '_cleanup' EXIT` (traps replace, not
-# stack), so _cleanup also removes the holder sidecar.
+# #183: the shared-rig lock, duplicated verbatim in tests/e2e-real.sh — same helper, same path, the
+# cross-project contract (tests/run.sh guards the two copies against drift). FD 9 is inherited by
+# children; do not close it. Its own EXIT trap is later REPLACED by snapshot_config's (traps replace,
+# not stack), so _cleanup also removes the holder sidecar.
 rig_lock() { # rig_lock <project> <suite> [shared]
     local mode=-x
     [ "${3:-}" = shared ] && mode=-s
@@ -537,7 +535,7 @@ summary() {
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|all)"
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|access-tokens|all)"
 rig_lock rigforge e2e-pithead
 
 snapshot_config
@@ -550,13 +548,14 @@ stratum-auth) phase_stratum_auth ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
 control) phase_control ;;
+access-tokens) phase_access_tokens ;;
 all)
-    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control; do
+    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens; do
         "$run_phase"
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|access-tokens|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT
