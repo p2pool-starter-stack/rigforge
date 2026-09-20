@@ -9,7 +9,7 @@ phase_access_tokens() {
     bench=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur=$(jq -r '.DONATION // 1' "$CFG")
     new=$(((cur + 1) % 101))
-    set_cfg ".api=\"enabled\" | .control=\"enabled\" | .ACCESS_TOKEN=\"$master\" | .ACCESS_TOKENS={\"bench\":\"$bench\"} | .api_allow_from=\"127.0.0.1/32\"" ||
+    set_cfg ".api=\"enabled\" | .control=\"enabled\" | .ACCESS_TOKEN=\"$master\" | .ACCESS_TOKENS={\"bench\":\"$bench\"} | .api_allow_from=\"127.0.0.1/32\"" soft ||
         bad "could not enable api+control with a named ACCESS_TOKENS entry"
     sleep 3 # let the sister API + control services (restarted by apply) settle
     port=$(jq -r '.control_port // 8082' "$CFG")
@@ -46,7 +46,7 @@ phase_access_tokens() {
         bad "bench-entry DONATION change $cid did not reach 'applied' within 300s (last status: ${st:-unreachable})"
 
     # Revocation: drop the entry and confirm it stops on both ports (red before / green after #516).
-    set_cfg '.ACCESS_TOKENS={}' || bad "could not revoke the bench ACCESS_TOKENS entry"
+    set_cfg '.ACCESS_TOKENS={}' soft || bad "could not revoke the bench ACCESS_TOKENS entry"
     sleep 3
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $bench" "http://127.0.0.1:$(jq -r '.api_port // 8081' "$CFG")/health" 2>/dev/null || true)
     [ "$code" = 401 ] && ok "a revoked ACCESS_TOKENS entry stops authenticating :8081 (#516)" || bad "revoked entry still answered $code on :8081"
