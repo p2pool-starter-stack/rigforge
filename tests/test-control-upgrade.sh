@@ -1,7 +1,7 @@
 # shellcheck shell=bash disable=SC1090,SC2034,SC2329
 # control_upgrade units (#308), sourced by run.sh: orchestration, throttle, fetch/checkout, safe.directory.
 echo "== unit: control_upgrade orchestration — whitelist, anti-rollback, throttle, rollback (#308) =="
-cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.json contents
+cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down|buildfail|hardexit|rollbackexit> -> status.json contents
     local d
     d=$(mktemp -d "$SANDBOX/cu.XXXXXX")
     mkdir -p "$d/state/spool"
@@ -23,6 +23,9 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down> -> status.js
             case "$DO" in
             buildfail) [ "$UDO" -eq 1 ] && return 1 ;;
             fail) return 1 ;;
+            # #535: error()'s bare `exit 1` (or a SIGTERM) mid-build — forward, or in the rollback rebuild.
+            hardexit) exit 1 ;;
+            rollbackexit) if [ "$UDO" -eq 1 ]; then return 1; else exit 1; fi ;;
             esac
             return 0
         }
@@ -48,6 +51,15 @@ assert_eq "build failure after checkout rolls back cleanly -> rolled_back" "$(st
 s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" fail)"
 assert_eq "forward AND rollback both fail -> terminal failed" "$(st "$s")" "failed"
 assert_contains "hard-failure reason flags manual intervention" "$s" "manual intervention"
+# #535: a run that dies inside _control_upgrade_do, after `started` was written, used to leave `started`
+# as the final record forever: the spool entry is consumed, so nothing re-drives it. The EXIT floor
+# control_apply got in #509 now records a terminal `failed` with the upgrade's own reason.
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" hardexit)"
+assert_eq "upgrade: a hard exit mid-build still records a terminal outcome, not started (#535)" "$(st "$s")" "failed"
+assert_contains "upgrade: the lost run names itself and the half-updated checkout (#535)" "$s" "the checkout may be half-updated"
+assert_eq "upgrade: the lost run keeps its change_id and keys for the poller (#535/#255)" "$(printf '%s' "$s" | jq -r '.change_id + "|" + (.changed_keys | join(","))')" "abc123def4567890|version"
+s="$(cu_run '{"version":"v9.9.9"}' "1.0.0" rollbackexit)"
+assert_contains "upgrade: a hard exit in the rollback rebuild is floored too (#535)" "$s" "the upgrade run ended before recording an outcome"
 s="$(cu_run '{"version":"v1.0.0"}' "2.0.0" ok)"
 assert_eq "downgrade refused -> failed (never built)" "$(st "$s")" "failed"
 assert_contains "downgrade reason names anti-rollback" "$s" "not newer"
