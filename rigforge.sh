@@ -4569,16 +4569,16 @@ _control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
     fi
 }
 
-# #509: control_apply's branches each record an outcome, but the apply step between them can still take
-# the process down (error() is a bare `exit 1`, reachable all over apply()) — leaving a claimed change
-# with nothing recorded, nothing to re-drive it, and a poller stuck on `pending`: the #344 contract,
-# broken. This EXIT floor says so instead. Globals, not control_apply's locals: those are out of scope
-# once the trap fires, and reaching for one under `set -u` would fail it and make the verb's rc 1.
+# #509/#535: control_apply and control_upgrade record an outcome on every branch, but the work between
+# them can still end the process (error()'s bare `exit 1`, systemd's SIGTERM): a claimed change with no
+# terminal record and nothing to re-drive it, a poller stuck on `pending`/`started`. Both verbs arm this
+# EXIT floor once they claim; RUN is <status-file> <cid> <keys-csv> <verb's reason>. Globals, since a
+# verb's locals are out of scope when the trap fires and `set -u` would fail it, making the rc 1.
 RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=()
-_control_apply_incomplete() {
+_control_run_incomplete() {
     [ -n "${RIGFORGE_CONTROL_TERMINAL_WRITTEN:-}" ] && return 0
-    [ "${#RIGFORGE_CONTROL_RUN[@]}" -eq 3 ] || return 0
-    _control_status "${RIGFORGE_CONTROL_RUN[0]}" failed "${RIGFORGE_CONTROL_RUN[1]}" "${RIGFORGE_CONTROL_RUN[2]}" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply" ""
+    [ "${#RIGFORGE_CONTROL_RUN[@]}" -eq 4 ] || return 0
+    _control_status "${RIGFORGE_CONTROL_RUN[0]}" failed "${RIGFORGE_CONTROL_RUN[1]}" "${RIGFORGE_CONTROL_RUN[2]}" "${RIGFORGE_CONTROL_RUN[3]}" ""
     return 0
 }
 
@@ -4639,8 +4639,8 @@ control_apply() {
         return 0
     fi
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
-    RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys")
-    trap _control_apply_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
+    RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
+    trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
     # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
@@ -4805,11 +4805,11 @@ control_upgrade() {
         warn "control-upgrade: could not freeze $cid in the root-only processing directory."
         return 0
     fi
-    # #320: one NON-terminal record now that the intent is claimed (D8 move done, nothing can swap it).
-    # Between 202 Accepted and the terminal write the poller previously saw only the PREVIOUS change's
-    # outcome — indistinguishable from "oneshot died before writing status". `started` is overwritten
-    # by this run's terminal record below; a poller that still reads it after the oneshot exited knows
-    # the run was lost.
+    # #320: a NON-terminal record once the intent is claimed (D8 move done, nothing can swap it), so a
+    # poller can tell this run from the PREVIOUS change's outcome; the terminal record below overwrites
+    # it. A run that dies first gets the EXIT floor's `failed` (#535): only SIGKILL or power loss is left.
+    RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" version "the upgrade run ended before recording an outcome (aborted or killed mid-fetch/build); the checkout may be half-updated and this upgrade will not be retried — check the installed version and re-request the upgrade")
+    trap _control_run_incomplete EXIT # #535: the spool entry is claimed; nothing else will retry it
     _control_status "$status" started "$cid" version "" ""
     # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
     target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)

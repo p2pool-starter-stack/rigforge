@@ -275,6 +275,8 @@ tens-of-seconds) apply pipeline gets around to it — so a poll during that wind
 newer one before ever being picked up stays `pending` forever rather than being guessed into a fake
 outcome; a claimed run that dies mid-apply instead records a terminal `failed` naming the loss (#509)
 — an EXIT floor armed the moment the oneshot claims the change, since nothing else will re-drive it.
+A remote upgrade that dies mid-fetch or mid-build gets the same floor instead of stopping at `started`
+(#535).
 `age_seconds` (see next paragraph) growing without bound on a still-`pending` id is the tell that it
 isn't coming back — don't treat `pending` as automatically transient. Every
 `/status` response, `?change_id` or no-arg alike, carries a derived `age_seconds` next to whichever
