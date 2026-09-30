@@ -117,10 +117,14 @@ builtin printf 'caller descriptor preserved\n' >&9
 exec 9>&-
 check test "$(cat "$CASE_DIR/caller-fd")" = 'caller descriptor preserved'
 umask "$saved_umask"
-check test "$REFRESH_PROFILE_DROPIN" = "$owned"
-check test "$(cat "$owned")" = "$(builtin printf '[Service]\nExecStart=')"
+check test -z "$REFRESH_PROFILE_DROPIN"
+check test ! -e "$owned"
+staged="$REFRESH_PROFILE_STAGING"
+check test "$(cat "$staged")" = "$(builtin printf '[Service]\nExecStart=')"
 refresh_profile_finish >"$CASE_DIR/partial-write-collected"
 check test ! -e "$owned"
+check test ! -e "$staged"
+check test -z "$REFRESH_PROFILE_STAGING"
 check test -z "$REFRESH_PROFILE_DROPIN"
 # A competitor arriving after the initial existence check must not be claimed or removed.
 mkdir() {
@@ -137,6 +141,33 @@ check test -z "$REFRESH_PROFILE_DROPIN"
 refresh_profile_finish
 check test "$(cat "$owned")" = 'competing override'
 rm "$owned"
+# A raced symlink to a nonregular target must also remain untouched.
+mkdir() {
+    command mkdir "$@" || return
+    ln -s /dev/null "$owned"
+}
+if refresh_profile_start 2>"$CASE_DIR/symlink-collision-error"; then exit 1; fi
+unset -f mkdir
+check test -z "$REFRESH_PROFILE_DROPIN"
+refresh_profile_finish
+check test -L "$owned"
+check test "$(readlink "$owned")" = /dev/null
+rm "$owned"
+# Failure to unlink staging after publication must not prevent live-override cleanup.
+rm() {
+    if [ "${2:-}" = "$REFRESH_PROFILE_STAGING" ]; then return 7; fi
+    command rm "$@"
+}
+if refresh_profile_start; then exit 1; fi
+staged="$REFRESH_PROFILE_STAGING"
+check test -n "$REFRESH_PROFILE_DROPIN"
+if refresh_profile_finish >"$CASE_DIR/staging-unlink-failed"; then exit 1; fi
+check test ! -e "$owned"
+check test -e "$staged"
+unset -f rm
+refresh_profile_finish
+check test ! -e "$staged"
+check test -z "$REFRESH_PROFILE_STAGING"
 # A window without a completed profiled refresh cannot report successful diagnostics.
 refresh_profile_start
 journalctl() { :; }
