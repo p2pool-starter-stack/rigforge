@@ -67,7 +67,7 @@ dev-setup: ## One-time local toolchain: linters + git hooks (brew or apt; versio
 	else echo "no brew/apt found — install shellcheck, shfmt, jq, yamllint, actionlint, pre-commit manually"; fi
 	pre-commit install
 	@echo "Hooks installed. CI-pinned versions to match (ci.yml/security.yml are the source of truth):"
-	@echo "  shellcheck 0.11.0 · yamllint 1.38.0 · actionlint 1.7.7 · markdownlint-cli2 $(MARKDOWNLINT_VERSION) · gitleaks 8.30.1"
+	@echo "  shellcheck 0.11.0 · yamllint 1.38.0 · actionlint 1.7.12 · markdownlint-cli2 $(MARKDOWNLINT_VERSION) · gitleaks 8.30.1"
 
 ci: lint-all test-suite ## Everything CI runs that can run locally (adds the container e2e when Docker is up)
 	@if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then $(MAKE) test-e2e; else echo "docker unavailable — skipped the container e2e (CI runs it)"; fi

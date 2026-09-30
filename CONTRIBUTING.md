@@ -28,8 +28,9 @@ break them gratuitously:
   make lint    # or: make test  (lint + the full dependency-free suite)
   ```
 
-  CI runs the same checks, so a clean local run keeps your PR green. (`make fmt` auto-applies the
-  `shfmt` formatting.) `make lint` also runs the topology gate and the **file budget gate** below.
+  CI runs the same checks with pinned tools (shfmt 3.14.1, diff-cover 10.6.0 for patch coverage,
+  and zizmor 1.30.1 for workflow security), so use matching versions when reproducing a CI finding.
+  (`make fmt` auto-applies the `shfmt` formatting.) `make lint` also runs the topology gate and the **file budget gate** below.
 - Update the README or other docs when you change behavior or add options.
 - New `config.json` keys are lowercase `snake_case`, matching Pithead. The three SCREAMING legacy
   keys (`ACCESS_TOKEN`, `DONATION`, `HOME_DIR`) are frozen as-is — never rename a shipped key.
