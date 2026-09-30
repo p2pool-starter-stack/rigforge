@@ -72,6 +72,12 @@ out="$(run_pool_doctor y "cat \"$DOC/api_connected.json\"" 'CONFIG_JSON="$proxy_
 assert_contains "doctor validates before dialing untrusted proxy input" "$out" "invalid host:port"
 assert_absent "doctor does not dial malformed proxy" "$out" "unexpected-dial"
 assert_absent "doctor does not log malformed proxy credentials" "$out" "secret"
+for proxy in $'127.0.0.1:80\n127.0.0.1:22' $'127.0.0.1:80\n' $'127.0.0.1:80\r'; do
+    jq -n --arg proxy "$proxy" '{pools:[{url:"pool.onion:3333",socks5:$proxy}]}' >"$proxy_config"
+    out="$(run_pool_doctor y "cat \"$DOC/api_connected.json\"" 'CONFIG_JSON="$proxy_config"; _tcp_probe() { echo unexpected-dial; }')"
+    assert_contains "doctor rejects proxy control characters before line splitting" "$out" "invalid host:port"
+    assert_absent "doctor does not dial any part of a malformed multiline proxy" "$out" "unexpected-dial"
+done
 
 # Called by run.sh against its existing loopback API listener: TCP reachability only.
 proxy_listener_checks() {

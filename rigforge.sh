@@ -5462,7 +5462,8 @@ doctor() {
             ph=${ph#\[}
             ph=${ph%\]}
             _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed"
-        done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[]' "$CONFIG_JSON" 2>/dev/null)
+            # Reject control characters before line framing can split one invalid value into valid ones.
+        done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
             IFS="$(printf '\t')" read -r pc_st pc_pool pc_n1 pc_n2 <<EOF
 $(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _pool_conn_status)
