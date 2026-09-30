@@ -25,6 +25,30 @@ push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). The nat
 manual and local-only — macOS is deprecated (#493), so it never runs in CI. The last two are
 deliberately kept out of CI, because a real build, HugePages, and live mining are flaky by nature and
 against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
+The queued `control` phase also instruments real timer-driven API refreshes around a thermal
+control apply (#546). A temporary runtime drop-in replaces only the refresh service's command
+with `e2e-api-refresh-profile.sh`; its priority, timeout, timer and live feed remain in use.
+The profiler logs fixed helper names, begin/end timestamps and nanosecond durations, never
+arguments or payloads. Five-second observations record timer/service state and the direct feed
+for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
+Control-phase requests pass the temporary bearer token through curl's stdin configuration,
+keeping it out of process arguments. Each POST uses its own securely allocated response file,
+removed after reading the change identifier.
+Cleanup quiesces the timer and instrumented pass, emits only measurement records from the journal, removes
+the drop-in, reloads systemd and restores the timer’s prior active state before config/runtime restoration.
+The job fails if journal collection or measurement export fails, no profiled refresh completes
+successfully, or cleanup fails. Begin events from unfinished helpers are retained to locate stalled
+operations, including a pass stopped by cleanup.
+For affected-workload acceptance, use a reserved `rigforge` `tier4-e2e` job with
+`phases=["connect","control"]`: connect proves mining before control on the same reserved worker.
+A `phases=["control"]` run validates diagnostic collection only;
+do not invoke the profiler against a rig yourself. Routing still chooses an eligible worker:
+this captures the same thermal-control/service path, but does not guarantee the original fixture.
+Short passes or an injected delay do not attribute the historical stale-feed failure; #540's
+fix acceptance requires evidence of the same failure mechanism. Profiling adds clock-read overhead
+and the source remains the submitted RigForge head; no alternative production implementation is
+installed by this diagnostic.
+
 Both stop at a failed mutation prerequisite and make restoration failure fail the process; recovery
 snapshots remain on disk when cleanup cannot prove the original config bytes and runtime were restored.
 

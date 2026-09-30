@@ -3727,7 +3727,7 @@ cp "$ROOT/VERSION" "$NOB/"
 cat >"$NOB/config.json" <<EOF
 { "HOME_DIR": "$NOB/home", "pools": [{"url": "h:3333"}] }
 EOF
-out="$( (cd "$NOB" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$NOB" RIGFORGE_HOME="$PWD" bash "$SCRIPT" start </dev/null 2>&1))"
+out="$( (cd "$NOB" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$NOB" RIGFORGE_HOME="$PWD" bash "$SCRIPT" start </dev/null 2>&1) )"
 assert_rc "macOS start with no built worker fails" "$?" "1"
 assert_contains "macOS start with no worker points at setup" "$out" "Run 'setup' first"
 
@@ -3753,7 +3753,7 @@ assert_contains "start reports login-agent control" "$out" "login agent"
 : >"$LCL"
 out="$(mac_lr bash "$SCRIPT" stop)"
 assert_contains "stop delegates to launchctl when enabled" "$(cat "$LCL")" "[launchctl] stop"
-out="$( (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" CALL_LOG="$LCL" STUB_LAUNCHD_PID=4321 RIGFORGE_HOME="$PWD" bash "$SCRIPT" status </dev/null 2>&1))"
+out="$( (cd "$MC" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin HOME="$MC" CALL_LOG="$LCL" STUB_LAUNCHD_PID=4321 RIGFORGE_HOME="$PWD" bash "$SCRIPT" status </dev/null 2>&1) )"
 assert_contains "status reads the launchd PID" "$out" "pid 4321"
 out="$(mac_lr bash "$SCRIPT" disable)"
 assert_rc "macOS disable exits 0" "$?" "0"
@@ -4594,8 +4594,7 @@ assert_absent "control: disabled prints no control-receiver ok line (#278)" "$ou
 assert_absent "control: disabled prints no control-receiver warn line either (#278)" "$out" "rigforge-control is inactive"
 
 # #343: doctor's pool-connection check — the miner's own /2/summary is the signal while the service
-# runs (connected ok / disconnected counted issue / silent API advisory); a stopped service falls
-# back to one TCP dial of pools[0]. Fixture bodies mirror XMRig's connection object shapes.
+# runs (connected ok / disconnected counted issue / silent API advisory); stopped -> TCP probe.
 echo "== unit: doctor pool connection (#343) =="
 printf '{"connection":{"pool":"poolbox.lan:3333","uptime":345,"failures":0,"accepted":7}}\n' >"$DOC/api_connected.json"
 printf '{"connection":{"pool":"nosuch.host:3333","uptime":0,"failures":9,"accepted":0}}\n' >"$DOC/api_disconnected.json"
@@ -4642,8 +4641,8 @@ assert_contains "pool: stopped + reachable pool -> advisory with host:port (#343
 out="$(run_pool_doctor n "" '_tcp_probe() { return 1; }')"
 assert_contains "pool: stopped + unreachable pool -> warn (#343)" "$out" "pool h:3333 is unreachable"
 assert_contains "pool: unreachable pool counts as an issue (#343)" "$out" "issue(s) found"
-# The real probe against a loopback port nothing listens on: refused, so rc != 0, instantly.
-prb="$( (source "$SCRIPT" && set +e && _tcp_probe 127.0.0.1 1 && echo open || echo closed))"
+source "$ROOT/tests/onion-proxy.sh" # #520: setup and advisory proxy diagnostics.
+prb="$( (source "$SCRIPT" && set +e && _tcp_probe 127.0.0.1 1 && echo open || echo closed) )"
 assert_eq "tcp probe: closed loopback port reads closed (#343)" "$prb" "closed"
 
 # #201: NPS regression detection — an EPYC reporting ONE NUMA node is NPS1 (a BIOS reset ate the
@@ -4671,8 +4670,8 @@ bd_nps() { (
 assert_eq "bios detect: NPS1 EPYC pending (#201)" "$(bd_nps "$NPS/one" "AMD EPYC 7642 48-Core Processor")" "pending"
 assert_eq "bios detect: NPS4 EPYC ok (#201)" "$(bd_nps "$NPS/four" "AMD EPYC 7642 48-Core Processor")" "ok"
 assert_eq "bios detect: desktop unknown — never listed (#201)" "$(bd_nps "$NPS/one" "Generic CPU")" "unknown"
-assert_contains "bios menu: NPS item names the CBS path (#201)" "$( (source "$SCRIPT" && _bios_menu generic numa_nps perf))" "NPS4"
-assert_contains "bios menu: generic power_boost speaks EPYC too (#201)" "$( (source "$SCRIPT" && _bios_menu generic power_boost perf))" "cTDP"
+assert_contains "bios menu: NPS item names the CBS path (#201)" "$( (source "$SCRIPT" && _bios_menu generic numa_nps perf) )" "NPS4"
+assert_contains "bios menu: generic power_boost speaks EPYC too (#201)" "$( (source "$SCRIPT" && _bios_menu generic power_boost perf) )" "cTDP"
 
 # ---------------------------------------------------------------------------
 # Guided BIOS flow (#80): detect -> guide -> save -> re-verify, against the #78 firmware fixtures.
@@ -5324,7 +5323,7 @@ mkdir -p "$UNN/etc/systemd/system"
 cat >"$UNN/config.json" <<EOF
 { "HOME_DIR": "$UNN/home", "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
-out="$(printf 'n\n' | (cd "$UNN" && PATH="$STUBS:$PATH" SYSTEMD_DIR="$UNN/etc/systemd/system" RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall 2>&1))"
+out="$(printf 'n\n' | (cd "$UNN" && PATH="$STUBS:$PATH" SYSTEMD_DIR="$UNN/etc/systemd/system" RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall 2>&1) )"
 assert_rc "uninstall 'n' exits 0" "$?" "0"
 assert_contains "uninstall 'n' reports it aborted" "$out" "Aborted"
 assert_eq "uninstall 'n' left the service unit in place" "$([ -f "$UNN/etc/systemd/system/xmrig.service" ] && echo present || echo gone)" "present"
@@ -6501,11 +6500,11 @@ assert_contains "no headroom, no ceiling -> plain requirement, unchanged (#328 x
 echo "== black-box: appliance mode (pithead#797 R1) =="
 AP="$(mktemp -d "$SANDBOX/appliance.XXXXXX")"
 
-out="$( (unset SYSTEMD_DIR && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
+out="$( (unset SYSTEMD_DIR && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME") )"
 assert_eq "flag presets /run/systemd/system + --runtime (#797)" "$out" "/run/systemd/system|--runtime"
-out="$( (unset SYSTEMD_DIR && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME"))"
+out="$( (unset SYSTEMD_DIR && source "$SCRIPT" && printf '%s|%s' "$SYSTEMD_DIR" "$ENABLE_RUNTIME") )"
 assert_eq "no flag: /etc/systemd/system + persistent enable (#797)" "$out" "/etc/systemd/system|"
-out="$( (SYSTEMD_DIR="$AP/custom-sd" && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s' "$SYSTEMD_DIR"))"
+out="$( (SYSTEMD_DIR="$AP/custom-sd" && RIGFORGE_APPLIANCE=1 && source "$SCRIPT" && printf '%s' "$SYSTEMD_DIR") )"
 assert_eq "explicit SYSTEMD_DIR still wins under the flag (#797)" "$out" "$AP/custom-sd"
 
 # Baked dependencies are verified against a restricted fixture PATH.
@@ -6929,7 +6928,7 @@ out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" resto
 assert_rc "restore without an archive fails" "$?" "1"
 out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$BK/nope.tar.gz" </dev/null 2>&1)"
 assert_rc "restore of a missing archive fails" "$?" "1"
-out="$(printf 'n\n' | (cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore "$ARCHIVE" 2>&1))"
+out="$(printf 'n\n' | (cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore "$ARCHIVE" 2>&1) )"
 assert_rc "restore cancels cleanly on 'n'" "$?" "0"
 assert_contains "restore cancel message" "$out" "cancelled"
 # A bad archive must fail LOUDLY and leave the existing good config.json untouched — a silent clobber here
@@ -7427,6 +7426,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     srv_up=0
     _poll_up "http://127.0.0.1:$APIPORT/health" && srv_up=1
     assert_eq "server comes up" "$srv_up" "1"
+    proxy_listener_checks # #520: reuse this live socket without requiring Tor.
     hdrs="$(curl -isS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/tune" 2>/dev/null | tr -d '\r' | sed -n '1,/^$/p')"
     assert_contains "server: 200 with the exact status line" "$hdrs" "HTTP/1.1 200 OK"
     assert_contains "server: application/json" "$hdrs" "Content-Type: application/json"

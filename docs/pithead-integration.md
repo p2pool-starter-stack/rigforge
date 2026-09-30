@@ -21,7 +21,8 @@ split centrally, so the worker config stays minimal and you never put a wallet a
 - The XMRig pool `user` field is just a label for the rig. It defaults to the hostname (set `pools[].user`
   to name it) so you can tell workers apart on the dashboard.
 - Point as many workers as you like at the same stack endpoint; the stack aggregates them.
-- Workers talk to the pool over plain Stratum on your local network; they do not need Tor.
+- LAN workers talk to the pool over plain Stratum and need no Tor. An `.onion` pool needs a Tor SOCKS
+  proxy that the DIY operator installs and runs; RigForge only configures its address.
 - The endpoint must be reachable from the worker; if the stack host has a firewall, allow the Stratum port
   (3333) on the LAN.
 
@@ -172,7 +173,7 @@ stack-side:
 | Auth token | none (open) by default; set `ACCESS_TOKEN` to require a Bearer token | Pithead's stock probe is no-auth, so an open, read-only API works without extra config. Setting `ACCESS_TOKEN` turns auth on; see below. This port takes **only** the master `ACCESS_TOKEN` — XMRig allows exactly one `http.access-token`, so named `ACCESS_TOKENS` entries are not accepted here. |
 
 Pithead discovers workers from the stratum proxy's connection list (the pool `user` label, which is the
-rig name), so there's nothing to register stack-side. Workers run on a trusted LAN and need no Tor.
+rig name), so there's nothing to register stack-side. Workers on a trusted LAN need no Tor; an `.onion` pool requires an operator-managed Tor SOCKS proxy.
 
 ---
 

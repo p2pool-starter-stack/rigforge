@@ -44,7 +44,7 @@ you like to your stack's single endpoint.
   for hardware-prefetcher control, and `hugetlbfs` mounts + memlock limits.
 - Runs XMRig as a `systemd` service on Linux, with a `cpupower` performance governor and log
   rotation.
-- Asks for your pool URL on first run if no config exists.
+- Asks for your pool URL and optional password on first run; an `.onion` pool also offers a Tor SOCKS proxy override.
 - Is idempotent: re-running skips the recompile when the pinned XMRig is already built and never
   double-applies system tuning.
 
@@ -97,8 +97,10 @@ chmod +x rigforge.sh
 sudo ./rigforge.sh
 ```
 
-The script needs root to install packages and tune the system. On first run it asks for your pool URL
-and writes a minimal `config.json`. On Linux, reboot once afterward to apply the HugePages tuning;
+The script needs root to install packages and tune the system. First-run setup asks for your pool URL
+and optional password. For an `.onion` pool it offers a validated SOCKS proxy override, defaulting to
+`127.0.0.1:9050`; install and run Tor yourself. It writes a minimal `config.json`. On Linux, reboot
+once afterward to apply the HugePages tuning;
 the `xmrig` service then starts automatically.
 
 > Mining to a public pool like SupportXMR? Point `url` at the pool and set your Monero wallet
