@@ -63,8 +63,8 @@ jobs:
     env:
       SHELLCHECK_VERSION: "0.11.0"
       SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
-      SHFMT_VERSION: "3.13.1"
-      SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
+      SHFMT_VERSION: "3.14.1"
+      SHFMT_SHA256: "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf"
       # The file-budget gate's "ceilings only go down" half needs origin/develop to diff the budget
       # against. Without this it would SKIP that half and still exit 0 — a green that proves less
       # than it looks like it does — so here it is fatal instead (#407).
@@ -143,7 +143,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       # Pin diff-cover (the patch-coverage gate); kcov + jq are pinned inside tests/coverage.sh.
-      DIFF_COVER_VERSION: "10.5.1"
+      DIFF_COVER_VERSION: "10.6.0"
       PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
       # Diff the PR against the branch it targets (develop or main). On a push, github.base_ref is empty,
       # so fall back to the pushed branch itself — that's an empty diff that trivially passes.
