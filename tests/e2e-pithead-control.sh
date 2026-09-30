@@ -48,6 +48,7 @@ phase_control() {
     sleep 20 # allow a natural timer dispatch before thermal apply
     local before feed_temp feed_stamp started observed=0
     before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    resp="$(mktemp)" || bad "could not allocate the thermal response file"
     code=$(_control_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"max_temp_c\":$target_temp}" "http://127.0.0.1:$port/apply" 2>/dev/null || true)
     cid=$(jq -r '.change_id // empty' "$resp" 2>/dev/null || true)

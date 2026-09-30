@@ -32,11 +32,13 @@ The profiler logs fixed helper names, begin/end timestamps and nanosecond durati
 arguments or payloads. Five-second observations record timer/service state and the direct feed
 for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
 Control-phase requests pass the temporary bearer token through curl's stdin configuration,
-keeping it out of process arguments.
+keeping it out of process arguments. Each POST uses its own securely allocated response file,
+removed after reading the change identifier.
 Cleanup quiesces the timer and instrumented pass, emits only measurement records from the journal, removes
 the drop-in, reloads systemd and restores the timer’s prior active state before config/runtime restoration.
-The job fails if no profiled refresh completes successfully or cleanup fails. Begin events from unfinished
-helpers are retained to locate stalled operations, including a pass stopped by cleanup.
+The job fails if journal collection or measurement export fails, no profiled refresh completes
+successfully, or cleanup fails. Begin events from unfinished helpers are retained to locate stalled
+operations, including a pass stopped by cleanup.
 For affected-workload acceptance, use a reserved `rigforge` `tier4-e2e` job with
 `phases=["connect","control"]`: connect proves mining before control on the same reserved worker.
 A `phases=["control"]` run validates diagnostic collection only;

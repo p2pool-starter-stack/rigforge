@@ -11,6 +11,14 @@ if [ "$#" = 0 ]; then
     grep -q '^finish-window elapsed=30[0-9]' "$TEST_WINDOW_DIR/fresh.log"
     grep -q '^POST thermal=99$' "$TEST_WINDOW_DIR/fresh-posts"
     grep -q '^profile started$' "$TEST_WINDOW_DIR/fresh.log"
+    bash "$0" substituted >"$TEST_WINDOW_DIR/substituted.log" 2>&1
+    grep -q '^substituted response pathname preserved sentinel$' "$TEST_WINDOW_DIR/substituted.log"
+    if bash "$0" allocation-failed >"$TEST_WINDOW_DIR/allocation-failed.log" 2>&1; then
+        printf 'failed thermal response allocation unexpectedly succeeded\n' >&2
+        exit 1
+    fi
+    grep -q 'could not allocate the thermal response file' "$TEST_WINDOW_DIR/allocation-failed.log"
+    [ ! -e "$TEST_WINDOW_DIR/allocation-failed-posts" ]
     for mode in stale late oldstamp rejected; do
         if bash "$0" "$mode" >"$TEST_WINDOW_DIR/$mode.log" 2>&1; then
             printf '%s unexpectedly passed freshness assertion\n' "$mode" >&2
@@ -80,6 +88,9 @@ curl() {
             fi
         fi
         printf '{"change_id":"fixture"}' >"$output"
+        if [ "$mode" = substituted ] && [[ "$data" != *DONATION* ]]; then
+            LC_ALL=C ls -ld "$output" | cut -c1-10 >"$TEST_WINDOW_DIR/$mode-response-mode"
+        fi
         printf 202
     elif [[ "$url" == */status* ]]; then
         printf '{"status":"applied"}'
@@ -91,4 +102,29 @@ curl() {
         printf '{"generated_at":"%s","rigforge":{"watchdog":{"max_temp_c":%s}}}' "$stamp" "$temp"
     fi
 }
+PLANTED_RESPONSE=""
+if [ "$mode" = substituted ]; then
+    SENTINEL="$TEST_WINDOW_DIR/sentinel"
+    printf 'preserve original bytes\n' >"$SENTINEL"
+    rm() {
+        command rm "$@"
+        if [ "$*" = "-f $resp" ] && [ -z "$PLANTED_RESPONSE" ]; then
+            ln -s "$SENTINEL" "$resp"
+            PLANTED_RESPONSE="$resp"
+        fi
+    }
+elif [ "$mode" = allocation-failed ]; then
+    mktemp() {
+        [ ! -e "$TEST_WINDOW_DIR/$mode-allocated" ] || return 1
+        : >"$TEST_WINDOW_DIR/$mode-allocated"
+        command mktemp "$@"
+    }
+fi
 phase_control
+if [ "$mode" = substituted ]; then
+    [ -n "$PLANTED_RESPONSE" ] || bad "response substitution fixture did not run"
+    command rm -f "$PLANTED_RESPONSE"
+    [ "$(cat "$SENTINEL")" = 'preserve original bytes' ] || bad "substituted response pathname overwrote sentinel"
+    [ "$(cat "$TEST_WINDOW_DIR/$mode-response-mode")" = '-rw-------' ] || bad "thermal response file was not secured"
+    printf 'substituted response pathname preserved sentinel\n'
+fi

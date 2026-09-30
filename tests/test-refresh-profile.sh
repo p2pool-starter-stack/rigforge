@@ -61,6 +61,19 @@ check awk '
     $0 == "start rigforge-api-refresh.timer" { d = NR }
     END { exit !(a && a < b && b < c && c < d) }
 ' "$CASE_DIR/calls"
+# Export failure must fail conditional callers while still restoring both units.
+: >"$CASE_DIR/calls"
+refresh_profile_start
+sed() { return 7; }
+if refresh_profile_finish >"$CASE_DIR/export-failed"; then
+    printf 'failed exporter unexpectedly reported successful diagnostics\n' >&2
+    exit 1
+fi
+unset -f sed
+check test ! -e "$owned"
+check test -z "$REFRESH_PROFILE_DROPIN"
+check grep -q '^daemon-reload$' "$CASE_DIR/calls"
+check grep -q '^start rigforge-api-refresh.timer$' "$CASE_DIR/calls"
 # A timer that fails during the window must still restore its original active state.
 refresh_profile_start
 systemctl() {
