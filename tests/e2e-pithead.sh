@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 # Worker ↔ stack contract gate (#114): a provisioned worker against a live Pithead stack.
-#   PITHEAD_URL=stack-host:3333 sudo bash tests/e2e-pithead.sh all
-#   PITHEAD_URL                  (required) the stack's stratum host:port
-#   E2E_STRATUM_PASS             opt-in: the stack's actual enforced stratum password
 #   E2E_DASH_URL                 opt-in: dashboard /api/state URL (self-signed HTTPS accepted)
 #   E2E_DASH_AUTH                user:pass for the dashboard's basic auth
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
@@ -17,6 +14,8 @@ RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
 
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh"
+# bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
     PASS=$((PASS + 1))
@@ -120,7 +119,7 @@ _cleanup() {
         cleanup_ok=0
     }
     [ "$cleanup_ok" != 1 ] || rm -f "$SAVED_CFG" || cleanup_ok=0
-    rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" || true
+    [ "${REPLAY_RUNNER_LOCK:-0}" = 1 ] || rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" || true
     [ "$cleanup_ok" = 1 ]
 }
 snapshot_config() {
@@ -171,7 +170,7 @@ wait_for_job() { # <timeout_s> -> 0 when the log shows a stratum job
 
 phase_connect() {
     phase "connect — worker mines against the live stack ($PITHEAD_URL)"
-    set_cfg ".pools[0].url = \"$PITHEAD_URL\""
+    [ "${1:-}" = preserve-pools ] || set_cfg ".pools[0].url = \"$PITHEAD_URL\""
     systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1
     [ -n "$WLOG" ] || WLOG="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
     if [ -z "$WLOG" ]; then
@@ -535,8 +534,8 @@ summary() {
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|access-tokens|all)"
-rig_lock rigforge e2e-pithead
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)"
+replay_lock "${1:-all}"
 
 snapshot_config
 case "${1:-all}" in
@@ -548,6 +547,7 @@ stratum-auth) phase_stratum_auth ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
 control) phase_control ;;
+control-replay-thermal | control-replay-pools) phase_control_replay "${1##*-}" ;;
 access-tokens) phase_access_tokens ;;
 all)
     for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens; do
@@ -555,7 +555,7 @@ all)
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|access-tokens|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT

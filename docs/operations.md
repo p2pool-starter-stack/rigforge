@@ -566,9 +566,9 @@ last-change provenance (`config_meta`; #254), and the last control-path outcome 
 persistent server (python3 stdlib, ~10 MB idle) ships pre-computed bytes, so a request costs
 microseconds and cannot touch mining performance; a systemd timer schedules a refresh every 15
 seconds at idle priority, off the request path. The clock probe reads per-core values without
-starting a process for each core. The hardware control test checks direct feed propagation and
-captures timer-driven helper timings around thermal apply while mining, preserving the service
-policy and normal feed publication. The timer uses an independent wall-clock cadence,
+starting a process for each core. The queued thermal and separate pools replay tests check direct-feed
+freshness and exact-ID publication, capturing timer-driven helper timings under the runner-owned
+mining fixture. They preserve the service policy and normal feed publication. The timer uses an independent wall-clock cadence,
 so a failed refresh or a unit reinstall cannot strand the feed without a future run. Summary and
 health responses carry `generated_at` in UTC; `doctor` reports its age and the timer's next/last
 trigger, and warns once the payload is over a minute old. The same

@@ -263,3 +263,6 @@ bash "$ROOT/tests/test-refresh-profile.sh"
 assert_rc "timer-refresh diagnostics regression suite (#546)" "$?" "0"
 bash "$ROOT/tests/test-refresh-window-control.sh"
 assert_rc "thermal refresh-window regression suite (#546)" "$?" "0"
+
+bash "$ROOT/tests/test-control-replay.sh"
+assert_rc "queued control replay regression suite (#540)" "$?" "0"

@@ -57,7 +57,7 @@ refresh_profile_state() { :; }
 refresh_profile_finish() { printf 'finish-window elapsed=%s\n' "$((SECONDS - started))"; }
 curl() {
     [[ "$*" != *Bearer* ]] || return 1
-    [ "$1 $2" = "--config -" ] || return 1
+    [ "$1 $2 $3 $4 $5" = "-q --noproxy * --config -" ] || return 1
     grep -Eq '^header = "Authorization: Bearer [0-9a-f]{64}"$' || return 1
     local output="" data="" url="" arg temp=100 stamp='2026-09-30T00:00:00Z'
     while [ "$#" -gt 0 ]; do

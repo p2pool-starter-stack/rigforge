@@ -25,7 +25,10 @@ refresh_profile_start() {
 }
 refresh_profile_state() {
     printf 'refresh-window: state at_ns=%s\n' "$(date +%s%N)"
-    systemctl is-active --quiet xmrig || return 1
+    local active=0
+    systemctl is-active --quiet xmrig && active=1
+    printf 'refresh-window: xmrig_active=%s\n' "$active"
+    [ "$active" = 1 ] || [ "${1:-}" = allow-inactive ] || return 1
     systemctl show rigforge-api-refresh.timer rigforge-api-refresh.service \
         -p ActiveState -p SubState -p Result -p LastTriggerUSec -p NextElapseUSecRealtime \
         -p ExecMainStartTimestamp -p ExecMainExitTimestamp -p ExecMainStatus

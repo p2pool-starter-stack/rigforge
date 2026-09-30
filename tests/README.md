@@ -42,11 +42,26 @@ the owned drop-in, reloads systemd and restores the timer’s prior active state
 The job fails if journal collection or measurement export fails, no profiled refresh completes
 successfully, or cleanup fails. Begin events from unfinished helpers are retained to locate stalled
 operations, including a pass stopped by cleanup.
-For affected-workload acceptance, use a reserved `rigforge` `tier4-e2e` job with
-`phases=["connect","control"]`: connect proves mining before control on the same reserved worker.
-A `phases=["control"]` run validates diagnostic collection only;
-do not invoke the profiler against a rig yourself. Routing still chooses an eligible worker:
-this captures the same thermal-control/service path, but does not guarantee the original fixture.
+The ordinary `phases=["connect","control"]` job proves mining and profiles a bounded thermal
+apply on an eligible worker; it does not recreate the historical sequence. For #540's separate
+thermal and pools replay cases, submit one declaring phase per `tier4-e2e` job with
+`fixture=pithead-control`: `control-replay-thermal` or `control-replay-pools`. The deployed runner
+privately supplies the operator pools probe, context and named reservation. The gate verifies that
+reservation, bypasses only its own competing flock, and leaves the runner's holder marker and release
+alone. Without the fixture, a replay is refused before config changes; ordinary locking is unchanged.
+Both cases establish real jobs and an accepted share, retain thread/tuning and payout identity, set
+recorded scalars (thermal 100, DONATION 0, watchdog interval 5), and replay thermal 101 → 100,
+DONATION 1 → 0, watchdog interval 6 → 5, then the private pools probe. The thermal case verifies a 100 baseline, then applies direct 102 and requires a newer feed
+carrying that cutoff and this exact terminal change ID within 90 seconds. The separate pools
+case requires this exact change ID to reach `applied` in the enriched feed within the same bound,
+not a later change's outcome. Both continue five-minute observations for diagnostics and preserve the
+original pass/fail deadline even if a read crosses it. Full applies can stop/restart the miner;
+observations record its active state rather than aborting during that expected transition.
+Requests use secured scratch payloads, never credential-bearing arguments or logs. The current probe
+and borrowed worker form an equivalent fixture: historical starting config/checkout, original pool
+payload, threads/affinity/tuning and precise inter-apply timing remain unknown in the runner context.
+No guessed delays or hardware differences are substituted. Do not invoke any replay or profiler
+against a worker yourself; the runner owns reservation, restoration and baseline verification.
 Short passes or an injected delay do not attribute the historical stale-feed failure; #540's
 fix acceptance requires evidence of the same failure mechanism. Profiling adds clock-read overhead
 and the source remains the submitted RigForge head; no alternative production implementation is
