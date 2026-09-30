@@ -98,6 +98,45 @@ if refresh_profile_start; then exit 1; fi
 refresh_profile_finish
 check test "$(cat "$owned")" = 'existing override'
 rm "$owned"
+# A failed partial write must remain owned until cleanup removes it.
+saved_umask=$(umask)
+umask 027
+exec 9>"$CASE_DIR/caller-fd"
+printf() {
+    if [[ "$1" == '[Service]'* ]]; then
+        builtin printf '[Service]\nExecStart=\n'
+        return 7
+    fi
+    builtin printf "$@"
+}
+if refresh_profile_start; then exit 1; fi
+unset -f printf
+check test "$(umask)" = 0027
+case $- in *C*) exit 1 ;; esac
+builtin printf 'caller descriptor preserved\n' >&9
+exec 9>&-
+check test "$(cat "$CASE_DIR/caller-fd")" = 'caller descriptor preserved'
+umask "$saved_umask"
+check test "$REFRESH_PROFILE_DROPIN" = "$owned"
+check test "$(cat "$owned")" = "$(builtin printf '[Service]\nExecStart=')"
+refresh_profile_finish >"$CASE_DIR/partial-write-collected"
+check test ! -e "$owned"
+check test -z "$REFRESH_PROFILE_DROPIN"
+# A competitor arriving after the initial existence check must not be claimed or removed.
+mkdir() {
+    command mkdir "$@" || return
+    builtin printf 'competing override\n' >"$owned"
+}
+set -o noclobber
+if refresh_profile_start 2>"$CASE_DIR/collision-error"; then exit 1; fi
+unset -f mkdir
+case $- in *C*) : ;; *) exit 1 ;; esac
+set +o noclobber
+check test "$(umask)" = "$saved_umask"
+check test -z "$REFRESH_PROFILE_DROPIN"
+refresh_profile_finish
+check test "$(cat "$owned")" = 'competing override'
+rm "$owned"
 # A window without a completed profiled refresh cannot report successful diagnostics.
 refresh_profile_start
 journalctl() { :; }

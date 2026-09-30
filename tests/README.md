@@ -34,8 +34,10 @@ for five minutes around the apply; the changed ceiling must still appear within 
 Control-phase requests pass the temporary bearer token through curl's stdin configuration,
 keeping it out of process arguments. Each POST uses its own securely allocated response file,
 removed after reading the change identifier.
+The drop-in is opened exclusively and claimed before writing: a partial write fails setup but remains
+owned for cleanup; an existing or competing override is refused without being claimed or removed.
 Cleanup quiesces the timer and instrumented pass, emits only measurement records from the journal, removes
-the drop-in, reloads systemd and restores the timer’s prior active state before config/runtime restoration.
+the owned drop-in, reloads systemd and restores the timer’s prior active state before config/runtime restoration.
 The job fails if journal collection or measurement export fails, no profiled refresh completes
 successfully, or cleanup fails. Begin events from unfinished helpers are retained to locate stalled
 operations, including a pass stopped by cleanup.

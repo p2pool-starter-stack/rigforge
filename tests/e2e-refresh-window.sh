@@ -13,12 +13,25 @@ refresh_profile_start() {
     systemctl is-active --quiet rigforge-api-refresh.timer && REFRESH_PROFILE_TIMER_ACTIVE=1
     REFRESH_PROFILE_SINCE=$(date -u '+%Y-%m-%d %H:%M:%S')
     local dropin="$dir/rigforge-profile.conf"
-    (
-        umask 077
-        set -o noclobber
-        printf '[Service]\nExecStart=\nExecStart=/bin/bash %s %s\n' "$script" "$RIGFORGE" >"$dropin"
-    ) || return 1
-    REFRESH_PROFILE_DROPIN="$dropin"
+    local original_umask original_noclobber=0
+    original_umask=$(umask)
+    case $- in *C*) original_noclobber=1 ;; esac
+    umask 077
+    set -o noclobber
+    # Claim only after the exclusive open succeeds, before any write can fail.
+    # The scoped descriptor preserves a caller's fd 9 and avoids reopening the pathname.
+    if {
+        umask "$original_umask"
+        [ "$original_noclobber" = 1 ] || set +o noclobber
+        REFRESH_PROFILE_DROPIN="$dropin"
+        printf '[Service]\nExecStart=\nExecStart=/bin/bash %s %s\n' "$script" "$RIGFORGE" >&9
+    } 9>"$dropin"; then
+        :
+    else
+        umask "$original_umask"
+        [ "$original_noclobber" = 1 ] || set +o noclobber
+        return 1
+    fi
     systemctl daemon-reload
 }
 refresh_profile_state() {
