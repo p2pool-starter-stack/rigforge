@@ -9,6 +9,8 @@ refresh_profile_start() {
     case "$script$RIGFORGE" in *[!a-zA-Z0-9_./-]*) return 1 ;; esac
     [ ! -L "$dir" ] && [ ! -e "$dir/rigforge-profile.conf" ] && [ ! -L "$dir/rigforge-profile.conf" ] || return 1
     mkdir -p "$dir" || return 1
+    REFRESH_PROFILE_TIMER_ACTIVE=0
+    systemctl is-active --quiet rigforge-api-refresh.timer && REFRESH_PROFILE_TIMER_ACTIVE=1
     REFRESH_PROFILE_SINCE=$(date -u '+%Y-%m-%d %H:%M:%S')
     local dropin="$dir/rigforge-profile.conf"
     (
@@ -31,10 +33,6 @@ refresh_profile_finish() {
     local log rc=0
     refresh_profile_state || rc=1
     # Quiesce both units before collecting: the timer could otherwise dispatch during cleanup.
-    if [ -z "$REFRESH_PROFILE_TIMER_ACTIVE" ]; then
-        REFRESH_PROFILE_TIMER_ACTIVE=0
-        systemctl is-active --quiet rigforge-api-refresh.timer && REFRESH_PROFILE_TIMER_ACTIVE=1
-    fi
     systemctl stop rigforge-api-refresh.timer || rc=1
     systemctl stop rigforge-api-refresh.service || rc=1
     log=$(mktemp) || rc=1

@@ -38,12 +38,19 @@ bad() {
     exit 1
 }
 set_cfg() { :; }
+xxd() {
+    cat >/dev/null
+    printf '%064d\n' 0
+}
 sleep() { SECONDS=$((SECONDS + $1)); }
 date() { printf '2026-09-30T00:00:00Z\n'; }
 refresh_profile_start() { printf 'profile started\n'; }
 refresh_profile_state() { :; }
 refresh_profile_finish() { printf 'finish-window elapsed=%s\n' "$((SECONDS - started))"; }
 curl() {
+    [[ "$*" != *Bearer* ]] || return 1
+    [ "$1 $2" = "--config -" ] || return 1
+    grep -Eq '^header = "Authorization: Bearer [0-9a-f]{64}"$' || return 1
     local output="" data="" url="" arg temp=100 stamp='2026-09-30T00:00:00Z'
     while [ "$#" -gt 0 ]; do
         arg="$1"

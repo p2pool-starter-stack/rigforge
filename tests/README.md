@@ -31,10 +31,13 @@ with `e2e-api-refresh-profile.sh`; its priority, timeout, timer and live feed re
 The profiler logs fixed helper names, begin/end timestamps and nanosecond durations, never
 arguments or payloads. Five-second observations record timer/service state and the direct feed
 for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
+Control-phase requests pass the temporary bearer token through curl's stdin configuration,
+keeping it out of process arguments.
 Cleanup quiesces the timer and instrumented pass, emits only measurement records from the journal, removes
 the drop-in, reloads systemd and restores the timer’s prior active state before config/runtime restoration.
-Missing measurements or failed
-cleanup fail the job. Use a reserved `rigforge` `tier4-e2e` job with `phases=["control"]`;
+The job fails if no profiled refresh completes successfully or cleanup fails. Begin events from unfinished
+helpers are retained to locate stalled operations, including a pass stopped by cleanup.
+Use a reserved `rigforge` `tier4-e2e` job with `phases=["control"]`;
 do not invoke the profiler against a rig yourself. Routing still chooses an eligible worker:
 this captures the same thermal-control/service path, but does not guarantee the original fixture.
 Short passes or an injected delay do not attribute the historical stale-feed failure; #540's

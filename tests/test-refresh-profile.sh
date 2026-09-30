@@ -54,15 +54,22 @@ check grep -q 'stop rigforge-api-refresh.service' "$CASE_DIR/calls"
 check grep -q 'helper=_health_json event=end' "$CASE_DIR/collected"
 check bash -c '! grep -q sensitive "$1"' -- "$CASE_DIR/collected"
 # Timer must be quiesced before the service; restore it only after override removal/reload.
-check python3 - "$CASE_DIR/calls" <<'PY_ORDER'
-import sys
-calls=open(sys.argv[1]).read().splitlines()
-a=calls.index('stop rigforge-api-refresh.timer')
-b=calls.index('stop rigforge-api-refresh.service')
-c=calls.index('daemon-reload', b)
-d=calls.index('start rigforge-api-refresh.timer')
-assert a < b < c < d
-PY_ORDER
+check awk '
+    $0 == "stop rigforge-api-refresh.timer" { a = NR }
+    $0 == "stop rigforge-api-refresh.service" { b = NR }
+    $0 == "daemon-reload" && b { c = NR }
+    $0 == "start rigforge-api-refresh.timer" { d = NR }
+    END { exit !(a && a < b && b < c && c < d) }
+' "$CASE_DIR/calls"
+# A timer that fails during the window must still restore its original active state.
+refresh_profile_start
+systemctl() {
+    printf '%s\n' "$*" >>"$CASE_DIR/failed-timer-calls"
+    [ "$*" != 'is-active --quiet rigforge-api-refresh.timer' ]
+}
+refresh_profile_finish >"$CASE_DIR/failed-timer-collected"
+check grep -q '^start rigforge-api-refresh.timer$' "$CASE_DIR/failed-timer-calls"
+systemctl() { printf '%s\n' "$*" >>"$CASE_DIR/calls"; }
 # Preserve an already-inactive timer; do not spuriously start it.
 systemctl() {
     printf '%s\n' "$*" >>"$CASE_DIR/inactive-calls"

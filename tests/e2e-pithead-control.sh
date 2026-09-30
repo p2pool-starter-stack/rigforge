@@ -5,6 +5,12 @@
 # file declares no preflight of its own and must not be run standalone.
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-refresh-window.sh"
 
+_control_curl() { # Keep the temporary write token out of process arguments.
+    local token="$1"
+    shift
+    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl --config - "$@"
+}
+
 phase_control() {
     phase "control — writable control path DONATION apply round trip (#344/#509)"
     local tok cur new port api_port resp code cid st waited=0 body max_temp target_temp
@@ -20,13 +26,13 @@ phase_control() {
     port=$(jq -r '.control_port // 8082' "$CFG")
     api_port=$(jq -r '.api_port // 8081' "$CFG")
     resp="$(mktemp)"
-    code=$(curl -s -o "$resp" -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $tok" \
+    code=$(_control_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"DONATION\": $new}" "http://127.0.0.1:$port/apply" 2>/dev/null || true)
     cid=$(jq -r '.change_id // empty' "$resp" 2>/dev/null || true)
     rm -f "$resp"
     [ "$code" = 202 ] && [ -n "$cid" ] && ok "POST /apply accepted (change_id=$cid)" || bad "POST /apply returned HTTP '$code' (expected 202)"
     while [ "$waited" -lt 300 ]; do
-        body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
+        body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
         st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
         case "$st" in applied | rejected | rolled_back | failed) break ;; esac
         sleep 5
@@ -42,7 +48,7 @@ phase_control() {
     sleep 20 # allow a natural timer dispatch before thermal apply
     local before feed_temp feed_stamp started observed=0
     before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    code=$(curl -s -o "$resp" -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $tok" \
+    code=$(_control_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"max_temp_c\":$target_temp}" "http://127.0.0.1:$port/apply" 2>/dev/null || true)
     cid=$(jq -r '.change_id // empty' "$resp" 2>/dev/null || true)
     rm -f "$resp"
@@ -50,9 +56,9 @@ phase_control() {
     started=$SECONDS
     while [ "$((SECONDS - started))" -lt 300 ]; do
         refresh_profile_state || bad "miner or refresh-state observation failed"
-        body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
+        body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
         st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
-        body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $tok" "http://127.0.0.1:$api_port/1/summary" 2>/dev/null || true)
+        body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null || true)
         feed_temp=$(printf '%s' "$body" | jq -r '.rigforge.watchdog.max_temp_c // empty' 2>/dev/null || true)
         feed_stamp=$(printf '%s' "$body" | jq -r '.generated_at // empty' 2>/dev/null || true)
         printf 'refresh-window: elapsed_s=%s status=%s max_temp_c=%s generated_at=%s\n' "$((SECONDS - started))" "${st:-unknown}" "${feed_temp:-missing}" "${feed_stamp:-missing}"
