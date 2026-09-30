@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Reserved control-phase lifecycle; overrides only ExecStart, retaining the real service policy.
-REFRESH_PROFILE_DROPIN="" REFRESH_PROFILE_SINCE="" REFRESH_PROFILE_TIMER_ACTIVE=""
+REFRESH_PROFILE_STAGING="" REFRESH_PROFILE_DROPIN="" REFRESH_PROFILE_SINCE="" REFRESH_PROFILE_TIMER_ACTIVE=""
 refresh_profile_start() {
     local dir="${REFRESH_PROFILE_UNIT_ROOT:-/run/systemd/system}/rigforge-api-refresh.service.d"
     local script
@@ -13,12 +13,14 @@ refresh_profile_start() {
     systemctl is-active --quiet rigforge-api-refresh.timer && REFRESH_PROFILE_TIMER_ACTIVE=1
     REFRESH_PROFILE_SINCE=$(date -u '+%Y-%m-%d %H:%M:%S')
     local dropin="$dir/rigforge-profile.conf"
-    (
-        umask 077
-        set -o noclobber
-        printf '[Service]\nExecStart=\nExecStart=/bin/bash %s %s\n' "$script" "$RIGFORGE" >"$dropin"
-    ) || return 1
+    # Stage privately: failed writes must never expose an incomplete service policy.
+    REFRESH_PROFILE_STAGING=$(mktemp "$dir/.rigforge-profile.XXXXXX") || return 1
+    printf '[Service]\nExecStart=\nExecStart=/bin/bash %s %s\n' "$script" "$RIGFORGE" >|"$REFRESH_PROFILE_STAGING" || return 1
+    # POSIX link uses the exact destination (unlike ln's directory handling) and never replaces it.
+    link "$REFRESH_PROFILE_STAGING" "$dropin" || return 1
     REFRESH_PROFILE_DROPIN="$dropin"
+    rm -f "$REFRESH_PROFILE_STAGING" || return 1
+    REFRESH_PROFILE_STAGING=""
     systemctl daemon-reload
 }
 refresh_profile_state() {
@@ -29,8 +31,11 @@ refresh_profile_state() {
         -p ExecMainStartTimestamp -p ExecMainExitTimestamp -p ExecMainStatus
 }
 refresh_profile_finish() {
-    [ -n "$REFRESH_PROFILE_DROPIN" ] || return 0
     local log rc=0
+    if [ -n "$REFRESH_PROFILE_STAGING" ]; then
+        if rm -f "$REFRESH_PROFILE_STAGING"; then REFRESH_PROFILE_STAGING=""; else rc=1; fi
+    fi
+    [ -n "$REFRESH_PROFILE_DROPIN" ] || return "$rc"
     refresh_profile_state || rc=1
     # Quiesce both units before collecting: the timer could otherwise dispatch during cleanup.
     systemctl stop rigforge-api-refresh.timer || rc=1
