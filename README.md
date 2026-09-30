@@ -97,8 +97,10 @@ chmod +x rigforge.sh
 sudo ./rigforge.sh
 ```
 
-The script needs root to install packages and tune the system. On first run it asks for your pool URL
-and writes a minimal `config.json`. On Linux, reboot once afterward to apply the HugePages tuning;
+The script needs root to install packages and tune the system. First-run setup asks for your pool URL
+and optional password. For an `.onion` pool it offers a validated SOCKS proxy override, defaulting to
+`127.0.0.1:9050`; install and run Tor yourself. It writes a minimal `config.json`. On Linux, reboot
+once afterward to apply the HugePages tuning;
 the `xmrig` service then starts automatically.
 
 > Mining to a public pool like SupportXMR? Point `url` at the pool and set your Monero wallet
