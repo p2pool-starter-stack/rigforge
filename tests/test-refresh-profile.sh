@@ -97,7 +97,7 @@ printf 'existing override\n' >"$owned"
 if refresh_profile_start; then exit 1; fi
 refresh_profile_finish
 check test "$(cat "$owned")" = 'existing override'
-rm "$owned"
+command rm "$owned"
 # A failed partial write must remain owned until cleanup removes it.
 saved_umask=$(umask)
 umask 027
@@ -121,6 +121,11 @@ check test -z "$REFRESH_PROFILE_DROPIN"
 check test ! -e "$owned"
 staged="$REFRESH_PROFILE_STAGING"
 check test "$(cat "$staged")" = "$(builtin printf '[Service]\nExecStart=')"
+rm() { return 7; }
+if refresh_profile_finish; then exit 1; fi
+check test "$REFRESH_PROFILE_STAGING" = "$staged"
+check test -e "$staged"
+unset -f rm
 refresh_profile_finish >"$CASE_DIR/partial-write-collected"
 check test ! -e "$owned"
 check test ! -e "$staged"
@@ -140,7 +145,7 @@ check test "$(umask)" = "$saved_umask"
 check test -z "$REFRESH_PROFILE_DROPIN"
 refresh_profile_finish
 check test "$(cat "$owned")" = 'competing override'
-rm "$owned"
+command rm "$owned"
 # A raced symlink to a nonregular target must also remain untouched.
 mkdir() {
     command mkdir "$@" || return
@@ -152,7 +157,15 @@ check test -z "$REFRESH_PROFILE_DROPIN"
 refresh_profile_finish
 check test -L "$owned"
 check test "$(readlink "$owned")" = /dev/null
-rm "$owned"
+command rm "$owned"
+# Staging allocation failure must fail setup without claiming any override.
+mktemp() { return 7; }
+if refresh_profile_start; then exit 1; fi
+unset -f mktemp
+check test -z "$REFRESH_PROFILE_STAGING"
+check test -z "$REFRESH_PROFILE_DROPIN"
+refresh_profile_finish
+check test ! -e "$owned"
 # Failure to unlink staging after publication must not prevent live-override cleanup.
 rm() {
     if [ "${2:-}" = "$REFRESH_PROFILE_STAGING" ]; then return 7; fi
