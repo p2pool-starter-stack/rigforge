@@ -106,6 +106,7 @@ _restore_xmrig() {
 }
 _cleanup() {
     local cleanup_ok=1 p
+    refresh_profile_finish || cleanup_ok=0
     for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
         "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
@@ -167,8 +168,6 @@ wait_for_job() { # <timeout_s> -> 0 when the log shows a stratum job
     done
     return 1
 }
-
-# --- phases ---
 
 phase_connect() {
     phase "connect — worker mines against the live stack ($PITHEAD_URL)"

@@ -251,3 +251,9 @@ assert_eq "watchdog cleanup fails when prior active state cannot be restored (#4
 # subprocess and assert it stays silent. Red before the `|| true` guard: two on_err blocks on stderr.
 APIERR="$(mktemp -d "$SANDBOX/apierr.XXXXXX")"
 assert_eq "api-refresh: no control changes/ ring does not trip errexit or the ERR trap (#519)" "$(RIGFORGE_HOME="$APIQ" RIGFORGE_API_DATA="$APIERR" RIGFORGE_CONTROL_STATE="$APIERR/ctl" PATH="$STUBS:$PATH" bash "$SCRIPT" api-refresh 2>&1 >/dev/null)" ""
+
+# Harness diagnostics have their own hardware-free regression suite (#546).
+bash "$ROOT/tests/test-refresh-profile.sh"
+assert_rc "timer-refresh diagnostics regression suite (#546)" "$?" "0"
+bash "$ROOT/tests/test-refresh-window-control.sh"
+assert_rc "thermal refresh-window regression suite (#546)" "$?" "0"
