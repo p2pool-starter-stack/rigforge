@@ -566,7 +566,9 @@ last-change provenance (`config_meta`; #254), and the last control-path outcome 
 persistent server (python3 stdlib, ~10 MB idle) ships pre-computed bytes, so a request costs
 microseconds and cannot touch mining performance; a systemd timer schedules a refresh every 15
 seconds at idle priority, off the request path. The clock probe reads per-core values without
-starting a process for each core. The timer uses an independent wall-clock cadence,
+starting a process for each core. The hardware control test checks direct feed propagation and
+compares complete refresh and clock-probe timings for the old and builtin reads at idle priority,
+publishing only into scratch files. The timer uses an independent wall-clock cadence,
 so a failed refresh or a unit reinstall cannot strand the feed without a future run. Summary and
 health responses carry `generated_at` in UTC; `doctor` reports its age and the timer's next/last
 trigger, and warns once the payload is over a minute old. The same

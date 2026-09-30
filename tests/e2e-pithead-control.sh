@@ -57,6 +57,12 @@ phase_control() {
     [ "$st" = applied ] && [ "$feed_temp" = "$target_temp" ] && [[ "$feed_stamp" > "$before" ]] &&
         ok "applied max_temp_c reaches a new direct sister-API summary within ${waited}s (#540)" ||
         bad "max_temp_c feed stale after 90s (status=${st:-unknown}, temp=${feed_temp:-missing}, generated_at=${feed_stamp:-missing})"
+    # Bounded A/B diagnostics at the refresh service's priority, while the miner runs. Never
+    # replace the live feed: both implementations publish only into the scratch directory.
+    systemctl is-active --quiet xmrig || bad "refresh profiling requires the miner running"
+    systemctl show rigforge-api-refresh.timer -p ActiveState -p LastTriggerUSec
+    timeout 300 nice -n 19 ionice -c 3 bash "$(dirname "${BASH_SOURCE[0]}")/e2e-api-refresh-profile.sh" "$RIGFORGE" ||
+        bad "refresh A/B diagnostics did not complete"
     # No token blanking here: _cleanup's EXIT trap restores DONATION, the token and the control
     # state from the snapshot, and blanking ACCESS_TOKEN while control is enabled is #514's own
     # fail-closed abort (rigforge.sh refuses that apply) — the bug this phase must not re-enact.
