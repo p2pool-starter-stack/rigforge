@@ -40,7 +40,7 @@ refresh_profile_finish() {
         journalctl --sync || rc=1
         journalctl -u rigforge-api-refresh.service --since "$REFRESH_PROFILE_SINCE UTC" --no-pager -o cat >"$log" || rc=1
         # Publish only the fixed-schema measurements; other unit journal messages may contain secrets.
-        sed -n '/^refresh-profile: pid=[0-9][0-9]* helper=[a-z_][a-z_]* event=\(begin\|end\) at_ns=[0-9][0-9]* duration_ns=[0-9][0-9]* rc=[0-9][0-9]*$/p' "$log"
+        sed -nE '/^refresh-profile: pid=[0-9][0-9]* helper=[a-z_][a-z_]* event=(begin|end) at_ns=[0-9][0-9]* duration_ns=[0-9][0-9]* rc=[0-9][0-9]*$/p' "$log"
         grep -Eq '^refresh-profile: .*helper=api_refresh event=end .*rc=0$' "$log" || rc=1
         rm -f "$log"
     fi
