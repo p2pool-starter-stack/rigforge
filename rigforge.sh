@@ -275,14 +275,7 @@ ensure_config_exists() {
         if [[ "$CREATE_CONF" =~ ^[Yy] ]]; then
             log "Starting interactive setup..."
 
-            # We only need the pool URL — every other key has a sensible default (see
-            # config.reference.json for the full list). The URL is host:port (Pithead's proxy
-            # listens on 3333).
-            # #344: re-prompt on an invalid entry instead of exiting the whole script — nothing is
-            # persisted at this point (the write is below, after validation), so a typo should cost
-            # three lines, not a restart. Bounded, not until-valid: a non-interactive/EOF stdin (tests,
-            # a piped install) must still terminate instead of spinning. SETUP_URL_TRIES follows this
-            # file's existing env-overridable-retry-count idiom (APPLY_POOL_TRIES, CONTROL_LIVE_TRIES).
+            # Validate before writing; bounded retries also terminate on piped stdin/EOF.
             url_tries="${SETUP_URL_TRIES:-3}"
             IN_URL=""
             for i in $(seq 1 "$url_tries"); do
@@ -318,22 +311,26 @@ ensure_config_exists() {
                 error "A valid pool URL (host:port) is required — giving up after $url_tries attempt(s)."
             fi
 
-            # Pithead stratum auth (#113): if the stack sets p2pool.stratum_password, every rig's pool
-            # `pass` must match or the proxy rejects the login. The secret is shown by `pithead status`.
-            # Enter skips it (open stack / non-Pithead pool) — parse_config then defaults pass to "x".
-            # Pre-validate with parse_config's exact pass rule (same reasoning as the host check above:
-            # fail before the write so a bad value doesn't leave a prompt-suppressing config on disk).
+            # Optional stratum password; validate before creating the config.
             IN_PASS=""
             read -r -p "Stratum password, if your stack requires one (shown by 'pithead status'; Enter for none): " IN_PASS || true
             if [ -n "$IN_PASS" ] && ! [[ "$IN_PASS" =~ ^[[:graph:]]+$ ]]; then
                 error "Stratum password must have no spaces or control characters."
             fi
 
-            # Minimal config: just the native pools array. jq writes it so the URL (and pass, when
-            # given) are safely quoted; an empty pass writes no key at all, keeping the no-auth
-            # minimal config byte-identical to before.
-            (umask 077 && jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" \
-                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end))]}' >"$CONFIG_JSON")
+            IN_SOCKS5=""
+            case "$_host" in
+            *.[Oo][Nn][Ii][Oo][Nn])
+                log "An onion pool needs Tor. Using SOCKS proxy 127.0.0.1:9050; install and run Tor yourself."
+                read -r -p "SOCKS proxy (host:port; Enter for 127.0.0.1:9050): " IN_SOCKS5 || true
+                IN_SOCKS5="${IN_SOCKS5:-127.0.0.1:9050}"
+                (_validate_host_port "$IN_SOCKS5" "SOCKS proxy" 9050) >/dev/null 2>&1 || error "SOCKS proxy must be a valid host:port."
+                ;;
+            esac
+
+            # Omit unset fields to preserve the LAN config's minimal shape.
+            (umask 077 && jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" --arg socks5 "$IN_SOCKS5" \
+                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end) + (if $socks5 == "" then {} else {socks5: $socks5} end))]}' >"$CONFIG_JSON")
             # The operator is told (below) to hand-edit this file to add a wallet / ACCESS_TOKEN, and the
             # first `apply` may be a long way off — chmod now so those secrets are never world-readable
             # in the interim (generate_xmrig_config's chmod 600 only runs on setup/apply). (#131)
@@ -394,15 +391,7 @@ _validate_host_port() { # <value> <label> <example-port>
     fi
     _h="${_v%:*}"
     _p="${_v##*:}"
-    # #405: the digit-count guard runs FIRST and short-circuits. On a value bash cannot evaluate as
-    # an integer, `[ "$_p" -lt 1 ]` returns 2 rather than false, so the range check fell through and
-    # let it pass. This keys on DIGIT COUNT and nothing else. Any legal port is at most five digits,
-    # so nothing in range is rejected — except a value padded PAST five digits (`065535`), which the
-    # range test evaluated as decimal and kept. Padding within five digits (`08080`) is untouched,
-    # accepted exactly as before, and pinned in tests/run.sh so that stays deliberate.
-    # It gets its OWN message: the range wording would quote a value that IS in range and tell the
-    # operator nothing. The message names the digit count, because the likeliest input to land here
-    # is a fat-fingered extra digit (`999999`) with no padding to remove.
+    # Bound the digit count before arithmetic; huge values otherwise evade the range check.
     if [ "${#_p}" -gt 5 ]; then
         error "$_label port '$_p' in '$_v' has more than five digits; a port is 1-65535."
     fi
@@ -465,12 +454,7 @@ parse_config() {
     # attribute in-string program lines, and the patch-coverage gate needs every new line hittable.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # socks5 (#400): re-attach the per-pool proxy from the raw config, emitted ONLY when set — the map
-    # above rebuilds each pool from a fixed key set, which is what dropped this key. Same shape and
-    # the same reasons as the #115 pass directly above: emitting it unconditionally (null) would
-    # change the generated config's shape for every existing rig on its next apply, and it is a
-    # single-line pass rather than lines inside the map because kcov cannot attribute in-string
-    # program lines and the patch-coverage gate needs every new line hittable.
+    # Re-attach socks5 only when set, using the same shape/coverage rule as tls-fingerprint.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
     # #265: jq's `//` treats an explicit false like null/missing, so the map above rewrites an
@@ -5463,15 +5447,23 @@ doctor() {
         issues=$((issues + 1))
     fi
 
-    # Pool connection (#343): the check that says whether the rig is doing its job at all — every
-    # other probe here can pass while a bad pools[0].url loops on DNS errors and mines nothing.
-    # Service running -> ask the miner itself (see _pool_conn_status); API silent -> advisory only
-    # (it may still be starting, and the service check already judges the service); service
-    # stopped -> one guarded TCP dial of pools[0], so a parked rig still learns whether its pool
-    # would even answer.
+    # Use the live miner verdict when running; a stopped miner can only support a TCP probe.
     if [ -f "$CONFIG_JSON" ]; then
-        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp
+        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy
         pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
+        # Advisory only: a listening TCP socket does not prove SOCKS/Tor or mining works.
+        while IFS= read -r proxy; do
+            (_validate_host_port "$proxy" "Pool socks5" 9050) >/dev/null 2>&1 || {
+                _ck_warn "configured SOCKS proxy has an invalid host:port — check pools[].socks5"
+                continue
+            }
+            ph=${proxy%:*}
+            pp=${proxy##*:}
+            ph=${ph#\[}
+            ph=${ph%\]}
+            _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed"
+            # Reject control characters before line framing can split one invalid value into valid ones.
+        done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
             IFS="$(printf '\t')" read -r pc_st pc_pool pc_n1 pc_n2 <<EOF
 $(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _pool_conn_status)
@@ -5489,6 +5481,8 @@ EOF
                 _ck_info "worker API not reachable at 127.0.0.1:8080 — can't verify the pool connection (the miner may still be starting; re-run doctor shortly)"
                 ;;
             esac
+        elif [ -n "$(jq -r '.pools[0].socks5 // empty' "$CONFIG_JSON" 2>/dev/null)" ]; then
+            _ck_info "miner stopped — can't verify the pool connection through SOCKS until it starts"
         elif [ -n "$pool0" ]; then
             ph=${pool0#*://}
             pp=${ph##*:}

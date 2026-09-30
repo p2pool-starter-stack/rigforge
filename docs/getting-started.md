@@ -12,7 +12,7 @@ whole process, and most of it is automated.
 > sudo ./rigforge.sh
 > ```
 >
-> Answer one prompt (your pool URL — plus an optional stratum password if your stack uses one), let it build, and on Linux reboot once to apply the
+> Enter your pool URL and optional stratum password (an `.onion` pool also offers a SOCKS proxy override), let it build, and on Linux reboot once to apply the
 > kernel tuning. The `xmrig` service starts automatically after the reboot.
 
 ---
@@ -25,7 +25,7 @@ whole process, and most of it is automated.
 | **CPU** | 64-bit x86 with **AVX2** is strongly recommended for RandomX performance. More and faster cores mean more hashrate. |
 | **RAM** | **~2.3 GB free** for RandomX fast mode (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread. **4 GB+** recommended. |
 | **Privileges** | `root` for `setup` (it installs packages and tunes the kernel, so run it with `sudo`). Looking is free: `status`, `logs`, and `backup` never need root. |
-| **Network** | The worker must reach your pool / stack host on its Stratum port (Pithead uses **3333**). Workers run on a trusted LAN and do **not** need Tor. |
+| **Network** | The worker must reach your pool / stack host on its Stratum port (Pithead uses **3333**). LAN pools need no Tor; an `.onion` pool needs a Tor SOCKS proxy that you install and run yourself. |
 
 > 📐 Full sizing guidance, including minimum vs. recommended specs and the per-CPU tuning profiles,
 > is in **[Hardware Requirements](hardware.md)**. The **stack host** these workers connect to is sized
@@ -57,8 +57,7 @@ and its proxy port `3333` (e.g. `stack.lan:3333`); with Pithead you do **not** n
 stack handles payouts centrally.
 
 > Mining to a public pool (SupportXMR, etc.) instead of Pithead? Public pools pay **you**, so they
-> expect your Monero wallet address as the login (and usually a TLS port). The first-run prompt only
-> asks for the pool URL, so afterwards set `pools[].user` to your wallet (and `tls`) and run
+> expect your Monero wallet address as the login (and usually a TLS port). First-run setup leaves the wallet and TLS fields for you, so afterwards set `pools[].user` to your wallet (and `tls`) and run
 > `sudo ./rigforge.sh apply`. There's a copy-paste example in
 > [Configuration › Connecting to a public pool](configuration.md#connecting-to-a-public-pool-supportxmr-etc).
 > Otherwise your hashes credit the rig's hostname instead of you.
@@ -74,8 +73,9 @@ sudo ./rigforge.sh
 `setup` is the default command and is safe to re-run. On a fresh machine it walks through:
 
 1. **Dependencies.** Installs the build toolchain and runtime libraries for your OS.
-2. **First-run config.** If there's no `config.json`, it asks for the one thing it needs, your
-   **pool URL** (and, optionally, the stack's stratum password — Enter skips it), and writes a minimal config. (You can also pre-create one; see
+2. **First-run config.** If there's no `config.json`, it asks for your **pool URL** and optional
+   stratum password (Enter skips it). An `.onion` host also offers a SOCKS proxy override, defaulting
+   to `127.0.0.1:9050`; install and run Tor yourself. It writes a minimal config. (You can also pre-create one; see
    [Configuration](configuration.md).)
 3. **Build.** Clones and compiles XMRig from source, pinned to a known version/commit and patched to
    your `DONATION` level. Build output is captured to a logfile.

@@ -4,7 +4,10 @@ RigForge reads a small `config.json` in the repo root. It holds only what the sc
 rest (CPU profile, thread count, HugePage sizing) is detected and applied for you.
 
 On first run, if there's no `config.json`, `setup` creates a minimal one interactively (it asks for
-your pool URL). You can also pre-create one from
+your pool URL and optional stratum password). For an `.onion` host it explains that you must
+install and run Tor yourself, defaults `socks5` to `127.0.0.1:9050`, and offers a validated
+interactive override (Enter or EOF keeps the default). LAN pools get no proxy prompt or key.
+You can also pre-create one from
 [`config.minimal.json`](../config.minimal.json).
 
 Setup validates every field when it parses the config. A malformed pool URL, an out-of-range port, a
@@ -27,7 +30,7 @@ its `url` (a `host:port`). Everything else falls back to a default:
 ```
 
 That's a complete config. Replace `<YOUR_POOL_HOST>:3333` with your pool's host and port (Pithead's
-proxy listens on `3333`). The interactive first-run setup writes exactly this minimal shape.
+proxy listens on `3333`). The interactive first-run setup writes this minimal shape for a LAN pool without a password.
 
 > Mining to a public pool like [SupportXMR](https://www.supportxmr.com)? A `url` alone isn't enough:
 > public pools also need your Monero wallet as the pool `user` (and usually a TLS port). See

@@ -4594,8 +4594,7 @@ assert_absent "control: disabled prints no control-receiver ok line (#278)" "$ou
 assert_absent "control: disabled prints no control-receiver warn line either (#278)" "$out" "rigforge-control is inactive"
 
 # #343: doctor's pool-connection check — the miner's own /2/summary is the signal while the service
-# runs (connected ok / disconnected counted issue / silent API advisory); a stopped service falls
-# back to one TCP dial of pools[0]. Fixture bodies mirror XMRig's connection object shapes.
+# runs (connected ok / disconnected counted issue / silent API advisory); stopped -> TCP probe.
 echo "== unit: doctor pool connection (#343) =="
 printf '{"connection":{"pool":"poolbox.lan:3333","uptime":345,"failures":0,"accepted":7}}\n' >"$DOC/api_connected.json"
 printf '{"connection":{"pool":"nosuch.host:3333","uptime":0,"failures":9,"accepted":0}}\n' >"$DOC/api_disconnected.json"
@@ -4642,7 +4641,7 @@ assert_contains "pool: stopped + reachable pool -> advisory with host:port (#343
 out="$(run_pool_doctor n "" '_tcp_probe() { return 1; }')"
 assert_contains "pool: stopped + unreachable pool -> warn (#343)" "$out" "pool h:3333 is unreachable"
 assert_contains "pool: unreachable pool counts as an issue (#343)" "$out" "issue(s) found"
-# The real probe against a loopback port nothing listens on: refused, so rc != 0, instantly.
+source "$ROOT/tests/onion-proxy.sh" # #520: setup and advisory proxy diagnostics.
 prb="$( (source "$SCRIPT" && set +e && _tcp_probe 127.0.0.1 1 && echo open || echo closed) )"
 assert_eq "tcp probe: closed loopback port reads closed (#343)" "$prb" "closed"
 
@@ -7427,6 +7426,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     srv_up=0
     _poll_up "http://127.0.0.1:$APIPORT/health" && srv_up=1
     assert_eq "server comes up" "$srv_up" "1"
+    proxy_listener_checks # #520: reuse this live socket without requiring Tor.
     hdrs="$(curl -isS --max-time 5 -H "Authorization: Bearer $STOK" "http://127.0.0.1:$APIPORT/tune" 2>/dev/null | tr -d '\r' | sed -n '1,/^$/p')"
     assert_contains "server: 200 with the exact status line" "$hdrs" "HTTP/1.1 200 OK"
     assert_contains "server: application/json" "$hdrs" "Content-Type: application/json"

@@ -113,8 +113,9 @@ Tuning is CPU-specific, so only reuse it between identical CPUs. See
 
 ## Does the worker need Tor?
 
-No. Workers talk to the pool/stack over plain Stratum on your local network. Tor (for privacy and no
-port-forwarding) is a stack-host concern, handled by Pithead, not the miner.
+Not for a LAN pool, the normal case. An `.onion` pool needs a Tor SOCKS proxy: install and run
+Tor yourself, then set the pool’s `socks5` address. First-run setup offers `127.0.0.1:9050` for an
+onion pool and lets you override it. RigForge does not install, start, or supervise Tor.
 
 ---
 
