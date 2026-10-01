@@ -48,7 +48,7 @@ source "$ROOT/tests/e2e-control-replay.sh"
 CFG="$REPLAY_TEST_DIR/$kind-$mode.json"
 CALLS="$REPLAY_TEST_DIR/$kind-$mode.calls"
 PITHEAD_URL='fixture.invalid:3333'
-RIGFORGE=/usr/bin/true
+RIGFORGE=true # Bash's builtin fixture does not depend on a container's external true path.
 printf '{"control_port":8082,"api_port":8081,"pools":[{"url":"original.invalid:3333","user":"synthetic-user","pass":"SOURCE-SECRET"},{"url":"fixture.invalid:3333","user":"synthetic-user","pass":"BENCH-SECRET"}]}' >"$CFG"
 E2E_PITHEAD_CONTROL_FIXTURE=pithead-control
 E2E_RIG_LOCK_UNIT=bench-ci-riglock-synthetic-123
@@ -153,7 +153,7 @@ expected='{"max_temp_c":101}
 eval "$(sed -n '/^_cleanup()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 _restore_xmrig() { return 0; }
 # shellcheck disable=SC2034 # consumed by the extracted cleanup function
-RIGFORGE=/usr/bin/true HAMMER_PIDS=''
+RIGFORGE=true HAMMER_PIDS=''
 RIG_LOCK_HOLDER="$REPLAY_TEST_DIR/holder"
 SAVED_CFG=$(mktemp)
 cp "$CFG" "$SAVED_CFG"

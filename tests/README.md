@@ -48,7 +48,7 @@ thermal and pools replay cases, submit one declaring phase per `tier4-e2e` job w
 `fixture=pithead-control`: `control-replay-thermal` or `control-replay-pools`. The deployed runner
 privately supplies the operator pools probe, context and named reservation. The gate verifies that
 reservation, bypasses only its own competing flock, and leaves the runner's holder marker and release
-alone. The hardware-free `test-control-replay.sh` checks that refusal before config changes and the
+alone. The hardware-free `test-control-replay.sh` uses Bash builtins for its apply fixture and checks that refusal before config changes and the
 unchanged ordinary locking; on failure it prints each synthetic case log's final 20 lines before
 removing its sandbox, preserving the failed exit status.
 Both cases establish real jobs and an accepted share, retain thread/tuning and payout identity, set
