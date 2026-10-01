@@ -129,10 +129,10 @@ snapshot_config() {
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; exit "$E2E_EXIT_RC"' EXIT
 }
 
-set_cfg() { # <jq program> [soft] -- soft: return 1 instead of dying when the edit or the apply fails (#514)
+set_cfg() { # <jq program> [soft] [jq options...] -- soft: return 1 instead of dying when the edit or the apply fails (#514)
     local tmp err stage=edit
     tmp="$(mktemp)"
-    if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" && stage=apply && err=$("$RIGFORGE" apply 2>&1 >/dev/null); then return 0; fi
+    if jq "${@:3}" "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" && stage=apply && err=$("$RIGFORGE" apply 2>&1 >/dev/null); then return 0; fi
     rm -f "$tmp"
     [ -n "${err:-}" ] && echo "set_cfg: $stage failed: $err" >&2
     [ "${2:-}" = soft ] && return 1
@@ -417,7 +417,7 @@ phase_stratum_auth() {
         skip "E2E_STRATUM_PASS not set (stack auth off, or secret not provided) — phases skipped"
         return 0
     fi
-    set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\""
+    printf '%s' "$E2E_STRATUM_PASS" | set_cfg '.pools[0].pass = $password' '' --rawfile password /dev/stdin
     : >"$WLOG" || true
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
@@ -443,7 +443,7 @@ phase_stratum_auth() {
     else
         ok "wrong pass: no jobs delivered"
     fi
-    set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\"" # the #113 rotation runbook, proven mechanically
+    printf '%s' "$E2E_STRATUM_PASS" | set_cfg '.pools[0].pass = $password' '' --rawfile password /dev/stdin # the #113 rotation runbook, proven mechanically
     : >"$WLOG" || true
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then

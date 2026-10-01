@@ -37,8 +37,10 @@ without a successful refresh and CPU begin/end from the same process fails diagn
 No arguments, process names or payloads are exported.
 Five-second observations record timer/service state and the direct feed
 for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
-Control-phase requests pass the temporary bearer token through curl's stdin configuration,
-keeping it out of process arguments. Each POST uses its own securely allocated response file,
+Control and access-token requests pass bearer tokens through curl's stdin configuration.
+Access-token setup and stratum password setup/rotation use stdin with constant jq programs;
+the derived read bearer uses Python's standard-library HMAC with its key on stdin.
+These paths keep credentials out of process arguments and logs; the EXIT trap restores the original config. Each POST uses its own securely allocated response file,
 removed after reading the change identifier.
 The drop-in is written in a private staging file and published atomically with `link` only after the
 write succeeds. A partial write fails setup and cleanup removes the staging file. Publication refuses

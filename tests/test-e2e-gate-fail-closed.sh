@@ -366,3 +366,7 @@ watchdog_active_case491() {
     )
 }
 assert_eq "watchdog cleanup restores and verifies an originally active miner" "$(watchdog_active_case491)" "0:active:1"
+
+# #559: exercise credential setup/transport with argv inspection and real restoration.
+bash "$ROOT/tests/test-contract-credentials.sh"
+assert_rc "contract harness credentials stay out of arguments and restore config" "$?" 0
