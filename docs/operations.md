@@ -564,8 +564,12 @@ last-change provenance (`config_meta`; #254), and the last control-path outcome 
 `{change_id, status, reason}` or `null`; #346) — as JSON (`/health`, or nested under
 `rigforge` in `/1/summary` and `/2/summary`). It follows XMRig's own architecture: one tiny
 persistent server (python3 stdlib, ~10 MB idle) ships pre-computed bytes, so a request costs
-microseconds and cannot touch mining performance; a systemd timer recomputes the state every 15
-seconds at idle priority, off the request path. The timer uses an independent wall-clock cadence,
+microseconds and cannot touch mining performance; a systemd timer schedules a refresh every 15
+seconds off the request path. Refreshes use normal CPU priority (`Nice=0`) to share CPU time with
+the miner when publishing control changes; disk I/O stays at idle priority and
+the cached HTTP server retains `Nice=19`. The queued thermal and separate pools replay tests check direct-feed
+freshness and exact-ID publication, capturing timer-driven helper timings under the runner-owned
+mining fixture. They preserve the service policy and normal feed publication. The timer uses an independent wall-clock cadence,
 so a failed refresh or a unit reinstall cannot strand the feed without a future run. Summary and
 health responses carry `generated_at` in UTC; `doctor` reports its age and the timer's next/last
 trigger, and warns once the payload is over a minute old. The same

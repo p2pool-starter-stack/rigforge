@@ -7275,7 +7275,7 @@ assert_contains "server ExecStart points at the credential copy (#sec)" "$(cat "
 assert_eq "credential var survives the envsubst render un-expanded (#sec)" "$(grep -c 'CREDENTIALS_DIRECTORY' "$APS/systemd/rigforge-api.service")" "2"
 assert_contains "server caps request-arrival time (slowloris) (#sec)" "$(cat "$ROOT/util/api-server.py")" "Handler.timeout"
 assert_contains "token compare is constant-time (#sec)" "$(cat "$ROOT/util/api-server.py")" "hmac.compare_digest"
-assert_eq "refresh runs at idle priority off the request path (#164)" "$(grep -c '^IOSchedulingClass=idle$' "$APS/systemd/rigforge-api-refresh.service")" "1"
+assert_eq "refresh gets normal CPU scheduling with idle disk I/O (#540)" "$(grep -E '^(Nice|IOSchedulingClass)=' "$APS/systemd/rigforge-api-refresh.service")" $'Nice=0\nIOSchedulingClass=idle'
 assert_contains "refresh cannot mask a frozen feed indefinitely (#476)" "$(cat "$APS/systemd/rigforge-api-refresh.service")" "TimeoutStartSec=300"
 assert_contains "refresh timer has an independent 15s wall-clock cadence (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnCalendar=*:*:0/15"
 assert_contains "refresh timer does not replay missed probes after downtime (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "Persistent=false"

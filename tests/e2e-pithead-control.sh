@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/e2e-refresh-window.sh"
 _control_curl() { # Keep the temporary write token out of process arguments.
     local token="$1"
     shift
-    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl --config - "$@"
+    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl -q --noproxy '*' --config - "$@"
 }
 
 phase_control() {
