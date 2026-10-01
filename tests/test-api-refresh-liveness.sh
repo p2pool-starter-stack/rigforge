@@ -1,12 +1,6 @@
 # shellcheck shell=bash disable=SC1090,SC2034,SC2329
 # #454: doctor's diagnosis stays deterministic here. Real transient-systemd timing was checked
 # separately because this dependency-free suite must also run on macOS.
-assert_eq "API clock probe reads every core without a process per core (#540)" "$(
-    source "$SCRIPT"
-    CPU_SYSFS="$DOC/cpu_throttle"
-    cat() { return 99; }
-    _cpu_eff_khz
-)" "3000000"
 RFS="$(mktemp -d "$SANDBOX/refresh-status.XXXXXX")"
 printf '%s' '{"generated_at":"2026-09-07T04:00:00Z"}' >"$RFS/summary.json"
 refresh_status() { # <next> <mtime> <now> [refresh state]

@@ -111,7 +111,9 @@ pool, `:8081` exists exactly while enabled, and no response byte ever contains `
 pool `pass`. `:8080` stays the canonical Pithead summary probe; `:8081` is additive. Port/bind are
 `api_port`/`api_bind`. Architecture mirrors XMRig's own API: a tiny persistent server ships
 pre-computed state (a request costs microseconds — polling cannot shave hashrate), refreshed every
-15s by an idle-priority wall-clock timer. Consumers should still age `generated_at`: it distinguishes
+15s by a wall-clock timer. Refresh work uses normal CPU priority with idle disk I/O to give
+control-change publication a normal CPU share during mining; the cached HTTP server remains at idle CPU
+priority. Consumers should still age `generated_at`: it distinguishes
 a current report from a cached response when a rig or its refresh job is unhealthy.
 
 ### Stratum over TLS (optional)

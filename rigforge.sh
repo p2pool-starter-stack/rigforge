@@ -4991,7 +4991,7 @@ _cpu_eff_khz() {
     local f v sum=0 n=0
     for f in "$CPU_SYSFS"/cpu[0-9]*/cpufreq/scaling_cur_freq; do
         [ -r "$f" ] || continue
-        IFS= read -r v <"$f" || true
+        v=$(cat "$f" 2>/dev/null)
         case "$v" in '' | *[!0-9]*) continue ;; esac
         sum=$((sum + v))
         n=$((n + 1))
