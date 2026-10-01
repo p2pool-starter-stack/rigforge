@@ -5,7 +5,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ "$#" = 0 ]; then
     REPLAY_TEST_DIR=$(mktemp -d)
     export REPLAY_TEST_DIR
-    trap 'rm -rf "$REPLAY_TEST_DIR"' EXIT
+    replay_test_cleanup() {
+        local rc=$?
+        if [ "$rc" != 0 ]; then tail -n 20 "$REPLAY_TEST_DIR"/*.log >&2 || true; fi
+        rm -rf "$REPLAY_TEST_DIR"
+        exit "$rc"
+    }
+    trap replay_test_cleanup EXIT
     for kind in thermal pools; do
         for success in fresh history; do
             bash "$0" "$kind" "$success" >"$REPLAY_TEST_DIR/$kind-$success.log" 2>&1
