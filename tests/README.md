@@ -65,7 +65,10 @@ case requires this exact change ID to reach `applied` in the enriched feed withi
 not a later change's outcome. Both continue five-minute observations for diagnostics and preserve the
 original pass/fail deadline even if a read crosses it. Full applies can stop/restart the miner;
 observations record its active state rather than aborting during that expected transition.
-Each apply settlement emits only elapsed seconds and its validated status. Mining-precondition
+Status and summary GETs consume JSON only after a successful transport; failed-read bytes are
+discarded and a fixed transport-failure marker is emitted. Valid JSON followed by a nonzero
+transport exit cannot satisfy settlement or publication. Each apply settlement emits only
+elapsed seconds and its validated status. Mining-precondition
 failures emit fixed-schema systemd state plus counts of jobs, shares and classified XMRig errors;
 unknown service values fail the diagnostic, and no journal text, endpoint or config value is printed.
 Requests use secured scratch payloads, never credential-bearing arguments or logs. The current probe

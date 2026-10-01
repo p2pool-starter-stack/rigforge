@@ -77,8 +77,12 @@ _replay_apply() { # JSON on stdin; credentials never become process arguments or
     printf '%s\n' "$id"
 }
 _replay_status() {
-    _control_curl "$tok" -fsS --max-time 3 --max-filesize 16384 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null |
-        jq -sr 'select(length == 1) | .[0].status | select(. == "applied" or . == "pending" or . == "accepted" or . == "rolled_back" or . == "failed" or . == "rejected")' || true
+    local body
+    if ! body=$(_control_curl "$tok" -fsS --max-time 3 --max-filesize 16384 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null); then
+        printf 'replay-read: status transport failed\n' >&2
+        return 0
+    fi
+    printf '%s' "$body" | jq -sr 'select(length == 1) | .[0].status | select(. == "applied" or . == "pending" or . == "accepted" or . == "rolled_back" or . == "failed" or . == "rejected")' || true
 }
 _replay_settle() { # Preserve the recorded 90-second apply bound, without logging payloads.
     local started=$SECONDS st elapsed
@@ -101,7 +105,10 @@ _replay_window() { # <thermal|pools> -- publication of this exact ID, not a late
     while [ "$((SECONDS - started))" -lt 300 ]; do
         refresh_profile_state allow-inactive || return 1
         st=$(_replay_status)
-        body=$(_control_curl "$tok" -fsS --max-time 3 --max-filesize 65536 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null || true)
+        if ! body=$(_control_curl "$tok" -fsS --max-time 3 --max-filesize 65536 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null); then
+            body=''
+            printf 'replay-read: summary transport failed\n' >&2
+        fi
         # Only bounded scalar fields are exported; arbitrary responses/config remain private.
         stamp=$(printf '%s' "$body" | jq -sr 'select(length == 1) | .[0].generated_at | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' 2>/dev/null || true)
         temp=$(printf '%s' "$body" | jq -sr 'select(length == 1) | .[0].rigforge.watchdog.max_temp_c | select(type == "number" and . >= 40 and . <= 110)' 2>/dev/null || true)

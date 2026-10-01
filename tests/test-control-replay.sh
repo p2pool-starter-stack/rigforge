@@ -18,24 +18,47 @@ if [ "$#" = 0 ]; then
             grep -q "replay $kind published within 90s" "$REPLAY_TEST_DIR/$kind-$success.log"
             grep -q 'finish-profile' "$REPLAY_TEST_DIR/$kind-$success.log"
         done
-        for mode in stale late wrong-id; do
+        for mode in stale late wrong-id summary-failed; do
             if bash "$0" "$kind" "$mode" >"$REPLAY_TEST_DIR/$kind-$mode.log" 2>&1; then
                 echo "replay $kind $mode unexpectedly passed" >&2
                 exit 1
             fi
             grep -q "feed stale after 90s" "$REPLAY_TEST_DIR/$kind-$mode.log"
+            if [ "$mode" = summary-failed ]; then
+                grep -q '^replay-read: summary transport failed$' "$REPLAY_TEST_DIR/$kind-$mode.log"
+                ! grep -q 'published=true' "$REPLAY_TEST_DIR/$kind-$mode.log"
+            fi
         done
     done
-    for mode in missing inactive context probe other bad-id mining curl-failed status-missing status-malformed; do
+    for mode in missing inactive context probe other bad-id mining curl-failed status-missing status-malformed status-failed; do
         if bash "$0" thermal "$mode" >"$REPLAY_TEST_DIR/$mode.log" 2>&1; then
             echo "replay $mode unexpectedly passed" >&2
             exit 1
         fi
     done
-    for mode in status-missing status-malformed; do
+    for mode in status-missing status-malformed status-failed; do
         grep -q 'replay-settle: elapsed_s=.* status=unknown' "$REPLAY_TEST_DIR/$mode.log"
         ! grep -q 'PRIVATE\|never-execute' "$REPLAY_TEST_DIR/$mode.log"
     done
+    grep -q '^replay-read: status transport failed$' "$REPLAY_TEST_DIR/status-failed.log"
+    ! grep -q 'status=applied' "$REPLAY_TEST_DIR/status-failed.log"
+    (
+        source "$ROOT/tests/e2e-control-replay.sh"
+        tok=synthetic port=8082 api_port=8081 cid=0123456789abcdef before=2026-09-30T00:00:00Z
+        refresh_profile_state() { :; }
+        sleep() { SECONDS=$((SECONDS + $1)); }
+        _control_curl() {
+            if [[ "${*: -1}" == */status* ]]; then
+                printf '{"status":"applied"}'
+                return 18
+            fi
+            printf '{"generated_at":"2026-09-30T00:00:01Z","rigforge":{"watchdog":{"max_temp_c":102},"control":{"change_id":"0123456789abcdef","status":"applied"}}}'
+        }
+        for kind in thermal pools; do
+            if _replay_window "$kind" >"$REPLAY_TEST_DIR/$kind-status-window.log" 2>&1; then exit 1; fi
+            grep -q 'status=unknown.*published=true' "$REPLAY_TEST_DIR/$kind-status-window.log"
+        done
+    )
     (
         source "$ROOT/tests/e2e-refresh-window.sh"
         systemctl() { [ "$1" = show ]; }
@@ -167,6 +190,7 @@ curl() {
         status-malformed) printf '{"status":"PRIVATE $(never-execute)"}' ;;
         *) printf '{"status":"applied"}' ;;
         esac
+        [ "$mode" != status-failed ] || return 18
     else
         id=$(printf '%016x' "$(wc -l <"$CALLS")")
         published_id="$id"
@@ -180,6 +204,7 @@ curl() {
         else
             printf '{"generated_at":"%s","rigforge":{"watchdog":{"max_temp_c":%s},"control":{"change_id":"%s","status":"applied"},"control_history":[]}}' "$stamp" "$target" "$published_id"
         fi
+        [ "$mode" != summary-failed ] || return 18
     fi
 }
 phase_name="control-replay-$kind"
