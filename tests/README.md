@@ -28,8 +28,14 @@ against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
 The queued `control` phase also instruments real timer-driven API refreshes around a thermal
 control apply (#546). A temporary runtime drop-in replaces only the refresh service's command
 with `e2e-api-refresh-profile.sh`; its priority, timeout, timer and live feed remain in use.
-The profiler logs fixed helper names, begin/end timestamps and nanosecond durations, never
-arguments or payloads. Five-second observations record timer/service state and the direct feed
+The profiler logs fixed helper names, begin/end timestamps and nanosecond durations, plus full-pass
+CPU ticks (the shell and waited-for children), clock ticks per second, nice level and the shell's
+cumulative scheduler wait in nanoseconds. CPU-time deltas distinguish computation from elapsed
+waiting; scheduler wait excludes children and can be zero when kernel scheduler statistics are
+disabled, so zero does not prove absence of contention. Missing/malformed accounting or a journal
+without a successful refresh and CPU begin/end from the same process fails diagnostics.
+No arguments, process names or payloads are exported.
+Five-second observations record timer/service state and the direct feed
 for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
 Control-phase requests pass the temporary bearer token through curl's stdin configuration,
 keeping it out of process arguments. Each POST uses its own securely allocated response file,

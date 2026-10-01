@@ -34,7 +34,7 @@ refresh_profile_state() {
         -p ExecMainStartTimestamp -p ExecMainExitTimestamp -p ExecMainStatus
 }
 refresh_profile_finish() {
-    local log rc=0
+    local log records rc=0
     if [ -n "$REFRESH_PROFILE_STAGING" ]; then
         if rm -f "$REFRESH_PROFILE_STAGING"; then REFRESH_PROFILE_STAGING=""; else rc=1; fi
     fi
@@ -48,8 +48,15 @@ refresh_profile_finish() {
         journalctl --sync || rc=1
         journalctl -u rigforge-api-refresh.service --since "$REFRESH_PROFILE_SINCE UTC" --no-pager -o cat >"$log" || rc=1
         # Publish only the fixed-schema measurements; other unit journal messages may contain secrets.
-        sed -nE '/^refresh-profile: pid=[0-9][0-9]* helper=[a-z_][a-z_]* event=(begin|end) at_ns=[0-9][0-9]* duration_ns=[0-9][0-9]* rc=[0-9][0-9]*$/p' "$log" || rc=1
-        grep -Eq '^refresh-profile: .*helper=api_refresh event=end .*rc=0$' "$log" || rc=1
+        records=$(sed -nE '/^refresh-profile: pid=[0-9][0-9]* helper=[a-z_][a-z_]* event=(begin|end) at_ns=[0-9][0-9]* duration_ns=[0-9][0-9]* rc=[0-9][0-9]*$/p; /^refresh-profile-cpu: pid=[0-9][0-9]* event=(begin|end) cpu_ticks=[0-9][0-9]* clock_ticks_per_s=[1-9][0-9]* nice=-?[0-9][0-9]* scheduler_wait_ns=[0-9][0-9]*$/p' "$log") || rc=1
+        printf '%s\n' "$records"
+        # A completed pass needs its own CPU begin/end, not counters from another process.
+        printf '%s\n' "$records" | awk '
+            $1 == "refresh-profile-cpu:" && $3 == "event=begin" { begun[$2] = 1 }
+            $1 == "refresh-profile-cpu:" && $3 == "event=end" && begun[$2] { cpu[$2] = 1 }
+            $1 == "refresh-profile:" && $3 == "helper=api_refresh" && $4 == "event=end" && $7 == "rc=0" && cpu[$2] { completed = 1 }
+            END { exit !completed }
+        ' || rc=1
         rm -f "$log"
     fi
     if rm -f "$REFRESH_PROFILE_DROPIN" && systemctl daemon-reload; then

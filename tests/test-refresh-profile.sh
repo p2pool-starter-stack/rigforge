@@ -9,8 +9,14 @@ check() { if ! "$@"; then
     exit 1
 fi; }
 export TEST_PAYLOAD="$CASE_DIR/payload"
+# Fixed Linux accounting fixtures keep these checks hardware-free, including on macOS.
+export REFRESH_PROFILE_STAT_FILE="$CASE_DIR/stat" REFRESH_PROFILE_SCHEDSTAT_FILE="$CASE_DIR/schedstat"
+stat_tail=(S 0 0 0 0 0 0 0 0 0 0 10 20 30 40 20 19)
+printf '123 (synthetic (comm) name) %s\n' "${stat_tail[*]}" >"$REFRESH_PROFILE_STAT_FILE"
+printf '100000 900000 3\n' >"$REFRESH_PROFILE_SCHEDSTAT_FILE"
 cat >"$CASE_DIR/fixture.sh" <<EOF_FIXTURE
 source "$ROOT/rigforge.sh"
+getconf() { printf '%s\n' "\${TEST_CLOCK_TICKS:-100}"; }
 parse_config() { :; }
 _health_json() { sleep 0.05; printf 'private-probe-value'; return "\${TEST_PROBE_RC:-0}"; }
 api_refresh() { parse_config; _health_json >"\$TEST_PAYLOAD"; }
@@ -18,8 +24,21 @@ EOF_FIXTURE
 bash "$ROOT/tests/e2e-api-refresh-profile.sh" "$CASE_DIR/fixture.sh" 2>"$CASE_DIR/measurements"
 check grep -q '^refresh-profile: .*helper=_health_json event=begin ' "$CASE_DIR/measurements"
 check grep -q '^refresh-profile: .*helper=api_refresh event=end .*rc=0$' "$CASE_DIR/measurements"
+check grep -q '^refresh-profile-cpu: .*event=begin cpu_ticks=100 clock_ticks_per_s=100 nice=19 scheduler_wait_ns=900000$' "$CASE_DIR/measurements"
+check grep -q '^refresh-profile-cpu: .*event=end cpu_ticks=100 clock_ticks_per_s=100 nice=19 scheduler_wait_ns=900000$' "$CASE_DIR/measurements"
 check test "$(cat "$TEST_PAYLOAD")" = private-probe-value
 check bash -c '! grep -q private-probe-value "$1"' -- "$CASE_DIR/measurements"
+check bash -c '! grep -q "synthetic (comm) name" "$1"' -- "$CASE_DIR/measurements"
+# Malformed or unavailable counters cannot silently become zero or a successful profile.
+cp "$REFRESH_PROFILE_STAT_FILE" "$CASE_DIR/stat-good"
+printf '123 (synthetic) S\n' >"$REFRESH_PROFILE_STAT_FILE"
+if bash "$ROOT/tests/e2e-api-refresh-profile.sh" "$CASE_DIR/fixture.sh" 2>"$CASE_DIR/bad-stat"; then exit 1; fi
+check bash -c '! grep -q "refresh-profile-cpu:" "$1"' -- "$CASE_DIR/bad-stat"
+cp "$CASE_DIR/stat-good" "$REFRESH_PROFILE_STAT_FILE"
+if TEST_CLOCK_TICKS=unknown bash "$ROOT/tests/e2e-api-refresh-profile.sh" "$CASE_DIR/fixture.sh" 2>"$CASE_DIR/bad-clock"; then exit 1; fi
+mv "$REFRESH_PROFILE_SCHEDSTAT_FILE" "$CASE_DIR/schedstat-good"
+if bash "$ROOT/tests/e2e-api-refresh-profile.sh" "$CASE_DIR/fixture.sh" 2>"$CASE_DIR/missing-schedstat"; then exit 1; fi
+mv "$CASE_DIR/schedstat-good" "$REFRESH_PROFILE_SCHEDSTAT_FILE"
 # A 50ms probe must be visible below one second, rather than rounded to zero as in job 1876.
 duration=$(sed -n 's/.*helper=_health_json event=end .*duration_ns=\([0-9]*\) rc=0/\1/p' "$CASE_DIR/measurements")
 check test "$duration" -ge 1000000
@@ -52,6 +71,7 @@ check test ! -e "$owned"
 check test -z "$REFRESH_PROFILE_DROPIN"
 check grep -q 'stop rigforge-api-refresh.service' "$CASE_DIR/calls"
 check grep -q 'helper=_health_json event=end' "$CASE_DIR/collected"
+check grep -q '^refresh-profile-cpu: .*event=end cpu_ticks=100 ' "$CASE_DIR/collected"
 check bash -c '! grep -q sensitive "$1"' -- "$CASE_DIR/collected"
 # Timer must be quiesced before the service; restore it only after override removal/reload.
 check awk '
@@ -187,6 +207,26 @@ journalctl() { :; }
 if refresh_profile_finish >"$CASE_DIR/missing"; then exit 1; fi
 check test ! -e "$owned"
 # Even when journal collection fails, remove our override and propagate failure.
+for invalid in missing-begin wrong-pid malformed; do
+    refresh_profile_start
+    journalctl() {
+        [ "$1" != --sync ] || return 0
+        case "$invalid" in
+        missing-begin) command sed '/^refresh-profile-cpu: .*event=begin /d' "$CASE_DIR/measurements" ;;
+        wrong-pid) command sed '/^refresh-profile-cpu:/s/pid=[0-9]*/pid=0/' "$CASE_DIR/measurements" ;;
+        malformed) command sed '/^refresh-profile-cpu:/s/cpu_ticks=100/cpu_ticks=invalid/' "$CASE_DIR/measurements" ;;
+        esac
+    }
+    if refresh_profile_finish >"$CASE_DIR/$invalid"; then exit 1; fi
+    check test ! -e "$owned"
+done
+refresh_profile_start
+journalctl() {
+    [ "$1" != --sync ] || return 0
+    command sed '/^refresh-profile-cpu:/d' "$CASE_DIR/measurements"
+}
+if refresh_profile_finish >"$CASE_DIR/missing-cpu"; then exit 1; fi
+check test ! -e "$owned"
 refresh_profile_start
 journalctl() { return 1; }
 if refresh_profile_finish >"$CASE_DIR/journal-failed"; then exit 1; fi
