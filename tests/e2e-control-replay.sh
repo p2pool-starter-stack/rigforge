@@ -18,6 +18,46 @@ replay_lock() {
 phase_control_replay_thermal() { phase_control_replay thermal; }
 phase_control_replay_pools() { phase_control_replay pools; }
 
+_xmrig_diagnostics() { # Fixed-schema service and log counts; never export journal/config text.
+    local raw key value active sub result status log_state=missing counts='0 0 0 0 0 0 0 0'
+    local jobs accepted dns network tls auth config other
+    raw=$(systemctl show xmrig --property=ActiveState --property=SubState --property=Result --property=ExecMainStatus 2>/dev/null) || return 1
+    while IFS='=' read -r key value; do
+        case "$key" in
+        ActiveState) active=$value ;;
+        SubState) sub=$value ;;
+        Result) result=$value ;;
+        ExecMainStatus) status=$value ;;
+        esac
+    done <<<"$raw"
+    case "${active:-}" in active | reloading | inactive | failed | activating | deactivating | maintenance) ;; *) return 1 ;; esac
+    case "${sub:-}" in dead | start-pre | start | start-post | running | exited | reload | stop | stop-watchdog | stop-sigterm | stop-sigkill | stop-post | final-sigterm | final-sigkill | failed | auto-restart | clean) ;; *) return 1 ;; esac
+    case "${result:-}" in success | resources | timeout | exit-code | signal | core-dump | watchdog | start-limit-hit | protocol | oom-kill | exec-condition | skipped) ;; *) return 1 ;; esac
+    [[ "${status:-}" =~ ^[0-9]{1,3}$ ]] && [ "$status" -le 255 ] || return 1
+    if [ -n "${WLOG:-}" ] && [ -f "$WLOG" ]; then
+        log_state=present
+        counts=$(awk 'BEGIN { j=a=d=n=t=u=c=o=0 }
+            { line=tolower($0) }
+            line ~ /new job from/ { j++ }
+            line ~ /accepted \(/ { a++ }
+            line ~ /dns error|name or service not known|temporary failure in name resolution/ { d++; next }
+            line ~ /tls error|failed to verify server certificate fingerprint/ { t++; next }
+            line ~ /permission denied|login error|unauthorized/ { u++; next }
+            line ~ /configuration error|config error|failed to parse config|invalid config/ { c++; next }
+            line ~ /connect error|connection refused|connection timed out|network error|no active pools/ { n++; next }
+            line ~ /error|failed|refused|denied|invalid/ { o++ }
+            END { print j, a, d, n, t, u, c, o }' "$WLOG" 2>/dev/null) || return 1
+        [[ "$counts" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]] || return 1
+    fi
+    read -r jobs accepted dns network tls auth config other <<<"$counts"
+    printf 'xmrig-diagnostic: active_state=%s sub_state=%s result=%s exec_main_status=%s log_state=%s jobs=%s accepted=%s dns_errors=%s network_errors=%s tls_errors=%s auth_errors=%s config_errors=%s other_errors=%s\n' \
+        "$active" "$sub" "$result" "$status" "$log_state" "$jobs" "$accepted" "$dns" "$network" "$tls" "$auth" "$config" "$other"
+}
+_connect_bad() {
+    _xmrig_diagnostics || printf 'xmrig-diagnostic: unavailable\n' >&2
+    bad "$1"
+}
+
 _replay_apply() { # JSON on stdin; credentials never become process arguments or log output.
     local request response code id curl_rc=0
     request=$(mktemp) || return 1
@@ -41,9 +81,11 @@ _replay_status() {
         jq -sr 'select(length == 1) | .[0].status | select(. == "applied" or . == "pending" or . == "accepted" or . == "rolled_back" or . == "failed" or . == "rejected")' || true
 }
 _replay_settle() { # Preserve the recorded 90-second apply bound, without logging payloads.
-    local started=$SECONDS st
+    local started=$SECONDS st elapsed
     while [ "$((SECONDS - started))" -lt 90 ]; do
         st=$(_replay_status)
+        elapsed=$((SECONDS - started))
+        printf 'replay-settle: elapsed_s=%s status=%s\n' "$elapsed" "${st:-unknown}"
         refresh_profile_state allow-inactive || return 1
         [ "$((SECONDS - started))" -lt 90 ] || break
         case "$st" in

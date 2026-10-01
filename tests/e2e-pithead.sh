@@ -174,7 +174,7 @@ phase_connect() {
     systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1
     [ -n "$WLOG" ] || WLOG="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
     if [ -z "$WLOG" ]; then
-        bad "could not find the worker's xmrig.log"
+        _connect_bad "could not find the worker's xmrig.log"
         return 0
     fi
     : >"$WLOG" || true # truncate so every assertion below is about THIS stack, not an old pool
@@ -182,7 +182,7 @@ phase_connect() {
     if wait_for_job 60; then
         ok "connected — stratum job from $(grep -oE 'new job from [^ ]+' "$WLOG" | tail -1 | awk '{print $NF}')"
     else
-        bad "no stratum job from $PITHEAD_URL within 60s — is the stack up and reachable?"
+        _connect_bad "no stratum job from $PITHEAD_URL within 60s — is the stack up and reachable?"
     fi
     local share_to="${E2E_SHARE_TIMEOUT:-180}" waited=0
     while [ "$waited" -lt "$share_to" ] && ! grep -q 'accepted (' "$WLOG" 2>/dev/null; do
@@ -192,7 +192,7 @@ phase_connect() {
     if grep -q 'accepted (' "$WLOG" 2>/dev/null; then
         ok "share accepted by the stack ($(grep -c 'accepted (' "$WLOG") so far)"
     else
-        bad "no accepted share within ${share_to}s"
+        _connect_bad "no accepted share within ${share_to}s"
     fi
     # Discovery contract: the dashboard identifies workers by the stratum `user` label.
     local user

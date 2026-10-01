@@ -26,11 +26,15 @@ if [ "$#" = 0 ]; then
             grep -q "feed stale after 90s" "$REPLAY_TEST_DIR/$kind-$mode.log"
         done
     done
-    for mode in missing inactive context probe other bad-id mining curl-failed; do
+    for mode in missing inactive context probe other bad-id mining curl-failed status-missing status-malformed; do
         if bash "$0" thermal "$mode" >"$REPLAY_TEST_DIR/$mode.log" 2>&1; then
             echo "replay $mode unexpectedly passed" >&2
             exit 1
         fi
+    done
+    for mode in status-missing status-malformed; do
+        grep -q 'replay-settle: elapsed_s=.* status=unknown' "$REPLAY_TEST_DIR/$mode.log"
+        ! grep -q 'PRIVATE\|never-execute' "$REPLAY_TEST_DIR/$mode.log"
     done
     (
         source "$ROOT/tests/e2e-refresh-window.sh"
@@ -38,6 +42,47 @@ if [ "$#" = 0 ]; then
         if refresh_profile_state >"$REPLAY_TEST_DIR/inactive-state"; then exit 1; fi
         refresh_profile_state allow-inactive >>"$REPLAY_TEST_DIR/inactive-state"
         grep -q 'xmrig_active=0' "$REPLAY_TEST_DIR/inactive-state"
+    )
+    (
+        source "$ROOT/tests/e2e-control-replay.sh"
+        WLOG="$REPLAY_TEST_DIR/xmrig.log"
+        printf '%s\n' 'nEw JoB fRoM fixture' 'AcCePtEd (1/0)' 'DnS ErRoR' 'CoNnEcT ErRoR' 'TlS ErRoR' 'LoGiN ErRoR' 'CoNfIg ErRoR' 'FaIlEd for another reason' >"$WLOG"
+        systemctl() { printf '%s\n' 'ActiveState=active' 'SubState=running' 'Result=success' 'ExecMainStatus=0'; }
+        _xmrig_diagnostics >"$REPLAY_TEST_DIR/xmrig-diagnostic"
+        grep -qx 'xmrig-diagnostic: active_state=active sub_state=running result=success exec_main_status=0 log_state=present jobs=1 accepted=1 dns_errors=1 network_errors=1 tls_errors=1 auth_errors=1 config_errors=1 other_errors=1' "$REPLAY_TEST_DIR/xmrig-diagnostic"
+        WLOG="$REPLAY_TEST_DIR/absent-xmrig.log"
+        _xmrig_diagnostics | grep -q 'log_state=missing jobs=0 accepted=0'
+        systemctl() { printf '%s\n' 'ActiveState=active' 'SubState=running' 'Result=success'; }
+        ! _xmrig_diagnostics
+        systemctl() { printf '%s\n' 'ActiveState=PRIVATE' 'SubState=running' 'Result=success' 'ExecMainStatus=0'; }
+        ! _xmrig_diagnostics
+        systemctl() { printf '%s\n' 'ActiveState=active' 'SubState=running' 'Result=success' 'ExecMainStatus=0'; }
+        WLOG="$REPLAY_TEST_DIR/xmrig.log"
+        awk() {
+            printf 'PRIVATE PATH' >&2
+            return 1
+        }
+        ! _xmrig_diagnostics 2>"$REPLAY_TEST_DIR/xmrig-diagnostic-error"
+        [ ! -s "$REPLAY_TEST_DIR/xmrig-diagnostic-error" ]
+    )
+    (
+        source "$ROOT/tests/e2e-control-replay.sh"
+        eval "$(sed -n '/^phase_connect()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+        phase() { :; }
+        set_cfg() { :; }
+        find() { :; }
+        bad() {
+            printf 'bad:%s\n' "$1"
+            exit 1
+        }
+        systemctl() {
+            [ "$1" = show ] && printf '%s\n' 'ActiveState=active' 'SubState=running' 'Result=success' 'ExecMainStatus=0'
+        }
+        # shellcheck disable=SC2034 # consumed by the extracted phase_connect function
+        HERE="$REPLAY_TEST_DIR" RIGFORGE=true WLOG='' GEN_CFG='' PITHEAD_URL='fixture.invalid:3333'
+        if (phase_connect) >"$REPLAY_TEST_DIR/connect-diagnostic" 2>&1; then exit 1; fi
+        grep -q 'xmrig-diagnostic: .* log_state=missing jobs=0 accepted=0' "$REPLAY_TEST_DIR/connect-diagnostic"
+        grep -q "bad:could not find the worker's xmrig.log" "$REPLAY_TEST_DIR/connect-diagnostic"
     )
     printf 'control replay regressions: PASS\n'
     exit 0
@@ -117,7 +162,11 @@ curl() {
         printf 202
         [ "$mode" != curl-failed ] || return 7
     elif [[ "$url" == */status* ]]; then
-        printf '{"status":"applied"}'
+        case "$mode" in
+        status-missing) printf '{}' ;;
+        status-malformed) printf '{"status":"PRIVATE $(never-execute)"}' ;;
+        *) printf '{"status":"applied"}' ;;
+        esac
     else
         id=$(printf '%016x' "$(wc -l <"$CALLS")")
         published_id="$id"
