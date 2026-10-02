@@ -37,8 +37,9 @@ without a successful refresh and CPU begin/end from the same process fails diagn
 No arguments, process names or payloads are exported.
 Five-second observations record timer/service state and the direct feed
 for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
-Control-phase requests pass the temporary bearer token through curl's stdin configuration,
-keeping it out of process arguments. Each POST uses its own securely allocated response file,
+Control-phase setup passes the temporary write token through stdin to jq's `--rawfile`
+with a constant program; requests pass it through curl's stdin configuration. Both keep the
+token out of process arguments and logs, while the EXIT trap restores the original config. Each POST uses its own securely allocated response file,
 removed after reading the change identifier.
 The drop-in is written in a private staging file and published atomically with `link` only after the
 write succeeds. A partial write fails setup and cleanup removes the staging file. Publication refuses

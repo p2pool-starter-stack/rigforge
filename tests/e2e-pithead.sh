@@ -129,10 +129,10 @@ snapshot_config() {
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; exit "$E2E_EXIT_RC"' EXIT
 }
 
-set_cfg() { # <jq program> [soft] -- soft: return 1 instead of dying when the edit or the apply fails (#514)
+set_cfg() { # <jq program> [soft] [jq options...] -- soft: return 1 instead of dying when the edit or the apply fails (#514)
     local tmp err stage=edit
     tmp="$(mktemp)"
-    if jq "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" && stage=apply && err=$("$RIGFORGE" apply 2>&1 >/dev/null); then return 0; fi
+    if jq "${@:3}" "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG" && stage=apply && err=$("$RIGFORGE" apply 2>&1 >/dev/null); then return 0; fi
     rm -f "$tmp"
     [ -n "${err:-}" ] && echo "set_cfg: $stage failed: $err" >&2
     [ "${2:-}" = soft ] && return 1
