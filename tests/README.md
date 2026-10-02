@@ -3,6 +3,9 @@
 RigForge is one self-contained script, so its tests are layered by how much they exercise for
 real, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
+`make test-suite` requires both the Bash suite and the Python-dependent contract credential regression.
+The kcov container measures the Bash suite only; the credential regression always runs in the
+GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
 
 > The split exists so CI proves everything it can on a GitHub runner, while the things a runner
 > physically can't do (compile XMRig, reserve HugePages, write MSRs, set the governor, hash) are
@@ -12,7 +15,7 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 
 | Layer | File | Runs | What it proves | How to run |
 |---|---|---|---|---|
-| **Unit + black-box suite** | [`run.sh`](run.sh) | Any host (macOS/Linux), no Docker. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `bash tests/run.sh` |
+| **Unit + black-box suite** | [`run.sh`](run.sh) + [`test-contract-credentials.sh`](test-contract-credentials.sh) | Any host (macOS/Linux), no Docker; credential regression needs Python 3. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `make test-suite` |
 | **Linux container e2e** | [`e2e/linux.sh`](e2e/linux.sh) → [`e2e/in-container.sh`](e2e/in-container.sh) | Disposable Ubuntu container, **needs Docker**. **In CI.** | The genuine Linux deploy path against a real (throwaway) `/etc` with real GNU tools (`sed -i`, `tee`, `envsubst`) + idempotency on re-run. Only the heavy/privileged bits (compile, package install, `systemctl`/`mount`) are stubbed. A second pass re-runs the container with `RIGFORGE_APPLIANCE=1` (#348) and proves the appliance contracts on that real `/etc`: units land in `/run/systemd/system`, no package installs, no fstab/limits.conf/logrotate writes, every enable carries `--runtime`. | `make test-e2e` |
 | **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is deprecated, #493). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
 | **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
