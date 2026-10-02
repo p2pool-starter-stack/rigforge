@@ -7,13 +7,61 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
-## [1.17.4] - 2026-09-08
+## [1.18.0] - 2026-10-02
+
+### Added
+
+- **One access token per consuming stack: `ACCESS_TOKENS` (#516, #521).**
+  An optional name-to-token map beside `ACCESS_TOKEN`. Every entry authenticates the sister API (`:8081`, raw or its own HMAC-derived read bearer, under the same rule `ACCESS_TOKEN` already had) and the writable control path (`:8082`). A production stack and a bench that borrows the rig can therefore hold separate credentials and rotate them independently. `ACCESS_TOKEN` stays the master: it is XMRig's own `:8080` token and the credential the control path's liveness and rollback probe uses. A named entry is a full control credential, not a read-only one. The support bundle masks `ACCESS_TOKENS` values too.
+
+- **The read feed keeps recent control outcomes (#519, #525).**
+  `rigforge.control_history` mirrors the control path's `changes/` ring, in the same `{change_id, status, reason}` shape as `rigforge.control`. A consumer without the control token can therefore still read an earlier change's terminal result after a second change supersedes it. A malformed entry is dropped without hiding the entries after it.
+
+- **First-run setup for `.onion` pools (#520, #548).**
+  Setup recognizes an onion pool, explains that Tor must be installed and running, and writes the default SOCKS proxy or a validated interactive override. `doctor` warns when a configured proxy does not accept TCP connections. The check is advisory and never dials a stopped, proxied miner directly.
+
+### Changed
+
+- **`control` implies the sister feed (#507, #517).**
+  A rig configured with only `control: "enabled"` now also serves the enriched read-only feed, because Pithead confirms an applied change through that feed. The implication is local only: `api` still cannot be turned on remotely, and a `control_port` equal to `api_port` is now refused. `doctor` derives the same implication.
+
+- **The API refresh no longer spawns a process per core, and runs at normal CPU priority (#540, #541).**
+  Per-core clocks are read without spawning processes, so the feed stays fresh on many-core rigs while they mine, including right after a thermal control apply.
+
+- **Contribution rules (#496, #497).**
+  `develop` merges on green checks plus an adversarial-review status recorded on the head by a session that did not author the change, as a squash after the branch is current. `AI_RULES.md` is the shared source for `AGENTS.md`, `CLAUDE.md` and `.cursorrules`.
+
+### Deprecated
+
+- **macOS is no longer a supported platform (#493, #504).**
+  The macOS CI runner and its native e2e legs are gone. The Darwin code paths keep working but are marked deprecated and are untested as of 2026-09-14. The docs say so wherever macOS was described as supported.
 
 ### Fixed
 
-- **Release e2e gates fail closed when mutation or restoration fails (#491).** Later mutation phases
-  stop after a failed prerequisite, cleanup errors reach the exit status, and recovery snapshots and
-  original upgrade refs remain available until config, source, apply, and runtime restoration succeed.
+- **A claimed control apply always records a terminal outcome (#509, #511).**
+  An EXIT trap armed when the change is claimed records `failed` if the run dies mid-apply, instead of leaving it `pending` forever. The apply oneshot gets an explicit 600-second start timeout, so a slow full-path apply is no longer killed and then reported as a failure.
+
+- **Remote upgrades are no longer killed by systemd's 90-second start timeout (#510, #524).**
+  The control-upgrade oneshot fetches, checks out and rebuilds XMRig, so it opts out of the start timeout. Its throttle bounds how often it runs.
+
+- **A control upgrade that dies records a terminal outcome (#535, #536).**
+  Control upgrade shares control apply's EXIT floor. A run killed after it claims the intent no longer leaves `started` as its final record.
+
+- **Partial refresh profiler overrides are cleaned up (#552).**
+  The override is claimed before its contents are written and staged before atomic publication. A staging retry or a refused allocation is cleaned up.
+
+- **Release e2e gates fail closed when mutation or restoration fails (#491, #492).**
+  Later mutation phases stop after a failed prerequisite, cleanup errors reach the exit status, and recovery snapshots and original upgrade refs remain available until config, source, apply and runtime restoration succeed.
+
+- **Tests and tooling.**
+  - The bench e2e harness now drives a DONATION control apply on a real rig (#509, #512) and proves `ACCESS_TOKENS` live (#516). Its network phase proves that `control` implies the feed (#507).
+  - Harness setup normalizes `control` and `control_upgrade` off before clearing a token (#514). `set_cfg` surfaces apply's error and exits 2 on a failed apply (#514, #522).
+  - The control setup token is kept out of `jq` arguments (#560).
+  - The apt prerequisite retry loop is driven end to end (#449, #498). The BSD watchdog assertion count is normalized (#501, #503).
+  - File-budget baselines are pinned immutable (#500).
+  - Timer-driven refresh timings are captured around thermal applies (#546, #547).
+  - A v1.17.3 performance baseline is recorded for one bench rig (#490).
+  - CI tool pins are refreshed (shfmt 3.14.1, diff-cover, zizmor) (#543).
 
 ## [1.17.3] - 2026-09-08
 
