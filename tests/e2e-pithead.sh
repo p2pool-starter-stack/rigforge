@@ -436,7 +436,7 @@ phase_stratum_auth() {
     if grep -qi 'permission denied\|login error' "$WLOG" 2>/dev/null; then
         ok "wrong pass: rejected by the proxy"
     else
-        bad "wrong pass: no rejection within 60s"
+        _connect_bad "wrong pass: no rejection within 60s"
     fi
     if grep -q 'new job from' "$WLOG" 2>/dev/null; then
         bad "wrong pass: worker still received jobs (auth not enforced?)"

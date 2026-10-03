@@ -6,7 +6,7 @@ if [ "$#" = 0 ]; then
     TEST_CREDENTIAL_DIR=$(mktemp -d)
     export TEST_CREDENTIAL_DIR
     trap 'rm -rf "$TEST_CREDENTIAL_DIR"' EXIT
-    for mode in tokens stratum edit-failed apply-failed; do
+    for mode in tokens stratum edit-failed apply-failed tokens-failed stratum-failed; do
         if bash "$0" "$mode" >"$TEST_CREDENTIAL_DIR/$mode.log" 2>&1; then
             case "$mode" in *-failed)
                 echo "$mode unexpectedly succeeded"
@@ -24,6 +24,16 @@ if [ "$#" = 0 ]; then
         edit-failed | apply-failed)
             grep -q 'could not enable api+control' "$TEST_CREDENTIAL_DIR/$mode.log"
             [ ! -s "$TEST_CREDENTIAL_DIR/$mode.requests" ]
+            ;;
+        esac
+        case "$mode" in
+        tokens-failed)
+            grep -q '^access-token-diagnostic: control_transport_rc=7 control_active=1$' "$TEST_CREDENTIAL_DIR/$mode.log"
+            grep -q 'revoked entry still answered 000' "$TEST_CREDENTIAL_DIR/$mode.log"
+            ;;
+        stratum-failed)
+            grep -q '^xmrig-diagnostic: .*network_errors=1 .*auth_errors=0 ' "$TEST_CREDENTIAL_DIR/$mode.log"
+            grep -q 'wrong pass: no rejection within 60s' "$TEST_CREDENTIAL_DIR/$mode.log"
             ;;
         esac
         cmp "$TEST_CREDENTIAL_DIR/$mode.json" "$TEST_CREDENTIAL_DIR/$mode.original"
@@ -62,9 +72,16 @@ skip() { bad 'unexpected skip'; }
 sleep() { :; }
 refresh_profile_finish() { :; }
 _restore_xmrig() { :; }
-systemctl() { [ "$1" = is-active ]; }
+systemctl() {
+    case "$1" in
+    is-active) return 0 ;;
+    show) printf 'ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n' ;;
+    *) return 1 ;;
+    esac
+}
 # Run the actual editor, phases and EXIT restoration without preflight or hardware.
 eval "$(sed -n '/^set_cfg()/,/^}/p; /^_cleanup()/,/^}/p; /^snapshot_config()/,/^}/p; /^phase_stratum_auth()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+eval "$(sed -n '/^_xmrig_diagnostics()/,/^}/p; /^_connect_bad()/,/^}/p' "$ROOT/tests/e2e-control-replay.sh")"
 source "$ROOT/tests/e2e-pithead-control.sh"
 source "$ROOT/tests/e2e-pithead-tokens.sh"
 check_args() {
@@ -101,7 +118,11 @@ xxd() {
 fixture_rigforge() {
     if [ "$1" = restart ]; then
         if command jq -e '.pools[0].pass == "wrong-114"' "$CFG" >/dev/null; then
-            printf 'login error\n' >"$WLOG"
+            if [ "$mode" = stratum-failed ]; then
+                printf 'connect error: stratum-secret\n' >"$WLOG"
+            else
+                printf 'login error\n' >"$WLOG"
+            fi
         else
             printf 'new job from fixture\n' >"$WLOG"
         fi
@@ -110,7 +131,7 @@ fixture_rigforge() {
     [ "$1" = apply ]
     cmp -s "$CFG" "$SAVED_CFG" && return 0 # restoration
     [ "$mode" != apply-failed ] || return 1
-    if [ "$mode" = stratum ]; then
+    if [[ "$mode" = stratum* ]]; then
         # Compare private stdin to the edited password, including quotes, slash and newline.
         if ! command jq -e '.pools[0].pass == "wrong-114"' "$CFG" >/dev/null; then
             printf '%s' "$E2E_STRATUM_PASS" | command jq -e --rawfile pass /dev/stdin '.pools[0].pass == $pass and .keep' "$CFG" >/dev/null
@@ -149,13 +170,17 @@ curl() {
     4:*/status?change_id=fixture) printf '{"status":"applied"}' ;;
     5:*/health | 6:*/apply)
         command jq -e '.ACCESS_TOKENS == {}' "$CFG" >/dev/null
+        if [ "$mode:$count" = tokens-failed:6 ]; then
+            printf 000
+            return 7
+        fi
         printf 401
         ;;
     *) bad 'unexpected request sequence' ;;
     esac
 }
 snapshot_config
-if [ "$mode" = stratum ]; then
+if [[ "$mode" = stratum* ]]; then
     phase_stratum_auth
     [ "$(wc -l <"$TEST_CREDENTIAL_DIR/$mode.edits" | tr -d ' ')" = 3 ]
     [ "$(wc -l <"$TEST_CREDENTIAL_DIR/$mode.ok" | tr -d ' ')" = 4 ]

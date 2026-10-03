@@ -4,7 +4,7 @@
 # e2e-pithead.sh AFTER phase()/ok()/bad()/set_cfg()/$CFG are defined; must not be run standalone.
 phase_access_tokens() {
     phase "access-tokens — a non-master ACCESS_TOKENS entry authenticates :8081 and :8082 (#516)"
-    local master bench cur new port resp code cid st waited=0 body bread
+    local master bench cur new port resp code cid st waited=0 body bread curl_rc=0 control_active=0
     master=$(head -c 32 /dev/urandom | xxd -p -c 256)
     bench=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur=$(jq -r '.DONATION // 1' "$CFG")
@@ -50,8 +50,14 @@ phase_access_tokens() {
     sleep 3
     code=$(_control_curl "$bench" -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$(jq -r '.api_port // 8081' "$CFG")/health" 2>/dev/null || true)
     [ "$code" = 401 ] && ok "a revoked ACCESS_TOKENS entry stops authenticating :8081 (#516)" || bad "revoked entry still answered $code on :8081"
-    code=$(_control_curl "$bench" -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d '{"DONATION":1}' "http://127.0.0.1:$port/apply" 2>/dev/null || true)
-    [ "$code" = 401 ] && ok "a revoked ACCESS_TOKENS entry stops authenticating :8082 (#516)" || bad "revoked entry still answered $code on :8082"
+    code=$(_control_curl "$bench" -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d '{"DONATION":1}' "http://127.0.0.1:$port/apply" 2>/dev/null) || curl_rc=$?
+    if [ "$code" = 401 ]; then
+        ok "a revoked ACCESS_TOKENS entry stops authenticating :8082 (#516)"
+    else
+        systemctl is-active --quiet rigforge-control.service && control_active=1 || true
+        printf 'access-token-diagnostic: control_transport_rc=%s control_active=%s\n' "$curl_rc" "$control_active"
+        bad "revoked entry still answered $code on :8082"
+    fi
     # No further restoration here: _cleanup's EXIT trap restores DONATION, the tokens and the
     # control state from the snapshot, same convention as phase_control.
 }

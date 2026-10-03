@@ -44,6 +44,9 @@ Control and access-token requests pass bearer tokens through curl's stdin config
 Control setup, access-token setup and stratum password setup/rotation use stdin with constant jq programs;
 the derived read bearer uses Python's standard-library HMAC with its key on stdin.
 These paths keep credentials out of process arguments and logs; the EXIT trap restores the original config.
+A failed control revocation request records only curl's numeric exit status and control-service
+activity; a failed wrong-password gate reuses fixed-schema XMRig state and classified log counts.
+These diagnostics preserve the failing verdict and never export config, log text or credentials.
 Each POST uses its own securely allocated response file,
 removed after reading the change identifier.
 The drop-in is written in a private staging file and published atomically with `link` only after the
