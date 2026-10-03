@@ -46,7 +46,7 @@ mode="$1"
 CFG="$TEST_CREDENTIAL_DIR/$mode.json"
 WLOG="$TEST_CREDENTIAL_DIR/worker.log"
 # shellcheck disable=SC2034 # consumed by extracted editor/cleanup functions
-RIGFORGE=fixture_rigforge
+RIGFORGE=fixture_rigforge PITHEAD_URL=fixture.invalid:3333
 # shellcheck disable=SC2034 # consumed by extracted cleanup function
 HAMMER_PIDS='' RIG_LOCK_HOLDER="$TEST_CREDENTIAL_DIR/holder"
 E2E_STRATUM_PASS=$'stratum-secret"\\\nsecond line'
