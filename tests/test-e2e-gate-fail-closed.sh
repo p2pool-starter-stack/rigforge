@@ -2,6 +2,7 @@
 # shellcheck disable=SC2016,SC2034,SC2329
 # Hardware-free regression for the release-gate failure plumbing (#491).
 echo "== unit: release e2e gates fail closed (#491) =="
+source "$ROOT/tests/test-summary-diagnostics.sh"
 source "$ROOT/tests/e2e-refresh-window.sh"
 T491="$(mktemp -d "$SANDBOX/gate491.XXXXXX")"
 

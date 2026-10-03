@@ -370,16 +370,16 @@ phase_network() {
     else
         bad "miner has unexpected listeners: $xl"
     fi
-    # Require the documented metadata, then compare the remaining keys exactly with XMRig's API.
+    source "$HERE/tests/e2e-summary-diagnostics.sh"
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
     k2=$(api8081 http://127.0.0.1:8081/2/summary)
+    printf '%s\n' "${k1:-null}" "${k2:-null}" | summary_contract_diagnostics
     if [ -n "$k1" ] && printf '%s' "$k2" | jq -e '(.rigforge | type) == "object" and (.generated_at | type) == "string" and (.generated_at as $g | [try ($g | fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch empty] == [$g])' >/dev/null 2>&1 &&
         [ "$k1" = "$(printf '%s' "$k2" | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)" ]; then
         ok "wire superset: sister /2/summary = xmrig's keys + rigforge + generated_at"
     else
         bad "sister summary lacks valid metadata or its XMRig key superset differs"
     fi
-    # No response on either port may expose the configured token or pool password.
     set_cfg '.ACCESS_TOKEN = "tok-net1" | .pools[0].pass = "pass-net1"'
     sleep 3
     sweep=$(
