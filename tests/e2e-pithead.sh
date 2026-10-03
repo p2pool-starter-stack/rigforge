@@ -417,7 +417,7 @@ phase_stratum_auth() {
         bad "no worker xmrig.log found — run the connect phase (or setup) first"
         return 0
     fi
-    set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\""
+    printf '%s' "$E2E_STRATUM_PASS" | set_cfg '.pools[0].pass = $password' '' --rawfile password /dev/stdin
     : >"$WLOG" || true
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
@@ -436,14 +436,14 @@ phase_stratum_auth() {
     if grep -qi 'permission denied\|login error' "$WLOG" 2>/dev/null; then
         ok "wrong pass: rejected by the proxy"
     else
-        bad "wrong pass: no rejection within 60s"
+        _connect_bad "wrong pass: no rejection within 60s"
     fi
     if grep -q 'new job from' "$WLOG" 2>/dev/null; then
         bad "wrong pass: worker still received jobs (auth not enforced?)"
     else
         ok "wrong pass: no jobs delivered"
     fi
-    set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\"" # the #113 rotation runbook, proven mechanically
+    printf '%s' "$E2E_STRATUM_PASS" | set_cfg '.pools[0].pass = $password' '' --rawfile password /dev/stdin # the #113 rotation runbook, proven mechanically
     : >"$WLOG" || true
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
