@@ -21,7 +21,8 @@ phase_control() {
     [ "$max_temp" -le 100 ] || max_temp=100
     [ "$max_temp" -gt 40 ] || bad "cannot lower the existing thermal cutoff safely"
     target_temp=$((max_temp - 1))
-    set_cfg ".api=\"enabled\" | .control=\"enabled\" | .ACCESS_TOKEN=\"$tok\" | .api_allow_from=\"127.0.0.1/32\" | .watchdog=\"enabled\" | .max_temp_c=$max_temp" soft || bad "could not enable the control path"
+    printf '%s' "$tok" | set_cfg '.api="enabled" | .control="enabled" | .ACCESS_TOKEN=$token | .api_allow_from="127.0.0.1/32" | .watchdog="enabled" | .max_temp_c=$max_temp' soft \
+        --rawfile token /dev/stdin --argjson max_temp "$max_temp" || bad "could not enable the control path"
     sleep 3 # let rigforge-control.service (restarted by install_control) settle
     port=$(jq -r '.control_port // 8082' "$CFG")
     api_port=$(jq -r '.api_port // 8081' "$CFG")
