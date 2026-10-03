@@ -3,7 +3,7 @@
 # shellcheck disable=SC2034,SC2317,SC2329
 set -Eeuo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-TASK_TMP=$(mktemp -d "${TMPDIR:?}/rigforge-readiness.XXXXXX")
+TASK_TMP=$(mktemp -d)
 trap 'rm -rf "$TASK_TMP"' EXIT
 source "$ROOT/tests/e2e-pithead-tokens.sh"
 for fn in _restore_xmrig _cleanup snapshot_config; do
@@ -50,6 +50,18 @@ curl() {
     if [ "$bearer" = 0 ]; then
         # Refuse POST/credentials/config inputs in every readiness probe.
         case "$url" in */health | */status) ;; *) return 99 ;; esac
+        if [[ "$url" == *:8082/status ]] && [ "$(jq '.ACCESS_TOKENS | length' "$CFG")" != 0 ]; then
+            n=$(cat "$CASE_DIR/setup-probes")
+            printf '%s' "$((n + 1))" >"$CASE_DIR/setup-probes"
+            if [ "$SCENARIO" = delayed ] && [ "$n" -lt 2 ]; then
+                printf 000
+                return 7
+            fi
+            if [ "$SCENARIO" = setup-down ]; then
+                printf 000
+                return 7
+            fi
+        fi
         if [[ "$url" == *:8082/status ]] && [ "$(jq '.ACCESS_TOKENS | length' "$CFG")" = 0 ]; then
             n=$(cat "$CASE_DIR/probes")
             printf '%s' "$((n + 1))" >"$CASE_DIR/probes"
@@ -99,6 +111,10 @@ curl() {
             }
             printf 401
         else
+            if [ "$SCENARIO" = delayed ] && [ "$(cat "$CASE_DIR/setup-probes")" -lt 3 ]; then
+                printf 000
+                return 7
+            fi
             printf '{"change_id":"0123456789abcdef"}' >"$output"
             printf 202
         fi
@@ -106,17 +122,19 @@ curl() {
         printf 401
     fi
 }
-for SCENARIO in delayed down timeout open denied error accepted; do
+for SCENARIO in delayed down timeout open denied error accepted setup-down; do
     CASE_DIR="$TASK_TMP/$SCENARIO"
     mkdir -p "$CASE_DIR"
     CFG="$CASE_DIR/config"
     printf '%s\n' '{"DONATION":1,"ACCESS_TOKEN":"original","ACCESS_TOKENS":{"original":"original"}}' >"$CFG"
     cp "$CFG" "$CASE_DIR/original"
     printf 0 >"$CASE_DIR/probes"
+    printf 0 >"$CASE_DIR/setup-probes"
     : >"$CASE_DIR/revoked-posts"
     : >"$CASE_DIR/argv"
     rc=0
     (
+        unset SECONDS # Unsetting removes Bash's wall-clock behavior before the fake clock.
         SECONDS=0
         SAVED_CFG='' SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS='' E2E_EXIT_RC=0
         RIG_LOCK_HOLDER="$CASE_DIR/holder" RIGFORGE=rigforge_stub
@@ -132,6 +150,8 @@ for SCENARIO in delayed down timeout open denied error accepted; do
     case "$SCENARIO" in
     delayed)
         check "$rc:$probes:$posts" 0:5:1 'transient refusal recovers before one revocation POST'
+        check "$(cat "$CASE_DIR/setup-probes")" 3 'setup waits before authenticated POST'
+        grep -Eq 'service=control stage=setup elapsed_s=2' "$CASE_DIR/log"
         grep -Eq 'service=control stage=revocation elapsed_s=4' "$CASE_DIR/log"
         grep -Eq 'a revoked ACCESS_TOKENS entry stops authenticating :8082' "$CASE_DIR/log"
         ;;
@@ -142,6 +162,11 @@ for SCENARIO in delayed down timeout open denied error accepted; do
         ;;
     open | denied | error)
         check "$rc:$probes:$posts" 1:1:0 'unexpected HTTP/TLS error fails without retry or POST'
+        ;;
+    setup-down)
+        check "$rc:$probes:$posts" 1:0:0 'setup failure stops before auth assertions'
+        check "$(cat "$CASE_DIR/setup-probes")" 30 'setup deadline is bounded'
+        grep -Eq 'service=control stage=setup elapsed_s=30 transport_rc=7 http_code=000 active=1' "$CASE_DIR/log"
         ;;
     accepted)
         check "$rc:$probes:$posts" 1:1:1 'readiness never substitutes for revoked-bearer rejection'
@@ -155,3 +180,16 @@ for SCENARIO in delayed down timeout open denied error accepted; do
     done
     printf 'PASS: %s (including byte-identical EXIT restoration)\n' "$SCENARIO"
 done
+# Force a clock tick between the loop condition and timeout calculation. No curl
+# may run with max-time 0, which would disable its deadline entirely.
+rc=0
+(
+    unset SECONDS
+    SECONDS=0
+    set -T
+    trap 'if [[ "$BASH_COMMAND" == "remaining="* ]]; then SECONDS=30; fi' DEBUG
+    _access_tokens_ready control 8082 revocation
+) >"$TASK_TMP/deadline.log" 2>&1 || rc=$?
+check "$rc" 1 'deadline tick refuses an unlimited curl timeout'
+grep -Eq 'elapsed_s=30 transport_rc=0 http_code=000 active=1' "$TASK_TMP/deadline.log"
+printf 'PASS: deadline tick before curl\n'

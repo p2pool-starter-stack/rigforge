@@ -9,6 +9,7 @@ _access_tokens_ready() { # <api|control> <port> <setup|revocation>
     [ "$service" != control ] || path=status
     while [ "$((SECONDS - started))" -lt 30 ]; do
         remaining=$((30 - SECONDS + started))
+        [ "$remaining" -gt 0 ] || break # curl treats --max-time 0 as unlimited
         [ "$remaining" -le 2 ] || remaining=2
         rc=0
         code=$(curl -q --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time "$remaining" \
