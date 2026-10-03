@@ -18,7 +18,7 @@ stratum_gate_case562() { # <unset|empty|present|all> <active|stopped>
             eval "$PIT_SNAPSHOT"
             eval "$(sed -n '/^bad()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
             CFG="$d/config" SAVED_CFG="" HAMMER_PIDS="" RIG_LOCK_HOLDER="$d/holder"
-            RIGFORGE=rigforge562 WLOG="$d/private-log" FAIL=0 E2E_EXIT_RC=0
+            PITHEAD_URL=fixture.invalid:3333 RIGFORGE=rigforge562 WLOG="$d/private-log" FAIL=0 E2E_EXIT_RC=0
             unset E2E_STRATUM_PASS
             [ "$1" != empty ] || E2E_STRATUM_PASS=""
             [ "$1" != present ] || E2E_STRATUM_PASS=synthetic-pass562
@@ -78,3 +78,110 @@ for stratum_assert562 in 'right pass: worker mines' 'wrong pass: rejected by the
     assert_contains "stratum retains $stratum_assert562" "$STRATUM_OUT562" "$stratum_assert562"
 done
 assert_absent "stratum output hides the synthetic password" "$STRATUM_OUT562" synthetic-pass562
+
+# #570: execute the real editor against a usable foreign primary AND fallback.
+# Mining from either must not satisfy the authenticated fixture's assertions.
+stratum_fixture_case570() { # <success|edit|apply|reject-apply|recover-apply|restart> <active|stopped>
+    local d="$T491/fixture-$1-$2" rc out
+    mkdir -p "$d"
+    printf '%s\n' '{"DONATION":1,"pools":[{"url":"primary.invalid:3333","user":"identity570","pass":"old","tls":true,"tls-fingerprint":"old-pin","socks5":"proxy.invalid:9050","enabled":false},{"url":"fallback.invalid:3333","user":"fallback570"}]}' >"$d/config"
+    cp "$d/config" "$d/original"
+    printf '%s' "$2" >"$d/service"
+    : >"$d/restarts"
+    printf 0 >"$d/applies"
+    out="$(
+        (
+            set -Eeuo pipefail
+            eval "$PIT_STRATUM"
+            eval "$PIT_SET"
+            eval "$PIT_DIE"
+            eval "$PIT_CLEAN"
+            eval "$PIT_RESTORE"
+            eval "$PIT_SNAPSHOT"
+            eval "$(sed -n '/^bad()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+            CFG="$d/config" SAVED_CFG="" HAMMER_PIDS="" RIG_LOCK_HOLDER="$d/holder"
+            RIGFORGE=rigforge570 WLOG="$d/log" FAIL=0 E2E_EXIT_RC=0
+            PITHEAD_URL=fixture.invalid:3333 E2E_STRATUM_PASS=$'synthetic570"\\\npassword'
+            phase() { :; }
+            ok() { printf '%s\n' "$1"; }
+            refresh_profile_finish() { :; }
+            systemctl() { [ "$1" = is-active ] && [ "$(cat "$d/service")" = active ]; }
+            jq() {
+                local arg
+                for arg in "$@"; do
+                    [[ "$arg" != *"$PITHEAD_URL"* && "$arg" != *"$E2E_STRATUM_PASS"* ]] || return 90
+                done
+                [ "$failure570" != edit ] || [ "$1" != --rawfile ] || {
+                    printf '%s %s\n' "$PITHEAD_URL" "$E2E_STRATUM_PASS" >&2
+                    return 91
+                }
+                command jq "$@"
+            }
+            rigforge570() {
+                case "$1" in
+                apply)
+                    if ! cmp -s "$CFG" "$d/original"; then
+                        local n
+                        n=$(($(cat "$d/applies") + 1))
+                        printf '%s' "$n" >"$d/applies"
+                        case "$failure570:$n" in
+                        apply:1 | reject-apply:2 | recover-apply:3)
+                            printf '%s %s\n' "$PITHEAD_URL" "$E2E_STRATUM_PASS" >&2
+                            return 93
+                            ;;
+                        esac
+                    fi
+                    ;;
+                start) printf active >"$d/service" ;;
+                stop) printf stopped >"$d/service" ;;
+                restart)
+                    printf active >"$d/service"
+                    [ "$failure570" != restart ] || return 92
+                    # The private test oracle models work from any foreign endpoint.
+                    if command jq -e '.pools | length != 1 or .[0].url != "fixture.invalid:3333"' "$CFG" >/dev/null; then
+                        printf 'new job from foreign pool\n' >"$WLOG"
+                    else
+                        command jq -e '.DONATION == 1 and .pools[0].user == "identity570" and (.pools[0] | keys == ["pass","url","user"])' "$CFG" >/dev/null
+                        if [ "$(command jq -r '.pools[0].pass' "$CFG")" = wrong-114 ]; then
+                            printf 'permission denied\n' >"$WLOG"
+                            printf rejected >>"$d/restarts"
+                        else
+                            printf '%s' "$E2E_STRATUM_PASS" | command jq -e --rawfile password /dev/stdin '.pools[0].pass == $password' "$CFG" >/dev/null
+                            printf 'new job from fixture\n' >"$WLOG"
+                            printf accepted >>"$d/restarts"
+                        fi
+                    fi
+                    ;;
+                *) return 1 ;;
+                esac
+            }
+            sleep() { :; }
+            wait_for_job() { grep -q 'new job from' "$WLOG"; }
+            failure570="$1"
+            snapshot_config
+            phase_stratum_auth required
+        ) 2>&1
+    )"
+    rc=$?
+    assert_eq "stratum $1 restores original bytes ($2)" "$(cmp -s "$d/config" "$d/original" && echo restored)" restored
+    assert_eq "stratum $1 restores original runtime ($2)" "$(cat "$d/service")" "$2"
+    assert_absent "stratum $1 hides endpoint" "$out" fixture.invalid
+    assert_absent "stratum $1 hides credential" "$out" synthetic570
+    if [ "$1" = success ]; then
+        assert_rc "isolated fixture phase succeeds ($2)" "$rc" 0
+        assert_eq "only fixture proves acceptance/rejection/recovery ($2)" "$(cat "$d/restarts")" acceptedrejectedaccepted
+        assert_contains "isolated rejection delivers no jobs ($2)" "$out" 'wrong pass: no jobs delivered'
+    else
+        [ "$rc" -ne 0 ] && ok "stratum $1 failure propagates ($2)" || bad "stratum $1 failure propagates ($2)" 'unexpected success'
+        case "$1" in
+        edit | apply) assert_contains "initial setup failure is diagnosed" "$out" 'stratum-auth: fixture setup failed' ;;
+        reject-apply) assert_contains "rejection setup failure is diagnosed" "$out" 'stratum-auth: wrong-password setup failed' ;;
+        recover-apply) assert_contains "recovery setup failure is diagnosed" "$out" 'stratum-auth: recovery setup failed' ;;
+        esac
+    fi
+}
+for fixture_state570 in active stopped; do
+    for fixture_failure570 in success edit apply reject-apply recover-apply restart; do
+        stratum_fixture_case570 "$fixture_failure570" "$fixture_state570"
+    done
+done

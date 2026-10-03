@@ -417,7 +417,7 @@ phase_stratum_auth() {
         bad "no worker xmrig.log found — run the connect phase (or setup) first"
         return 0
     fi
-    set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\""
+    printf '%s\0%s' "$PITHEAD_URL" "$E2E_STRATUM_PASS" | set_cfg '($fixture | split("\u0000")) as $f | .pools = [(.pools[0] | {user}) + {url: $f[0], pass: $f[1]}]' soft --rawfile fixture /dev/stdin 2>/dev/null || die "stratum-auth: fixture setup failed"
     : >"$WLOG" || true
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
@@ -425,7 +425,7 @@ phase_stratum_auth() {
     else
         bad "right pass: no stratum job within 60s"
     fi
-    set_cfg '.pools[0].pass = "wrong-114"'
+    set_cfg '.pools[0].pass = "wrong-114"' soft 2>/dev/null || die "stratum-auth: wrong-password setup failed"
     : >"$WLOG" || true
     "$RIGFORGE" restart >/dev/null 2>&1
     local waited=0
@@ -443,7 +443,7 @@ phase_stratum_auth() {
     else
         ok "wrong pass: no jobs delivered"
     fi
-    set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\"" # the #113 rotation runbook, proven mechanically
+    printf '%s' "$E2E_STRATUM_PASS" | set_cfg '.pools[0].pass = $password' soft --rawfile password /dev/stdin 2>/dev/null || die "stratum-auth: recovery setup failed"
     : >"$WLOG" || true
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
