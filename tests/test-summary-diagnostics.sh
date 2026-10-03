@@ -52,3 +52,39 @@ rc=$?
 assert_rc "summary diagnostics: wire failure remains fatal" "$rc" 1
 assert_contains "summary diagnostics: phase emits observations before failure" "$(cat "$SANDBOX/summary-diag-phase")" 'network-summary:'
 assert_contains "summary diagnostics: original failing row retained" "$(cat "$SANDBOX/summary-diag-phase")" 'FAIL:sister summary lacks valid metadata or its XMRig key superset differs'
+# No inter-phase cleanup: the same shell state must reach the network check.
+summary_sequence_case() {
+    (
+        set -e
+        FAIL=0 sequence_state=initial
+        phase_connect() {
+            sequence_state=connected
+            printf 'connect '
+        }
+        phase_worker_api() {
+            [ "$sequence_state" = connected ]
+            sequence_state=worker
+            printf 'worker-api '
+        }
+        fault=$1
+        phase_api_impact() {
+            [ "$sequence_state" = worker ]
+            sequence_state=loaded
+            printf 'api-impact '
+            case "$fault" in fatal) return 7 ;; row) FAIL=1 ;; esac
+            return 0
+        }
+        phase_network() {
+            [ "$sequence_state" = loaded ]
+            printf network
+        }
+        phase_network_sequence
+    )
+}
+assert_eq "network sequence: ordered nightly prefix shares shell state" "$(summary_sequence_case success)" 'connect worker-api api-impact network'
+sequence_out=$(summary_sequence_case fatal)
+assert_rc "network sequence: fatal phase status propagates" "$?" 7
+assert_eq "network sequence: fatal predecessor stops before network" "$sequence_out" 'connect worker-api api-impact '
+sequence_out=$(summary_sequence_case row)
+assert_rc "network sequence: failed row stops the prefix" "$?" 1
+assert_eq "network sequence: failed predecessor row stops before network" "$sequence_out" 'connect worker-api api-impact '

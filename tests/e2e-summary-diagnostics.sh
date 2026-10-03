@@ -18,3 +18,11 @@ summary_contract_diagnostics() {
     ' 2>/dev/null) || result='{"json_valid":false}'
     printf 'network-summary: %s\n' "$result"
 }
+# Preserve the nightly prefix in one snapshot, without running unrelated later phases.
+phase_network_sequence() {
+    local run_phase
+    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network; do
+        "$run_phase"
+        [ "$FAIL" -eq 0 ] || return 1
+    done
+}

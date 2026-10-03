@@ -14,7 +14,7 @@ RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
@@ -370,7 +370,6 @@ phase_network() {
     else
         bad "miner has unexpected listeners: $xl"
     fi
-    source "$HERE/tests/e2e-summary-diagnostics.sh"
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
     k2=$(api8081 http://127.0.0.1:8081/2/summary)
     printf '%s\n' "${k1:-null}" "${k2:-null}" | summary_contract_diagnostics
@@ -534,7 +533,7 @@ summary() {
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)"
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)"
 replay_lock "${1:-all}"
 
 snapshot_config
@@ -543,6 +542,7 @@ connect) phase_connect ;;
 worker-api) phase_worker_api ;;
 api-impact) phase_api_impact ;;
 network) phase_network ;;
+network-sequence) phase_network_sequence ;;
 stratum-auth) phase_stratum_auth ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
@@ -555,7 +555,7 @@ all)
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT
