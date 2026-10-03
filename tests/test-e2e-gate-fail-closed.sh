@@ -74,6 +74,7 @@ pit_dispatch_case() { # <phase arg> -> what-ran:rc
     rc=$?
     printf '%s:%s\n' "${out:-nothing}" "$rc"
 }
+source "$ROOT/tests/test-stratum-auth-gate.sh"
 assert_eq "dispatch selects the network sequence" "$(pit_dispatch_case network-sequence)" "network_sequence :0"
 assert_eq "dispatch runs the named phase" "$(pit_dispatch_case worker-api)" "worker_api :0"
 assert_eq "dispatch runs every phase for 'all'" "$(pit_dispatch_case all)" "connect worker_api api_impact network stratum_auth dashboard dev_fee control access_tokens :0"

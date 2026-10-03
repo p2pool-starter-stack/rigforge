@@ -408,12 +408,13 @@ phase_network() {
 
 phase_stratum_auth() {
     phase "stratum-auth — right pass mines, wrong pass is rejected (#113, stack phase 1)"
-    if [ -z "$WLOG" ]; then
-        bad "no worker xmrig.log found — run the connect phase (or setup) first"
+    if [ -z "${E2E_STRATUM_PASS:-}" ]; then
+        [ "${1:-}" != required ] || die "stratum-auth: missing E2E_STRATUM_PASS"
+        skip "E2E_STRATUM_PASS not set (stack auth off, or secret not provided) — phases skipped"
         return 0
     fi
-    if [ -z "${E2E_STRATUM_PASS:-}" ]; then
-        skip "E2E_STRATUM_PASS not set (stack auth off, or secret not provided) — phases skipped"
+    if [ -z "$WLOG" ]; then
+        bad "no worker xmrig.log found — run the connect phase (or setup) first"
         return 0
     fi
     set_cfg ".pools[0].pass = \"$E2E_STRATUM_PASS\""
@@ -543,7 +544,7 @@ worker-api) phase_worker_api ;;
 api-impact) phase_api_impact ;;
 network) phase_network ;;
 network-sequence) phase_network_sequence ;;
-stratum-auth) phase_stratum_auth ;;
+stratum-auth) phase_stratum_auth required ;;
 dashboard) phase_dashboard ;;
 dev-fee) phase_dev_fee ;;
 control) phase_control ;;
