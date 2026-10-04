@@ -2,17 +2,47 @@
 # ACCESS_TOKENS phase for e2e-pithead.sh (#516), split out to stay under e2e-pithead.sh's file
 # budget (docs/dev/file-budget.tsv) — same convention as e2e-pithead-control.sh. Sourced by
 # e2e-pithead.sh AFTER phase()/ok()/bad()/set_cfg()/$CFG are defined; must not be run standalone.
+# Probe without a bearer or a write: HTTP 401 establishes a listening, gated service,
+# not successful revocation. The revoked bearer must still get its own HTTP 401 below.
+_access_tokens_ready() { # <api|control> <port> <setup|revocation>
+    local service="$1" port="$2" stage="$3" path=health started=$SECONDS code=000 rc=0 active=0 remaining
+    [ "$service" != control ] || path=status
+    while [ "$((SECONDS - started))" -lt 30 ]; do
+        remaining=$((30 - SECONDS + started))
+        [ "$remaining" -gt 0 ] || break # curl treats --max-time 0 as unlimited
+        [ "$remaining" -le 2 ] || remaining=2
+        rc=0
+        code=$(curl -q --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time "$remaining" \
+            "http://127.0.0.1:$port/$path" 2>/dev/null) || rc=$?
+        if [ "$rc" = 0 ] && [ "$code" = 401 ]; then
+            printf 'access-token-readiness: service=%s stage=%s elapsed_s=%s\n' "$service" "$stage" "$((SECONDS - started))"
+            return 0
+        fi
+        # Only a refused/timed-out connection is a startup window. A reachable service
+        # with unexpected auth posture, or any other curl error, is a failure immediately.
+        case "$rc:$code" in 7:000 | 28:000) ;; *) break ;; esac
+        [ "$((SECONDS - started))" -ge 30 ] || sleep 1
+    done
+    systemctl is-active --quiet "rigforge-$service.service" 2>/dev/null && active=1
+    printf 'access-token-readiness: service=%s stage=%s elapsed_s=%s transport_rc=%s http_code=%s active=%s\n' \
+        "$service" "$stage" "$((SECONDS - started))" "$rc" "$code" "$active" >&2
+    bad "access-token $service listener did not become ready after $stage within 30s (#573)"
+    return 1
+}
+
 phase_access_tokens() {
     phase "access-tokens — a non-master ACCESS_TOKENS entry authenticates :8081 and :8082 (#516)"
-    local master bench cur new port resp code cid st waited=0 body bread curl_rc=0 control_active=0
+    local master bench cur new port api_port resp code cid st waited=0 body bread curl_rc=0 control_active=0
     master=$(head -c 32 /dev/urandom | xxd -p -c 256)
     bench=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur=$(jq -r '.DONATION // 1' "$CFG")
     new=$(((cur + 1) % 101))
     printf '{"master":"%s","bench":"%s"}' "$master" "$bench" | set_cfg '.api="enabled" | .control="enabled" | .ACCESS_TOKEN=$tokens[0].master | .ACCESS_TOKENS={"bench":$tokens[0].bench} | .api_allow_from="127.0.0.1/32"' soft --slurpfile tokens /dev/stdin ||
         bad "could not enable api+control with a named ACCESS_TOKENS entry"
-    sleep 3 # let the sister API + control services (restarted by apply) settle
     port=$(jq -r '.control_port // 8082' "$CFG")
+    api_port=$(jq -r '.api_port // 8081' "$CFG")
+    _access_tokens_ready api "$api_port" setup || return 1
+    _access_tokens_ready control "$port" setup || return 1
 
     # :8080 stays master-only — a named entry must not reach xmrig's own API. The refusal code is a
     # present-but-wrong Bearer, not a missing one, and varies by xmrig version (same reasoning as
@@ -47,8 +77,9 @@ phase_access_tokens() {
 
     # Revocation: drop the entry and confirm it stops on both ports (red before / green after #516).
     set_cfg '.ACCESS_TOKENS={}' soft || bad "could not revoke the bench ACCESS_TOKENS entry"
-    sleep 3
-    code=$(_control_curl "$bench" -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$(jq -r '.api_port // 8081' "$CFG")/health" 2>/dev/null || true)
+    _access_tokens_ready api "$api_port" revocation || return 1
+    _access_tokens_ready control "$port" revocation || return 1
+    code=$(_control_curl "$bench" -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$api_port/health" 2>/dev/null || true)
     [ "$code" = 401 ] && ok "a revoked ACCESS_TOKENS entry stops authenticating :8081 (#516)" || bad "revoked entry still answered $code on :8081"
     code=$(_control_curl "$bench" -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d '{"DONATION":1}' "http://127.0.0.1:$port/apply" 2>/dev/null) || curl_rc=$?
     if [ "$code" = 401 ]; then

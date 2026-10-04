@@ -144,6 +144,10 @@ fixture_rigforge() {
 wait_for_job() { grep -q 'new job from' "$WLOG"; }
 curl() {
     check_args "$@"
+    if [ "${1:-}" = -q ] && [ "${4:-}" = -s ]; then
+        printf 401 # Bearer-free readiness is separate from the seven auth assertions.
+        return
+    fi
     local config arg url='' response='' count expected
     config=$(cat)
     count=$(wc -l <"$TEST_CREDENTIAL_DIR/$mode.requests" | tr -d ' ')
