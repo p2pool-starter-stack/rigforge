@@ -18,6 +18,7 @@ test: lint test-suite ## Lint + the dependency-free suite (runs on macOS or Linu
 
 test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simulated
 	bash tests/run.sh
+	bash tests/test-contract-credentials.sh
 	bash tests/test-access-token-readiness.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)

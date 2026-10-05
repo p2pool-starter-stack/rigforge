@@ -3,6 +3,9 @@
 RigForge is one self-contained script, so its tests are layered by how much they exercise for
 real, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
+`make test-suite` requires both the Bash suite and the Python-dependent contract credential regression.
+The kcov container measures the Bash suite only; the credential regression always runs in the
+GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
 
 > The split exists so CI proves everything it can on a GitHub runner, while the things a runner
 > physically can't do (compile XMRig, reserve HugePages, write MSRs, set the governor, hash) are
@@ -12,7 +15,7 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 
 | Layer | File | Runs | What it proves | How to run |
 |---|---|---|---|---|
-| **Unit + black-box suite** | [`run.sh`](run.sh) | Any host (macOS/Linux), no Docker. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `bash tests/run.sh` |
+| **Unit + black-box suite** | [`run.sh`](run.sh) + [`test-contract-credentials.sh`](test-contract-credentials.sh) | Any host (macOS/Linux), no Docker; credential regression needs Python 3. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `make test-suite` |
 | **Linux container e2e** | [`e2e/linux.sh`](e2e/linux.sh) → [`e2e/in-container.sh`](e2e/in-container.sh) | Disposable Ubuntu container, **needs Docker**. **In CI.** | The genuine Linux deploy path against a real (throwaway) `/etc` with real GNU tools (`sed -i`, `tee`, `envsubst`) + idempotency on re-run. Only the heavy/privileged bits (compile, package install, `systemctl`/`mount`) are stubbed. A second pass re-runs the container with `RIGFORGE_APPLIANCE=1` (#348) and proves the appliance contracts on that real `/etc`: units land in `/run/systemd/system`, no package installs, no fstab/limits.conf/logrotate writes, every enable carries `--runtime`. | `make test-e2e` |
 | **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is deprecated, #493). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
 | **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
@@ -37,9 +40,14 @@ without a successful refresh and CPU begin/end from the same process fails diagn
 No arguments, process names or payloads are exported.
 Five-second observations record timer/service state and the direct feed
 for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
-Control-phase setup passes the temporary write token through stdin to jq's `--rawfile`
-with a constant program; requests pass it through curl's stdin configuration. Both keep the
-token out of process arguments and logs, while the EXIT trap restores the original config. Each POST uses its own securely allocated response file,
+Control and access-token requests pass bearer tokens through curl's stdin configuration.
+Control setup, access-token setup and stratum password setup/rotation use stdin with constant jq programs;
+the derived read bearer uses Python's standard-library HMAC with its key on stdin.
+These paths keep credentials out of process arguments and logs; the EXIT trap restores the original config.
+A failed control revocation request records only curl's numeric exit status and control-service
+activity; a failed wrong-password gate reuses fixed-schema XMRig state and classified log counts.
+These diagnostics preserve the failing verdict and never export config, log text or credentials.
+Each POST uses its own securely allocated response file,
 removed after reading the change identifier.
 The drop-in is written in a private staging file and published atomically with `link` only after the
 write succeeds. A partial write fails setup and cleanup removes the staging file. Publication refuses

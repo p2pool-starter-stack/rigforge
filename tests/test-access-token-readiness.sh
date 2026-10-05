@@ -6,7 +6,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TASK_TMP=$(mktemp -d)
 trap 'rm -rf "$TASK_TMP"' EXIT
 source "$ROOT/tests/e2e-pithead-tokens.sh"
-for fn in _restore_xmrig _cleanup snapshot_config; do
+source "$ROOT/tests/e2e-pithead-control.sh"
+for fn in _restore_xmrig _cleanup snapshot_config set_cfg; do
     eval "$(sed -n "/^$fn()/,/^}/p" "$ROOT/tests/e2e-pithead.sh")"
 done
 check() { [ "$1" = "$2" ] || {
@@ -24,11 +25,7 @@ bad() {
 refresh_profile_finish() { :; }
 rigforge_stub() { :; }
 systemctl() { return 0; }
-set_cfg() {
-    local next
-    next=$(jq "$1" "$CFG")
-    printf '%s\n' "$next" >"$CFG"
-}
+
 curl() {
     local url="${*: -1}" output='' bearer=0 body=0 n=0 arg
     printf '%s\n' "$*" >>"$CASE_DIR/argv"
@@ -36,8 +33,14 @@ curl() {
         arg=$1
         shift
         case "$arg" in
-        -H)
+        --config)
+            [ "$1" = - ] || return 99
+            shift
+            [ -n "$(cat)" ] || return 99
             bearer=1
+            ;;
+        -H)
+            [[ "$1" != Authorization:* ]] || return 99
             shift
             ;;
         -o)
