@@ -13,7 +13,7 @@ reference](#commands) is below.
 | I want to… | Command | What happens |
 |---|---|---|
 | Change a setting (pool, rig name, TLS, failover) | edit `config.json`, then `sudo ./rigforge.sh apply` | Regenerates the live config and restarts. No rebuild. A miner that is deliberately stopped stays stopped. |
-| Redeploy after a `git pull` | `git pull && sudo ./rigforge.sh upgrade` | Regenerates the live config, reinstalls the units and restarts (and re-tunes); rebuilds XMRig only if the pin moved. See [the note below](#upgrading-xmrig-redeploy-after-a-git-pull). |
+| Upgrade to a new release | `git fetch --tags && git checkout vX.Y.Z && sudo ./rigforge.sh upgrade` | Regenerates the live config, reinstalls the units and restarts (and re-tunes); rebuilds XMRig only if the pin moved. See [the note below](#upgrading-xmrig-check-out-the-new-release-and-redeploy). |
 | Run a live tune now | `sudo ./rigforge.sh tune --now` | One live pass against the running miner; keeps the best prefetch mode if it wins. Linux only. |
 | Check the worker is healthy | `sudo ./rigforge.sh doctor` | HugePages, MSR, governor, service, pool connection, with a fix hint for anything off. |
 | Watch it mining | `./rigforge.sh logs` | Live logs, no root needed; `Ctrl-C` stops following (the miner keeps running). |
@@ -431,13 +431,13 @@ rig comes back, against the new one.
 
 ---
 
-## Upgrading XMRig (redeploy after a `git pull`)
+## Upgrading XMRig (check out the new release and redeploy)
 
 RigForge pins XMRig to a known version/commit. To move to a newer pinned build:
 
 ```bash
 ./rigforge.sh upgrade --check   # optional: is there a newer RigForge release? (on-demand, no sudo)
-git pull                        # get the new pin (and any RigForge changes)
+git fetch --tags && git checkout vX.Y.Z   # the release you want (your clone is pinned to a tag, so `git pull` does not apply)
 sudo ./rigforge.sh upgrade      # regenerate config, reinstall units, restart; rebuild only if the pin changed
 ```
 

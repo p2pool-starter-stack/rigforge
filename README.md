@@ -91,7 +91,7 @@ both CPUs, and the caveats: [Benchmarks](docs/benchmarks.md).
 On the machine you want to turn into a miner:
 
 ```bash
-git clone https://github.com/p2pool-starter-stack/rigforge.git
+git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 sudo ./rigforge.sh
@@ -149,8 +149,8 @@ The everyday tasks, each a single command. There's a task-by-task cheat sheet in
 # Change a setting — edit config.json first, then:
 sudo ./rigforge.sh apply        # regenerate config + restart (no rebuild)
 
-# Redeploy after pulling updates:
-git pull && sudo ./rigforge.sh upgrade   # apply the release: regenerate config, reinstall units, restart
+# Upgrade to a new release (your clone is pinned to a tag, so check out the new one):
+git fetch --tags && git checkout vX.Y.Z && sudo ./rigforge.sh upgrade   # apply the release: regenerate config, reinstall units, restart
 
 sudo ./rigforge.sh tune --now   # run a live tune now — keep the best prefetch mode
 sudo ./rigforge.sh doctor       # health check: HugePages, MSR, governor, service, pool connection

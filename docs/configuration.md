@@ -215,7 +215,7 @@ skip the recompile when the pinned XMRig is already built.
 > NOTE: `DONATION` is also compiled into the XMRig binary at build time, so on an already-built worker
 > neither `apply` nor a setup re-run changes it; both update only the runtime config. To re-patch the
 > binary, force a rebuild: remove `<WORKER_ROOT>/xmrig` (or bump the pinned XMRig) and run setup, or run
-> [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull) after bumping the pin.
+> [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy) after bumping the pin.
 
 ---
 

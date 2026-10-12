@@ -63,7 +63,9 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
      Actions' ToS); it's a manual pre-tag gate the releaser runs.
 3. In [`CHANGELOG.md`](./CHANGELOG.md), move the `## [Unreleased]` entries under a new
    `## [X.Y.Z] - YYYY-MM-DD` heading, then leave a fresh empty `## [Unreleased]` above it.
-4. Bump [`VERSION`](./VERSION) to `X.Y.Z`.
+4. Bump [`VERSION`](./VERSION) to `X.Y.Z`, and move the `git clone --branch vX.Y.Z` pin in
+   `README.md` and `docs/getting-started.md` to the same tag (the suite fails on an unpinned clone
+   or a pin newer than `VERSION`).
 5. Commit the two together on `develop`:
 
    ```bash

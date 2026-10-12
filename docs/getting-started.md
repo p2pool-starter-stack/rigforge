@@ -6,7 +6,7 @@ whole process, and most of it is automated.
 > **TL;DR**
 >
 > ```bash
-> git clone https://github.com/p2pool-starter-stack/rigforge.git
+> git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
 > cd rigforge
 > chmod +x rigforge.sh
 > sudo ./rigforge.sh
@@ -39,7 +39,7 @@ You don't need to install build dependencies yourself. RigForge installs the too
 ## 2. Get the code
 
 ```bash
-git clone https://github.com/p2pool-starter-stack/rigforge.git
+git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 ```
@@ -89,7 +89,7 @@ sudo ./rigforge.sh
 Re-running `setup` is **idempotent**: it skips the (slow) recompile when the pinned XMRig is already
 built, and it won't duplicate the kernel/limits edits. Later on, to apply a `config.json` edit use
 [`apply`](operations.md#applying-configuration-changes); to rebuild only when the pinned version
-changed, use [`upgrade`](operations.md#upgrading-xmrig-redeploy-after-a-git-pull).
+changed, use [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy).
 
 **Optional: a `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and setup
 installs a `rigforge` symlink in `/usr/local/bin`, so you can run it from any directory (`sudo rigforge
