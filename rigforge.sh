@@ -2125,7 +2125,7 @@ _upgrade_check() {
         if [ -n "$url" ]; then
             log "Release notes: $url"
         fi
-        log "Update: cd $SCRIPT_DIR && git pull && sudo $0 upgrade  (tag-pinned fleets: git fetch --tags && git checkout v$remote_v)"
+        log "Update: cd $SCRIPT_DIR && git fetch --tags && git checkout v$remote_v && sudo $0 upgrade  (development checkouts on a branch: git pull && sudo $0 upgrade)"
     else
         log "RigForge $local_v is ahead of the latest release ($remote_v) — development build."
     fi
@@ -6169,7 +6169,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
-  upgrade    redeploy after a 'git pull': rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
+  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
   doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running

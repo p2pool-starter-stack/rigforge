@@ -33,7 +33,7 @@ Significant, cross-cutting decisions are recorded as ADRs under [`adr/`](adr/):
 
 - **Just want to start mining?** → [Getting Started](getting-started.md)
 - **What do I run day to day?** → [Operations › Common tasks](operations.md#common-tasks)
-- **Redeploy after a `git pull`?** → [Operations › Upgrading](operations.md#upgrading-xmrig-redeploy-after-a-git-pull)
+- **Upgrade to a new release?** → [Operations › Upgrading](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy)
 - **Run a live tune now?** → [Operations › Live auto-tuning](operations.md#live-auto-tuning-opt-in)
 - **Will my CPU do well?** → [Hardware Requirements](hardware.md)
 - **How much does the tuning help?** → [Benchmarks](benchmarks.md)
