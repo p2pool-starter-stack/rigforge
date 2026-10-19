@@ -87,11 +87,17 @@ require_preflight() {
     [ -x "$RIGFORGE" ] || die "$RIGFORGE not found or not executable."
     [ -n "${PITHEAD_URL:-}" ] || die "PITHEAD_URL is required (the stack's stratum host:port, e.g. stack-host:3333)."
     [ -f "$CFG" ] || die "no $CFG — run setup first (this gate needs a provisioned worker)."
-    WLOG="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
-    GEN_CFG="$(find "$HERE" -path '*worker*/xmrig/build/config.json' 2>/dev/null | head -1)"
-    [ -n "$GEN_CFG" ] || die "no generated worker config found — run setup first."
+    local worker_root
+    jq -e 'type == "object"' "$CFG" >/dev/null 2>&1 || die "invalid worker configuration."
+    # shellcheck disable=SC1090
+    worker_root="$(RIGFORGE_HOME="$HERE" source "$RIGFORGE" && _worker_root_from_config)" || die "could not resolve configured worker root."
+    WLOG="$worker_root/xmrig.log" GEN_CFG="$worker_root/xmrig/build/config.json"
+    [ -f "$GEN_CFG" ] || die "no generated config at the configured worker root — run setup first."
+    if [ "${1:-all}" = connect ] || [ "${1:-all}" = stratum-auth ] || [ "${1:-all}" = network-sequence ] || [ "${1:-all}" = all ]; then
+        jq -e --arg log "$WLOG" '."log-file" == $log' "$GEN_CFG" >/dev/null 2>&1 || die "harness limitation: mining assertions require persistent-log evidence; journal-only appliance mining is unsupported."
+        [ -f "$WLOG" ] || die "harness limitation: required persistent worker log is unavailable."
+    fi
 }
-
 SAVED_CFG="" SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS=""
 _restore_xmrig() {
     local active=0
@@ -167,17 +173,15 @@ wait_for_job() { # <timeout_s> -> 0 when the log shows a stratum job
     done
     return 1
 }
-
 phase_connect() {
     phase "connect — worker mines against the live stack ($PITHEAD_URL)"
+    [ -f "$WLOG" ] || {
+        _connect_bad "could not find the worker's xmrig.log"
+        return 1
+    }
     [ "${1:-}" = preserve-pools ] || set_cfg ".pools[0].url = \"$PITHEAD_URL\""
     systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1
-    [ -n "$WLOG" ] || WLOG="$(find "$HERE" -path '*worker*' -name xmrig.log 2>/dev/null | head -1)"
-    if [ -z "$WLOG" ]; then
-        _connect_bad "could not find the worker's xmrig.log"
-        return 0
-    fi
-    : >"$WLOG" || true # truncate so every assertion below is about THIS stack, not an old pool
+    : >"$WLOG" || die "could not clear worker log for fresh mining evidence."
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
         ok "connected — stratum job from $(grep -oE 'new job from [^ ]+' "$WLOG" | tail -1 | awk '{print $NF}')"
@@ -413,12 +417,8 @@ phase_stratum_auth() {
         skip "E2E_STRATUM_PASS not set (stack auth off, or secret not provided) — phases skipped"
         return 0
     fi
-    if [ -z "$WLOG" ]; then
-        bad "no worker xmrig.log found — run the connect phase (or setup) first"
-        return 0
-    fi
     printf '%s\0%s' "$PITHEAD_URL" "$E2E_STRATUM_PASS" | set_cfg '($fixture | split("\u0000")) as $f | .pools = [(.pools[0] | {user}) + {url: $f[0], pass: $f[1]}]' soft --rawfile fixture /dev/stdin 2>/dev/null || die "stratum-auth: fixture setup failed"
-    : >"$WLOG" || true
+    : >"$WLOG" || die "could not clear worker log for fresh mining evidence."
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
         ok "right pass: worker mines"
@@ -426,7 +426,7 @@ phase_stratum_auth() {
         bad "right pass: no stratum job within 60s"
     fi
     set_cfg '.pools[0].pass = "wrong-114"' soft 2>/dev/null || die "stratum-auth: wrong-password setup failed"
-    : >"$WLOG" || true
+    : >"$WLOG" || die "could not clear worker log for fresh mining evidence."
     "$RIGFORGE" restart >/dev/null 2>&1
     local waited=0
     while [ "$waited" -lt 60 ] && ! grep -qi 'permission denied\|login error' "$WLOG" 2>/dev/null; do
@@ -444,7 +444,7 @@ phase_stratum_auth() {
         ok "wrong pass: no jobs delivered"
     fi
     printf '%s' "$E2E_STRATUM_PASS" | set_cfg '.pools[0].pass = $password' soft --rawfile password /dev/stdin 2>/dev/null || die "stratum-auth: recovery setup failed"
-    : >"$WLOG" || true
+    : >"$WLOG" || die "could not clear worker log for fresh mining evidence."
     "$RIGFORGE" restart >/dev/null 2>&1
     if wait_for_job 60; then
         ok "rotation runbook: re-pasting the right pass recovers the worker"
