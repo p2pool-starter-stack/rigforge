@@ -89,7 +89,8 @@ require_preflight() {
     [ -f "$CFG" ] || die "no $CFG — run setup first (this gate needs a provisioned worker)."
     local worker_root
     jq -e 'type == "object"' "$CFG" >/dev/null 2>&1 || die "invalid worker configuration."
-    worker_root=$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_from_config' _ "$RIGFORGE") || die "could not resolve configured worker root."
+    # shellcheck disable=SC1090
+    worker_root="$(RIGFORGE_HOME="$HERE" source "$RIGFORGE" && _worker_root_from_config)" || die "could not resolve configured worker root."
     WLOG="$worker_root/xmrig.log" GEN_CFG="$worker_root/xmrig/build/config.json"
     [ -f "$GEN_CFG" ] || die "no generated config at the configured worker root — run setup first."
     if [ "${1:-all}" = connect ] || [ "${1:-all}" = stratum-auth ] || [ "${1:-all}" = network-sequence ] || [ "${1:-all}" = all ]; then
@@ -97,7 +98,6 @@ require_preflight() {
         [ -f "$WLOG" ] || die "harness limitation: required persistent worker log is unavailable."
     fi
 }
-
 SAVED_CFG="" SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS=""
 _restore_xmrig() {
     local active=0
@@ -173,9 +173,12 @@ wait_for_job() { # <timeout_s> -> 0 when the log shows a stratum job
     done
     return 1
 }
-
 phase_connect() {
     phase "connect — worker mines against the live stack ($PITHEAD_URL)"
+    [ -f "$WLOG" ] || {
+        _connect_bad "could not find the worker's xmrig.log"
+        return 1
+    }
     [ "${1:-}" = preserve-pools ] || set_cfg ".pools[0].url = \"$PITHEAD_URL\""
     systemctl is-active --quiet xmrig || "$RIGFORGE" start >/dev/null 2>&1
     : >"$WLOG" || die "could not clear worker log for fresh mining evidence."

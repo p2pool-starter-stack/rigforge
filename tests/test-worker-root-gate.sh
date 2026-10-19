@@ -39,6 +39,7 @@ fixture_restart() {
 }
 export -f require_preflight die phase_connect wait_for_job uname id phase ok bad _connect_bad systemctl set_cfg sleep fixture_restart
 export HERE CFG RIGFORGE PITHEAD_URL
+printf '%s\n' 'set -Eeuo pipefail' 'require_preflight connect' '[ "$WORK" != clear-failed ] || set -o noclobber' 'RIGFORGE=fixture_restart E2E_SHARE_TIMEOUT=1' 'phase_connect' >"$SANDBOX/connect-case.sh"
 write_generated() {
     jq -n --arg log "$1/xmrig.log" '{"log-file":$log,pools:[{user:"configured-worker"}]}' >"$1/xmrig/build/config.json"
     printf 'new job from previous\naccepted (1/0)\n' >"$1/xmrig.log"
@@ -87,7 +88,7 @@ export EXPECTED_LOG WORK
 for WORK in complete no-job no-share; do
     write_generated "$SANDBOX/external/worker"
     result=0
-    bash -Eeuo pipefail -c 'require_preflight connect; RIGFORGE=fixture_restart E2E_SHARE_TIMEOUT=1; phase_connect' >"$SANDBOX/$WORK.log" 2>&1 || result=$?
+    bash "$SANDBOX/connect-case.sh" >"$SANDBOX/$WORK.log" 2>&1 || result=$?
     if [ "$WORK" = complete ]; then
         [ "$result" -eq 0 ]
         grep -q 'share accepted by the stack' "$SANDBOX/$WORK.log"
@@ -102,10 +103,9 @@ for WORK in complete no-job no-share; do
 done
 write_generated "$SANDBOX/external/worker"
 result=0
-bash -Eeuo pipefail -c 'require_preflight connect; rm -f "$WLOG"; mkdir "$WLOG"; RIGFORGE=fixture_restart; phase_connect' >"$SANDBOX/clear-failed.log" 2>&1 || result=$?
+WORK=clear-failed bash "$SANDBOX/connect-case.sh" >"$SANDBOX/clear-failed.log" 2>&1 || result=$?
 [ "$result" -eq 2 ]
 grep -q 'could not clear worker log for fresh mining evidence' "$SANDBOX/clear-failed.log"
-rmdir "$EXPECTED_LOG"
 mv "$SANDBOX/external/worker/xmrig/build/config.json" "$SANDBOX/generated"
 expect_refusal connect 'no generated config at the configured worker root'
 mv "$SANDBOX/generated" "$SANDBOX/external/worker/xmrig/build/config.json"
