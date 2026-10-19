@@ -16,7 +16,7 @@ systemctl() {
     [ "$1" = daemon-reload ] || return 1
     printf 'reload\n' >>"$D/reloads"
 }
-sha256sum() { shasum -a 256 "$@"; }
+sha256sum() { cksum "$@"; }
 sleep() { :; }
 _control_curl() {
     local output="" request="" arg url=""

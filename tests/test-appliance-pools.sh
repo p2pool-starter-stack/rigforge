@@ -6,6 +6,7 @@ D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
 export RIGFORGE_HOME="$D" RIGFORGE_APPLIANCE=1
 source "$SCRIPT"
+_fsync_paths() { :; }
 printf '{"pools":[{"url":"pool.example:3333"}],"DONATION":1}' >"$CONFIG_JSON"
 cp "$CONFIG_JSON" "$D/before.json"
 for change in '{"pools":[{"url":"other.example:3333"}]}' '{"pools":null}' '{"pools":[{"url":"pool.example:3333"}],"DONATION":2}'; do
