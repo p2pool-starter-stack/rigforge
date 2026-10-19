@@ -132,4 +132,5 @@ printf '{invalid' >"$CFG"
 expect_refusal connect 'invalid worker configuration'
 cmp "$HERE/old-worker/xmrig.log" "$SANDBOX/decoy-log"
 cmp "$HERE/old-worker/xmrig/build/config.json" "$SANDBOX/decoy-config"
+bash "$ROOT/tests/test-stratum-log-clear.sh" "$HARNESS"
 printf 'configured worker-root harness regressions: PASS\n'

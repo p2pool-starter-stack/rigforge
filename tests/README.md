@@ -108,7 +108,10 @@ configuration. Appliance mode intentionally uses the systemd journal without a p
 these phases fail with an explicit harness-limitation diagnostic, not a claim that appliance
 mining failed. Journal support is outside this harness fix. Other phases can inspect the resolved
 generated config without requiring a persistent log. Log truncation must succeed before a restart;
-only new jobs and accepted shares can satisfy the mining assertions.
+only new jobs and accepted shares can satisfy the mining assertions. The registered worker-root
+regression includes `test-stratum-log-clear.sh`: each initial-authentication, rejection and recovery
+clear failure must stop before its restart or mining assertion and restore the original config and
+service state, for both initially active and stopped workers.
 
 ### The shared rig (miner-0)
 
