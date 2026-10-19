@@ -87,11 +87,16 @@ The YAML, Markdown, and link checks gate in CI and have matching Make targets fo
 
 ```bash
 make lint-yaml     # yamllint the workflows + configs   (.yamllint)
-make lint-md       # markdownlint the docs              (.markdownlint-cli2.yaml; needs node)
+make lint-md       # markdownlint the docs              (.markdownlint-cli2.yaml; needs Node 22+)
 make lint-links    # lychee link-check the docs         (.lychee.toml; needs lychee — runs weekly in CI)
 make lint-all      # shell + yaml + markdown + workflows in one go
 make ci            # everything CI runs that can run locally (adds the container e2e when Docker is up)
 ```
+
+The weekly CI tool watcher reads the Markdown linter pin from `Makefile` and compares it with
+npm's latest published version. It reports stale pins without changing them; failed or malformed
+registry responses remain unchecked and fail the watcher. Validate a pin update with `make lint-md`.
+GitHub Actions and pre-commit dependencies are watched by Dependabot.
 
 An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final
 newline) so most editors match these checks automatically.

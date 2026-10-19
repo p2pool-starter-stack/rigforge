@@ -3,7 +3,9 @@
 RigForge is one self-contained script, so its tests are layered by how much they exercise for
 real, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
-`make test-suite` requires both the Bash suite and the Python-dependent contract credential regression.
+`make test-suite` runs the Bash suite, contract credential and token-readiness regressions,
+documented clone checks, and the offline CI tool watcher regression. The watcher regression needs jq;
+the contract credential regression needs Python 3.
 The kcov container measures the Bash suite only; the credential regression always runs in the
 GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
 

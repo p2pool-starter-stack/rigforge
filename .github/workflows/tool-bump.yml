@@ -1,7 +1,7 @@
 name: CI tool pin watch
 
-# Self-healing pin hygiene, part 2 (#228, #373): the CI tools installed by curl-with-checksum, pipx
-# or a docker digest are the pins Dependabot can't see. Weekly, compare each against its latest
+# Self-healing pin hygiene, part 2 (#228, #373): the CI tools installed by curl-with-checksum, pipx,
+# npm, or a docker digest are the pins Dependabot can't see. Weekly, compare each against its latest
 # upstream release. An issue exists only while something needs attention (#378): stale/dead/
 # unchecked rows open (or refresh) the one tracking issue; an all-current week closes it with the
 # final report as the closing comment, and raises nothing when nothing is wrong.
@@ -18,7 +18,7 @@ name: CI tool pin watch
 # XMRig keeps its PR flow in xmrig-bump.yml: it lives in rigforge.sh, so that push is not blocked,
 # and a build-verified bump is worth having for the one pin that ships to a rig.
 #
-# Watched here: shellcheck, shfmt, gitleaks, actionlint, lychee, jq, zizmor, diff-cover, kcov.
+# Watched here: shellcheck, shfmt, gitleaks, actionlint, lychee, jq, zizmor, diff-cover, kcov, markdownlint-cli2.
 # Elsewhere: XMRig by xmrig-bump.yml, GitHub Actions and .pre-commit-config.yaml by Dependabot.
 # That is every pin in the repo. If you add one, add it to one of those three places in the same
 # change.
@@ -77,13 +77,18 @@ jobs:
           # UNREACHABLE IS NOT CURRENT. A failed lookup or an unparseable tag is counted, named in
           # the report, and fails the run — it never quietly reads as "pin is current".
           check() {
-            local name="$1" repo="$2" current="$3" prefix="${4:-v}" raw latest up="—" verdict
-            if ! raw=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null); then
+            local name="$1" repo="$2" current="$3" prefix="${4-v}" raw latest up="—" verdict
+            if [ "$repo" = npm ]; then
+              raw=$(curl -fsS --max-time 30 "https://registry.npmjs.org/${name}/latest" | jq -er .version) || raw=""
+            else
+              raw=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null) || raw=""
+            fi
+            if [ -z "$raw" ]; then
               verdict="**upstream lookup FAILED — not checked**"
               failed=$((failed + 1))
             else
               latest="${raw#"$prefix"}"
-              if ! printf '%s' "$latest" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+              if ! [[ "$latest" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
                 verdict="**upstream tag unparseable — not checked**"
                 failed=$((failed + 1))
               else
@@ -112,8 +117,10 @@ jobs:
           check jq jqlang/jq \
             "$(grep -oE 'download/jq-[0-9.]+' tests/coverage.sh | grep -oE '[0-9]+(\.[0-9]+)*')" "jq-"
 
-          # kcov is a Docker Hub image, not a GitHub release — the one second source type, and so the
-          # one place a failure looks different. An unreachable Docker Hub must not read as current.
+          check markdownlint-cli2 npm \
+            "$(sed -n 's/^MARKDOWNLINT_VERSION = //p' Makefile)" ""
+
+          # kcov uses Docker Hub; an unreachable registry must not read as current.
           kcur=$(grep -oE '# kcov v[0-9]+' tests/coverage.sh | grep -oE '[0-9]+')
           if klatest=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/kcov/kcov/tags?page_size=100" 2>/dev/null |
             jq -r '.results[].name' | grep -E '^v[0-9]+$' | sort -V | tail -1) && [ -n "$klatest" ]; then
