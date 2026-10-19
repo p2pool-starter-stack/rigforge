@@ -92,12 +92,10 @@ require_preflight() {
     worker_root=$(RIGFORGE_HOME="$HERE" bash -c 'source "$1"; _worker_root_from_config' _ "$RIGFORGE") || die "could not resolve configured worker root."
     WLOG="$worker_root/xmrig.log" GEN_CFG="$worker_root/xmrig/build/config.json"
     [ -f "$GEN_CFG" ] || die "no generated config at the configured worker root — run setup first."
-    case "${1:-all}" in
-    connect | stratum-auth | network-sequence | all)
+    if [ "${1:-all}" = connect ] || [ "${1:-all}" = stratum-auth ] || [ "${1:-all}" = network-sequence ] || [ "${1:-all}" = all ]; then
         jq -e --arg log "$WLOG" '."log-file" == $log' "$GEN_CFG" >/dev/null 2>&1 || die "harness limitation: mining assertions require persistent-log evidence; journal-only appliance mining is unsupported."
         [ -f "$WLOG" ] || die "harness limitation: required persistent worker log is unavailable."
-        ;;
-    esac
+    fi
 }
 
 SAVED_CFG="" SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS=""
