@@ -18,47 +18,34 @@ refresh_status() { # <next> <mtime> <now> [refresh state]
 out="$(refresh_status 'Sun 2026-09-06 23:59:45 CDT' 1000 1030)"
 assert_contains "doctor: scheduled refresh reports NEXT and payload age (#454)" "$out" "next: Sun 2026-09-06 23:59:45 CDT"
 assert_contains "doctor: fresh payload reports its age (#454)" "$out" "payload age: 30s"
+refresh_status_retry() {
+    (
+        _ready_after="$1" _last_trigger="$2"
+        source "$SCRIPT"
+        RIGFORGE_API_DATA="$RFS"
+        systemctl() {
+            case "$*" in
+            *NextElapse*)
+                n=$(cat "$RFS/systemctl.calls")
+                printf '%s\n' "$((n + 1))" >"$RFS/systemctl.calls"
+                [ "$n" -lt "$_ready_after" ] && echo n/a || echo 'Sun 2026-09-06 23:59:45 CDT'
+                ;;
+            *LastTrigger*) echo "$_last_trigger" ;;
+            *ActiveState*) echo inactive ;;
+            esac
+        }
+        stat() { echo 1000; }
+        date() { [ "$1" = -d ] && echo 1000 || echo 1030; }
+        sleep() { :; }
+        _api_refresh_status
+    ) 2>&1
+}
 printf '0\n' >"$RFS/systemctl.calls"
-out="$({
-    source "$SCRIPT"
-    RIGFORGE_API_DATA="$RFS"
-    systemctl() {
-        case "$*" in
-        *NextElapse*)
-            n=$(cat "$RFS/systemctl.calls")
-            printf '%s\n' "$((n + 1))" >"$RFS/systemctl.calls"
-            [ "$n" -lt 2 ] && echo n/a || echo 'Sun 2026-09-06 23:59:45 CDT'
-            ;;
-        *LastTrigger*) echo 'Sun 2026-09-06 23:59:30 CDT' ;;
-        esac
-    }
-    stat() { echo 1000; }
-    date() { [ "$1" = -d ] && echo 1000 || echo 1030; }
-    sleep() { :; }
-    _api_refresh_status
-} 2>&1)"
+out="$(refresh_status_retry 2 'Sun 2026-09-06 23:59:30 CDT')"
 assert_contains "doctor: timer activation is retried (#460)" "$out" "refresh scheduled"
 assert_eq "doctor: delayed timer schedule took three reads (#460)" "$(cat "$RFS/systemctl.calls")" "3"
 printf '0\n' >"$RFS/systemctl.calls"
-out="$({
-    source "$SCRIPT"
-    RIGFORGE_API_DATA="$RFS"
-    systemctl() {
-        case "$*" in
-        *NextElapse*)
-            n=$(cat "$RFS/systemctl.calls")
-            printf '%s\n' "$((n + 1))" >"$RFS/systemctl.calls"
-            [ "$n" -lt 5 ] && echo n/a || echo 'Sun 2026-09-06 23:59:45 CDT'
-            ;;
-        *LastTrigger*) echo never ;;
-        *ActiveState*) echo inactive ;;
-        esac
-    }
-    stat() { echo 1000; }
-    date() { [ "$1" = -d ] && echo 1000 || echo 1030; }
-    sleep() { :; }
-    _api_refresh_status
-} 2>&1)"
+out="$(refresh_status_retry 5 never)"
 assert_contains "doctor re-reads NEXT after a refresh completes (#476)" "$out" "refresh scheduled"
 assert_eq "doctor completion race takes the final timer read (#476)" "$(cat "$RFS/systemctl.calls")" "6"
 out="$(refresh_status n/a 1000 1030 || true)"
@@ -139,65 +126,77 @@ out="$({
     check_api_refresh
 } 2>&1)"
 assert_contains "e2e refresh still rejects a persistently absent NEXT (#458)" "$out" "timer has no NEXT trigger"
-out="$({
-    eval "$E2E_REFRESH_SRC"
-    HERE="$EFR"
-    ok() { printf 'ok: %s\n' "$1"; }
-    bad() { printf 'bad: %s\n' "$1"; }
-    systemctl() {
-        case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac
-    }
-    curl() { printf '{"generated_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
-    sleep() { :; }
-    check_api_refresh
-} 2>&1)"
+e2e_refresh_active() {
+    (
+        eval "$E2E_REFRESH_SRC"
+        HERE="$EFR"
+        ok() { printf 'ok: %s\n' "$1"; }
+        bad() { printf 'bad: %s\n' "$1"; }
+        systemctl() {
+            case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac
+        }
+        curl() { printf '{"generated_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
+        sleep() { :; }
+        check_api_refresh
+    ) 2>&1
+}
+out="$(e2e_refresh_active)"
 assert_contains "e2e refresh accepts an active refresh without NEXT (#476)" "$out" "refresh is in progress (active)"
 assert_absent "e2e active refresh does not false-red missing NEXT (#476)" "$out" "timer has no NEXT trigger"
-out="$({
-    eval "$E2E_REFRESH_SRC"
-    HERE="$EFR"
-    ok() { printf 'ok: %s\n' "$1"; }
-    bad() { printf 'bad: %s\n' "$1"; }
-    systemctl() { case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac }
-    curl() { printf '{"generated_at":"2000-01-01T00:00:00Z"}\n'; }
-    date() { [ "$1" = -d ] && echo 1000 || echo 1061; }
-    sleep() { :; }
-    check_api_refresh
-} 2>&1)"
+e2e_refresh_active_retained() {
+    (
+        eval "$E2E_REFRESH_SRC"
+        HERE="$EFR"
+        ok() { printf 'ok: %s\n' "$1"; }
+        bad() { printf 'bad: %s\n' "$1"; }
+        systemctl() { case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac }
+        curl() { printf '{"generated_at":"2000-01-01T00:00:00Z"}\n'; }
+        date() { [ "$1" = -d ] && echo 1000 || echo 1061; }
+        sleep() { :; }
+        check_api_refresh
+    ) 2>&1
+}
+out="$(e2e_refresh_active_retained)"
 assert_contains "e2e active refresh may retain an old payload (#476)" "$out" "retained payload is available"
 assert_absent "e2e active refresh does not false-red its retained payload (#476)" "$out" "no fresh generated_at"
-out="$({
-    eval "$E2E_REFRESH_SRC"
-    HERE="$EFR"
-    ok() { printf 'ok: %s\n' "$1"; }
-    bad() { printf 'bad: %s\n' "$1"; }
-    systemctl() { case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac }
-    curl() { printf '{"generated_at":"2000-01-01T00:00:00Z"}\n'; }
-    date() { [ "$1" = -d ] && echo 1000 || echo 1301; }
-    sleep() { :; }
-    check_api_refresh
-} 2>&1)"
+e2e_refresh_active_stuck() {
+    (
+        eval "$E2E_REFRESH_SRC"
+        HERE="$EFR"
+        ok() { printf 'ok: %s\n' "$1"; }
+        bad() { printf 'bad: %s\n' "$1"; }
+        systemctl() { case "$*" in *ActiveState*) echo active ;; *) echo n/a ;; esac }
+        curl() { printf '{"generated_at":"2000-01-01T00:00:00Z"}\n'; }
+        date() { [ "$1" = -d ] && echo 1000 || echo 1301; }
+        sleep() { :; }
+        check_api_refresh
+    ) 2>&1
+}
+out="$(e2e_refresh_active_stuck)"
 assert_contains "e2e stuck active refresh fails closed (#476)" "$out" "no fresh generated_at"
 printf '0\n' >"$EFR/systemctl.calls"
-out="$({
-    eval "$E2E_REFRESH_SRC"
-    HERE="$EFR"
-    ok() { printf 'ok: %s\n' "$1"; }
-    bad() { printf 'bad: %s\n' "$1"; }
-    systemctl() {
-        case "$*" in
-        *NextElapse*)
-            n=$(cat "$EFR/systemctl.calls")
-            printf '%s\n' "$((n + 1))" >"$EFR/systemctl.calls"
-            [ "$n" -lt 5 ] && echo n/a || echo 'Mon 2099-01-01 00:00:00 UTC'
-            ;;
-        *ActiveState*) echo inactive ;;
-        esac
-    }
-    curl() { printf '{"generated_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
-    sleep() { :; }
-    check_api_refresh
-} 2>&1)"
+e2e_refresh_retry() {
+    (
+        eval "$E2E_REFRESH_SRC"
+        HERE="$EFR"
+        ok() { printf 'ok: %s\n' "$1"; }
+        bad() { printf 'bad: %s\n' "$1"; }
+        systemctl() {
+            case "$*" in
+            *NextElapse*)
+                n=$(cat "$EFR/systemctl.calls")
+                printf '%s\n' "$((n + 1))" >"$EFR/systemctl.calls"
+                [ "$n" -lt 5 ] && echo n/a || echo 'Mon 2099-01-01 00:00:00 UTC'
+                ;;
+            *ActiveState*) echo inactive ;;
+            esac
+        }
+        curl() { printf '{"generated_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
+        sleep() { :; }
+        check_api_refresh
+    ) 2>&1
+}
+out="$(e2e_refresh_retry)"
 assert_contains "e2e refresh re-reads NEXT after completion (#476)" "$out" "timer has a NEXT trigger"
 assert_absent "e2e completion race does not false-red (#476)" "$out" "timer has no NEXT trigger"
 

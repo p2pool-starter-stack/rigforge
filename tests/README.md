@@ -3,7 +3,9 @@
 RigForge is one self-contained script, so its tests are layered by how much they exercise for
 real, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
-`make test-suite` requires both the Bash suite and the Python-dependent contract credential regression.
+`make test-suite` requires the suite-liveness regression, the Bash suite and the Python-dependent
+contract credential regression. The Bash suite exits nonzero if it aborts before its final
+`rigforge tests: ... passed, ... failed` summary, even when the shell would otherwise return zero.
 The kcov container measures the Bash suite only; the credential regression always runs in the
 GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
 
@@ -126,6 +128,9 @@ holds it from off-box: `ssh miner-0 'flock -n -x /var/lock/rig-e2e.lock true || 
 - The suite should still pass under Apple's bash 3.2, not just modern bash — that's no longer CI-
   enforced (macOS is deprecated, #493, and no CI job runs `/bin/bash tests/run.sh` anymore), just a
   courtesy for the deprecated Darwin path. Avoid bash-4-only syntax.
+  `bash tests/test-suite-liveness.sh` runs the actual timer-refresh fixtures and checks premature
+  exit handling without running the host-dependent black-box suite; use `/bin/bash` on macOS
+  to exercise the native Bash 3.2 runtime parser as well as the completion guard.
 - Lint everything: `make lint` (shellcheck + shfmt). The file list lives in the Makefile's
   `SHELL_FILES` so CI and local stay in sync — add new `tests/*.sh` there.
 
