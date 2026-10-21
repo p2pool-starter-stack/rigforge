@@ -576,7 +576,12 @@ trigger, and warns once the payload is over a minute old. The same
 `ACCESS_TOKEN` posture applies (open when unset, Bearer required when set), it is read-only by
 construction (GET only), and when XMRig is down the RigForge data still serves with an
 `"xmrig_api": "unreachable"` marker — which is exactly when the health data matters. Linux-only;
-`"api": "disabled"` + `apply` removes the units cleanly.
+`"api": "disabled"` + `apply` removes the units cleanly. Systemd loads both network servers'
+Python entrypoints and config as private credentials before dropping to DynamicUser, so a checkout
+beneath a `0750` home works without relaxing home permissions. Setup and apply fail if the enabled
+sister API cannot be installed, primed, or confirmed active and listening. The listener check accepts
+a warming-up 503 or authentication-required 401; it does not require a live miner. Apply completes
+its other reconciles before returning the sister-API failure.
 
 ## Writable control path (opt-in)
 

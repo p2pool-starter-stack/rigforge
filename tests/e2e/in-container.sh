@@ -124,12 +124,14 @@ echo "Socket(s):             2"
 X
 printf '#!/usr/bin/env bash\necho 8\n' >"$STUBS/nproc"
 printf '#!/usr/bin/env bash\necho poolbox\n' >"$STUBS/hostname"
-# No-op the rest (sysctl -w / mount / systemctl etc. cannot run unprivileged in a container). Each
-# stub logs "[cmd] args" to $CALL_LOG (run.sh's idiom) so call-shape assertions read real evidence
-# instead of an always-empty file. cc exists only for the appliance pass's baked-toolchain probe.
 for c in cmake make systemctl modprobe mount cpupower update-grub sysctl dpkg nft cc; do
     printf '#!/usr/bin/env bash\necho "[%s] $*" >>"${CALL_LOG:-/dev/null}"\nexit 0\n' "$c" >"$STUBS/$c"
 done
+cat >"$STUBS/curl" <<'X'
+#!/usr/bin/env bash
+case "$*" in *'%{http_code}'*'/health'*) printf 200; exit 0 ;; esac
+exec /usr/bin/curl "$@"
+X
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
 # Pin the XMRig version/commit to known test values so the build's commit verification (#18) passes
@@ -253,9 +255,8 @@ assert_eq "in-script: no dead cpu.hwloc key" "$(jq -r '.cpu.hwloc' "$BUILD/confi
 assert_eq "in-script: huge-pages-jit off (XMRig default)" "$(jq -r '.cpu."huge-pages-jit"' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "in-script default: randomx.mode fast" "$(jq -r '.randomx.mode' "$BUILD/config.json" 2>/dev/null)" "fast"
 assert_eq "in-script default: http.port 8080" "$(jq -r '.http.port' "$BUILD/config.json" 2>/dev/null)" "8080"
-# Sister API (#99/#164) against the real /etc: the persistent server + refresh timer land rendered.
 assert_eq "deploy: sister API server unit installed" "$([ -f /etc/systemd/system/rigforge-api.service ] && echo y || echo n)" "y"
-assert_contains "deploy: server unit carries the default bind:port" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" "api-server.py 0.0.0.0 8081"
+assert_contains "deploy: server unit carries the default bind:port" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 8081'
 assert_eq "deploy: refresh timer installed" "$([ -f /etc/systemd/system/rigforge-api-refresh.timer ] && echo y || echo n)" "y"
 # API firewall (#142): the nft file is rendered against the real /etc for the configured source.
 FW_NFT="$(find "$WORK" -name api-firewall.nft 2>/dev/null | head -1)"
