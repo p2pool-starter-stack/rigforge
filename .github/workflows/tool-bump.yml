@@ -1,34 +1,8 @@
 name: CI tool pin watch
 
-# Self-healing pin hygiene, part 2 (#228, #373): the CI tools installed by curl-with-checksum, pipx,
-# npm, or a docker digest are the pins Dependabot can't see. Weekly, compare each against its latest
-# upstream release. An issue exists only while something needs attention (#378): stale/dead/
-# unchecked rows open (or refresh) the one tracking issue; an all-current week closes it with the
-# final report as the closing comment, and raises nothing when nothing is wrong.
-#
-# It REPORTS and never bumps (#376). It used to open a bot PR per stale pin, with the dispatched
-# checks on the branch as the verification — a genuinely better design, and it had never once
-# worked: seven of the nine pins live in `.github/workflows/**`, and GITHUB_TOKEN may not push
-# changes to a workflow file. There is no `permissions:` key that grants it; the `workflow` scope
-# exists only for a PAT or GitHub App. Every run went green on having found nothing to do, which
-# from the outside is indistinguishable from a watcher that works. Buying the PR flow back would
-# mean a long-lived token that can rewrite this repo's CI, which is a poor trade for a repo whose
-# whole posture is SHA-pinned actions and least-privilege tokens.
-#
-# XMRig keeps its PR flow in xmrig-bump.yml: it lives in rigforge.sh, so that push is not blocked,
-# and a build-verified bump is worth having for the one pin that ships to a rig.
-#
-# Watched here: shellcheck, shfmt, gitleaks, actionlint, lychee, jq, zizmor, diff-cover, kcov, markdownlint-cli2.
-# Elsewhere: XMRig by xmrig-bump.yml, GitHub Actions and .pre-commit-config.yaml by Dependabot.
-# That is every pin in the repo. If you add one, add it to one of those three places in the same
-# change.
-#
-# It also proves the sibling scheduled watchers (xmrig-bump.yml, links.yml) are still firing (#372):
-# a workflow whose cron silently stopped looks, from the tracking issue, exactly like one with
-# nothing to report. The run history is the only place that tells the two apart.
 on:
   schedule:
-    - cron: "30 6 * * 1" # Mondays 06:30 UTC, between the xmrig bump and the zizmor re-audit
+    - cron: "30 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -65,17 +39,6 @@ jobs:
             _sink="${_sink}| $2 | \`$3\` | $4 | $5 |"$'\n'
           }
 
-          # <name> <upstream-repo> <current> [tag-prefix]
-          #
-          # Not every project tags `vX.Y.Z`: lychee tags `lychee-v0.24.2` and jq tags `jq-1.8.2`.
-          # Stripping only a leading "v" leaves those failing the shape check, which would report
-          # two healthy pins as broken every week — and a watcher that cries wolf weekly gets muted,
-          # which is exactly as useful as one that never runs. The prefix is a per-tool fact, so it
-          # is a per-tool argument. The strict validation still runs AFTER the strip: normalising
-          # the spelling must not mean trusting the value.
-          #
-          # UNREACHABLE IS NOT CURRENT. A failed lookup or an unparseable tag is counted, named in
-          # the report, and fails the run — it never quietly reads as "pin is current".
           check() {
             local name="$1" repo="$2" current="$3" prefix="${4-v}" raw latest up="—" verdict
             if [ "$repo" = npm ]; then
@@ -120,7 +83,6 @@ jobs:
           check markdownlint-cli2 npm \
             "$(sed -n 's/^MARKDOWNLINT_VERSION = //p' Makefile)" ""
 
-          # kcov uses Docker Hub; an unreachable registry must not read as current.
           kcur=$(grep -oE '# kcov v[0-9]+' tests/coverage.sh | grep -oE '[0-9]+')
           if klatest=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/kcov/kcov/tags?page_size=100" 2>/dev/null |
             jq -r '.results[].name' | grep -E '^v[0-9]+$' | sort -V | tail -1) && [ -n "$klatest" ]; then

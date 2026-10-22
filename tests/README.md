@@ -4,7 +4,8 @@ RigForge is one self-contained script, so its tests are layered by how much they
 real, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
 `make test-suite` requires the suite-liveness regression, the Bash suite and the Python-dependent
-contract credential regression. The Bash suite exits nonzero if it aborts before its final
+contract credential regression, plus access-token readiness, release clone-pin and offline tool-pin
+watcher regressions. The Bash suite exits nonzero if it aborts before its final
 `rigforge tests: ... passed, ... failed` summary, even when the shell would otherwise return zero.
 The kcov container measures the Bash suite only; the credential regression always runs in the
 GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.

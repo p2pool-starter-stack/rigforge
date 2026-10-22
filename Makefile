@@ -3,12 +3,10 @@
 
 SHELL_FILES = $(shell git ls-files '*.sh')
 
-# Config/docs lint file sets, derived from what's tracked so CI and local stay in sync (like SHELL_FILES).
 YAML_FILES = $(shell git ls-files '*.yml' '*.yaml')
 MD_FILES = $(shell git ls-files '*.md')
 MARKDOWNLINT_VERSION = 0.23.3
 
-# Keep `make` (no target) running the default dev check; `make help` lists every target.
 .DEFAULT_GOAL := test
 
 help: ## List the available targets

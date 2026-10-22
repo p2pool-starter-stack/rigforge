@@ -7,7 +7,7 @@ mkdir -p "$SCRATCH/.github/workflows" "$SCRATCH/tests"
 cp "$ROOT/tests/coverage.sh" "$SCRATCH/tests/coverage.sh"
 cp "$ROOT/Makefile" "$SCRATCH/Makefile"
 cp "$ROOT"/.github/workflows/{ci,security,links}.yml "$SCRATCH/.github/workflows/"
-sed -n '/^          check()/,/^          # kcov/{ /^          # kcov/d; s/^          //; p; }' \
+sed -n '/^          check()/,/^          kcur=/{ /^          kcur=/d; s/^          //; p; }' \
     "$ROOT/.github/workflows/tool-bump.yml" >"$SCRATCH/checks.sh"
 [ -s "$SCRATCH/checks.sh" ]
 cd "$SCRATCH"
