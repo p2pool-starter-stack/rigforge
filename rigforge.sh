@@ -4305,6 +4305,10 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "rejected non-writable-keys:$badkeys"
         return 1
     fi
+    if [ "$RIGFORGE_APPLIANCE" = 1 ] && printf '%s' "$change" | jq -e 'has("pools")' >/dev/null; then
+        echo "rejected appliance-pools-read-only:change the pool in Pithead configuration (rig.json for the rig role)"
+        return 1
+    fi
     # #257: remote control may tune thermal protection, not remove it. This duplicates the receiver
     # check as an applier-side backstop for anything staged out of band; local apply remains capable.
     local wd_new mt_new

@@ -9,7 +9,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/rigforge.sh"
 PASS=0
 FAIL=0
-
 ok() {
     PASS=$((PASS + 1))
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
@@ -32,9 +31,17 @@ _poll_up() {
 } # <curl args...>: retry a just-started server for up to 3s
 
 SANDBOX="$(mktemp -d)"
-trap 'rm -rf "$SANDBOX"' EXIT
+SUITE_COMPLETE=0
+trap 'rc=$?
+    rm -rf "$SANDBOX"
+    if [ "$SUITE_COMPLETE" != 1 ]; then
+        echo "rigforge tests: aborted before final summary" >&2
+        [ "$rc" -ne 0 ] || rc=1
+    fi
+    exit "$rc"' EXIT
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock"
-
+bash "$ROOT/tests/test-suite-liveness.sh"
+assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
 
@@ -84,16 +91,7 @@ make_stubs() {
 #!/usr/bin/env bash
 exec "$@"
 EOF
-    # The `{ } 2>/dev/null` is load-bearing (#419), not tidiness: every real consumer of lscpu here
-    # closes the pipe at its FIRST match (`lscpu | awk '/L3 cache/{print $3$4; exit}'` in
-    # util/proposed-grub.sh, `lscpu | sed -n ... | head -1` in rigforge.sh), so this stub is mid-write
-    # when the reader goes away. At SIGPIPE's default disposition it dies silently — which is why the
-    # problem never reproduces locally — but a harness that passes SIGPIPE down as IGNORED, as CI's
-    # does, turns the same write into an EPIPE that bash reports as `echo: write error: Broken pipe`
-    # on stderr, one line per failed write. That lands on the stderr of the script under test, and
-    # three #410 controls assert that stderr is EMPTY: a fixture's noise read as the subject's output,
-    # timing-dependent, and a red control invalidates the block that reads against it. Any stub that
-    # writes more than one line to stdout needs the same guard. Pinned by the #419 test below.
+    # Suppress fixture EPIPE noise when an early-closing reader inherits ignored SIGPIPE.
     cat >"$bin/lscpu" <<'EOF'
 #!/usr/bin/env bash
 {
@@ -211,13 +209,14 @@ make_stubs "$STUBS"
 RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing"
 mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING"
 export RIGFORGE_CONTROL_PROCESSING
-
 assert_rc "privileged consumers share a lock and refuse a planted processing symlink (#479)" "$(
     bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT"
     echo $?
 )" "0"
-
-# Source rigforge with the given config + script dir, run parse_config, print one resulting variable.
+assert_rc "appliance pool policy rejects edits and preserves tuning (#583)" "$(
+    bash "$ROOT/tests/test-appliance-pools.sh" "$SCRIPT" >/dev/null
+    echo $?
+)" "0"
 parse_and_print() { # <config_file> <script_dir> <var>
     (
         source "$SCRIPT"
@@ -9552,6 +9551,7 @@ fi
 
 # ---------------------------------------------------------------------------
 echo ""
+SUITE_COMPLETE=1
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then
     printf '\033[1;31m%d failed\033[0m\n' "$FAIL"

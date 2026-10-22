@@ -45,6 +45,7 @@ phase_control() {
     [ "$(jq -r '.DONATION' "$CFG")" = "$new" ] &&
         ok "config.json carries DONATION=$new (control-apply persisted it)" ||
         bad "config.json DONATION is '$(jq -r '.DONATION' "$CFG")', expected $new"
+    appliance_pool_refusal "$tok" "$port"
     refresh_profile_start || bad "could not instrument timer-driven refreshes"
     sleep 20 # allow a natural timer dispatch before thermal apply
     local before feed_temp feed_stamp started observed=0
@@ -78,3 +79,33 @@ phase_control() {
     # state from the snapshot, and blanking ACCESS_TOKEN while control is enabled is #514's own
     # fail-closed abort (rigforge.sh refuses that apply) — the bug this phase must not re-enact.
 }
+
+appliance_pool_refusal() (
+    local tok="$1" port="$2" dropin response request code cid body st waited=0 before
+    dropin="${E2E_APPLIANCE_POLICY_DROPIN:-/run/systemd/system/rigforge-control-apply.service.d/583-pool-policy.conf}"
+    [ ! -e "$dropin" ] || bad "appliance policy test override already exists"
+    mkdir -p "$(dirname "$dropin")" || bad "cannot create appliance policy override directory"
+    request=$(mktemp) || bad "cannot allocate appliance policy request"
+    response=$(mktemp) || bad "cannot allocate appliance policy response"
+    trap 'rm -f "$dropin" "$request" "$response"; systemctl daemon-reload' EXIT
+    printf '[Service]\nEnvironment=RIGFORGE_APPLIANCE=1\n' >"$dropin" || bad "cannot write appliance policy override"
+    systemctl daemon-reload || bad "cannot load appliance policy override"
+    before=$(sha256sum "$CFG")
+    jq -c '{pools:.pools,watchdog_interval_min:6}' "$CFG" >"$request" || bad "cannot prepare appliance policy request"
+    code=$(_control_curl "$tok" -s -o "$response" -w '%{http_code}' --max-time 10 \
+        -H 'Content-Type: application/json' --data-binary "@$request" "http://127.0.0.1:$port/apply" 2>/dev/null || true)
+    cid=$(jq -r '.change_id // empty' "$response" 2>/dev/null || true)
+    rm -f "$response"
+    [ "$code" = 202 ] && [[ "$cid" =~ ^[0-9a-f]{16}$ ]] || bad "appliance pool request was not staged"
+    while [ "$waited" -lt 30 ]; do
+        body=$(_control_curl "$tok" -fsS --max-time 3 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
+        st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
+        case "$st" in applied | rejected | rolled_back | failed) break ;; esac
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ "$st" = rejected ] && printf '%s' "$body" | jq -e '.reason | contains("appliance-pools-read-only") and contains("rig.json")' >/dev/null &&
+        [ "$before" = "$(sha256sum "$CFG")" ] &&
+        ok "appliance pool edit rejected with ownership reason and config unchanged (#583)" ||
+        bad "appliance pool edit did not reject atomically with ownership reason"
+)

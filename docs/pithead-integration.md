@@ -250,7 +250,11 @@ Off by default. When you set `"control": "enabled"` (plus the required `ACCESS_T
 apply config changes through RigForge — the RigForge-side producer for pithead's Worker Inspect
 (pithead #185). It is deliberately independent of the read API: a `POST :8082/apply` of an
 allowlisted change (`pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`,
-`max_temp_c`) returns `202 Accepted`; RigForge validates, snapshots the old config, applies it, and
+`max_temp_c`) returns `202 Accepted` for staging; poll the change ID for the terminal outcome.
+In appliance mode, a request containing `pools` is rejected with `appliance-pools-read-only`
+before any config write, including any tuning keys sent with it. Change the pool in Pithead
+configuration (`rig.json` for the rig role) instead; standalone rigs still accept pool edits.
+For other requests, RigForge validates, snapshots the old config, applies it, and
 rolls back anything that doesn't come back live. Changing only `watchdog_interval_min` and/or
 `max_temp_c` never restarts XMRig (#381) — those two are proven not to reach XMRig's config or unit,
 so RigForge reconciles just the watchdog timer instead of running the full apply pipeline, landing in
