@@ -43,6 +43,12 @@ without a successful refresh and CPU begin/end from the same process fails diagn
 No arguments, process names or payloads are exported.
 Five-second observations record timer/service state and the direct feed
 for five minutes around the apply; the changed ceiling must still appear within 90 seconds.
+The ordinary control phase parses status and summary GETs only after transport success.
+Failed reads discard their response bytes and clear the corresponding observation, emitting only
+fixed transport-failure markers before retrying within the existing bounds. Valid JSON followed
+by a nonzero curl exit cannot prove DONATION settlement or thermal publication.
+The hardware-free `test-refresh-window-control.sh`, run by the unit suite, covers each failed read
+with valid JSON followed by curl exit 18, recovery on a later successful read, and config restoration.
 Control and access-token requests pass bearer tokens through curl's stdin configuration.
 Control setup, access-token setup and stratum password setup/rotation use stdin with constant jq programs;
 the derived read bearer uses Python's standard-library HMAC with its key on stdin.

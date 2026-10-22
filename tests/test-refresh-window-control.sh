@@ -35,6 +35,30 @@ if [ "$#" = 0 ]; then
             grep -q '^finish-window elapsed=30[0-9]' "$TEST_WINDOW_DIR/$mode.log"
         fi
     done
+    for read in settlement status summary; do
+        mode="$read-transport-failed"
+        if bash "$0" "$mode" >"$TEST_WINDOW_DIR/$mode.log" 2>&1; then
+            printf '%s consumed JSON from a failed transport\n' "$mode" >&2
+            exit 1
+        fi
+        if [ "$read" = settlement ]; then
+            grep -q "did not reach 'applied' within 300s" "$TEST_WINDOW_DIR/$mode.log"
+            [ ! -e "$TEST_WINDOW_DIR/$mode-posts" ]
+        else
+            grep -q 'feed stale after 90s' "$TEST_WINDOW_DIR/$mode.log"
+            grep -q '^finish-window elapsed=30[0-9]' "$TEST_WINDOW_DIR/$mode.log"
+        fi
+        marker="$read"
+        [ "$read" != settlement ] || marker=status
+        grep -q "^pithead-read: $marker transport failed$" "$TEST_WINDOW_DIR/$mode.log"
+        cmp "$TEST_WINDOW_DIR/$mode.json" "$TEST_WINDOW_DIR/$mode.json.original"
+        mode="$read-transport-retry"
+        bash "$0" "$mode" >"$TEST_WINDOW_DIR/$mode.log" 2>&1
+        grep -q "^pithead-read: $marker transport failed$" "$TEST_WINDOW_DIR/$mode.log"
+        grep -q 'new direct sister-API summary within' "$TEST_WINDOW_DIR/$mode.log"
+        grep -q '^finish-window elapsed=30[0-9]' "$TEST_WINDOW_DIR/$mode.log"
+    done
+    ! grep -q 'private-transport-detail' "$TEST_WINDOW_DIR"/*.log
     ! grep -q "$(printf '%064d' 0)" "$TEST_WINDOW_DIR"/*.log
     printf 'thermal refresh-window regressions: PASS\n'
     exit 0
@@ -120,12 +144,28 @@ curl() {
         printf 202
     elif [[ "$url" == */status* ]]; then
         printf '{"status":"applied"}'
+        local read=settlement
+        [ ! -e "$TEST_WINDOW_DIR/$mode-posts" ] || read=status
+        if [[ "$mode" = "$read-transport-"* ]]; then
+            if [ "$mode" = "$read-transport-failed" ] || [ ! -e "$TEST_WINDOW_DIR/$mode-read" ]; then
+                : >"$TEST_WINDOW_DIR/$mode-read"
+                printf 'private-transport-detail\n' >&2
+                return 18
+            fi
+        fi
     else
         if [ "$mode" != stale ] && { [ "$mode" != late ] || [ "$((SECONDS - started))" -ge 95 ]; }; then
             temp=99
             [ "$mode" = oldstamp ] || stamp='2026-09-30T00:00:01Z'
         fi
         printf '{"generated_at":"%s","rigforge":{"watchdog":{"max_temp_c":%s}}}' "$stamp" "$temp"
+        if [[ "$mode" = summary-transport-* ]]; then
+            if [ "$mode" = summary-transport-failed ] || [ ! -e "$TEST_WINDOW_DIR/$mode-read" ]; then
+                : >"$TEST_WINDOW_DIR/$mode-read"
+                printf 'private-transport-detail\n' >&2
+                return 18
+            fi
+        fi
     fi
 }
 # Install the real EXIT snapshot/cleanup trap before running any failure case.
