@@ -46,7 +46,10 @@ if [ "${2:-all}" = all ]; then
     _wait_sister_api
     grep -Fq 'http://127.0.0.1:8081/health' "$TEST_DIR/curl-args"
     command() {
-        if [ "$*" = '-v python3' ] && [ "${MISSING_PYTHON:-0}" = 1 ]; then return 1; fi
+        if [ "$*" = '-v python3' ]; then
+            [ "${MISSING_PYTHON:-0}" != 1 ]
+            return
+        fi
         builtin command "$@"
     }
     MISSING_PYTHON=1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_OS:-}" = Linux ] || {
     echo 'Run only in the disposable hosted Ubuntu CI job.' >&2
     exit 2
@@ -11,6 +11,17 @@ TEST_DIR=$(mktemp -d "${RUNNER_TEMP:?}/rigforge-home.XXXXXX")
 test_user=rigforge-home-test
 home_dir="$TEST_DIR/home"
 checkout="$home_dir/rigforge"
+stage=fixture
+apply_rc=not-run
+http_code=not-probed
+report_failure() {
+    printf 'stock-home failure: stage=%s line=%s apply_rc=%s http_code=%s\n' "$stage" "$1" "$apply_rc" "$http_code" >&2
+    for marker in 'No built worker' 'Permission denied' 'command not found' 'rigforge aborted' 'Failed to' 'not allowed to execute' 'does not exist'; do
+        if grep -Fq "$marker" "$TEST_DIR/apply.log" 2>/dev/null; then printf 'apply diagnostic: %s\n' "$marker" >&2; fi
+    done
+    systemctl show rigforge-api.service -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
+}
+trap 'report_failure "$LINENO"' ERR
 cleanup() {
     sudo systemctl disable --now rigforge-api.service rigforge-api-refresh.timer >/dev/null 2>&1 || true
     sudo systemctl stop rigforge-api-refresh.service >/dev/null 2>&1 || true
@@ -36,20 +47,24 @@ sudo systemctl daemon-reload
 run_apply() {
     sudo -u "$test_user" -H bash -c 'cd "$1" && sudo -n ./rigforge.sh apply' bash "$checkout"
 }
+stage=initial-apply
 set +e
 run_apply >"$TEST_DIR/apply.log" 2>&1
 apply_rc=$?
 set -e
+stage=listener
 http_code=000
 for _ in $(seq 1 30); do
     http_code=$(curl -q --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 1 http://127.0.0.1:8081/health) || http_code=000
     [ "$http_code" = 401 ] && break
     sleep 1
 done
+stage=fixture-invariants
 [ "$(stat -c %a "$home_dir")" = 750 ]
 ! systemctl is-active --quiet xmrig.service
 [ ! -e /etc/systemd/system/rigforge-control.service ]
 if [ "$expect" = broken ]; then
+    stage=historical-failure
     [ "$apply_rc" = 0 ]
     [ "$http_code" = 000 ]
     ! systemctl is-active --quiet rigforge-api.service
@@ -58,6 +73,7 @@ if [ "$expect" = broken ]; then
     printf 'stock-home historical RED: apply returned success while the sister API could not open its entrypoint\n'
     exit 0
 fi
+stage=current-listener
 [ "$apply_rc" = 0 ]
 [ "$http_code" = 401 ]
 systemctl is-active --quiet rigforge-api.service
