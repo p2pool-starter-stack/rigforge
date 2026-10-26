@@ -28,15 +28,18 @@ GitHub Test suite job, including argument inspection, password rotation and EXIT
 
 `tests/test-sister-reconcile.sh`, registered in `tests/run.sh`, checks startup failures, bounded
 listener probes (including IPv6 and failed transports), and apply's failure result while retaining
-later reconciles. The hosted Ubuntu 24.04 `Stock home (real systemd)` job runs the real CLI as a
-hosted runner account via sudo, with a private `HOME` containing the checkout at mode `0750`,
-real DynamicUser and real credentials. The fixture stays accessible to that account without
-requiring a second account to traverse the hosted runner’s own home.
-It reproduces the historical false-success failure at the reported commit, then requires an active
-sister API, authenticated responses on port 8081, failure on a missing entrypoint, and recovery.
-Its deliberately stopped miner fixture exercises apply's preserve-run-state path; it neither builds
-nor mines, and does not prove full stock-host setup, reboot, or hardware behavior. The real-rig
-`worker-api` and `control` contract phases cover the live service integration through bench-ci.
+later reconciles. The hosted Ubuntu 24.04 `Stock home setup` jobs run historical and current revisions on separate
+fresh runners. Each invokes the documented `sudo ./rigforge.sh setup` as the existing non-root
+account beneath a private `0750` HOME. Setup installs real dependencies, compiles pinned XMRig,
+performs ordinary kernel/service provisioning and installs the real miner unit; there is no
+prebuilt worker, fake unit, appliance mode or command stub. A closed loopback pool, donation zero
+and one configured mining thread leave it without mining jobs; the real miner is stopped after setup.
+The historical case requires setup to complete while its denied sister entrypoint leaves port
+8081 unavailable. The current case requires an active DynamicUser service and authenticated port
+8081 before any apply, then tests failed apply and recovery. HOME permissions remain `0750`.
+Both jobs uninstall through the real CLI on exit. Reboot persistence, a live pool and hardware
+performance are outside this hosted proof. The real-rig `control` contract phase covers both
+network services against the coordinator through bench-ci.
 The existing real-e2e checkout traversability preflight remains a harness placement requirement.
 A failed initial control POST emits only allowlisted service states and fixed startup-error markers;
 raw journal entries and credentials are excluded.
@@ -44,8 +47,9 @@ raw journal entries and credentials are excluded.
 The unit + black-box suite, the Linux container e2e, and the coverage gate run automatically on every
 push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). The native macOS e2e is
 manual and local-only — macOS is deprecated (#493), so it never runs in CI. The last two are
-deliberately kept out of CI, because a real build, HugePages, and live mining are flaky by nature and
-against GitHub Actions' ToS. They're a manual pre-tag gate the releaser runs.
+deliberately kept out of hosted CI because they mine against live pools and exercise hardware
+performance on reserved rigs. The hosted stock-home setup has no mining jobs and does not replace
+those manual pre-tag release gates.
 The queued `control` phase also instruments real timer-driven API refreshes around a thermal
 control apply (#546). A temporary runtime drop-in replaces only the refresh service's command
 with `e2e-api-refresh-profile.sh`; its priority, timeout, timer and live feed remain in use.
