@@ -29,13 +29,17 @@ GitHub Test suite job, including argument inspection, password rotation and EXIT
 `tests/test-sister-reconcile.sh`, registered in `tests/run.sh`, checks startup failures, bounded
 listener probes (including IPv6 and failed transports), and apply's failure result while retaining
 later reconciles. The hosted Ubuntu 24.04 `Stock home (real systemd)` job runs the real CLI as a
-normal user via sudo, with the checkout under a `0750` home, real DynamicUser and real credentials.
+hosted runner account via sudo, with a private `HOME` containing the checkout at mode `0750`,
+real DynamicUser and real credentials. The fixture stays accessible to that account without
+requiring a second account to traverse the hosted runner’s own home.
 It reproduces the historical false-success failure at the reported commit, then requires an active
 sister API, authenticated responses on port 8081, failure on a missing entrypoint, and recovery.
 Its deliberately stopped miner fixture exercises apply's preserve-run-state path; it neither builds
 nor mines, and does not prove full stock-host setup, reboot, or hardware behavior. The real-rig
 `worker-api` and `control` contract phases cover the live service integration through bench-ci.
 The existing real-e2e checkout traversability preflight remains a harness placement requirement.
+A failed initial control POST emits only allowlisted service states and fixed startup-error markers;
+raw journal entries and credentials are excluded.
 
 The unit + black-box suite, the Linux container e2e, and the coverage gate run automatically on every
 push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). The native macOS e2e is

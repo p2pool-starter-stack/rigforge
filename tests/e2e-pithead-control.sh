@@ -11,6 +11,22 @@ _control_curl() { # Keep the temporary write token out of process arguments.
     printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl -q --noproxy '*' --config - "$@"
 }
 
+_control_startup_diagnostics() {
+    local unit active log_file marker
+    for unit in rigforge-api rigforge-control; do
+        active=$(systemctl show "$unit.service" -p ActiveState --value 2>/dev/null) || active=unknown
+        case "$active" in active | inactive | activating | deactivating | failed | reloading) ;; *) active=unknown ;; esac
+        printf 'receiver-startup: unit=%s active=%s\n' "$unit" "$active" >&2
+    done
+    log_file=$(mktemp) || return 0
+    if journalctl -u rigforge-control.service -n 80 --no-pager >"$log_file" 2>/dev/null; then
+        for marker in 'Permission denied' 'Failed to load credential' 'Address already in use' 'ModuleNotFoundError' 'No such file or directory' 'SyntaxError' 'Failed at step CREDENTIALS' 'Traceback'; do
+            if grep -Fq "$marker" "$log_file"; then printf 'receiver-startup: %s\n' "$marker" >&2; fi
+        done
+    fi
+    rm -f "$log_file"
+}
+
 phase_control() {
     phase "control — writable control path DONATION apply round trip (#344/#509)"
     local tok cur new port api_port resp code cid st waited=0 body max_temp target_temp
@@ -31,7 +47,12 @@ phase_control() {
         -H "Content-Type: application/json" -d "{\"DONATION\": $new}" "http://127.0.0.1:$port/apply" 2>/dev/null || true)
     cid=$(jq -r '.change_id // empty' "$resp" 2>/dev/null || true)
     rm -f "$resp"
-    [ "$code" = 202 ] && [ -n "$cid" ] && ok "POST /apply accepted (change_id=$cid)" || bad "POST /apply returned HTTP '$code' (expected 202)"
+    if [ "$code" = 202 ] && [ -n "$cid" ]; then
+        ok "POST /apply accepted (change_id=$cid)"
+    else
+        _control_startup_diagnostics
+        bad "POST /apply returned HTTP '$code' (expected 202)"
+    fi
     while [ "$waited" -lt 300 ]; do
         body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
         st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)

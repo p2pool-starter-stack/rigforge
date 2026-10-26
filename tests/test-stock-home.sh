@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 revision="${1:-HEAD}"
 expect="${2:-working}"
 TEST_DIR=$(mktemp -d "${RUNNER_TEMP:?}/rigforge-home.XXXXXX")
-test_user=rigforge-home-test
+[ "$(id -u)" -ne 0 ]
 home_dir="$TEST_DIR/home"
 checkout="$home_dir/rigforge"
 stage=fixture
@@ -28,27 +28,24 @@ cleanup() {
     sudo systemctl disable --now rigforge-api.service rigforge-api-refresh.timer >/dev/null 2>&1 || true
     sudo systemctl stop rigforge-api-refresh.service >/dev/null 2>&1 || true
     sudo rm -f /etc/systemd/system/rigforge-api.service /etc/systemd/system/rigforge-api-refresh.service \
-        /etc/systemd/system/rigforge-api-refresh.timer /etc/systemd/system/xmrig.service \
-        /etc/sudoers.d/rigforge-home-test
+        /etc/systemd/system/rigforge-api-refresh.timer /etc/systemd/system/xmrig.service
     sudo systemctl daemon-reload
-    sudo userdel "$test_user"
 }
 [ ! -e /etc/systemd/system/xmrig.service ]
-sudo useradd -M -d "$home_dir" -s /bin/bash "$test_user"
 trap cleanup EXIT
 chmod 755 "$TEST_DIR"
-sudo mkdir -p "$checkout/data/worker/xmrig/build"
-git -C "$ROOT" archive "$revision" | sudo tar -x -C "$checkout"
-printf '%s ALL=(root) NOPASSWD: ALL\n' "$test_user" | sudo tee /etc/sudoers.d/rigforge-home-test >/dev/null
-sudo chmod 440 /etc/sudoers.d/rigforge-home-test
-printf '%s\n' '{"pools":[{"url":"pool.invalid:3333","user":"fixture"}],"DONATION":0,"api":"enabled","api_bind":"127.0.0.1","ACCESS_TOKEN":"fixture-only-token","control":"disabled","control_upgrade":"disabled"}' | sudo tee "$checkout/config.json" >/dev/null
-sudo chown -R "$test_user:$test_user" "$home_dir"
-sudo chmod 750 "$home_dir"
+mkdir -p "$checkout/data/worker/xmrig/build"
+git -C "$ROOT" archive "$revision" | tar -x -C "$checkout"
+printf '%s\n' '{"pools":[{"url":"pool.invalid:3333","user":"fixture"}],"DONATION":0,"api":"enabled","api_bind":"127.0.0.1","ACCESS_TOKEN":"fixture-only-token","control":"disabled","control_upgrade":"disabled"}' >"$checkout/config.json"
+chmod 600 "$checkout/config.json"
+chmod 750 "$home_dir"
 printf '%s\n' '[Unit]' 'Description=Deliberately stopped miner fixture; never executed' '[Service]' 'ExecStart=/usr/bin/false' | sudo tee /etc/systemd/system/xmrig.service >/dev/null
 sudo systemctl daemon-reload
 run_apply() {
-    sudo -u "$test_user" -H bash -c 'cd "$1" && sudo -n ./rigforge.sh apply' bash "$checkout"
+    env HOME="$home_dir" bash -c 'cd "$1" && sudo -n ./rigforge.sh apply' bash "$checkout"
 }
+stage=operator-access
+[ -x "$checkout/rigforge.sh" ]
 stage=initial-apply
 if run_apply >"$TEST_DIR/apply.log" 2>&1; then apply_rc=0; else apply_rc=$?; fi
 stage=listener

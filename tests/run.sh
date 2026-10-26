@@ -7147,7 +7147,7 @@ assert_rc "malformed miner_user rejected (#140)" "$?" "1"
 c="$(mkconf mu_none "{ $POOL }")"
 assert_eq "miner_user absent -> empty (run as root) (#140)" "$(parse_and_print "$c" "$ROOT" MINER_USER)" ""
 
-if bash "$ROOT/tests/test-sister-reconcile.sh" "$SCRIPT"; then ok "sister API reconciliation reports failures (#362)"; else bad "sister API reconciliation reports failures (#362)" "regression failed"; fi
+if PATH="$STUBS:$PATH" bash "$ROOT/tests/test-sister-reconcile.sh" "$SCRIPT"; then ok "sister API reconciliation reports failures (#362)"; else bad "sister API reconciliation reports failures (#362)" "regression failed"; fi
 
 echo "== black-box: install_api_firewall renders + tears down the nft table (#142) =="
 FW="$(mktemp -d "$SANDBOX/fw.XXXXXX")"

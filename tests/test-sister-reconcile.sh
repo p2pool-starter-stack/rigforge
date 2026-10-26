@@ -99,4 +99,12 @@ for WATCHDOG_RC in 0 1; do
         fi
     done
 done
+source "$ROOT/tests/e2e-pithead-control.sh"
+systemctl() { printf 'failed\n'; }
+journalctl() { printf 'Permission denied: fixture-private-value\nTraceback: fixture-private-value\n'; }
+_control_startup_diagnostics >"$TEST_DIR/diagnostics" 2>&1
+grep -q 'unit=rigforge-control active=failed' "$TEST_DIR/diagnostics"
+grep -q 'receiver-startup: Permission denied' "$TEST_DIR/diagnostics"
+grep -q 'receiver-startup: Traceback' "$TEST_DIR/diagnostics"
+! grep -q 'fixture-private-value' "$TEST_DIR/diagnostics"
 printf 'sister API reconcile regressions: PASS\n'
