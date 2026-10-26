@@ -625,7 +625,13 @@ How a change flows:
    queue returns retryable `503` without staging another file. The token is write-capable and travels
    in cleartext HTTP —
    isolate the mining LAN (#256; see [Security](../SECURITY.md#what-rigforge-exposes-and-what-it-doesnt)).
-2. A path-triggered root oneshot takes the shared privileged-control lock, picks up the staged change, snapshots the current `config.json` to
+2. A path-triggered root oneshot takes the shared privileged-control lock and picks up the staged change.
+   In appliance mode, a request containing `pools` is rejected as a whole with
+   `appliance-pools-read-only`, before any snapshot or config write. Change the pool in Pithead
+   configuration (`rig.json` for the rig role), which owns the appliance pool across boots. Other
+   allowlisted tuning keys remain writable; ordinary rigs still accept pool edits. The receiver
+   returns `202` for staging, so callers must poll the change ID for this terminal rejection.
+   Otherwise, the oneshot snapshots the current `config.json` to
    `config-backups/config-<UTC-stamp>.json`, merges only the allowlisted keys, and re-validates the
    result with the same rules `apply` uses. An invalid change is rejected and **nothing is written**.
 3. A valid change is written durably (temp file, `fsync`, atomic rename) and applied. If the final

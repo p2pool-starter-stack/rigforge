@@ -47,6 +47,7 @@ started=0 # the sourced phase shadows this clock origin in its dynamic scope
 printf '{"DONATION":1,"max_temp_c":100,"control_port":8082,"api_port":8081}' >"$CFG"
 source "$ROOT/tests/e2e-pithead-control.sh"
 phase() { :; }
+appliance_pool_refusal() { :; }
 ok() { printf '%s\n' "$1"; }
 bad() {
     printf '%s\n' "$1" >&2
