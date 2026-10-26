@@ -1412,7 +1412,6 @@ NFT
     fi
     log "API firewall active — port(s) $ports reachable only from $API_ALLOW_FROM and loopback."
 }
-
 _wait_sister_api() {
     local host="$API_BIND" code i
     case "$host" in 0.0.0.0) host=127.0.0.1 ;; ::) host=::1 ;; esac
@@ -1427,7 +1426,6 @@ _wait_sister_api() {
     warn "Sister API is not active and listening; check journalctl -u rigforge-api.service."
     return 1
 }
-
 install_api() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-api.service" rsvc="$SYSTEMD_DIR/rigforge-api-refresh.service" rtmr="$SYSTEMD_DIR/rigforge-api-refresh.timer"
@@ -4217,8 +4215,6 @@ apply() {
         esac
     done
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
-        # A miner_user change only lands in the unit file — re-render + daemon-reload so the
-        # _apply_runtime restart below picks it up (#140).
         parse_config
         _ensure_miner_user
         NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")

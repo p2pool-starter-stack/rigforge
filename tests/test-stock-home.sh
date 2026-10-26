@@ -16,8 +16,10 @@ apply_rc=not-run
 http_code=not-probed
 report_failure() {
     printf 'stock-home failure: stage=%s line=%s apply_rc=%s http_code=%s\n' "$stage" "$1" "$apply_rc" "$http_code" >&2
-    for marker in 'No built worker' 'Permission denied' 'command not found' 'rigforge aborted' 'Failed to' 'not allowed to execute' 'does not exist'; do
-        if grep -Fq "$marker" "$TEST_DIR/apply.log" 2>/dev/null; then printf 'apply diagnostic: %s\n' "$marker" >&2; fi
+    for diagnostic_log in apply.log failed-apply.log recovered-apply.log journal.log; do
+        for marker in 'No built worker' 'Permission denied' 'command not found' 'rigforge aborted' 'Failed to' 'not allowed to execute' 'does not exist'; do
+            if grep -Fq "$marker" "$TEST_DIR/$diagnostic_log" 2>/dev/null; then printf '%s diagnostic: %s\n' "$diagnostic_log" "$marker" >&2; fi
+        done
     done
     systemctl show rigforge-api.service -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
 }
@@ -48,10 +50,7 @@ run_apply() {
     sudo -u "$test_user" -H bash -c 'cd "$1" && sudo -n ./rigforge.sh apply' bash "$checkout"
 }
 stage=initial-apply
-set +e
-run_apply >"$TEST_DIR/apply.log" 2>&1
-apply_rc=$?
-set -e
+if run_apply >"$TEST_DIR/apply.log" 2>&1; then apply_rc=0; else apply_rc=$?; fi
 stage=listener
 http_code=000
 for _ in $(seq 1 30); do
@@ -77,12 +76,19 @@ stage=current-listener
 [ "$apply_rc" = 0 ]
 [ "$http_code" = 401 ]
 systemctl is-active --quiet rigforge-api.service
+stage=authenticated-health
 code=$(printf '%s\n' 'header = "Authorization: Bearer fixture-only-token"' | curl -q --noproxy '*' --config - -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8081/health)
 [ "$code" = 200 ]
+stage=missing-entrypoint
 sudo mv "$checkout/util/api-server.py" "$checkout/util/api-server.saved"
-if run_apply >"$TEST_DIR/failed-apply.log" 2>&1; then exit 1; fi
+if run_apply >"$TEST_DIR/failed-apply.log" 2>&1; then
+    printf 'missing entrypoint incorrectly reconciled successfully\n' >&2
+    report_failure "$LINENO"
+    exit 1
+fi
 grep -q 'configured sister API could NOT be reconciled' "$TEST_DIR/failed-apply.log"
 sudo mv "$checkout/util/api-server.saved" "$checkout/util/api-server.py"
+stage=recovery
 run_apply >"$TEST_DIR/recovered-apply.log" 2>&1
 systemctl is-active --quiet rigforge-api.service
 [ "$(stat -c %a "$home_dir")" = 750 ]
