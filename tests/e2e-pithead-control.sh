@@ -1,11 +1,8 @@
 # shellcheck shell=bash
-# control phase for e2e-pithead.sh (#509), split out to stay under e2e-pithead.sh's file budget
-# (docs/dev/file-budget.tsv) — same convention as tests/run.sh sourcing its own test-e2e-*.sh
-# fragments. Sourced by e2e-pithead.sh AFTER phase()/ok()/bad()/set_cfg()/$CFG are defined; this
-# file declares no preflight of its own and must not be run standalone.
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-refresh-window.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh"
 
-_control_curl() { # Keep the temporary write token out of process arguments.
+_control_curl() {
     local token="$1"
     shift
     printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl -q --noproxy '*' --config - "$@"
@@ -39,9 +36,12 @@ phase_control() {
     target_temp=$((max_temp - 1))
     printf '%s' "$tok" | set_cfg '.api="enabled" | .control="enabled" | .ACCESS_TOKEN=$token | .api_allow_from="127.0.0.1/32" | .watchdog="enabled" | .max_temp_c=$max_temp' soft \
         --rawfile token /dev/stdin --argjson max_temp "$max_temp" || bad "could not enable the control path"
-    sleep 3 # let rigforge-control.service (restarted by install_control) settle
     port=$(jq -r '.control_port // 8082' "$CFG")
     api_port=$(jq -r '.api_port // 8081' "$CFG")
+    _access_tokens_ready control "$port" setup || {
+        _control_startup_diagnostics
+        return 1
+    }
     resp="$(mktemp)"
     code=$(_control_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"DONATION\": $new}" "http://127.0.0.1:$port/apply" 2>/dev/null || true)

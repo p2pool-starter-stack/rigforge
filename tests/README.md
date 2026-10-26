@@ -41,7 +41,10 @@ Both jobs uninstall through the real CLI on exit. Reboot persistence, a live poo
 performance are outside this hosted proof. The real-rig `control` contract phase covers both
 network services against the coordinator through bench-ci.
 The existing real-e2e checkout traversability preflight remains a harness placement requirement.
-A failed initial control POST emits only allowlisted service states and fixed startup-error markers;
+The control phase uses the shared bounded unauthenticated readiness probe before its first POST;
+a delayed listener receives no write until it returns HTTP 401, and an unavailable listener fails
+without a POST. Hardware-free cases cover delayed and unavailable listeners with config restoration.
+A failed readiness probe or initial control POST emits only allowlisted service states and fixed startup-error markers;
 raw journal entries and credentials are excluded.
 
 The unit + black-box suite, the Linux container e2e, and the coverage gate run automatically on every
