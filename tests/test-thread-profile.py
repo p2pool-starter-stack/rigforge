@@ -148,6 +148,7 @@ SAVED_CFG="$PROFILE_ROOT/saved.json"
 CFG="$PROFILE_ROOT/config.json"
 RIGFORGE="$PROFILE_ROOT/rigforge"
 HAMMER_PIDS=""
+THREAD_PROFILE_SAVED="$PROFILE_ROOT/tuning-snapshot"
 refresh_profile_finish() { :; }
 thread_profile_restore() { return 1; }
 _restore_xmrig() { :; }

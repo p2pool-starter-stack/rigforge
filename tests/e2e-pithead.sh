@@ -106,7 +106,7 @@ _restore_xmrig() {
 _cleanup() {
     local cleanup_ok=1 p threads_ok=1
     refresh_profile_finish || cleanup_ok=0
-    thread_profile_restore || threads_ok=0
+    if [ -n "${THREAD_PROFILE_SAVED:-}" ]; then thread_profile_restore || threads_ok=0; fi
     for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
         [ "$threads_ok" = 1 ] && "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
