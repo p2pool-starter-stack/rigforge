@@ -14,7 +14,7 @@ RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-thread-profile.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
@@ -104,11 +104,12 @@ _restore_xmrig() {
     [ "$active" = "$SAVED_XMRIG_ACTIVE" ]
 }
 _cleanup() {
-    local cleanup_ok=1 p
+    local cleanup_ok=1 p threads_ok=1
     refresh_profile_finish || cleanup_ok=0
+    if [ -n "${THREAD_PROFILE_SAVED:-}" ]; then thread_profile_restore || threads_ok=0; fi
     for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
-        "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
+        [ "$threads_ok" = 1 ] && "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
         :
     else
         echo "e2e-pithead: WARNING: config restoration failed; snapshot retained at ${SAVED_CFG:-<missing>}" >&2
@@ -532,9 +533,7 @@ summary() {
 }
 
 require_preflight "$@"
-# Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
-# #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)"
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|all)"
 replay_lock "${1:-all}"
 
 snapshot_config
@@ -550,13 +549,14 @@ dev-fee) phase_dev_fee ;;
 control) phase_control ;;
 control-replay-thermal | control-replay-pools) phase_control_replay "${1##*-}" ;;
 access-tokens) phase_access_tokens ;;
+thread-profile) phase_thread_profile ;;
 all)
-    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens; do
+    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens phase_thread_profile; do
         "$run_phase"
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT
