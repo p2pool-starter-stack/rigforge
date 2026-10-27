@@ -1412,11 +1412,23 @@ NFT
     fi
     log "API firewall active — port(s) $ports reachable only from $API_ALLOW_FROM and loopback."
 }
-
+_wait_sister_api() {
+    local host="$API_BIND" code i
+    case "$host" in 0.0.0.0) host=127.0.0.1 ;; ::) host=::1 ;; esac
+    case "$host" in *:*) host="[$host]" ;; esac
+    for i in $(seq 1 15); do
+        if systemctl is-active --quiet rigforge-api.service; then
+            code=$(curl -q --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 1 "http://$host:$API_PORT/health") || code=000
+            case "$code" in 200 | 401 | 503) return 0 ;; esac
+        fi
+        sleep 1
+    done
+    warn "Sister API is not active and listening; check journalctl -u rigforge-api.service."
+    return 1
+}
 install_api() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-api.service" rsvc="$SYSTEMD_DIR/rigforge-api-refresh.service" rtmr="$SYSTEMD_DIR/rigforge-api-refresh.timer"
-    # v1.2.x shipped a per-connection socket pair (Accept=yes) — remove it on sight so upgrades converge.
     if [ -f "$SYSTEMD_DIR/rigforge-api.socket" ]; then
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-api.socket 2>/dev/null || true
         sudo rm -f "$SYSTEMD_DIR/rigforge-api.socket" "$SYSTEMD_DIR/rigforge-api@.service"
@@ -1431,24 +1443,21 @@ install_api() {
         fi
         return 0
     fi
-    command -v python3 >/dev/null 2>&1 || error "The sister API server needs python3 (stock on Ubuntu 24.04). Install it or set \"api\": \"disabled\"."
-    # Never echo the token itself — only whether one is required.
+    command -v python3 >/dev/null 2>&1 || {
+        warn 'The sister API server needs python3. Install it or disable api in config.json.'
+        return 1
+    }
     log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open); state refreshes every 15s)..."
-    API_BIND="$API_BIND" API_PORT="$API_PORT" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$API_BIND $API_PORT $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null
-    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null
-    sudo tee "$rtmr" <"$SCRIPT_DIR/systemd/rigforge-api-refresh.timer.template" >/dev/null
-    sudo systemctl daemon-reload
-    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api-refresh.timer 2>/dev/null || true
-    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api.service 2>/dev/null || true
-    # Restart adopts timer and server edits on setup, apply, and upgrade; it also starts inactive units.
-    sudo systemctl restart rigforge-api-refresh.timer rigforge-api.service 2>/dev/null || true
-    # Prime the state files so the first poll isn't a 503 for a whole timer period.
-    sudo systemctl start rigforge-api-refresh.service 2>/dev/null || true
+    API_BIND="$API_BIND" API_PORT="$API_PORT" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$API_BIND $API_PORT $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null || return 1
+    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null || return 1
+    sudo tee "$rtmr" <"$SCRIPT_DIR/systemd/rigforge-api-refresh.timer.template" >/dev/null || return 1
+    sudo systemctl daemon-reload || return 1
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api-refresh.timer || return 1
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api.service || return 1
+    sudo systemctl restart rigforge-api-refresh.timer rigforge-api.service || return 1
+    sudo systemctl start rigforge-api-refresh.service || return 1
+    _wait_sister_api
 }
-
-# Writable control path (#236): the unprivileged receiver server plus the path-triggered privileged
-# applier. Same opt-in/teardown shape as install_api; its own units so it enables independently.
-# parse_config has already refused to reach here without a token + api_allow_from (fail-closed).
 install_control() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
@@ -4206,8 +4215,6 @@ apply() {
         esac
     done
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
-        # A miner_user change only lands in the unit file — re-render + daemon-reload so the
-        # _apply_runtime restart below picks it up (#140).
         parse_config
         _ensure_miner_user
         NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
@@ -4218,32 +4225,27 @@ apply() {
         _render_xmrig_unit
         sudo systemctl daemon-reload 2>/dev/null || true
     fi
-    _apply_runtime preserve-run-state # #396: an apply must not start a rig that is deliberately stopped
-    local _wd_rc=0
+    _apply_runtime preserve-run-state
+    local _wd_rc=0 _api_rc=0
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
-        # #395: of the install_* steps here, a failed watchdog re-render is the one that leaves the
-        # RUNNING cadence silently diverged from the config we are about to stamp as in effect, so it
-        # is captured instead of discarded. The remaining steps still run — abandoning the reconcile
-        # would strand more units than the one that failed — but apply() returns non-zero at the end,
-        # which is what lets control_apply reach its rollback branch instead of recording "applied".
         install_watchdog >/dev/null 2>&1 || _wd_rc=1
-        install_api >/dev/null 2>&1 || true
+        install_api || _api_rc=1
         install_control >/dev/null 2>&1 || true
         install_api_firewall || true
         _autotune_apply_notice
     fi
-    # #254: record who put this config into effect. Default source "local" (a bare `apply` after a
-    # hand-edit); control-apply and restore set RIGFORGE_CONFIG_SOURCE first. No-op unless the writable
-    # config actually changed (so tune/autotune restarts, which reuse _apply_runtime not apply(), and
-    # a re-apply of the same config, never bump the revision).
     _stamp_config_meta "${RIGFORGE_CONFIG_SOURCE:-local}" "${RIGFORGE_CONFIG_CHANGE_ID:-}"
     _apply_pool_check
     if [ "$_wd_rc" -ne 0 ]; then
         RIGFORGE_APPLY_FAIL_REASON="could not re-render the watchdog units"
         warn "The miner watchdog units could NOT be re-rendered ($SYSTEMD_DIR/rigforge-watchdog.{service,timer}) — the watchdog is still on its PREVIOUS schedule, whatever config.json now says. Check free disk space and sudo rights, then re-run 'sudo $0 apply'."
     fi
-    return "$_wd_rc"
+    if [ "$_api_rc" -ne 0 ]; then
+        RIGFORGE_APPLY_FAIL_REASON="could not start the sister API"
+        warn "The configured sister API could NOT be reconciled; check journalctl -u rigforge-api.service, then re-run 'sudo $0 apply'."
+    fi
+    [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ]
 }
 
 # #343: apply's honesty check. "Applied config and restarted" used to be the last word even when the

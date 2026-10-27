@@ -189,13 +189,10 @@ if [ "$1" = list ] && [ -n "$2" ]; then
 fi
 exit 0
 EOF
-    # curl stub for the worker-API probe: record the invocation (so a test can assert whether an
-    # Authorization header was passed) and emit an XMRig-style /2/summary body. Exits 0 like a real 200.
-    # hugepages is the real /2/summary shape — a [loaded, total] pages ARRAY, not a bool; the old
-    # bool-shaped fixture is exactly how the @tsv array crash (#341) slipped past this suite.
     cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "[curl] $*" >> "${CURL_LOG:-/dev/null}"
+case "$*" in *'%{http_code}'*'/health'*) printf 200; exit 0 ;; esac
 case " $* " in
 *" --config - "*) cat >>"${CURL_STDIN_LOG:-/dev/null}" ;;
 esac
@@ -7150,6 +7147,8 @@ assert_rc "malformed miner_user rejected (#140)" "$?" "1"
 c="$(mkconf mu_none "{ $POOL }")"
 assert_eq "miner_user absent -> empty (run as root) (#140)" "$(parse_and_print "$c" "$ROOT" MINER_USER)" ""
 
+if PATH="$STUBS:$PATH" bash "$ROOT/tests/test-sister-reconcile.sh" "$SCRIPT"; then ok "sister API reconciliation reports failures (#362)"; else bad "sister API reconciliation reports failures (#362)" "regression failed"; fi
+
 echo "== black-box: install_api_firewall renders + tears down the nft table (#142) =="
 FW="$(mktemp -d "$SANDBOX/fw.XXXXXX")"
 run_fw() { # <allow_from> <api_mode>
@@ -7235,9 +7234,10 @@ APS="$(mktemp -d "$SANDBOX/aps.XXXXXX")"
 mkdir -p "$APS/systemd"
 cp "$ROOT/systemd/rigforge-api.service.template" "$ROOT/systemd/rigforge-api-refresh.service.template" "$ROOT/systemd/rigforge-api-refresh.timer.template" "$APS/systemd/"
 cp -R "$ROOT/util" "$APS/" 2>/dev/null || true
-run_api_install() { # <disabled|enabled> [port]
+run_api_install() {
     (
         source "$SCRIPT"
+        _wait_sister_api() { :; }
         OS_TYPE=Linux
         SCRIPT_DIR="$APS"
         SYSTEMD_DIR="$APS/systemd"
@@ -7253,15 +7253,14 @@ out="$(run_api_install enabled)"
 assert_eq "api enable writes the persistent server unit" "$([ -f "$APS/systemd/rigforge-api.service" ] && echo y || echo n)" "y"
 assert_eq "api enable writes the refresh service" "$([ -f "$APS/systemd/rigforge-api-refresh.service" ] && echo y || echo n)" "y"
 assert_eq "api enable writes the refresh timer" "$([ -f "$APS/systemd/rigforge-api-refresh.timer" ] && echo y || echo n)" "y"
-assert_contains "server unit runs the stdlib server with the configured bind/port" "$(cat "$APS/systemd/rigforge-api.service")" "api-server.py 0.0.0.0 8081"
+assert_contains "server unit runs the stdlib server with the configured bind/port" "$(cat "$APS/systemd/rigforge-api.service")" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 8081'
 assert_eq "server is maximally polite: exactly Nice=19 as a directive (#164)" "$(grep -c '^Nice=19$' "$APS/systemd/rigforge-api.service")" "1"
 assert_eq "server is sandboxed read-only (#99 hardening)" "$(grep -c '^ProtectSystem=strict$' "$APS/systemd/rigforge-api.service")" "1"
-# Security hardening (audit 2026-07-10): the network-facing unit drops root via DynamicUser and
-# reads the 0600 config through a systemd credential (root loads it, the sandbox user reads it).
+assert_contains "API entrypoint is loaded as a credential" "$(cat "$APS/systemd/rigforge-api.service")" "LoadCredential=server:$APS/util/api-server.py"
 assert_eq "server never runs as root (DynamicUser) (#sec)" "$(grep -c '^DynamicUser=yes$' "$APS/systemd/rigforge-api.service")" "1"
 assert_contains "server reads the token via LoadCredential, not the 0600 file (#sec)" "$(cat "$APS/systemd/rigforge-api.service")" "LoadCredential=config:"
 assert_contains "server ExecStart points at the credential copy (#sec)" "$(cat "$APS/systemd/rigforge-api.service")" '${CREDENTIALS_DIRECTORY}/config'
-assert_eq "credential var survives the envsubst render un-expanded (#sec)" "$(grep -c 'CREDENTIALS_DIRECTORY' "$APS/systemd/rigforge-api.service")" "2"
+assert_eq "credential var survives the envsubst render un-expanded (#sec)" "$(grep -c 'CREDENTIALS_DIRECTORY' "$APS/systemd/rigforge-api.service")" "1"
 assert_contains "server caps request-arrival time (slowloris) (#sec)" "$(cat "$ROOT/util/api-server.py")" "Handler.timeout"
 assert_contains "token compare is constant-time (#sec)" "$(cat "$ROOT/util/api-server.py")" "hmac.compare_digest"
 assert_eq "refresh gets normal CPU scheduling with idle disk I/O (#540)" "$(grep -E '^(Nice|IOSchedulingClass)=' "$APS/systemd/rigforge-api-refresh.service")" $'Nice=0\nIOSchedulingClass=idle'
@@ -7270,10 +7269,10 @@ assert_contains "refresh timer has an independent 15s wall-clock cadence (#454)"
 assert_contains "refresh timer does not replay missed probes after downtime (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "Persistent=false"
 assert_absent "refresh cadence is not chained to the service's last activation (#454)" "$(cat "$APS/systemd/rigforge-api-refresh.timer")" "OnUnitActiveSec"
 assert_contains "enable log reports token posture without any token value" "$out" "token: open"
-# Port change re-renders + restarts the server (config re-read on restart).
 APS_CALLS="$APS/calls.log"
 (
     source "$SCRIPT"
+    _wait_sister_api() { :; }
     OS_TYPE=Linux
     SCRIPT_DIR="$APS"
     SYSTEMD_DIR="$APS/systemd"
@@ -7284,9 +7283,8 @@ APS_CALLS="$APS/calls.log"
     set +e
     PATH="$STUBS:$PATH" CALL_LOG="$APS_CALLS" install_api >/dev/null 2>&1
 )
-assert_contains "port change re-renders the server unit (#99)" "$(cat "$APS/systemd/rigforge-api.service")" "api-server.py 0.0.0.0 9000"
+assert_contains "port change re-renders the server unit (#99)" "$(cat "$APS/systemd/rigforge-api.service")" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 9000'
 assert_contains "port change restarts the timer and server to adopt both units (#99/#454)" "$(cat "$APS_CALLS")" "[systemctl] restart rigforge-api-refresh.timer rigforge-api.service"
-# Legacy v1.2.x socket pair is removed on sight (upgrade convergence).
 printf 'x' >"$APS/systemd/rigforge-api.socket"
 printf 'x' >"$APS/systemd/rigforge-api@.service"
 run_api_install enabled >/dev/null
@@ -7592,14 +7590,15 @@ assert_eq "control enable writes the server unit" "$([ -f "$CPS/systemd/rigforge
 assert_eq "control enable writes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "y"
 assert_eq "control enable writes the path watcher" "$([ -f "$CPS/systemd/rigforge-control-apply.path" ] && echo y || echo n)" "y"
 assert_eq "accepted control applies keep foreground scheduling (#472)" "$(grep -Ec '^(Nice=|IOSchedulingClass=)' "$CPS/systemd/rigforge-control-apply.service")" "0"
-assert_contains "server unit runs control-server.py with the configured bind/port" "$(cat "$CPS/systemd/rigforge-control.service")" "control-server.py 0.0.0.0 8082"
+assert_contains "server unit runs control-server.py with the configured bind/port" "$(cat "$CPS/systemd/rigforge-control.service")" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 8082'
+assert_contains "control entrypoint is loaded as a credential" "$(cat "$CPS/systemd/rigforge-control.service")" "LoadCredential=server:$CPS/util/control-server.py"
 assert_eq "server is unprivileged (DynamicUser)" "$(grep -c '^DynamicUser=yes$' "$CPS/systemd/rigforge-control.service")" "1"
 assert_eq "server has a writable StateDirectory spool" "$(grep -c '^StateDirectory=rigforge-control$' "$CPS/systemd/rigforge-control.service")" "1"
 assert_contains "applier unit baked with the operator (#reown)" "$(cat "$CPS/systemd/rigforge-control-apply.service")" "RIGFORGE_OPERATOR=rfop"
 assert_contains "path watcher globs the pending files" "$(cat "$CPS/systemd/rigforge-control-apply.path")" "PathExistsGlob=/var/lib/rigforge-control/spool/pending-*.json"
 assert_absent "no token baked into any control unit" "$(cat "$CPS/systemd/rigforge-control.service" "$CPS/systemd/rigforge-control-apply.service" "$CPS/systemd/rigforge-control-apply.path")" "tok-secret"
 out="$(run_control_install enabled 9099)"
-assert_contains "control server honours the port override" "$(cat "$CPS/systemd/rigforge-control.service")" "control-server.py 0.0.0.0 9099"
+assert_contains "control server honours the port override" "$(cat "$CPS/systemd/rigforge-control.service")" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 9099'
 out="$(run_control_install disabled)"
 assert_eq "control disable removes the server unit" "$([ -f "$CPS/systemd/rigforge-control.service" ] && echo y || echo n)" "n"
 assert_eq "control disable removes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "n"

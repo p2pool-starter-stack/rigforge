@@ -19,6 +19,18 @@ if [ "$#" = 0 ]; then
     fi
     grep -q 'could not allocate the thermal response file' "$TEST_WINDOW_DIR/allocation-failed.log"
     [ ! -e "$TEST_WINDOW_DIR/allocation-failed-posts" ]
+    if ! bash "$0" listener-delayed >"$TEST_WINDOW_DIR/listener-delayed.log" 2>&1; then
+        printf 'delayed control listener was not awaited before POST\n' >&2
+        tail -n 5 "$TEST_WINDOW_DIR/listener-delayed.log" >&2
+        exit 1
+    fi
+    [ "$(cat "$TEST_WINDOW_DIR/listener-delayed-ready")" = 5 ]
+    grep -q 'service=control stage=setup elapsed_s=4' "$TEST_WINDOW_DIR/listener-delayed.log"
+    [ ! -e "$TEST_WINDOW_DIR/listener-delayed-early-post" ]
+    if bash "$0" listener-down >"$TEST_WINDOW_DIR/listener-down.log" 2>&1; then exit 1; fi
+    grep -q 'listener did not become ready after setup within 30s' "$TEST_WINDOW_DIR/listener-down.log"
+    [ ! -e "$TEST_WINDOW_DIR/listener-down-write-attempt" ]
+    cmp "$TEST_WINDOW_DIR/listener-down.json" "$TEST_WINDOW_DIR/listener-down.json.original"
     for mode in setup-edit-failed setup-apply-failed; do
         if bash "$0" "$mode" >"$TEST_WINDOW_DIR/$mode.log" 2>&1; then exit 1; fi
         grep -q 'could not enable the control path' "$TEST_WINDOW_DIR/$mode.log"
@@ -40,6 +52,11 @@ if [ "$#" = 0 ]; then
     exit 0
 fi
 mode="$1"
+case "$mode" in listener-delayed | listener-down)
+    unset SECONDS
+    SECONDS=0
+    ;;
+esac
 CFG="$TEST_WINDOW_DIR/$mode.json"
 # shellcheck disable=SC2034 # consumed by the sourced phase
 RIGFORGE=control_test_apply
@@ -82,6 +99,18 @@ refresh_profile_start() { printf 'profile started\n'; }
 refresh_profile_state() { :; }
 refresh_profile_finish() { printf 'finish-window elapsed=%s\n' "$((SECONDS - started))"; }
 curl() {
+    if [ "$1 $2 $3 $4" = '-q --noproxy * -s' ]; then
+        [[ "${*: -1}" == */status ]] || return 99
+        local probes=0
+        if [ -f "$TEST_WINDOW_DIR/$mode-ready" ]; then probes=$(cat "$TEST_WINDOW_DIR/$mode-ready"); fi
+        printf '%s' "$((probes + 1))" >"$TEST_WINDOW_DIR/$mode-ready"
+        if [ "$mode" = listener-down ] || { [ "$mode" = listener-delayed ] && [ "$probes" -lt 4 ]; }; then
+            printf 000
+            return 7
+        fi
+        printf 401
+        return 0
+    fi
     [[ "$*" != *Bearer* ]] || return 1
     [ "$1 $2 $3 $4 $5" = "-q --noproxy * --config -" ] || return 1
     grep -Eq '^header = "Authorization: Bearer [0-9a-f]{64}"$' || return 1
@@ -101,6 +130,14 @@ curl() {
         http://*) url="$arg" ;;
         esac
     done
+    if [ -n "$data" ]; then
+        : >"$TEST_WINDOW_DIR/$mode-write-attempt"
+        if [ "$mode" = listener-down ] || { [ "$mode" = listener-delayed ] && { [ ! -e "$TEST_WINDOW_DIR/$mode-ready" ] || [ "$(cat "$TEST_WINDOW_DIR/$mode-ready")" -lt 5 ]; }; }; then
+            : >"$TEST_WINDOW_DIR/$mode-early-post"
+            printf 000
+            return 7
+        fi
+    fi
     if [ -n "$output" ]; then
         if [[ "$data" == *DONATION* ]]; then
             jq '.DONATION=2' "$CFG" >"$CFG.tmp"
@@ -134,6 +171,7 @@ eval "$(sed -n '/^_cleanup()/,/^}/p; /^snapshot_config()/,/^}/p' "$ROOT/tests/e2
 HAMMER_PIDS='' RIG_LOCK_HOLDER="$TEST_WINDOW_DIR/holder"
 _restore_xmrig() { :; }
 systemctl() { [ "$1" = is-active ]; }
+journalctl() { :; }
 cp "$CFG" "$CFG.original"
 snapshot_config
 PLANTED_RESPONSE=""

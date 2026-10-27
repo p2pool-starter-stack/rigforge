@@ -125,6 +125,35 @@ jobs:
       - name: Run test suite
         run: make test-suite
 
+  stock-home:
+    name: Stock home setup (${{ matrix.label }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: historical
+            revision: b2d4c3d9ca1da74d0e6d5ccce772d401acc8be03
+            expect: broken
+          - label: current
+            revision: HEAD
+            expect: working
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify native prerequisites
+        run: |
+          command -v git curl
+          systemctl --version
+      - name: Run documented setup beneath a private home
+        env:
+          TEST_REVISION: ${{ matrix.revision }}
+          TEST_EXPECTATION: ${{ matrix.expect }}
+        run: timeout 1800 bash tests/test-stock-home.sh "$TEST_REVISION" "$TEST_EXPECTATION"
+
   e2e:
     name: End-to-end (Docker)
     runs-on: ubuntu-24.04
