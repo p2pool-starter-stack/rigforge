@@ -17,7 +17,8 @@ already done.
 2. Config: create a minimal `config.json` interactively if none exists, then parse and validate
    it (see [Configuration](configuration.md)).
 3. Rebuild decision: decide whether XMRig needs (re)building, based on the pinned
-   version/commit vs. what's already compiled.
+   version/commit vs. what's already compiled, a zero compiled-minimum marker, and a valid binary
+   checksum.
 4. Workspace: prepare the worker root. Any prior install is archived rather than clobbered, and
    old archives are pruned so re-runs don't leak disk.
 5. Dependencies: install the build toolchain and runtime libraries for the OS (`cmake`, `libuv`,
