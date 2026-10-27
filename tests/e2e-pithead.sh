@@ -104,12 +104,12 @@ _restore_xmrig() {
     [ "$active" = "$SAVED_XMRIG_ACTIVE" ]
 }
 _cleanup() {
-    local cleanup_ok=1 p
+    local cleanup_ok=1 p threads_ok=1
     refresh_profile_finish || cleanup_ok=0
-    thread_profile_restore || cleanup_ok=0
+    thread_profile_restore || threads_ok=0
     for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
-        "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
+        [ "$threads_ok" = 1 ] && "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
         :
     else
         echo "e2e-pithead: WARNING: config restoration failed; snapshot retained at ${SAVED_CFG:-<missing>}" >&2

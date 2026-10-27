@@ -5,26 +5,29 @@ THREAD_PROFILE_SAVED="" THREAD_PROFILE_OVERRIDES="" THREAD_PROFILE_EXISTED=0
 thread_profile_restore() {
     [ -n "$THREAD_PROFILE_SAVED" ] || return 0
     if [ "$THREAD_PROFILE_EXISTED" = 1 ]; then
-        cp -p "$THREAD_PROFILE_SAVED/overrides.json" "$THREAD_PROFILE_OVERRIDES" || return 1
+        cp -p "$THREAD_PROFILE_SAVED/overrides.json" "$THREAD_PROFILE_OVERRIDES" || {
+            printf 'thread-profile: tuning restoration failed; snapshot retained at %s\n' "$THREAD_PROFILE_SAVED" >&2
+            return 1
+        }
     else
         rm -f "$THREAD_PROFILE_OVERRIDES" || return 1
     fi
-    rm -r "$THREAD_PROFILE_SAVED" || return 1
+    if ! rm -r "$THREAD_PROFILE_SAVED"; then
+        printf 'thread-profile: tuning restored; temporary snapshot retained at %s\n' "$THREAD_PROFILE_SAVED" >&2
+    fi
     THREAD_PROFILE_SAVED=""
 }
 
 thread_profile_count() {
-    local data count token auth=() waited=0
+    local data count token deadline=$((SECONDS + 120))
     token=$(jq -r '.ACCESS_TOKEN // empty' "$CFG") || return 1
-    [ -z "$token" ] || auth=(-H "Authorization: Bearer $token")
-    while [ "$waited" -lt 120 ]; do
-        if data=$(curl -fsS --max-time 5 "${auth[@]}" http://127.0.0.1:8080/2/backends 2>/dev/null) &&
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if data=$(_control_curl "$token" -fsS --max-time 5 http://127.0.0.1:8080/2/backends 2>/dev/null) &&
             count=$(printf '%s' "$data" | jq -er '[.[] | select(.type == "cpu" and .algo == "rx/0") | .threads | select(type == "array") | length] | select(length == 1) | .[0] | select(. > 0)'); then
             printf '%s\n' "$count"
             return 0
         fi
         sleep 2
-        waited=$((waited + 2))
     done
     return 1
 }
@@ -57,8 +60,8 @@ phase_thread_profile() {
     [ ! -L "$THREAD_PROFILE_OVERRIDES" ] || die "thread-profile refuses symlinked tuning overrides"
     THREAD_PROFILE_SAVED=$(mktemp -d)
     if [ -e "$THREAD_PROFILE_OVERRIDES" ]; then
-        cp -p "$THREAD_PROFILE_OVERRIDES" "$THREAD_PROFILE_SAVED/overrides.json" || die "cannot snapshot tuning overrides"
         THREAD_PROFILE_EXISTED=1
+        cp -p "$THREAD_PROFILE_OVERRIDES" "$THREAD_PROFILE_SAVED/overrides.json" || die "cannot snapshot tuning overrides"
         jq 'del(.cpu.rx)' "$THREAD_PROFILE_OVERRIDES" >"$THREAD_PROFILE_SAVED/base.json" || die "invalid tuning overrides"
     else
         printf '{}\n' >"$THREAD_PROFILE_SAVED/base.json"

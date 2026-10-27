@@ -104,6 +104,84 @@ _tune_config "$PWD/candidate.json" 1 false 12 false 2 false false false
     def test_bench_candidate_uses_same_ceiling(self):
         self.assertEqual(count(self.generate(16, candidate=True)["cpu"]["rx"]), 8)
 
+    def test_failed_hardware_snapshot_preserves_original(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            original = b'{"cpu":{"rx":12}}\n'
+            overrides = root / "tune-overrides.json"
+            overrides.write_bytes(original)
+            stub = root / "rigforge.sh"
+            stub.write_text('parse_config() { WORKER_ROOT="$PROFILE_ROOT"; }\n')
+            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_STUB=str(stub), PROFILE_HELPER=str(ROOT / "tests/e2e-thread-profile.sh"))
+            command = """
+set -e
+source "$PROFILE_HELPER"
+RIGFORGE="$PROFILE_STUB"
+CFG="$PROFILE_ROOT/config.json"
+phase() { :; }
+die() { exit 2; }
+cp() { return 1; }
+trap 'thread_profile_restore' EXIT
+phase_thread_profile
+"""
+            result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(overrides.exists())
+            self.assertEqual(overrides.read_bytes(), original)
+
+    def test_failed_tuning_restore_does_not_apply_test_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            saved = root / "saved.json"
+            saved.write_text('{"threads":16}\n')
+            config = root / "config.json"
+            config.write_text('{"threads":1}\n')
+            stub = root / "rigforge"
+            marker = root / "apply"
+            stub.write_text('#!/usr/bin/env bash\ntouch "$PROFILE_MARKER"\n')
+            stub.chmod(0o700)
+            harness = (ROOT / "tests/e2e-pithead.sh").read_text()
+            cleanup = harness[harness.index("_cleanup() {"):harness.index("\nsnapshot_config()")]
+            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_MARKER=str(marker))
+            command = cleanup + """
+SAVED_CFG="$PROFILE_ROOT/saved.json"
+CFG="$PROFILE_ROOT/config.json"
+RIGFORGE="$PROFILE_ROOT/rigforge"
+HAMMER_PIDS=""
+refresh_profile_finish() { :; }
+thread_profile_restore() { return 1; }
+_restore_xmrig() { :; }
+_cleanup
+"""
+            result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists())
+            self.assertTrue(saved.exists())
+            self.assertEqual(config.read_bytes(), saved.read_bytes())
+
+    def test_snapshot_cleanup_failure_does_not_fail_restoration(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            original = b'{"cpu":{"rx":12}}\n'
+            (snapshot / "overrides.json").write_bytes(original)
+            overrides = root / "tune-overrides.json"
+            overrides.write_text('{"cpu":{"rx":1}}\n')
+            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_HELPER=str(ROOT / "tests/e2e-thread-profile.sh"))
+            command = """
+source "$PROFILE_HELPER"
+THREAD_PROFILE_SAVED="$PROFILE_ROOT/snapshot"
+THREAD_PROFILE_OVERRIDES="$PROFILE_ROOT/tune-overrides.json"
+THREAD_PROFILE_EXISTED=1
+rm() { return 1; }
+thread_profile_restore
+"""
+            result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(overrides.read_bytes(), original)
+            self.assertTrue(snapshot.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
