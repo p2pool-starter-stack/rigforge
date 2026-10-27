@@ -19,7 +19,7 @@
     "control_bind": "0.0.0.0",
     "control_upgrade": "disabled",
 
-    "DONATION": 1,
+    "DONATION": 0,
     "autotune": "disabled",
     "watchdog": "disabled",
     "watchdog_interval_min": 5,

@@ -142,7 +142,7 @@ EOF
 echo "[git] $*" >> "${CALL_LOG:-/dev/null}"
 case "$*" in
   *rev-parse*) echo "${STUB_GIT_HEAD:-${XMRIG_COMMIT:-}}" ;;
-  *clone*)     mkdir -p xmrig/src; printf 'static int DonateLevel = 1;\n' > xmrig/src/donate.h ;;
+  *clone*)     mkdir -p xmrig/src; printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' > xmrig/src/donate.h ;;
 esac
 exit 0
 EOF
@@ -752,6 +752,8 @@ ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
 )
 assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
 
+bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
+assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
     c="$(mkconf "don$d" "{ \"DONATION\": $d, $POOL }")"
@@ -761,7 +763,7 @@ done
 c="$(mkconf d0 "{ \"DONATION\": 0, $POOL }")"
 assert_eq "DONATION 0 parsed as 0" "$(parse_and_print "$c" "$ROOT" DONATION)" "0"
 c="$(mkconf dmiss "{ $POOL }")"
-assert_eq "DONATION defaults to 1 when absent" "$(parse_and_print "$c" "$ROOT" DONATION)" "1"
+assert_eq "DONATION defaults to 0 when absent" "$(parse_and_print "$c" "$ROOT" DONATION)" "0"
 for d in 101 -1 1.5 abc; do
     c="$(mkconf "donbad" "{ \"DONATION\": \"$d\", $POOL }")"
     parse_rc "$c" "$ROOT"
@@ -1766,6 +1768,7 @@ mkdir -p "$b/xmrig/build"
 : >"$b/xmrig/build/xmrig"
 chmod +x "$b/xmrig/build/xmrig"
 printf 'ABC\n' >"$b/xmrig/.rigforge-commit"
+printf '0\n' >"$b/xmrig/.rigforge-donate-min"
 (
     source "$SCRIPT"
     WORKER_ROOT="$b"
@@ -1782,8 +1785,6 @@ assert_rc "matching commit -> built" "$?" "0"
     xmrig_already_built
 )
 assert_rc "different commit -> rebuild" "$?" "1"
-# #141: the binary's build-time SHA-256 joins the check — mismatch self-heals via rebuild, a
-# missing record (older build) stays "built" so fleets aren't forced into a recompile.
 (
     source "$SCRIPT"
     WORKER_ROOT="$b"
@@ -1856,6 +1857,7 @@ mkdir -p "$U/home/worker/xmrig/build"
 : >"$U/home/worker/xmrig/build/xmrig"
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 printf 'ABC\n' >"$U/home/worker/xmrig/.rigforge-commit"
+printf '0\n' >"$U/home/worker/xmrig/.rigforge-donate-min"
 cat >"$U/config.json" <<EOF
 { "HOME_DIR": "$U/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
@@ -1869,6 +1871,7 @@ mk_upgrade_rig() { # <dir> <commit marker> — a rig at the pinned commit, with 
     : >"$d/home/worker/xmrig/build/xmrig"
     chmod +x "$d/home/worker/xmrig/build/xmrig"
     printf '%s\n' "$2" >"$d/home/worker/xmrig/.rigforge-commit"
+    printf '0\n' >"$d/home/worker/xmrig/.rigforge-donate-min"
     printf '{ "pools": [{ "url": "stale.invalid:1111" }] }\n' >"$d/home/worker/xmrig/build/config.json"
     cat >"$d/config.json" <<EOF
 { "HOME_DIR": "$d/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
@@ -1951,7 +1954,8 @@ UPG="$(mktemp -d "$SANDBOX/upg2.XXXXXX")"
 cp "$ROOT/VERSION" "$UPG/"
 cp -R "$ROOT/systemd" "$UPG/"
 mkdir -p "$UPG/home/worker/xmrig/build" "$UPG/logrotate" "$UPG/etc-systemd"
-printf 'OLDCOMMIT\n' >"$UPG/home/worker/xmrig/.rigforge-commit" # built at a different commit -> rebuild
+printf 'OLDCOMMIT\n' >"$UPG/home/worker/xmrig/.rigforge-commit"
+printf '0\n' >"$UPG/home/worker/xmrig/.rigforge-donate-min"
 printf '{ "randomx": { "scratchpad_prefetch_mode": 2 } }\n' >"$UPG/home/worker/tune-overrides.json"
 cat >"$UPG/config.json" <<EOF
 { "HOME_DIR": "$UPG/home", "DONATION": 1, "pools": [{"url": "h:3333"}] }
@@ -2289,7 +2293,8 @@ mkdir -p "$AST/home/worker/xmrig/build" "$AST/logrotate" "$AST/etc-systemd" "$AS
 : >"$AST/home/worker/xmrig/build/xmrig"
 chmod +x "$AST/home/worker/xmrig/build/xmrig"
 printf 'ABC\n' >"$AST/home/worker/xmrig/.rigforge-commit"
-: >"$AST/etc-systemd/xmrig.service" # the unit IS installed — the miner is simply stopped
+printf '0\n' >"$AST/home/worker/xmrig/.rigforge-donate-min"
+: >"$AST/etc-systemd/xmrig.service"
 cat >"$AST/config.json" <<EOF
 { "HOME_DIR": "$AST/home", "DONATION": 1, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
@@ -3192,6 +3197,7 @@ touch "$DR3/home/worker/tune-overrides.json"
 printf '#!/bin/sh\n' >"$DR3/home/worker/xmrig/build/xmrig"
 chmod +x "$DR3/home/worker/xmrig/build/xmrig"
 printf 'dr3commit000\n' >"$DR3/home/worker/xmrig/.rigforge-commit"
+printf '0\n' >"$DR3/home/worker/xmrig/.rigforge-donate-min"
 mkdir -p "$DR3/util"
 cp "$DR/util/proposed-grub.sh" "$DR3/util/proposed-grub.sh"
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash default_hugepagesz=2M hugepages=2514 msr.allow_writes=on"\n' >"$DR3/etc/grub"
@@ -4063,7 +4069,7 @@ assert_rc "first run exits 0" "$rc" "0"
 assert_contains "build: cloned xmrig" "$(cat "$W/calls.log")" "[git] clone"
 assert_contains "build: ran cmake" "$(cat "$W/calls.log")" "[cmake]"
 assert_contains "build: ran make" "$(cat "$W/calls.log")" "[make]"
-assert_contains "build: donate.h patched to 7" "$(cat "$W/home/worker/xmrig/src/donate.h")" "DonateLevel = 7;"
+assert_contains "build: donate.h patched to 7" "$(cat "$W/home/worker/xmrig/src/donate.h")" "kDefaultDonateLevel = 7;"
 assert_eq "build: output captured to logfile" "$([ -f "$W/home/worker/build.log" ] && echo yes || echo no)" "yes"
 assert_contains "build: verified pinned commit" "$E2E_OUT" "Verified XMRig"
 assert_eq "deploy: pool url from hostname" "$(J "$BUILD/config.json" '.pools[0].url')" "poolbox.lan:3333"
@@ -4615,6 +4621,10 @@ run_pool_doctor() { # <xmrig active y|n> <API_CMD> [extra eval, e.g. a _tcp_prob
         PATH="$STUBS:$PATH" doctor 2>&1
     )
 }
+printf '{"donate_level":5,"connection":{"pool":"poolbox.lan:3333","uptime":345,"accepted":7}}\n' >"$DOC/api_donation.json"
+out="$(run_pool_doctor y "cat \"$DOC/api_donation.json\"")"
+assert_contains "doctor: effective donation mismatch warns (#602)" "$out" "differs from DONATION"
+assert_contains "doctor: donation mismatch counts as an issue (#602)" "$out" "issue(s) found"
 out="$(run_pool_doctor y "cat \"$DOC/api_connected.json\"")"
 assert_contains "pool: connected miner -> ok line with pool + shares (#343)" "$out" "pool connection live: poolbox.lan:3333"
 assert_contains "pool: connected stays all-clear (#343)" "$out" "all critical checks passed"

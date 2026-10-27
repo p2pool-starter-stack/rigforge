@@ -411,8 +411,8 @@ sudo ./rigforge.sh apply
 ```
 
 `apply` re-reads `config.json`, regenerates the live XMRig config, and restarts the service, with no
-recompile. Use it for a pool change, a new rig label, TLS, or failover pools. Changing `DONATION` is
-the exception: it's compiled into the binary and needs a rebuild. See
+recompile. Use it for a pool change, a new rig label, TLS, failover pools, or `DONATION`. Existing
+builds need one upgrade to install the zero donation minimum; later reductions use `apply`. See
 [Configuration › Changing settings later](configuration.md#changing-settings-later).
 
 A full `setup` re-run also regenerates the config, but it's meant for re-provisioning, and so that it

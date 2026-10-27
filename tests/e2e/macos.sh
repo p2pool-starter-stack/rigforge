@@ -62,7 +62,7 @@ cat >"$STUBS/git" <<'X'
 #!/usr/bin/env bash
 case "$*" in
   *rev-parse*) echo "${XMRIG_COMMIT:-}" ;;
-  *clone*)     mkdir -p xmrig/src; printf 'constexpr const int kDefaultDonateLevel = 1;\nstatic int DonateLevel = 1;\n' > xmrig/src/donate.h ;;
+  *clone*)     mkdir -p xmrig/src; printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' > xmrig/src/donate.h ;;
 esac
 exit 0
 X
@@ -83,7 +83,7 @@ out="$(./rigforge.sh setup </dev/null 2>&1)"
 rc=$?
 assert_rc "setup exits 0" "$rc" "0"
 [ "$rc" = 0 ] || printf '%s\n' "$out" | tail -25
-assert_contains "donate.h patched by real BSD sed" "$(cat "$WORK/data-home/worker/xmrig/src/donate.h" 2>/dev/null)" "DonateLevel = 7;"
+assert_contains "donate.h patched by real BSD sed" "$(cat "$WORK/data-home/worker/xmrig/src/donate.h" 2>/dev/null)" "kDefaultDonateLevel = 7;"
 assert_eq "config.json generated + valid JSON" "$(jq -e . "$BUILD/config.json" >/dev/null 2>&1 && echo y || echo n)" "y"
 assert_eq "macOS profile: API host = :: (all interfaces)" "$(jq -r '.http.host' "$BUILD/config.json" 2>/dev/null)" "::"
 assert_eq "macOS profile: donate-level = 7" "$(jq -r '.["donate-level"]' "$BUILD/config.json" 2>/dev/null)" "7"

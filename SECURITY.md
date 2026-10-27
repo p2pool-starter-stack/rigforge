@@ -13,10 +13,10 @@ API, but only when you run it — nothing is scheduled and nothing else calls it
 The only outbound connections it makes are to
 *your* pool, to the pinned XMRig source on GitHub (a shallow clone whose commit is
 verified against a hardcoded hash before it's built), and to your distro's package
-mirrors. The XMRig developer donation defaults to 1%, XMRig's own upstream
-default rather than a RigForge markup. It goes to the XMRig project's address (RigForge
-substitutes no wallet of its own into the mining path), and is set to 0 with
-`"DONATION": 0` in `config.json`.
+mirrors. The XMRig developer donation defaults to 0% and is opt-in through `DONATION`
+in `config.json`. Donations go to the XMRig project's address; RigForge substitutes no
+wallet of its own into the mining path. Existing builds rebuild once on upgrade to
+install a zero minimum; later donation reductions take effect with `apply` without rebuilding.
 
 The worker stats API (`:8080`). Each worker runs XMRig's HTTP API so a
 [Pithead](https://github.com/p2pool-starter-stack/pithead) dashboard can read

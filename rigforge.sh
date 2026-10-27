@@ -183,15 +183,10 @@ _sha256() { # <file>
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
 }
 
-# True if a finished XMRig build for the pinned commit already exists, so we can skip the recompile.
-# Requires BOTH the built binary and a commit marker that matches XMRIG_COMMIT (a marker without a
-# binary means an incomplete build → rebuild).
 xmrig_already_built() {
     local marker="$WORKER_ROOT/xmrig/.rigforge-commit" sums="$WORKER_ROOT/xmrig/.rigforge-sha256"
     [ -x "$WORKER_ROOT/xmrig/build/xmrig" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$XMRIG_COMMIT" ] || return 1
-    # Tamper evidence (#141): a binary that no longer matches its build-time SHA-256 is NOT "already
-    # built" — the next setup/upgrade rebuilds it (self-healing). A missing record is a build from an
-    # older RigForge: still built (don't force a 10-minute recompile fleet-wide on first upgrade).
+    [ "$(cat "$WORKER_ROOT/xmrig/.rigforge-donate-min" 2>/dev/null)" = 0 ] || return 1
     [ ! -f "$sums" ] || [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$WORKER_ROOT/xmrig/build/xmrig")" ]
 }
 
@@ -424,9 +419,7 @@ parse_config() {
     if ! WORKER_ROOT=$(_worker_root_for_home "$RAW_HOME"); then
         error "HOME_DIR must be \"DYNAMIC_HOME\" or an absolute path (letters, digits, . _ - /); got: '$RAW_HOME'."
     fi
-    DONATION=$(jq -r '.DONATION // 1' "$CONFIG_JSON")
-    # donate-level is a percentage; the compile step also seds this into donate.h, so a malformed
-    # value would corrupt both the XMRig config and the source patch. Require an integer 0-100.
+    DONATION=$(jq -r '.DONATION // 0' "$CONFIG_JSON")
     if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
@@ -952,23 +945,13 @@ install_dependencies() {
 compile_xmrig() {
     if [ "$XMRIG_REBUILD" != true ]; then
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
-        # Enter the build dir the rebuild path also ends in, so generate_xmrig_config (which writes a
-        # relative config.json) emits it where the service actually reads it: --config=$BUILD_DIR/config.json
-        # with BUILD_DIR=$WORKER_ROOT/xmrig/build. Without this, a no-rebuild setup re-run would drop the
-        # regenerated config.json in $WORKER_ROOT and the miner would keep loading the stale build/config.json
-        # — config edits would silently never take effect. The dir is guaranteed to exist here (a no-rebuild
-        # decision requires the built binary under it). `apply` and the rebuild path already cd here.
         cd "$WORKER_ROOT/xmrig/build"
         return 0
     fi
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
-    # Remove any partial/stale clone an interrupted or commit-mismatched prior run left behind — otherwise
-    # `git clone` aborts with "destination path 'xmrig' already exists and is not empty".
     rm -rf xmrig
     git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git
 
-    # Verify we built the exact commit we pinned (supply-chain hardening). On a mismatch, drop the clone so
-    # the next run starts clean rather than tripping the not-empty error above.
     local actual
     actual="$(git -C xmrig rev-parse HEAD)"
     [ "$actual" = "$XMRIG_COMMIT" ] || {
@@ -977,22 +960,21 @@ compile_xmrig() {
     }
     log "Verified XMRig $XMRIG_VERSION at commit $XMRIG_COMMIT"
 
-    # Build output goes to a logfile (not /dev/null) so a failed compile is diagnosable; the ERR trap
-    # points the user at it. BUILD_LOG is global so on_err can find it.
     BUILD_LOG="$WORKER_ROOT/build.log"
     : >"$BUILD_LOG" 2>/dev/null || true
 
+    sed "s/kDefaultDonateLevel = 1;/kDefaultDonateLevel = $DONATION;/; s/kMinimumDonateLevel = 1;/kMinimumDonateLevel = 0;/" xmrig/src/donate.h >xmrig/src/donate.h.new
+    mv xmrig/src/donate.h.new xmrig/src/donate.h
+    grep -Fxq "constexpr const int kDefaultDonateLevel = $DONATION;" xmrig/src/donate.h &&
+        grep -Fxq 'constexpr const int kMinimumDonateLevel = 0;' xmrig/src/donate.h || error "XMRig donation patch verification failed; refusing to build."
     local cores jobs
     if [ "$OS_TYPE" == "Darwin" ]; then
-        sed -i '' "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
         cores=$(sysctl -n hw.ncpu)
         jobs=$(compute_build_jobs "$cores")
         log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
         mkdir -p xmrig/build && cd xmrig/build
-        # macOS often needs explicit OpenSSL root for cmake if installed via brew
         cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" >>"$BUILD_LOG" 2>&1
     else
-        sed -i "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
         cores=$(nproc)
         jobs=$(compute_build_jobs "$cores")
         log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
@@ -1002,12 +984,8 @@ compile_xmrig() {
 
     make -j"$jobs" >>"$BUILD_LOG" 2>&1
 
-    # Record the built commit so a later run can detect "already built" and skip the recompile (#4).
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig/.rigforge-commit"
-    # And the binary's SHA-256 (#141): tamper EVIDENCE, not proofing — root can rewrite this too,
-    # but it reliably catches the accidental and unsophisticated cases, same honest posture as
-    # `restricted:true`. Guarded if: the stubbed-make tests produce no binary, and a trailing
-    # false `&&` would abort the function under set -e.
+    printf '0\n' >"$WORKER_ROOT/xmrig/.rigforge-donate-min"
     if [ -f "$WORKER_ROOT/xmrig/build/xmrig" ]; then
         _sha256 "$WORKER_ROOT/xmrig/build/xmrig" >"$WORKER_ROOT/xmrig/.rigforge-sha256"
     fi
@@ -5269,7 +5247,7 @@ _writable_config_canonical() {
     local pools
     pools=$(jq -c '.pools // []' "$CONFIG_JSON" 2>/dev/null || echo '[]')
     [ -n "$pools" ] || pools='[]'
-    jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-1}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
+    jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
 }
 
 # #254: a short content hash of the canonical writable config — the load-bearing "did it change"
@@ -5424,6 +5402,21 @@ _tcp_probe() { # <host> <port>
     fi
 }
 
+_check_donation() {
+    local want got
+    want=$(jq -r '.DONATION // 0' "$CONFIG_JSON" 2>/dev/null) || return 0
+    _uint_in_range "$want" 0 100 || return 0
+    got=$(_read_api_summary | jq -er '.donate_level | select(type == "number" and . >= 0 and . <= 100 and floor == .)' 2>/dev/null) || got=""
+    if [ -z "$got" ]; then
+        _ck_info "XMRig donation level unavailable — cannot verify DONATION"
+    elif [ "$got" != "$want" ]; then
+        _ck_warn "XMRig donate_level $got differs from DONATION $want — upgrade an older build, then apply and restart"
+        return 1
+    else
+        _ck_ok "XMRig donate_level matches DONATION ($want%)"
+    fi
+}
+
 doctor() {
     cmd_version
     if [ "$OS_TYPE" != "Linux" ]; then
@@ -5468,9 +5461,11 @@ doctor() {
             ph=${ph#\[}
             ph=${ph%\]}
             _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed"
-            # Reject control characters before line framing can split one invalid value into valid ones.
         done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
+            if ! ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _check_donation; then
+                issues=$((issues + 1))
+            fi
             IFS="$(printf '\t')" read -r pc_st pc_pool pc_n1 pc_n2 <<EOF
 $(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _pool_conn_status)
 EOF
