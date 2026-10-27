@@ -40,6 +40,8 @@ trap 'rc=$?
     fi
     exit "$rc"' EXIT
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock"
+python3 "$ROOT/tests/test-thread-profile.py"
+assert_rc "XMRig thread profile regression (#588)" "$?" 0
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).
