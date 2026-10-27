@@ -97,6 +97,9 @@ RigForge is built to be reproducible and tamper-evident:
   build-verified PR (never fetched-and-run; a human merges, the normal gates apply).
 - Secret scanning. [gitleaks](https://github.com/gitleaks/gitleaks) scans the full git history on
   every push and PR, and runs as a pre-commit hook, so credentials can't slip into the repo.
+  Historical fixture false positives use exact commit/file/rule/line fingerprints in `.gitleaksignore`;
+  the donation fixture's empty `ACCESS_TOKEN` followed by `RIGFORGE_APPLIANCE` is one such match.
+  These entries do not exclude future findings in the same file.
 - Workflow auditing. [zizmor](https://github.com/zizmorcore/zizmor) static-audits the CI workflows
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
