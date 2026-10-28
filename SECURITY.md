@@ -13,10 +13,10 @@ API, but only when you run it — nothing is scheduled and nothing else calls it
 The only outbound connections it makes are to
 *your* pool, to the pinned XMRig source on GitHub (a shallow clone whose commit is
 verified against a hardcoded hash before it's built), and to your distro's package
-mirrors. The XMRig developer donation defaults to 1%, XMRig's own upstream
-default rather than a RigForge markup. It goes to the XMRig project's address (RigForge
-substitutes no wallet of its own into the mining path), and is set to 0 with
-`"DONATION": 0` in `config.json`.
+mirrors. The XMRig developer donation defaults to 0% and is opt-in through `DONATION`
+in `config.json`. Donations go to the XMRig project's address; RigForge substitutes no
+wallet of its own into the mining path. Existing builds rebuild once on upgrade to
+install a zero minimum; later donation reductions take effect with `apply` without rebuilding.
 
 The worker stats API (`:8080`). Each worker runs XMRig's HTTP API so a
 [Pithead](https://github.com/p2pool-starter-stack/pithead) dashboard can read
@@ -97,6 +97,9 @@ RigForge is built to be reproducible and tamper-evident:
   build-verified PR (never fetched-and-run; a human merges, the normal gates apply).
 - Secret scanning. [gitleaks](https://github.com/gitleaks/gitleaks) scans the full git history on
   every push and PR, and runs as a pre-commit hook, so credentials can't slip into the repo.
+  Historical fixture false positives use exact commit/file/rule/line fingerprints in `.gitleaksignore`;
+  the donation fixture's empty `ACCESS_TOKEN` followed by `RIGFORGE_APPLIANCE` is one such match.
+  These entries do not exclude future findings in the same file.
 - Workflow auditing. [zizmor](https://github.com/zizmorcore/zizmor) static-audits the CI workflows
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.

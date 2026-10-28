@@ -17,7 +17,8 @@ already done.
 2. Config: create a minimal `config.json` interactively if none exists, then parse and validate
    it (see [Configuration](configuration.md)).
 3. Rebuild decision: decide whether XMRig needs (re)building, based on the pinned
-   version/commit vs. what's already compiled.
+   version/commit vs. what's already compiled, a zero compiled-minimum marker, and a valid binary
+   checksum.
 4. Workspace: prepare the worker root. Any prior install is archived rather than clobbered, and
    old archives are pruned so re-runs don't leak disk.
 5. Dependencies: install the build toolchain and runtime libraries for the OS (`cmake`, `libuv`,
@@ -41,15 +42,15 @@ RigForge builds XMRig from source rather than shipping a binary:
 - Pinned to a known `XMRIG_VERSION` / `XMRIG_COMMIT`. The checkout is verified against the pinned
   commit (`git rev-parse HEAD` must match `XMRIG_COMMIT`, or the build aborts), so every worker runs the
   same audited source and supply-chain risk is bounded.
-- Donate level patched at build time. The configured `DONATION` is `sed`'d into `donate.h` so the
-  compiled binary honors it (XMRig's floor is otherwise 1%). It's also written into the runtime config.
-  Because this patch happens during the compile, changing `DONATION` after XMRig is already built only
-  updates the runtime config; re-patching the binary requires a rebuild (see
-  [Configuration](configuration.md#changing-settings-later)).
+- The compiled donation minimum is always zero; the compiled default follows `DONATION` (zero when
+  omitted). The runtime config controls the effective donation after a miner restart. Existing builds
+  rebuild once on upgrade, recorded by the compiled-minimum marker; subsequent changes use `apply`
+  without recompiling (see [Configuration](configuration.md#changing-settings-later)).
 - Memory-guarded parallelism. `make -j` is capped based on available RAM, so the build doesn't OOM
   on small machines.
 - Idempotent. If the pinned build already exists, setup skips the recompile. The
-  [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy) command rebuilds only when the pin changes.
+  [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy) command rebuilds when the pin changes, the compiled-minimum marker is missing or nonzero, or the
+  binary checksum no longer matches.
 
 ---
 

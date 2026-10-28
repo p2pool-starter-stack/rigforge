@@ -28,7 +28,7 @@ phase_control() {
     phase "control — writable control path DONATION apply round trip (#344/#509)"
     local tok cur new port api_port resp code cid st waited=0 body max_temp target_temp
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
-    cur=$(jq -r '.DONATION // 1' "$CFG")
+    cur=$(jq -r '.DONATION // 0' "$CFG")
     new=$(((cur + 1) % 101))
     max_temp=$(jq -r 'if .max_temp_c == null or .max_temp_c == "" then 100 else .max_temp_c end' "$CFG")
     [ "$max_temp" -le 100 ] || max_temp=100

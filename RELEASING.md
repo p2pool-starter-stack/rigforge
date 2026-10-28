@@ -12,6 +12,14 @@ tracked in [`VERSION`](./VERSION) and the history in [`CHANGELOG.md`](./CHANGELO
 From `1.0.0` on, the `config.json` and CLI surface is stable, so a breaking change bumps MAJOR. (Pre-1.0
 `0.x` releases could break the interface between minor versions while it settled.)
 
+## Donation migration wording for v1.18.1
+
+Include this wording in the release changelog and published release notes:
+
+> Omitted `DONATION` now defaults to zero; explicit values in `config.json` are preserved.
+> Existing XMRig builds rebuild once on upgrade to install a compiled donation minimum of zero.
+> Subsequent donation reductions take effect on `apply`, which restarts XMRig, without rebuilding.
+
 ## Cutting a release
 
 Work lands on `develop` (the integration branch); a release is the point where `develop` is

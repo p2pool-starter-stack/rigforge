@@ -5,3 +5,4 @@ da898f48b632c133f9dc4b5cb3a35fd20432d1de:tests/run.sh:curl-auth-header:7436
 ed3a94a2efe0374de76f79fcbe4995019a492967:tests/run.sh:generic-api-key:3193
 # Synthetic 32-byte migration-fixture token, replaced with a low-entropy test label next commit.
 5768178d9188c1c617e31ff898e2c03f9b171885:tests/run.sh:generic-api-key:6703
+f4324823640e70ff9a9fc0506ebcb83a4b47b960:tests/test-donation.sh:generic-api-key:38
