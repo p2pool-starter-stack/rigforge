@@ -54,8 +54,12 @@ phase_control() {
         bad "POST /apply returned HTTP '$code' (expected 202)"
     fi
     while [ "$waited" -lt 300 ]; do
-        body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
-        st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
+        if body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null); then
+            st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
+        else
+            body='' st=''
+            printf 'pithead-read: status transport failed\n' >&2
+        fi
         case "$st" in applied | rejected | rolled_back | failed) break ;; esac
         sleep 5
         waited=$((waited + 5))
@@ -80,11 +84,19 @@ phase_control() {
     started=$SECONDS
     while [ "$((SECONDS - started))" -lt 300 ]; do
         refresh_profile_state || bad "miner or refresh-state observation failed"
-        body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null || true)
-        st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
-        body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null || true)
-        feed_temp=$(printf '%s' "$body" | jq -r '.rigforge.watchdog.max_temp_c // empty' 2>/dev/null || true)
-        feed_stamp=$(printf '%s' "$body" | jq -r '.generated_at // empty' 2>/dev/null || true)
+        if body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null); then
+            st=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)
+        else
+            body='' st=''
+            printf 'pithead-read: status transport failed\n' >&2
+        fi
+        if body=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$api_port/1/summary" 2>/dev/null); then
+            feed_temp=$(printf '%s' "$body" | jq -r '.rigforge.watchdog.max_temp_c // empty' 2>/dev/null || true)
+            feed_stamp=$(printf '%s' "$body" | jq -r '.generated_at // empty' 2>/dev/null || true)
+        else
+            body='' feed_temp='' feed_stamp=''
+            printf 'pithead-read: summary transport failed\n' >&2
+        fi
         printf 'refresh-window: elapsed_s=%s status=%s max_temp_c=%s generated_at=%s\n' "$((SECONDS - started))" "${st:-unknown}" "${feed_temp:-missing}" "${feed_stamp:-missing}"
         if [ "$((SECONDS - started))" -lt 90 ] && [ "$st" = applied ] && [ "$feed_temp" = "$target_temp" ] && [[ "$feed_stamp" > "$before" ]] && [ "$observed" = 0 ]; then
             observed=$((SECONDS - started + 1))
