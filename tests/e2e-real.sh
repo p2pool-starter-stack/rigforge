@@ -1248,20 +1248,7 @@ summary() {
     fi
 }
 
-# Standardized performance gate (#114 follow-through): the same offline 1M bench as verify, judged
-# against a COMMITTED per-host baseline (tests/perf-baselines/<hostname>.json) so a release can't
-# silently regress hashrate. No baseline yet -> reports the measurement and how to record one.
-# Knobs: E2E_PERF_RECORD=1 writes/updates the baseline (commit the file); E2E_PERF_TAG=vX.Y.Z tags
-# the history entry with the release being cut; E2E_PERF_TOLERANCE_PCT (default 5) is the allowed
-# drop — real rigs vary run-to-run with thermals, so keep it honest but not twitchy. The relative
-# live-hashrate guard (API load must not shave H/s) lives in tests/e2e-pithead.sh's api-impact
-# phase; this one owns the absolute number.
-#
-# History + anti-ratchet: every E2E_PERF_RECORD appends {tag, recorded, bench_1m_hs} to
-# tests/perf-baselines/<hostname>.history.jsonl (commit it with the baseline) so per-release
-# benchmarks are never lost to an overwrite. The gate then checks the measurement against BOTH the
-# current baseline AND the best history entry — refreshing the baseline every release can never
-# ratchet hashrate downward tolerance-by-tolerance without a visible failure.
+# Release measurements are checked against both the baseline and best history.
 # Judge a measurement against the committed baseline AND the best-ever history entry (#186).
 # Prints the ok/bad verdict lines and returns 1 on any regression — shared by judge mode and
 # record mode (#214), so the two can never disagree about what "regressed" means.
@@ -1293,12 +1280,13 @@ _perf_judge() { # <hr> <baseline.json> <history.jsonl> <tolerance_pct>
 }
 
 perf() {
-    phase "perf — offline bench vs the committed $(hostname) baseline"
-    local bl hist out hr base best tol="${E2E_PERF_TOLERANCE_PCT:-5}"
+    phase "perf — verified bench vs the committed $(hostname) baseline"
+    local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}"
+    [ "${E2E_PERF_SUBMIT:-0}" != 1 ] || submit=--submit
     bl="$HERE/tests/perf-baselines/$(hostname).json"
     hist="$HERE/tests/perf-baselines/$(hostname).history.jsonl"
     "$RIGFORGE" stop >/dev/null 2>&1 || true # take the whole machine for a clean reading
-    if ! out="$(BENCH=1M "$RIGFORGE" bench 2>&1)"; then
+    if ! out="$(BENCH=1M "$RIGFORGE" bench ${submit:+"$submit"} 2>&1)"; then
         bad "perf: bench failed"
         printf '%s\n' "$out" | tail -3 >&2
         "$RIGFORGE" start >/dev/null 2>&1 || true
@@ -1311,6 +1299,14 @@ perf() {
         bad "perf: no hashrate parsed from bench output"
         summary "perf"
         return
+    fi
+    if [ -n "$submit" ]; then
+        id=$(printf '%s\n' "$out" | sed -nE 's/.*Benchmark submission ID: ([A-Za-z0-9]{1,128})$/\1/p' | tail -1)
+        if [ -z "$id" ]; then
+            bad "perf: missing verified submission ID"
+            summary "perf"
+            return
+        fi
     fi
     if [ -n "${E2E_PERF_RECORD:-}" ]; then
         # #214: judge BEFORE writing — recording is the only perf run most rigs ever get, and a
@@ -1325,8 +1321,8 @@ perf() {
             printf '  \033[1;33m∙\033[0m E2E_PERF_FORCE=1 — recording a REGRESSED measurement as the new baseline\n'
         fi
         mkdir -p "$(dirname "$bl")"
-        jq -n --arg hs "$hr" --arg cpu "$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1)" --arg when "$(date '+%Y-%m-%d')" '{bench_1m_hs: ($hs | tonumber), cpu: $cpu, recorded: $when}' >"$bl"
-        jq -cn --arg hs "$hr" --arg tag "${E2E_PERF_TAG:-}" --arg when "$(date '+%Y-%m-%d')" '{tag: $tag, recorded: $when, bench_1m_hs: ($hs | tonumber)}' >>"$hist"
+        jq -n --arg hs "$hr" --arg id "$id" --arg cpu "$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1)" --arg when "$(date '+%Y-%m-%d')" '{bench_1m_hs: ($hs | tonumber), cpu: $cpu, recorded: $when} + (if $id == "" then {} else {benchmark_id:$id} end)' >"$bl"
+        jq -cn --arg hs "$hr" --arg id "$id" --arg tag "${E2E_PERF_TAG:-}" --arg when "$(date '+%Y-%m-%d')" '{tag: $tag, recorded: $when, bench_1m_hs: ($hs | tonumber)} + (if $id == "" then {} else {benchmark_id:$id} end)' >>"$hist"
         ok "perf: baseline recorded — $hr H/s -> $bl + history (commit both files)"
         # #206: the recording dirties this checkout, and a later `git checkout <tag>` ABORTS on
         # dirty tracked files — say so now, not at the next deploy.
