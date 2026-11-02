@@ -72,6 +72,38 @@ if [ "${2:-all}" = all ]; then
     API_MODE=disabled
     install_api
 fi
+for _fn in check_prerequisites ensure_config_exists parse_config decide_rebuild prepare_workspace install_dependencies compile_xmrig \
+    generate_xmrig_config tune_kernel configure_limits install_service install_autotune install_watchdog link_cli finish_deployment \
+    _persist_appliance_mode _upgrade_restart _post_upgrade_retune; do
+    eval "$_fn() { :; }"
+done
+API_MODE=enabled
+_reown_worker() { printf reown >"$TEST_DIR/reown"; }
+install_control() { printf control >"$TEST_DIR/control"; }
+install_api_firewall() { printf firewall >"$TEST_DIR/firewall"; }
+systemctl() {
+    case "$*" in
+    'is-active --quiet'*) return 1 ;;
+    esac
+    [ "$*" != 'enable rigforge-api.service' ]
+}
+for _verb in main "upgrade" "upgrade rebuild"; do
+    rm -f "$TEST_DIR/firewall" "$TEST_DIR/control" "$TEST_DIR/reown"
+    XMRIG_REBUILD=false
+    [ "$_verb" = "upgrade rebuild" ] && XMRIG_REBUILD=true
+    if ${_verb%% *} >"$TEST_DIR/result" 2>&1; then
+        echo "$_verb returned success despite a failed sister API" >&2
+        exit 1
+    fi
+    [ -f "$TEST_DIR/firewall" ] && [ -f "$TEST_DIR/control" ] && [ -f "$TEST_DIR/reown" ]
+    grep -q 'sister API could NOT be started' "$TEST_DIR/result"
+done
+rm -f "$TEST_DIR/firewall"
+systemctl() { :; }
+HTTP_CODE=401
+main >/dev/null 2>&1
+upgrade >/dev/null 2>&1
+[ -f "$TEST_DIR/firewall" ]
 parse_config() { :; }
 _apply_runtime() { :; }
 install_autotune() { :; }
