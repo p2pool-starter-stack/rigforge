@@ -792,22 +792,19 @@ prepare_workspace() {
     fi
 
     cd "$WORKER_ROOT"
+}
 
-    GIT_DIR="xmrig"
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-    # Archive the existing installation only when we're about to rebuild (a no-op re-run keeps it).
-    if [ "$XMRIG_REBUILD" = true ] && [ -d "$GIT_DIR" ]; then
+_activate_xmrig_build() {
+    cd "$WORKER_ROOT"
+    if [ -d xmrig ]; then
         log "Archiving existing worker installation..."
-        mv "$GIT_DIR" "${GIT_DIR}-${TIMESTAMP}"
+        mv xmrig "xmrig-$(date +%Y%m%d_%H%M%S)"
     fi
+    mv xmrig.new xmrig
 
-    # Prune old build archives so re-runs don't grow the disk without bound (keep the most recent
-    # few). Override the retention count with KEEP_ARCHIVES. The `|| true` keeps an empty glob (no
-    # archives yet) from tripping `set -e`/`pipefail`.
     local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
-    archives="$(ls -dt "${GIT_DIR}-"* 2>/dev/null || true)"
+    archives="$(ls -dt xmrig-* 2>/dev/null || true)"
     if [ -n "$archives" ]; then
         printf '%s\n' "$archives" | tail -n +"$((keep + 1))" | while IFS= read -r old; do
             [ -n "$old" ] || continue
@@ -815,6 +812,7 @@ prepare_workspace() {
             rm -rf "$old" 2>/dev/null || sudo rm -rf "$old"
         done
     fi
+    cd "$WORKER_ROOT/xmrig/build"
 }
 
 # Package-manager detection (read-only) — sets DEP_LIST / DEP_CHECK / DEP_INSTALL, rc 1 when no
@@ -949,13 +947,14 @@ compile_xmrig() {
         return 0
     fi
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
-    rm -rf xmrig
-    git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git
+    cd "$WORKER_ROOT"
+    rm -rf xmrig.new
+    git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git xmrig.new
 
     local actual
-    actual="$(git -C xmrig rev-parse HEAD)"
+    actual="$(git -C xmrig.new rev-parse HEAD)"
     [ "$actual" = "$XMRIG_COMMIT" ] || {
-        rm -rf xmrig
+        rm -rf xmrig.new
         error "XMRig commit mismatch: expected $XMRIG_COMMIT, got $actual"
     }
     log "Verified XMRig $XMRIG_VERSION at commit $XMRIG_COMMIT"
@@ -963,32 +962,33 @@ compile_xmrig() {
     BUILD_LOG="$WORKER_ROOT/build.log"
     : >"$BUILD_LOG" 2>/dev/null || true
 
-    sed "s/kDefaultDonateLevel = 1;/kDefaultDonateLevel = $DONATION;/; s/kMinimumDonateLevel = 1;/kMinimumDonateLevel = 0;/" xmrig/src/donate.h >xmrig/src/donate.h.new
-    mv xmrig/src/donate.h.new xmrig/src/donate.h
-    grep -Fxq "constexpr const int kDefaultDonateLevel = $DONATION;" xmrig/src/donate.h &&
-        grep -Fxq 'constexpr const int kMinimumDonateLevel = 0;' xmrig/src/donate.h || error "XMRig donation patch verification failed; refusing to build."
+    sed "s/kDefaultDonateLevel = 1;/kDefaultDonateLevel = $DONATION;/; s/kMinimumDonateLevel = 1;/kMinimumDonateLevel = 0;/" xmrig.new/src/donate.h >xmrig.new/src/donate.h.new
+    mv xmrig.new/src/donate.h.new xmrig.new/src/donate.h
+    grep -Fxq "constexpr const int kDefaultDonateLevel = $DONATION;" xmrig.new/src/donate.h &&
+        grep -Fxq 'constexpr const int kMinimumDonateLevel = 0;' xmrig.new/src/donate.h || error "XMRig donation patch verification failed; refusing to build."
     local cores jobs
     if [ "$OS_TYPE" == "Darwin" ]; then
         cores=$(sysctl -n hw.ncpu)
         jobs=$(compute_build_jobs "$cores")
         log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
-        mkdir -p xmrig/build && cd xmrig/build
+        mkdir -p xmrig.new/build && cd xmrig.new/build
         cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" >>"$BUILD_LOG" 2>&1
     else
         cores=$(nproc)
         jobs=$(compute_build_jobs "$cores")
         log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
-        mkdir -p xmrig/build && cd xmrig/build
+        mkdir -p xmrig.new/build && cd xmrig.new/build
         cmake .. -DWITH_HWLOC=ON >>"$BUILD_LOG" 2>&1
     fi
 
     make -j"$jobs" >>"$BUILD_LOG" 2>&1
 
-    echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig/.rigforge-commit"
-    printf '0\n' >"$WORKER_ROOT/xmrig/.rigforge-donate-min"
-    if [ -f "$WORKER_ROOT/xmrig/build/xmrig" ]; then
-        _sha256 "$WORKER_ROOT/xmrig/build/xmrig" >"$WORKER_ROOT/xmrig/.rigforge-sha256"
+    echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig.new/.rigforge-commit"
+    printf '0\n' >"$WORKER_ROOT/xmrig.new/.rigforge-donate-min"
+    if [ -f "$WORKER_ROOT/xmrig.new/build/xmrig" ]; then
+        _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
     fi
+    _activate_xmrig_build
 }
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---

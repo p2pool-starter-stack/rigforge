@@ -19,8 +19,10 @@ already done.
 3. Rebuild decision: decide whether XMRig needs (re)building, based on the pinned
    version/commit vs. what's already compiled, a zero compiled-minimum marker, and a valid binary
    checksum.
-4. Workspace: prepare the worker root. Any prior install is archived rather than clobbered, and
-   old archives are pruned so re-runs don't leak disk.
+4. Workspace: prepare the worker root. A rebuild is cloned and built in `xmrig.new` beside the live
+   tree; only after it builds is the prior install archived and the new one swapped in, so a failed
+   fetch or build leaves the running miner's binary and config untouched. Old archives are pruned
+   after the swap so re-runs don't leak disk and failed attempts never evict the last good archive.
 5. Dependencies: install the build toolchain and runtime libraries for the OS (`cmake`, `libuv`,
    `hwloc`, OpenSSL, …).
 6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it. Output is
@@ -245,7 +247,7 @@ RigForge is built to be re-run:
 
 - Idempotent edits. System-file changes (`fstab`, `limits.conf`, `/etc/modules`) are append-only
   and deduplicated, so running setup twice never doubles a line.
-- Non-destructive workspace. A prior install is archived, not overwritten.
+- Non-destructive workspace. A prior install is archived, not overwritten, and only once its replacement has built.
 - Fail-fast with context. An `ERR` trap names the step that failed; config input is validated
   before the build starts.
 - Tested. A dependency-free suite fakes all hardware and privileged commands so every supported
