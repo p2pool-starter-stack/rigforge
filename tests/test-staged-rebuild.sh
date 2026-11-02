@@ -34,11 +34,23 @@ for stage in git make; do
         )
         rc=$?
         set -e
-        [ "$rc" != 0 ] || { echo "FAIL: $stage failure attempt $attempt exited 0"; fail=1; }
+        [ "$rc" != 0 ] || {
+            echo "FAIL: $stage failure attempt $attempt exited 0"
+            fail=1
+        }
     done
-    [ "$(cat "$W/xmrig/build/xmrig")" = good ] || { echo "FAIL: $stage failures lost the live binary"; fail=1; }
-    [ "$(cat "$W/xmrig/build/config.json")" = '{}' ] || { echo "FAIL: $stage failures lost the live config"; fail=1; }
-    [ -z "$(find "$W" -maxdepth 1 -name 'xmrig-*')" ] || { echo "FAIL: $stage failures archived the live tree"; fail=1; }
+    [ "$(cat "$W/xmrig/build/xmrig")" = good ] || {
+        echo "FAIL: $stage failures lost the live binary"
+        fail=1
+    }
+    [ "$(cat "$W/xmrig/build/config.json")" = '{}' ] || {
+        echo "FAIL: $stage failures lost the live config"
+        fail=1
+    }
+    [ -z "$(find "$W" -maxdepth 1 -name 'xmrig-*')" ] || {
+        echo "FAIL: $stage failures archived the live tree"
+        fail=1
+    }
 done
 
 W="$D/ok"
@@ -53,9 +65,21 @@ printf 'good\n' >"$W/xmrig/build/xmrig"
     XMRIG_REBUILD=true
     export XMRIG_COMMIT=ABC
     PATH="$STUBS:$PATH" compile_xmrig >/dev/null 2>&1
-) || { echo "FAIL: successful rebuild exited non-zero"; fail=1; }
-[ "$(cat "$W/xmrig/.rigforge-donate-min")" = 0 ] || { echo "FAIL: successful rebuild wrote no donation marker"; fail=1; }
-[ -n "$(find "$W" -maxdepth 1 -name 'xmrig-*')" ] || { echo "FAIL: successful rebuild did not archive the old tree"; fail=1; }
-[ ! -e "$W/xmrig.new" ] || { echo "FAIL: staging dir left behind"; fail=1; }
+) || {
+    echo "FAIL: successful rebuild exited non-zero"
+    fail=1
+}
+[ "$(cat "$W/xmrig/.rigforge-donate-min")" = 0 ] || {
+    echo "FAIL: successful rebuild wrote no donation marker"
+    fail=1
+}
+[ -n "$(find "$W" -maxdepth 1 -name 'xmrig-*')" ] || {
+    echo "FAIL: successful rebuild did not archive the old tree"
+    fail=1
+}
+[ ! -e "$W/xmrig.new" ] || {
+    echo "FAIL: staging dir left behind"
+    fail=1
+}
 [ "$fail" = 0 ] || exit 1
 echo "failed rebuilds keep the live miner; a good rebuild swaps in: PASS"
