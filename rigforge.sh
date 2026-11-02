@@ -1441,6 +1441,7 @@ install_api() {
     sudo systemctl start rigforge-api-refresh.service || return 1
     _wait_sister_api
 }
+_sister_api_failed() { ! warn "The configured sister API could NOT be started; check journalctl -u rigforge-api.service, then re-run 'sudo $0 $1'."; }
 install_control() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
@@ -1971,7 +1972,7 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg
+    local _arg _api_rc=0
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
@@ -2009,7 +2010,7 @@ main() {
     CURRENT_STEP="configuring the watchdog"
     install_watchdog
     CURRENT_STEP="configuring the sister API"
-    install_api
+    install_api || _api_rc=1
     CURRENT_STEP="configuring the control path"
     install_control
     CURRENT_STEP="configuring the API firewall"
@@ -2020,6 +2021,7 @@ main() {
     _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
     CURRENT_STEP="finishing up"
     finish_deployment
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed setup
 }
 
 # --- Lifecycle: upgrade & uninstall ---
@@ -2128,7 +2130,7 @@ _upgrade_check() {
 # what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
 # (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
-    local arg
+    local arg _api_rc=0
     for arg in "$@"; do
         case "$arg" in
         --check)
@@ -2154,7 +2156,7 @@ upgrade() {
     install_service
     install_autotune
     install_watchdog
-    install_api
+    install_api || _api_rc=1
     install_control
     install_api_firewall
     if [ "$XMRIG_REBUILD" = true ]; then
@@ -2165,6 +2167,7 @@ upgrade() {
     _upgrade_restart "$was_active"
     _post_upgrade_retune
     _reown_worker
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
