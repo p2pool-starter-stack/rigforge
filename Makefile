@@ -15,6 +15,8 @@ help: ## List the available targets
 test: lint test-suite ## Lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 
 test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simulated
+	bash tests/test-shared-host.sh
+	bash tests/test-shared-host-lifecycle.sh
 	bash tests/run.sh
 	bash tests/test-contract-credentials.sh
 	bash tests/test-access-token-readiness.sh
