@@ -7895,7 +7895,7 @@ rfblk="$(
     printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"PWNEEDLE415"}] }' >"$rfd/config.json"
     (
         source "$SCRIPT"
-        CONFIG_JSON="$rfd/config.json"
+        CONFIG_JSON="$rfd/config.json" RIGFORGE_APPLIANCE=0
         SCRIPT_DIR="$rfd"
         CONFIG_META_FILE="$rfd/meta.json"
         set +e
@@ -7911,6 +7911,8 @@ assert_eq "feed: served config still masks pass + config_meta has a revision (co
 # emits is `__secret__`, so a needle of "secret" would match the MASK and report a leak that is not
 # one — the assertion has to be able to tell the two apart to mean anything.
 assert_absent "feed: no pool password anywhere in the served block (contract)" "$rfblk" "PWNEEDLE415"
+assert_eq "feed: DIY appliance is a boolean false (#452)" "$(printf '%s' "$rfblk" | jq -c '.appliance')" "false"
+assert_eq "feed: missing stamp is null (#452)" "$(printf '%s' "$rfblk" | jq -r 'has("stamp") and .stamp == null')" "true"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
@@ -9506,12 +9508,13 @@ fi
 FEEDFX="$(mktemp -d "$SANDBOX/feedfx.XXXXXX")"
 mkdir -p "$FEEDFX/home" "$FEEDFX/data" "$FEEDFX/control"
 printf 'v0.0.0-fixture\n' >"$FEEDFX/VERSION"
+printf 'ref=0000000000000000000000000000000000000000 version=0.0.0-fixture\n' >"$FEEDFX/RIGFORGE_REF"
 printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333", "pass": "secret"}], "watchdog": "enabled", "max_temp_c": 85 }\n' "$FEEDFX" >"$FEEDFX/config.json"
 printf '%s' '{"status":"rolled_back","change_id":"7777777777777777","source":"control","applied_at":"2026-01-01T00:00:00Z","changed_keys":["watchdog","DONATION"],"reason":"miner did not return to a live hashrate; rolled back and live","backup":"/b","warnings":["thermal protection changed: watchdog"]}' >"$FEEDFX/control/status.json"
 printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}' >"$FEEDFX/xmrig-body.json"
 (
     source "$SCRIPT"
-    OS_TYPE=Linux
+    OS_TYPE=Linux RIGFORGE_APPLIANCE=1
     SCRIPT_DIR="$FEEDFX"
     CONFIG_JSON="$FEEDFX/config.json"
     # source-time CONFIG_META_FILE was derived from the REAL $SCRIPT_DIR (above), not this sandbox —
@@ -9521,15 +9524,7 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     RIGFORGE_API_DATA="$FEEDFX/data"
     RIGFORGE_CONTROL_STATE="$FEEDFX/control"
     API_CMD="cat '$FEEDFX/xmrig-body.json'"
-    # _health_json shells out to the REAL `systemctl is-active` for service_active — API_CMD only
-    # replaces the worker-API curl, not that. On any Linux box genuinely running the xmrig unit (i.e.
-    # every fleet rig) the untouched default SERVICE_NAME=xmrig would read "active" there and byte-
-    # diff this fixture on rigs while passing everywhere else. Point it at a unit name no rig will
-    # ever have instead of putting $STUBS on PATH: the generic systemctl stub there always exits 0
-    # (fine for the tests that use it, which never assert exact service_active/autotune values), which
-    # would make this read "active" unconditionally instead of fixing anything. Pins service_active:
-    # false and, since both are gated on it, clock_pct_of_boost/throttling: null too — see
-    # contract/v1/README.md.
+    # A nonexistent service pins health values even on a rig; see contract/v1/README.md.
     SERVICE_NAME="rigforge-contract-fixture-nonexistent"
     set +e
     api_refresh 2>/dev/null
@@ -9537,6 +9532,8 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
 live_feed="$(jq -S '.generated_at = "NORMALIZED" | .rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"
 fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
+assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
+assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
 
 # ---------------------------------------------------------------------------
 echo ""

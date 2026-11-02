@@ -18,6 +18,8 @@ normalized and byte-compared against the committed file on every run — see
 
 The feed guard omits `DONATION` from its input config, so `feed.json` pins the zero default and the
 revision of that effective configuration. Both values stay byte-strict when the default changes.
+It also supplies appliance mode and a fixed `RIGFORGE_REF`, so `rigforge.appliance` and
+`rigforge.stamp` stay byte-strict; separate rows cover DIY mode and a missing stamp.
 
 `control-status.json` has two producers because it has two servers of truth. `_control_status()` is
 the single choke point `control_apply`/`control_upgrade` write terminal outcomes through — the right
