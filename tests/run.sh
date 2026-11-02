@@ -142,7 +142,7 @@ EOF
 echo "[git] $*" >> "${CALL_LOG:-/dev/null}"
 case "$*" in
   *rev-parse*) echo "${STUB_GIT_HEAD:-${XMRIG_COMMIT:-}}" ;;
-  *clone*)     mkdir -p xmrig/src; printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' > xmrig/src/donate.h ;;
+  *clone*)     mkdir -p xmrig.new/src; printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' > xmrig.new/src/donate.h ;;
 esac
 exit 0
 EOF
@@ -1732,32 +1732,33 @@ csv_out="$(cd "$CSV" && PATH="$CSV/bin:$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE
 assert_contains "on_err names the 'start' verb on an unexpected failure (#353)" "$csv_out" "aborted while running 'start'"
 assert_absent "on_err no longer falls back to the stale setup default (#353)" "$csv_out" "aborted while starting up"
 
-# prepare_workspace archives the existing build and must prune old archives so re-runs don't grow the
-# disk without bound (#4). KEEP_ARCHIVES caps how many are retained.
-echo "== unit: prepare_workspace prunes old build archives (#4) =="
+echo "== unit: staged rebuild swaps in and prunes old build archives (#4, #612) =="
 ws="$(mktemp -d "$SANDBOX/ws.XXXXXX")"
-mkdir -p "$ws/xmrig" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
+mkdir -p "$ws/xmrig/build" "$ws/xmrig.new/build" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
     "$ws/xmrig-20240101_000003" "$ws/xmrig-20240101_000004"
+echo new >"$ws/xmrig.new/marker"
 (
     source "$SCRIPT"
     OS_TYPE=Linux
     WORKER_ROOT="$ws"
     set +e
-    PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 prepare_workspace >/dev/null 2>&1
+    PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 _activate_xmrig_build >/dev/null 2>&1
 )
 assert_eq "archives pruned to KEEP_ARCHIVES" "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
-assert_eq "current install was archived (gone)" "$([ -d "$ws/xmrig" ] && echo present || echo gone)" "gone"
-# Regression: with NO archives present the prune must not trip set -e/pipefail (the script runs under
-# `set -Eeuo pipefail`, so this runs WITHOUT the `set +e` the other unit helpers use).
+assert_eq "staged build is now live" "$(cat "$ws/xmrig/marker")" "new"
+sw="$(mktemp -d "$SANDBOX/ws-swap.XXXXXX")"
+mkdir -p "$sw/xmrig" && echo live >"$sw/xmrig/marker"
+(source "$SCRIPT" && OS_TYPE=Linux && WORKER_ROOT="$sw" && _activate_xmrig_build) >/dev/null 2>&1
+assert_eq "a failed swap restores the live tree (#612)" "$(cat "$sw/xmrig/marker")" "live"
 empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
 (
     source "$SCRIPT"
     OS_TYPE=Linux
     WORKER_ROOT="$empty"
-    PATH="$STUBS:$PATH" prepare_workspace >/dev/null 2>&1
+    mkdir -p "$empty/xmrig.new/build"
+    PATH="$STUBS:$PATH" _activate_xmrig_build >/dev/null 2>&1
 )
-rc=$?
-assert_rc "prune is set -e safe with no archives" "$rc" "0"
+assert_rc "prune is set -e safe with no archives" "$?" "0"
 
 # ---------------------------------------------------------------------------
 # Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow

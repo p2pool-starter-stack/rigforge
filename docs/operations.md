@@ -465,7 +465,8 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 > published release pair — so an `upgrade` regenerated nothing, reinstalled nothing and still reported
 > success; `apply` was the workaround. Fixed in #413.
 
-> Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk.
+> Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk. A failed
+> XMRig fetch or build aborts the upgrade and leaves the live `xmrig/` tree (binary and config) untouched.
 
 ---
 
