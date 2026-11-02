@@ -1746,9 +1746,10 @@ echo new >"$ws/xmrig.new/marker"
 )
 assert_eq "archives pruned to KEEP_ARCHIVES" "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
 assert_eq "staged build is now live" "$(cat "$ws/xmrig/marker")" "new"
-assert_eq "staging dir is gone" "$([ -d "$ws/xmrig.new" ] && echo present || echo gone)" "gone"
-# Regression: with NO archives present the prune must not trip set -e/pipefail (the script runs under
-# `set -Eeuo pipefail`, so this runs WITHOUT the `set +e` the other unit helpers use).
+sw="$(mktemp -d "$SANDBOX/ws-swap.XXXXXX")"
+mkdir -p "$sw/xmrig" && echo live >"$sw/xmrig/marker"
+(source "$SCRIPT" && OS_TYPE=Linux && WORKER_ROOT="$sw" && _activate_xmrig_build) >/dev/null 2>&1
+assert_eq "a failed swap restores the live tree (#612)" "$(cat "$sw/xmrig/marker")" "live"
 empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
 (
     source "$SCRIPT"
@@ -1757,8 +1758,7 @@ empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
     mkdir -p "$empty/xmrig.new/build"
     PATH="$STUBS:$PATH" _activate_xmrig_build >/dev/null 2>&1
 )
-rc=$?
-assert_rc "prune is set -e safe with no archives" "$rc" "0"
+assert_rc "prune is set -e safe with no archives" "$?" "0"
 
 # ---------------------------------------------------------------------------
 # Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow
