@@ -806,7 +806,6 @@ _activate_xmrig_build() {
         [ -z "$archived" ] || mv "$archived" xmrig
         error "Could not swap in the new XMRig build."
     }
-
     local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
     archives="$(ls -dt xmrig-* 2>/dev/null || true)"
@@ -990,9 +989,7 @@ compile_xmrig() {
 
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig.new/.rigforge-commit"
     printf '0\n' >"$WORKER_ROOT/xmrig.new/.rigforge-donate-min"
-    if [ -f "$WORKER_ROOT/xmrig.new/build/xmrig" ]; then
-        _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
-    fi
+    [ ! -f "$WORKER_ROOT/xmrig.new/build/xmrig" ] || _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
     _activate_xmrig_build
 }
 
