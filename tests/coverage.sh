@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Coverage runner (#68): measure line coverage of rigforge.sh + util/proposed-grub.sh by running the
+# Coverage runner (#68): measure line coverage of rigforge.sh + util/ shell helpers by running the
 # dependency-free suite (tests/run.sh) under kcov, and enforce a committed total floor (a ratchet).
 #
 # kcov is Linux + ptrace based, so this runs the suite inside a PINNED kcov Docker image (by digest,
@@ -49,7 +49,7 @@ if [ ! -x "$JQ_BIN" ]; then
 fi
 
 # --- Run the suite under kcov ------------------------------------------------
-# The repo is mounted at /src; include only the two git files by absolute path, which excludes any
+# The repo is mounted at /src; include the product and shell helpers by absolute path, which excludes any
 # per-test sandbox copies and keeps the number stable. ptrace needs the seccomp/cap relaxations.
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -57,7 +57,7 @@ echo "coverage: running tests/run.sh under kcov (this is slower than 'make test'
 docker run --rm --security-opt seccomp=unconfined --cap-add SYS_PTRACE \
     -v "$ROOT:/src" -v "$JQ_BIN:/usr/local/bin/jq:ro" -w /src \
     --entrypoint kcov "$KCOV_IMAGE" \
-    --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh \
+    --include-pattern=/src/rigforge.sh,/src/util/ \
     --clean /src/coverage ./tests/run.sh
 
 # kcov writes root-owned files onto the bind mount; hand them back to the caller so later steps and
@@ -93,7 +93,7 @@ PCT="$("$JQ_BIN" -r '.percent_covered' "$COV_JSON")"
 FLOOR="$(tr -d '[:space:]' <"$FLOOR_FILE" 2>/dev/null || echo 0)"
 
 echo ""
-echo "  rigforge.sh + util/proposed-grub.sh coverage"
+echo "  rigforge.sh + util/ shell helpers coverage"
 "$JQ_BIN" -r '.files[] | "    \(.covered_lines)/\(.total_lines)\t\(.percent_covered)%\t\(.file)"' "$COV_JSON"
 echo "  ------------------------------------------------------------"
 printf '  TOTAL: %s%%   (floor: %s%%)\n\n' "$PCT" "$FLOOR"

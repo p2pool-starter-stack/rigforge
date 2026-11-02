@@ -42,6 +42,7 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
+bash "$ROOT/tests/test-xmrig-overlay.sh" "$SCRIPT" || FAIL=$((FAIL + 1))
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
 
@@ -2253,10 +2254,10 @@ EOF
     if [ "${3:-n}" = y ]; then : >"$ARS/worker/watchdog.thermal-hold"; fi
     (
         source "$SCRIPT"
-        # The regen and the re-own are covered by the black-box apply tests; what is under test here is
-        # purely which service action this function takes, so both are stubbed out.
+        # Stub config staging, unit rendering, and re-ownership to isolate the service action.
         parse_config() { :; }
-        generate_xmrig_config() { :; }
+        _stage_xmrig_config() { :; }
+        _render_xmrig_unit() { :; }
         _reown_worker() { :; }
         OS_TYPE=Linux
         SYSTEMD_DIR="$ARS/systemd"
@@ -3123,15 +3124,15 @@ assert_eq "macOS bundle still collects system.txt (#147)" "$([ -f "$SBX/system.t
 # appear in the plan, so a new pipeline step can't ship without a plan line.
 echo "== black-box: setup --dry-run plan + no-mutation guard (#146) =="
 DR="$(mktemp -d "$SANDBOX/dryrun.XXXXXX")"
-mkdir -p "$DR/etc"
+mkdir -p "$DR/etc" "$DR/home/worker/xmrig/build"
+printf '#!/bin/sh\nexit 0\n' >"$DR/home/worker/xmrig/build/xmrig"
+chmod +x "$DR/home/worker/xmrig/build/xmrig"
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$DR/etc/grub"
 printf 'proc /proc proc defaults 0 0\n' >"$DR/etc/fstab"
 cat >"$DR/config.json" <<EOF
 { "HOME_DIR": "$DR/home", "pools": [{"url": "poolbox.lan:3333"}], "autotune": "performance", "api": "enabled", "add_to_path": true }
 EOF
-# RIGFORGE_HOME points SCRIPT_DIR at the sandbox, so seed a DETERMINISTIC stand-in for our own
-# util/proposed-grub.sh — the unit suite pins the plan's rendering; the container e2e runs the
-# real probe against a real kernel.
+# Use a deterministic proposed-grub stand-in for this dry-run fixture.
 mkdir -p "$DR/util"
 cat >"$DR/util/proposed-grub.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -3950,11 +3951,12 @@ assert_contains "reown: miner user keeps config.json + log writable (#140)" "$(c
 # User=root; config says rf-appuser.
 echo "== unit: apply re-renders the installed unit to the configured miner_user (#140) =="
 APR="$(mktemp -d "$SANDBOX/apprr.XXXXXX")"
-mkdir -p "$APR/sysd" "$APR/home/worker/xmrig/build"
+mkdir -p "$APR/sysd" "$APR/logrotate" "$APR/home/worker/xmrig/build"
 printf 'User=root\n' >"$APR/sysd/xmrig.service"
 cat >"$APR/config.json" <<EOF
 { "HOME_DIR": "$APR/home", "miner_user": "rf-appuser", "pools": [{"url": "h:3333"}] }
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$APR/home/worker/xmrig/build/xmrig" && chmod +x "$APR/home/worker/xmrig/build/xmrig"
 (
     source "$SCRIPT"
     OS_TYPE=Linux
@@ -3962,14 +3964,13 @@ EOF
     SYSTEMD_DIR="$APR/sysd"
     SERVICE_NAME=xmrig
     CONFIG_JSON="$APR/config.json"
-    _apply_runtime() { :; }
     install_autotune() { :; }
     install_api() { :; }
     install_api_firewall() { :; }
     _autotune_apply_notice() { :; }
-    sudo() { "$@"; }
+    sudo() { [ "$1" = chown ] || "$@"; }
     set +e
-    PATH="$STUBS:$PATH" CALL_LOG="$APR/calls.log" apply >/dev/null 2>&1
+    PATH="$STUBS:$PATH" LOGROTATE_DIR="$APR/logrotate" CALL_LOG="$APR/calls.log" apply >/dev/null 2>&1
 )
 apr_unit="$(cat "$APR/sysd/xmrig.service")"
 assert_contains "apply: unit re-rendered to the configured user (#140)" "$apr_unit" "User=rf-appuser"
@@ -5390,10 +5391,10 @@ export CPUFREQ_MAX="$TN/cpu_max" CPU_SYSFS="$TN/cpuok"
 cat >"$BD/config.json" <<'EOF'
 { "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
 EOF
-# Fake xmrig: hashrate = f(prefetch, yield, threads, 1gb-pages), peak at prefetch=2/yield=false/threads=4.
 # BENCH_LOG records one line per invocation (used to assert no double-benchmarking).
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
+case " $* " in *" --dry-run "*) exit 0 ;; esac
 cfg=""
 for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 [ -n "${BENCH_LOG:-}" ] && echo call >>"$BENCH_LOG"

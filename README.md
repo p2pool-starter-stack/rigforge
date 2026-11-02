@@ -215,7 +215,7 @@ heavy XMRig compile and the package install are stubbed. It skips cleanly if Doc
 No XMRig binary is compiled by the tests; the heavy native build is stubbed. The suite asserts the
 *orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
 
-**`make coverage`** measures line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running the
+**`make coverage`** measures line coverage of `rigforge.sh` + the shell helpers in `util/` by running the
 suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned container, since kcov is
 Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`,
 so both the sourced functions and the command-dispatch paths are credited. CI enforces two gates: a
