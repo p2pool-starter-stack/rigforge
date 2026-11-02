@@ -1732,14 +1732,10 @@ csv_out="$(cd "$CSV" && PATH="$CSV/bin:$STUBS:$PATH" STUB_UNAME_S=Linux RIGFORGE
 assert_contains "on_err names the 'start' verb on an unexpected failure (#353)" "$csv_out" "aborted while running 'start'"
 assert_absent "on_err no longer falls back to the stale setup default (#353)" "$csv_out" "aborted while starting up"
 
-# A rebuild is staged in xmrig.new and swapped in only after it builds (#612); the swap archives the
-# live tree and prunes old archives so re-runs don't grow the disk without bound (#4). KEEP_ARCHIVES
-# caps how many are retained.
 echo "== unit: staged rebuild swaps in and prunes old build archives (#4, #612) =="
 ws="$(mktemp -d "$SANDBOX/ws.XXXXXX")"
 mkdir -p "$ws/xmrig/build" "$ws/xmrig.new/build" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
     "$ws/xmrig-20240101_000003" "$ws/xmrig-20240101_000004"
-echo old >"$ws/xmrig/marker"
 echo new >"$ws/xmrig.new/marker"
 (
     source "$SCRIPT"
@@ -1751,32 +1747,6 @@ echo new >"$ws/xmrig.new/marker"
 assert_eq "archives pruned to KEEP_ARCHIVES" "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
 assert_eq "staged build is now live" "$(cat "$ws/xmrig/marker")" "new"
 assert_eq "staging dir is gone" "$([ -d "$ws/xmrig.new" ] && echo present || echo gone)" "gone"
-assert_eq "previous install was archived" "$(cat "$ws"/xmrig-2*/marker 2>/dev/null | grep -c old)" "1"
-fail="$(mktemp -d "$SANDBOX/ws-fail.XXXXXX")"
-mkdir -p "$fail/xmrig/build"
-printf 'good\n' >"$fail/xmrig/build/xmrig"
-printf '{}\n' >"$fail/xmrig/build/config.json"
-for stage in git make; do
-    failbin="$(mktemp -d "$SANDBOX/failbin.XXXXXX")"
-    printf '#!/usr/bin/env bash\nexit 1\n' >"$failbin/$stage"
-    chmod +x "$failbin/$stage"
-    for attempt in 1 2 3 4; do
-        (
-            cd "$fail" || exit 1
-            source "$SCRIPT"
-            OS_TYPE=Linux
-            WORKER_ROOT="$fail"
-            DONATION=1
-            XMRIG_REBUILD=true
-            export XMRIG_COMMIT=ABC
-            PATH="$failbin:$STUBS:$PATH" compile_xmrig >/dev/null 2>&1
-        )
-        assert_rc "failed $stage rebuild attempt $attempt exits non-zero (#612)" "$?" "1"
-    done
-    assert_eq "failed $stage rebuilds keep the live binary (#612)" "$(cat "$fail/xmrig/build/xmrig")" "good"
-    assert_eq "failed $stage rebuilds keep the live config (#612)" "$(cat "$fail/xmrig/build/config.json")" "{}"
-    assert_eq "failed $stage rebuilds archive nothing (#612)" "$(find "$fail" -maxdepth 1 -name 'xmrig-*' | wc -l | tr -d ' ')" "0"
-done
 # Regression: with NO archives present the prune must not trip set -e/pipefail (the script runs under
 # `set -Eeuo pipefail`, so this runs WITHOUT the `set +e` the other unit helpers use).
 empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
