@@ -5,6 +5,7 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down|buildfail|har
     local d
     d=$(mktemp -d "$SANDBOX/cu.XXXXXX")
     mkdir -p "$d/state/spool"
+    mkdir -m 700 "$d/upgrade-state"
     printf '%s' "$2" >"$d/VERSION"
     printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
     [ -n "$1" ] && printf '%s\n' "$1" >"$d/state/spool/upgrade-abc123def4567890.json"
@@ -14,6 +15,7 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down|buildfail|har
         SCRIPT_DIR="$d"
         CONFIG_JSON="$d/config.json"
         RIGFORGE_CONTROL_STATE="$d/state"
+        RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state"
         CONTROL_UPGRADE_MIN_INTERVAL=0
         DO="$3"
         WML=0
@@ -119,7 +121,7 @@ assert_eq "throttle: zero interval always allowed" "$?" "0"
 # caller can report the real cause instead of "throttled — retry later". The dangling symlink into
 # a missing dir makes the open fail for ANY uid (root included), unlike a chmod-based setup.
 roThr="$SANDBOX/thr-ro"
-mkdir -p "$roThr"
+mkdir -m 700 "$roThr"
 ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
 (
     source "$SCRIPT"
@@ -169,16 +171,19 @@ assert_eq "D10 guard does not consult origin/HEAD (#318)" \
 
 cuThr=$(mktemp -d "$SANDBOX/cuthr.XXXXXX")
 mkdir -p "$cuThr/state/spool"
+mkdir -m 700 "$cuThr/upgrade-state"
 printf '1.0.0' >"$cuThr/VERSION"
 printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuThr/config.json"
 printf '{"version":"v9.9.9"}\n' >"$cuThr/state/spool/upgrade-abc123def4567890.json"
-date +%s >"$cuThr/state/upgrade-last"
+date +%s >"$cuThr/upgrade-state/upgrade-last"
+chmod 600 "$cuThr/upgrade-state/upgrade-last"
 sThr="$(
     source "$SCRIPT"
     OS_TYPE=Linux
     SCRIPT_DIR="$cuThr"
     CONFIG_JSON="$cuThr/config.json"
     RIGFORGE_CONTROL_STATE="$cuThr/state"
+    RIGFORGE_CONTROL_UPGRADE_STATE="$cuThr/upgrade-state"
     CONTROL_UPGRADE_MIN_INTERVAL=3600
     _control_upgrade_do() { return 0; }
     _wait_miner_live() { return 0; }
@@ -192,16 +197,18 @@ assert_contains "throttled reason says why" "$sThr" "too soon"
 
 cuTs=$(mktemp -d "$SANDBOX/cuts.XXXXXX")
 mkdir -p "$cuTs/state/spool"
+mkdir -m 700 "$cuTs/upgrade-state"
 printf '1.0.0' >"$cuTs/VERSION"
 printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuTs/config.json"
 printf '{"version":"v9.9.9"}\n' >"$cuTs/state/spool/upgrade-abc123def4567890.json"
-ln -s "$cuTs/state/no-such-dir/lock" "$cuTs/state/.upgrade-throttle.lock"
+ln -s "$cuTs/no-such-dir/lock" "$cuTs/upgrade-state/.upgrade-throttle.lock"
 sTs="$(
     source "$SCRIPT"
     OS_TYPE=Linux
     SCRIPT_DIR="$cuTs"
     CONFIG_JSON="$cuTs/config.json"
     RIGFORGE_CONTROL_STATE="$cuTs/state"
+    RIGFORGE_CONTROL_UPGRADE_STATE="$cuTs/upgrade-state"
     CONTROL_UPGRADE_MIN_INTERVAL=3600
     _control_upgrade_do() { return 0; }
     _wait_miner_live() { return 0; }
@@ -215,6 +222,7 @@ assert_contains "fail-closed reason names the throttle state, not 'throttled'" "
 
 cuSt=$(mktemp -d "$SANDBOX/cust.XXXXXX")
 mkdir -p "$cuSt/state/spool"
+mkdir -m 700 "$cuSt/upgrade-state"
 printf '1.0.0' >"$cuSt/VERSION"
 printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuSt/config.json"
 printf '{"version":"v9.9.9"}\n' >"$cuSt/state/spool/upgrade-abc123def4567890.json"
@@ -224,6 +232,7 @@ printf '{"version":"v9.9.9"}\n' >"$cuSt/state/spool/upgrade-abc123def4567890.jso
     SCRIPT_DIR="$cuSt"
     CONFIG_JSON="$cuSt/config.json"
     RIGFORGE_CONTROL_STATE="$cuSt/state"
+    RIGFORGE_CONTROL_UPGRADE_STATE="$cuSt/upgrade-state"
     CONTROL_UPGRADE_MIN_INTERVAL=0
     _control_upgrade_do() {
         cp "$cuSt/state/status.json" "$cuSt/mid-status.json" 2>/dev/null

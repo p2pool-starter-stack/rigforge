@@ -715,6 +715,12 @@ ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt re
 in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
 unbounded by it: the D6 throttle is what bounds how often this path fetches and builds at all.
 
+The root upgrade unit keeps its throttle lock and timestamp in
+`/var/lib/rigforge-control-upgrade`, owned by root with mode `0700`, separate from the
+receiver's writable state. Unsafe ownership, permissions, links, file types, or timestamp contents
+fail the upgrade before any fetch or build. Existing throttle files in the receiver's state are
+left untouched and never migrated, so the first upgrade after this change starts a fresh cooldown.
+
 `"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).

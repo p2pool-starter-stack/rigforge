@@ -220,10 +220,12 @@ control_retry_case() {
 assert_eq "failed control cleanup retries instead of false-passing" "$(control_retry_case)" "1:1:0:0"
 
 REAL_UPG="$(sed -n '/^_upgrade_cleanup()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
+REAL_UPG_CLEAR="$(sed -n '/^_upgrade_clear_throttles()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 upgrade_cleanup_case() { # checkout succeeds, rebuild fails twice
     (
+        eval "$REAL_UPG_CLEAR"
         eval "$REAL_UPG"
-        UPG_ORIG_REF=original UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/retry-stamp" HERE="$T491" RIGFORGE=false
+        UPG_ORIG_REF=original UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/retry-stamp" UPG_LEGACY_STAMP="$T491/retry-legacy-stamp" UPG_LEGACY_LOCK="$T491/retry-legacy-lock" HERE="$T491" RIGFORGE=false
         _hgit() { case "$1" in rev-parse) printf '%s\n' "${head:-old}" ;; checkout) head=original ;; esac }
         _control_cleanup() { :; }
         _upgrade_cleanup >/dev/null 2>&1
@@ -236,8 +238,9 @@ assert_eq "upgrade cleanup retries rebuild and retains source ref until it succe
 UPG_ARM_BLOCK="$(sed -n '/^            UPG_ORIG_REF=.*rev-parse HEAD/,/^            if _hgit checkout/p' "$ROOT/tests/e2e-real.sh" | sed '$d')"
 upgrade_same_head_case491() {
     (
+        eval "$REAL_UPG_CLEAR"
         eval "$REAL_UPG"
-        UPG_ORIG_REF="" UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/same-head-stamp" calls=0
+        UPG_ORIG_REF="" UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/same-head-stamp" UPG_LEGACY_STAMP="$T491/same-head-legacy-stamp" UPG_LEGACY_LOCK="$T491/same-head-legacy-lock" calls=0
         RIGFORGE=rebuild491
         _hgit() { [ "$1" != rev-parse ] || printf original; }
         _control_cleanup() { :; }
@@ -253,7 +256,7 @@ upgrade_same_head_case491() {
     )
 }
 assert_eq "upgrade cleanup rebuilds stale artifacts even when HEAD is already restored" "$(upgrade_same_head_case491)" "1:original:1:0:2:cleared:0"
-assert_eq "upgrade checkpoints guard setup, VERSION, noop, probe, and rollback" "$(grep -c 'continue_or_cleanup _upgrade_cleanup upgrade' "$ROOT/tests/e2e-real.sh")" "6"
+assert_eq "upgrade checkpoints guard setup, VERSION, noop, probe, rollback, and old-release throttle cleanup" "$(grep -c 'continue_or_cleanup _upgrade_cleanup upgrade' "$ROOT/tests/e2e-real.sh")" "7"
 
 UPG_VERSION_BLOCK="$(sed -n '/^    installed=$(tr /,/^    phase "upgrade — rollback/p' "$ROOT/tests/e2e-real.sh")"
 out="$( (
@@ -279,8 +282,9 @@ assert_eq "missing VERSION fires no later upgrade mutation" "$out" "posts=0"
 
 upgrade_artifact_case() {
     (
+        eval "$REAL_UPG_CLEAR"
         eval "$REAL_UPG"
-        UPG_ORIG_REF="" UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/retained-stamp"
+        UPG_ORIG_REF="" UPG_RESTORE_BUILD=0 UPG_STAMP="$T491/retained-stamp" UPG_LEGACY_STAMP="$T491/retained-legacy-stamp" UPG_LEGACY_LOCK="$T491/retained-legacy-lock"
         : >"$UPG_STAMP"
         _hgit() { case "$1 $2" in 'tag -d') return 1 ;; 'show-ref --verify') return 0 ;; esac }
         rm() { return 1; }
