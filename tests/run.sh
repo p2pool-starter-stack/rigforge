@@ -42,6 +42,8 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
+bash "$ROOT/tests/test-hugepages-ceiling.sh"
+assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
 
@@ -9548,8 +9550,6 @@ else
     [ -e "$ROOT/util/__pycache__" ] && pycache_post=present
     assert_eq "no util/__pycache__ left in the tracked tree (#418)" "$pycache_post" "absent"
 fi
-
-# ---------------------------------------------------------------------------
 echo ""
 SUITE_COMPLETE=1
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
