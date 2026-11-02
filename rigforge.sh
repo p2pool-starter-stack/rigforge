@@ -4061,6 +4061,7 @@ _rigforge() {
     case "$verb" in
     tune) COMPREPLY=($(compgen -W "--now --short --long --live --bench --confirm --efficiency --perf --history --clear" -- "$cur")) ;;
     setup | apply) COMPREPLY=($(compgen -W "--dry-run" -- "$cur")) ;;
+    doctor) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
     upgrade) COMPREPLY=($(compgen -W "--check" -- "$cur")) ;;
     bios) COMPREPLY=($(compgen -W "--perf --efficiency" -- "$cur")) ;;
     uninstall | backup) COMPREPLY=($(compgen -W "-y --yes" -- "$cur")) ;;
@@ -4942,11 +4943,11 @@ bench() {
     log "Benchmark hashrate: $hr H/s"
 }
 
-# doctor (#45): verify the optimizations actually took effect. Read-only and best-effort — it never
-# changes the system, just reports PASS/WARN with actionable hints. Linux-only checks.
-_ck_ok() { echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
-_ck_warn() { echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
-_ck_info() { echo -e "  ${C_BLUE}∙${C_RESET} $1"; } # neutral context line (#78), not a pass/fail check
+# shellcheck source=util/doctor-report.sh
+source "$(_script_dir)/util/doctor-report.sh"
+_ck_ok() { _dr_record ok "$1" "${2:-}" && echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
+_ck_warn() { _dr_record warn "$1" "${2:-}" && echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
+_ck_info() { _dr_record info "$1" "${2:-}" && echo -e "  ${C_BLUE}∙${C_RESET} $1"; } # neutral context line (#78), not a pass/fail check
 # Read a /sys/class/dmi/id field (board/BIOS identity; world-readable). Empty if missing. #78.
 _dmi() {
     [ -r "$DMI_DIR/$1" ] || return 0
@@ -5408,12 +5409,12 @@ _check_donation() {
     _uint_in_range "$want" 0 100 || return 0
     got=$(_read_api_summary | jq -er '.donate_level | select(type == "number" and . >= 0 and . <= 100 and floor == .)' 2>/dev/null) || got=""
     if [ -z "$got" ]; then
-        _ck_info "XMRig donation level unavailable — cannot verify DONATION"
+        _ck_info "XMRig donation level unavailable — cannot verify DONATION" donation
     elif [ "$got" != "$want" ]; then
-        _ck_warn "XMRig donate_level $got differs from DONATION $want — upgrade an older build, then apply and restart"
+        _ck_warn "XMRig donate_level $got differs from DONATION $want — upgrade an older build, then apply and restart" donation
         return 1
     else
-        _ck_ok "XMRig donate_level matches DONATION ($want%)"
+        _ck_ok "XMRig donate_level matches DONATION ($want%)" donation
     fi
 }
 
@@ -5429,8 +5430,8 @@ doctor() {
     case "$(jq -r 'if (.control | tostring) | test("^(enabled|true|on)$") then "enabled" else (.api // "disabled") end' "$CONFIG_JSON" 2>/dev/null || true)" in # #507: doctor has no parse_config, so it re-derives control's api implication here
     enabled | true | on)
         local refresh_state
-        if refresh_state=$(_api_refresh_status); then _ck_ok "$refresh_state"; else
-            _ck_warn "$refresh_state"
+        if refresh_state=$(_api_refresh_status); then _ck_ok "$refresh_state" api-refresh; else
+            _ck_warn "$refresh_state" api-refresh
             issues=$((issues + 1))
         fi
         ;;
@@ -5440,9 +5441,9 @@ doctor() {
     local svc_up=n
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         svc_up=y
-        _ck_ok "service '$SERVICE_NAME' is active"
+        _ck_ok "service '$SERVICE_NAME' is active" service
     else
-        _ck_warn "service '$SERVICE_NAME' is not active — start it with: sudo $0 start"
+        _ck_warn "service '$SERVICE_NAME' is not active — start it with: sudo $0 start" service
         issues=$((issues + 1))
     fi
 
@@ -5453,14 +5454,14 @@ doctor() {
         # Advisory only: a listening TCP socket does not prove SOCKS/Tor or mining works.
         while IFS= read -r proxy; do
             (_validate_host_port "$proxy" "Pool socks5" 9050) >/dev/null 2>&1 || {
-                _ck_warn "configured SOCKS proxy has an invalid host:port — check pools[].socks5"
+                _ck_warn "configured SOCKS proxy has an invalid host:port — check pools[].socks5" socks-proxy
                 continue
             }
             ph=${proxy%:*}
             pp=${proxy##*:}
             ph=${ph#\[}
             ph=${ph%\]}
-            _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed"
+            _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed" socks-proxy
         done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
             if ! ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _check_donation; then
@@ -5471,28 +5472,28 @@ $(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || t
 EOF
             case "$pc_st" in
             connected)
-                _ck_ok "pool connection live: $pc_pool (up $(_render_duration "${pc_n1:-0}"), ${pc_n2:-0} share(s) accepted)"
+                _ck_ok "pool connection live: $pc_pool (up $(_render_duration "${pc_n1:-0}"), ${pc_n2:-0} share(s) accepted)" pool-connection
                 ;;
             disconnected)
                 { [ -n "$pc_pool" ] && [ "$pc_pool" != "?" ]; } || pc_pool="${pool0:-?}"
-                _ck_warn "miner is running but has NO live pool connection (pool: $pc_pool, ${pc_n1:-0} failed attempt(s)) — the rig is not mining; check pools[0].url in config.json and '$0 logs'"
+                _ck_warn "miner is running but has NO live pool connection (pool: $pc_pool, ${pc_n1:-0} failed attempt(s)) — the rig is not mining; check pools[0].url in config.json and '$0 logs'" pool-connection
                 issues=$((issues + 1))
                 ;;
             *)
-                _ck_info "worker API not reachable at 127.0.0.1:8080 — can't verify the pool connection (the miner may still be starting; re-run doctor shortly)"
+                _ck_info "worker API not reachable at 127.0.0.1:8080 — can't verify the pool connection (the miner may still be starting; re-run doctor shortly)" pool-connection
                 ;;
             esac
         elif [ -n "$(jq -r '.pools[0].socks5 // empty' "$CONFIG_JSON" 2>/dev/null)" ]; then
-            _ck_info "miner stopped — can't verify the pool connection through SOCKS until it starts"
+            _ck_info "miner stopped — can't verify the pool connection through SOCKS until it starts" pool-connection
         elif [ -n "$pool0" ]; then
             ph=${pool0#*://}
             pp=${ph##*:}
             ph=${ph%:*}
             if [[ "$pp" =~ ^[0-9]+$ ]]; then
                 if _tcp_probe "$ph" "$pp"; then
-                    _ck_info "pool $ph:$pp accepts TCP connections (miner stopped — the live check runs once it's started)"
+                    _ck_info "pool $ph:$pp accepts TCP connections (miner stopped — the live check runs once it's started)" pool-connection
                 else
-                    _ck_warn "pool $ph:$pp is unreachable (TCP connect failed) — the rig cannot mine until pools[0].url points at a reachable pool"
+                    _ck_warn "pool $ph:$pp is unreachable (TCP connect failed) — the rig cannot mine until pools[0].url points at a reachable pool" pool-connection
                     issues=$((issues + 1))
                 fi
             fi
@@ -5503,9 +5504,9 @@ EOF
     local hp
     hp=$(awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null)
     if [ -n "$hp" ] && [ "$hp" -gt 0 ] 2>/dev/null; then
-        _ck_ok "HugePages reserved (HugePages_Total=$hp)"
+        _ck_ok "HugePages reserved (HugePages_Total=$hp)" hugepages
     else
-        _ck_warn "HugePages not reserved — reboot after setup (the GRUB change needs a reboot)"
+        _ck_warn "HugePages not reserved — reboot after setup (the GRUB change needs a reboot)" hugepages
         issues=$((issues + 1))
     fi
 
@@ -5513,9 +5514,9 @@ EOF
     local g=0
     [ -f "$HUGEPAGES_1G_NR" ] && g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
     if [ "${g:-0}" -gt 0 ] 2>/dev/null; then
-        _ck_ok "1GB HugePages reserved ($g)"
+        _ck_ok "1GB HugePages reserved ($g)" hugepages-1gb
     else
-        _ck_warn "1GB HugePages not reserved (optional; needs a pdpe1gb CPU + reboot)"
+        _ck_warn "1GB HugePages not reserved (optional; needs a pdpe1gb CPU + reboot)" hugepages-1gb
     fi
 
     # CPU ISA support (#338): a rig without AES-NI mines at soft-AES speed (~4x slower) with no
@@ -5525,13 +5526,13 @@ EOF
     local miss_isa
     miss_isa=$(_cpu_missing_isa)
     if [[ " $miss_isa " == *" aes "* ]]; then
-        _ck_warn "CPU has no AES-NI — RandomX runs soft AES, roughly 4x slower; this hardware cannot mine at a competitive rate"
+        _ck_warn "CPU has no AES-NI — RandomX runs soft AES, roughly 4x slower; this hardware cannot mine at a competitive rate" cpu-aes
         issues=$((issues + 1))
     else
         # The ok line only when there IS a flags line to have judged; no flags line = unknown, say nothing.
-        grep -q '^flags' "$CPUINFO" 2>/dev/null && _ck_ok "CPU supports AES-NI (hardware RandomX path)" || true
+        grep -q '^flags' "$CPUINFO" 2>/dev/null && _ck_ok "CPU supports AES-NI (hardware RandomX path)" cpu-aes || true
     fi
-    [[ " $miss_isa " == *" avx2 "* ]] && _ck_info "CPU has no AVX2 — dataset init is slower (steady-state hashrate unaffected)"
+    [[ " $miss_isa " == *" avx2 "* ]] && _ck_info "CPU has no AVX2 — dataset init is slower (steady-state hashrate unaffected)" cpu-avx2
     # Resolve the configured log once — appliance mode intentionally has no persistent file log (#477).
     local wr="" log_file="" live_log_cfg=""
     if [ -f "$CONFIG_JSON" ]; then
@@ -5549,9 +5550,9 @@ EOF
         local svc_user
         svc_user=$(systemctl show -p User --value "$SERVICE_NAME" 2>/dev/null || true)
         if [ "$svc_user" = "$cfg_mu" ]; then
-            _ck_ok "miner runs unprivileged as '$cfg_mu' (miner_user)"
+            _ck_ok "miner runs unprivileged as '$cfg_mu' (miner_user)" miner-user
         elif [ -n "$svc_user" ]; then
-            _ck_warn "config sets miner_user='$cfg_mu' but the unit runs as '$svc_user' — re-run 'sudo $0 apply'"
+            _ck_warn "config sets miner_user='$cfg_mu' but the unit runs as '$svc_user' — re-run 'sudo $0 apply'" miner-user
             issues=$((issues + 1))
         fi
         if [ -n "$wr" ] && [ -f "$wr/.rigforge-msr-preset" ]; then
@@ -5559,11 +5560,11 @@ EOF
             _mp=$(cat "$wr/.rigforge-msr-preset" 2>/dev/null || true)
             _msr_rdmsr_verify "$_mp"
             if [ "$_MSR_TOTAL" -gt 0 ] && [ "$_MSR_OK" = "$_MSR_TOTAL" ]; then
-                _ck_ok "root-side MSR preset '$_mp' verified by register read-back ($_MSR_OK/$_MSR_TOTAL)"
+                _ck_ok "root-side MSR preset '$_mp' verified by register read-back ($_MSR_OK/$_MSR_TOTAL)" msr-root-preset
             elif [ "$_MSR_UNREAD" = "$_MSR_TOTAL" ]; then
-                _ck_info "root-side MSR preset '$_mp' recorded — run doctor as root for the register read-back"
+                _ck_info "root-side MSR preset '$_mp' recorded — run doctor as root for the register read-back" msr-root-preset
             else
-                _ck_warn "root-side MSR preset '$_mp': only $_MSR_OK/$_MSR_TOTAL registers match (bad:$_MSR_BAD)"
+                _ck_warn "root-side MSR preset '$_mp': only $_MSR_OK/$_MSR_TOTAL registers match (bad:$_MSR_BAD)" msr-root-preset
                 issues=$((issues + 1))
             fi
         fi
@@ -5574,11 +5575,11 @@ EOF
     local bin="$wr/xmrig/build/xmrig" sums="$wr/xmrig/.rigforge-sha256"
     if [ -n "$wr" ] && [ -f "$bin" ]; then
         if [ ! -f "$sums" ]; then
-            _ck_info "no build-time checksum recorded (older build) — the next setup/upgrade rebuild records one"
+            _ck_info "no build-time checksum recorded (older build) — the next setup/upgrade rebuild records one" binary-checksum
         elif [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$bin")" ]; then
-            _ck_ok "xmrig binary matches its build-time SHA-256 (unchanged since compile)"
+            _ck_ok "xmrig binary matches its build-time SHA-256 (unchanged since compile)" binary-checksum
         else
-            _ck_warn "xmrig binary CHANGED since it was built — re-run 'sudo $0 setup' to rebuild, or investigate how it changed"
+            _ck_warn "xmrig binary CHANGED since it was built — re-run 'sudo $0 setup' to rebuild, or investigate how it changed" binary-checksum
             issues=$((issues + 1))
         fi
     fi
@@ -5591,9 +5592,9 @@ EOF
     if [ -n "$live_cfg" ] && [ -f "$live_cfg" ]; then
         restricted=$(jq -r '.http.restricted' "$live_cfg" 2>/dev/null || true)
         if [ "$restricted" = "true" ]; then
-            _ck_ok "HTTP API is read-only (http.restricted=true in the live config)"
+            _ck_ok "HTTP API is read-only (http.restricted=true in the live config)" api-read-only
         else
-            _ck_warn "HTTP API is NOT read-only (http.restricted=${restricted:-unreadable}) — regenerate it with: sudo $0 apply"
+            _ck_warn "HTTP API is NOT read-only (http.restricted=${restricted:-unreadable}) — regenerate it with: sudo $0 apply" api-read-only
             issues=$((issues + 1))
         fi
     fi
@@ -5606,13 +5607,13 @@ EOF
         cfg_scope=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON" 2>/dev/null || true)
         cfg_extra_n=$(jq -r '(.ACCESS_TOKENS // {}) | length' "$CONFIG_JSON" 2>/dev/null || echo 0)
         if [ -z "$cfg_tok" ] && [ -z "$cfg_scope" ]; then
-            _ck_info "API is open (no ACCESS_TOKEN) and unscoped (no api_allow_from) — fine on a trusted LAN; set one of them before this rig faces anything else"
+            _ck_info "API is open (no ACCESS_TOKEN) and unscoped (no api_allow_from) — fine on a trusted LAN; set one of them before this rig faces anything else" api-exposure
         else
-            _ck_ok "API exposure is limited (${cfg_tok:+token}${cfg_tok:+${cfg_scope:+ + }}${cfg_scope:+firewall scope})"
+            _ck_ok "API exposure is limited (${cfg_tok:+token}${cfg_tok:+${cfg_scope:+ + }}${cfg_scope:+firewall scope})" api-exposure
         fi
         # #516: xmrig's :8080 is master-only; :8081/:8082 take any configured token. Never interpolate
         # cfg_tok itself here — this line is a NAME/COUNT report, not a value one.
-        _ck_info "$(($([ -n "$cfg_tok" ] && echo 1 || echo 0) + cfg_extra_n)) access token(s) configured ($([ -n "$cfg_tok" ] && echo 1 || echo 0) master + $cfg_extra_n named in ACCESS_TOKENS); xmrig's own :8080 API carries $([ -n "$cfg_tok" ] && echo "ACCESS_TOKEN (the master)" || echo "no token (open)")"
+        _ck_info "$(($([ -n "$cfg_tok" ] && echo 1 || echo 0) + cfg_extra_n)) access token(s) configured ($([ -n "$cfg_tok" ] && echo 1 || echo 0) master + $cfg_extra_n named in ACCESS_TOKENS); xmrig's own :8080 API carries $([ -n "$cfg_tok" ] && echo "ACCESS_TOKEN (the master)" || echo "no token (open)")" access-tokens
     fi
 
     # Control receiver health (#278): probe the writable service when enabled; retry briefly because
@@ -5633,14 +5634,14 @@ EOF
                     [ "$i" = 5 ] || sleep 1
                 done
                 case "$ctl_code" in
-                200 | 503) _ck_ok "control receiver is active and responding (rigforge-control, :${ctl_port:-8082})" ;;
+                200 | 503) _ck_ok "control receiver is active and responding (rigforge-control, :${ctl_port:-8082})" control ;;
                 *)
-                    _ck_warn "control: enabled and rigforge-control is active, but :${ctl_port:-8082}/status isn't responding — check journalctl -u rigforge-control"
+                    _ck_warn "control: enabled and rigforge-control is active, but :${ctl_port:-8082}/status isn't responding — check journalctl -u rigforge-control" control
                     issues=$((issues + 1))
                     ;;
                 esac
             else
-                _ck_warn "control: enabled but rigforge-control is inactive — run 'sudo $0 apply' or check journalctl -u rigforge-control"
+                _ck_warn "control: enabled but rigforge-control is inactive — run 'sudo $0 apply' or check journalctl -u rigforge-control" control
                 issues=$((issues + 1))
             fi
             ;;
@@ -5658,21 +5659,21 @@ EOF
     local ld
     ld=$(_lockdown_state)
     if [ -z "$ld" ]; then
-        _ck_info "kernel lockdown state unknown ($LOCKDOWN_FILE unreadable) — run 'doctor' as root, or the lockdown LSM isn't built in"
+        _ck_info "kernel lockdown state unknown ($LOCKDOWN_FILE unreadable) — run 'doctor' as root, or the lockdown LSM isn't built in" kernel-lockdown
     elif _lockdown_blocks_msr "$ld"; then
-        _ck_warn "kernel lockdown is ACTIVE ('$ld') — it denies every /dev/cpu/*/msr write, so the MSR mod cannot apply (worth ~5-15% RandomX). msr.allow_writes=on does NOT override it: disable Secure Boot in BIOS ($(_bios_menu "$(_dmi board_vendor)" secure_boot "${TUNE_TARGET:-perf}")), then re-run 'sudo $0 doctor'."
+        _ck_warn "kernel lockdown is ACTIVE ('$ld') — it denies every /dev/cpu/*/msr write, so the MSR mod cannot apply (worth ~5-15% RandomX). msr.allow_writes=on does NOT override it: disable Secure Boot in BIOS ($(_bios_menu "$(_dmi board_vendor)" secure_boot "${TUNE_TARGET:-perf}")), then re-run 'sudo $0 doctor'." kernel-lockdown
         issues=$((issues + 1))
     else
-        _ck_ok "kernel lockdown: none — MSR writes are permitted"
+        _ck_ok "kernel lockdown: none — MSR writes are permitted" kernel-lockdown
     fi
 
     if [ -d "$MSR_MODULE_DIR" ]; then
-        _ck_ok "msr kernel module loaded"
+        _ck_ok "msr kernel module loaded" msr-module
     else
         # Secure Boot does NOT stop the in-tree, distro-signed `msr` module from loading, so the old
         # "disable Secure Boot" hint pointed the wrong way here (#333). A missing module is a modprobe /
         # packaging problem; lockdown is reported separately above.
-        _ck_warn "msr module not loaded — the MSR mod won't apply; check 'sudo modprobe msr' and $MODULES_LOAD_DIR/msr.conf"
+        _ck_warn "msr module not loaded — the MSR mod won't apply; check 'sudo modprobe msr' and $MODULES_LOAD_DIR/msr.conf" msr-module
         issues=$((issues + 1))
     fi
     if [ -n "$wr" ]; then
@@ -5682,32 +5683,32 @@ $(_msr_log_status "$log_file")
 EOF
         case "$msrstat" in
         ok)
-            _ck_ok "MSR mod applied — XMRig set the '${preset:-?}' preset (per its log)"
+            _ck_ok "MSR mod applied — XMRig set the '${preset:-?}' preset (per its log)" msr-log
             # Register-level read-back (rdmsr) needs root + the msr device; it's the strong check that
             # catches a write a hypervisor/lockdown silently dropped. Degrade gracefully otherwise — the
             # log line above already confirms XMRig wrote the preset, so missing rdmsr is advisory, never
             # an issue. Mirrors the #67 RAM check, which also asks for root rather than crying wolf.
             if [ "$(id -u)" -ne 0 ]; then
-                _ck_warn "run 'doctor' as root (sudo) to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)"
+                _ck_warn "run 'doctor' as root (sudo) to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)" msr-registers
             elif ! command -v "$RDMSR_BIN" >/dev/null 2>&1; then
-                _ck_warn "rdmsr not found — install msr-tools to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)"
+                _ck_warn "rdmsr not found — install msr-tools to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)" msr-registers
             elif [ -n "$(_msr_preset_regs "$preset")" ]; then
                 _msr_rdmsr_verify "$preset"
                 if [ "${_MSR_OK:-0}" -gt 0 ] && [ "${_MSR_OK:-0}" -eq "${_MSR_TOTAL:-0}" ]; then
-                    _ck_ok "MSR registers verified via rdmsr ($_MSR_OK/$_MSR_TOTAL match the $preset preset)"
+                    _ck_ok "MSR registers verified via rdmsr ($_MSR_OK/$_MSR_TOTAL match the $preset preset)" msr-registers
                 elif [ -n "$_MSR_BAD" ]; then
                     # A genuine value mismatch — the write didn't take. This is the real failure (#66).
                     # #333: when lockdown is active we already know which of the three causes it was —
                     # say so instead of listing all of them.
                     if _lockdown_blocks_msr "$ld"; then
-                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — kernel lockdown ('$ld') dropped the write; see the lockdown item above"
+                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — kernel lockdown ('$ld') dropped the write; see the lockdown item above" msr-registers
                     else
-                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — a hypervisor may have dropped the write, or XMRig changed its preset"
+                        _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — a hypervisor may have dropped the write, or XMRig changed its preset" msr-registers
                     fi
                     issues=$((issues + 1))
                 else
                     # No mismatch, but some/all registers were unreadable (e.g. msr module not loaded). Advisory.
-                    _ck_warn "couldn't read $_MSR_UNREAD/$_MSR_TOTAL MSR(s) via rdmsr (is the 'msr' module loaded?) — relying on XMRig's log confirmation"
+                    _ck_warn "couldn't read $_MSR_UNREAD/$_MSR_TOTAL MSR(s) via rdmsr (is the 'msr' module loaded?) — relying on XMRig's log confirmation" msr-registers
                 fi
             fi
             ;;
@@ -5715,9 +5716,9 @@ EOF
             # #333: msr.allow_writes=on is only the answer when lockdown is NOT the blocker — under
             # lockdown the kernel rejects the write before the filter ever runs.
             if _lockdown_blocks_msr "$ld"; then
-                _ck_warn "XMRig reports the MSR preset FAILED to set — kernel lockdown ('$ld') is denying the write; see the lockdown item above"
+                _ck_warn "XMRig reports the MSR preset FAILED to set — kernel lockdown ('$ld') is denying the write; see the lockdown item above" msr-log
             else
-                _ck_warn "XMRig reports the MSR preset FAILED to set — check msr.allow_writes=on and that no hypervisor is masking MSR access"
+                _ck_warn "XMRig reports the MSR preset FAILED to set — check msr.allow_writes=on and that no hypervisor is masking MSR access" msr-log
             fi
             issues=$((issues + 1))
             ;;
@@ -5726,22 +5727,22 @@ EOF
         *) : ;;
         esac
         if [ "$msrstat" = none ]; then
-            [ -z "$log_file" ] && _ck_info "MSR file-log confirmation is disabled; the bounded systemd journal has no confirmation yet"
-            [ -n "$log_file" ] && [ ! -f "$log_file" ] && _ck_info "MSR unverifiable — no xmrig.log at $log_file and no journal confirmation"
+            [ -z "$log_file" ] && _ck_info "MSR file-log confirmation is disabled; the bounded systemd journal has no confirmation yet" msr-log
+            [ -n "$log_file" ] && [ ! -f "$log_file" ] && _ck_info "MSR unverifiable — no xmrig.log at $log_file and no journal confirmation" msr-log
         fi
     elif [ -z "$wr" ]; then
         # #367: no config.json, so the worker root above never resolved. Distinct wording from the
         # "resolved but no log" case below — an absent block must not read as a failed check.
-        _ck_info "MSR unverifiable — no config.json, so the worker root couldn't be resolved"
+        _ck_info "MSR unverifiable — no config.json, so the worker root couldn't be resolved" msr-log
     fi
 
     # CPU governor
     local gov
     gov=$(cat "$GOVERNOR_FILE" 2>/dev/null || echo "")
     if [ "$gov" = "performance" ]; then
-        _ck_ok "CPU governor = performance"
+        _ck_ok "CPU governor = performance" cpu-governor
     else
-        _ck_warn "CPU governor is '${gov:-unknown}' (expected 'performance')"
+        _ck_warn "CPU governor is '${gov:-unknown}' (expected 'performance')" cpu-governor
     fi
 
     # Hashrate-capping HARDWARE (advisory; #67). RandomX fast-mode is dataset-latency bound, so a
@@ -5752,21 +5753,21 @@ EOF
         mem=$(_mem_summary)
         read -r pop nch spd rated <<<"${mem:-0 0 0 0}" # rated (4th field) feeds the #78 XMP/EXPO check
         if [ "${pop:-0}" -eq 0 ] 2>/dev/null; then
-            _ck_warn "RAM layout not readable — run 'doctor' as root so dmidecode can check channels/speed"
+            _ck_warn "RAM layout not readable — run 'doctor' as root so dmidecode can check channels/speed" ram-layout
         else
             if [ "${nch:-0}" -le 1 ]; then
-                _ck_warn "RAM is single-channel ($pop module(s), 1 channel) — RandomX wants ≥2 channels; move a stick to the other channel for a large gain"
+                _ck_warn "RAM is single-channel ($pop module(s), 1 channel) — RandomX wants ≥2 channels; move a stick to the other channel for a large gain" ram-channels
             else
-                _ck_ok "RAM: $pop modules across $nch channels (dual+ channel)"
+                _ck_ok "RAM: $pop modules across $nch channels (dual+ channel)" ram-channels
             fi
             if [ "${spd:-0}" -gt 0 ] 2>/dev/null && [ "$spd" -lt "$MIN_RAM_MTS" ]; then
-                _ck_warn "RAM speed ${spd} MT/s is low — enable XMP/EXPO or fit faster RAM (RandomX is memory-latency bound)"
+                _ck_warn "RAM speed ${spd} MT/s is low — enable XMP/EXPO or fit faster RAM (RandomX is memory-latency bound)" ram-speed
             elif [ "${spd:-0}" -gt 0 ] 2>/dev/null; then
-                _ck_ok "RAM speed: ${spd} MT/s"
+                _ck_ok "RAM speed: ${spd} MT/s" ram-speed
             fi
         fi
     else
-        _ck_warn "dmidecode not found — install it for the RAM channels/speed check (advisory only)"
+        _ck_warn "dmidecode not found — install it for the RAM channels/speed check (advisory only)" ram-layout
     fi
 
     # Effective CPU clock under load — only meaningful while the miner is running (else the cores idle).
@@ -5777,9 +5778,9 @@ EOF
         if [ -n "$effk" ] && [ "${maxk:-0}" -gt 0 ] 2>/dev/null; then
             pct=$((effk * 100 / maxk))
             if [ "$pct" -lt "$MIN_CLOCK_PCT" ]; then
-                _ck_warn "CPU at $((effk / 1000)) MHz — only ${pct}% of the $((maxk / 1000)) MHz max boost; check PBO/cTDP power limits + cooling (likely throttling)"
+                _ck_warn "CPU at $((effk / 1000)) MHz — only ${pct}% of the $((maxk / 1000)) MHz max boost; check PBO/cTDP power limits + cooling (likely throttling)" cpu-clock
             else
-                _ck_ok "CPU clock under load: $((effk / 1000)) MHz (${pct}% of max boost)"
+                _ck_ok "CPU clock under load: $((effk / 1000)) MHz (${pct}% of max boost)" cpu-clock
             fi
         fi
     fi
@@ -5813,22 +5814,22 @@ EOF
     fi
     if [ -n "$bvendor$board$bios" ]; then
         if [ -n "$xmp_rec$smt_rec$nps_rec" ]; then
-            _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the BIOS/UEFI item(s) below (RigForge can't change them from the OS)."
+            _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — apply the BIOS/UEFI item(s) below (RigForge can't change them from the OS)." firmware
         else
-            _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — no BIOS changes recommended."
+            _ck_info "Firmware: ${bvendor:-?} ${board:-?}, BIOS ${bios:-?} (${bdate:-?})${cpu:+, $cpu} — no BIOS changes recommended." firmware
         fi
     fi
-    if [ -n "$xmp_rec" ]; then _ck_warn "$xmp_rec"; fi
-    if [ -n "$smt_rec" ]; then _ck_warn "$smt_rec"; fi
-    if [ -n "$nps_rec" ]; then _ck_warn "$nps_rec"; fi
+    if [ -n "$xmp_rec" ]; then _ck_warn "$xmp_rec" memory-profile; fi
+    if [ -n "$smt_rec" ]; then _ck_warn "$smt_rec" smt; fi
+    if [ -n "$nps_rec" ]; then _ck_warn "$nps_rec" numa-nps; fi
 
     # XMRig's own startup report (HUGE PAGES 100% means the dataset is fully backed). Reuses the
     # log_file resolved above for the MSR-applied check.
     if [ -n "$log_file" ] && [ -f "$log_file" ]; then
         if grep -qiE 'huge pages.*100%' "$log_file"; then
-            _ck_ok "XMRig log reports HUGE PAGES 100%"
+            _ck_ok "XMRig log reports HUGE PAGES 100%" hugepages-backing
         elif grep -qi 'huge pages' "$log_file"; then
-            _ck_warn "XMRig log shows HUGE PAGES below 100% — not all threads are backed"
+            _ck_warn "XMRig log shows HUGE PAGES below 100% — not all threads are backed" hugepages-backing
         fi
     fi
 
@@ -6171,7 +6172,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
   upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
-  doctor     check that HugePages, the MSR mod, the governor and the service are all healthy
+  doctor     check worker health (doctor --json: machine report on stdout, human report on stderr)
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
   start      start the miner (systemd on Linux, a background process on macOS) [alias: up]
@@ -6229,7 +6230,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
     # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
     case "${1:-setup}" in
-    autotune | watchdog | doctor | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
+    autotune | watchdog | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
@@ -6258,7 +6259,10 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     autotune) autotune ;;
     watchdog) watchdog ;;
-    doctor) doctor || exit 1 ;; # `||`: a mere unhealthy report must not fire the ERR trap's "aborted while" line
+    doctor)
+        shift
+        doctor_command "$@" || exit 1
+        ;; # `||`: a mere unhealthy report must not fire the ERR trap's "aborted while" line
     bios)
         shift
         bios "$@"

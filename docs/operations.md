@@ -91,6 +91,32 @@ by Secure Boot. See [Troubleshooting](#troubleshooting).
 > reserved before then), so a `doctor` run between `setup` and the reboot will report "service is not
 > active". That's expected; it starts automatically after you reboot.
 
+### Machine-readable health report
+
+Use `doctor --json` when another program needs the health result:
+
+```bash
+sudo ./rigforge.sh doctor --json
+```
+
+It writes one JSON object to standard output and keeps the human report on standard error. The object
+has this contract:
+
+- `version` is the RigForge version and `exit` is the command's exit status.
+- `summary` contains integer `ok`, `warn`, `fail`, and `info` counts.
+- `checks` is an array of `{id, status, message}` objects. `status` is one of the four summary keys.
+
+Treat `exit` as the health authority instead of deriving success from row statuses. A critical finding
+still has status `warn`; it also makes `exit` non-zero. The `fail` count is reserved and is currently
+zero. On a non-Linux host, the Linux-only check is skipped, `checks` is empty, and both the process and
+reported exit remain zero.
+
+Check IDs are stable for automation, but row availability depends on the worker's configuration and
+available probes. An ID may repeat: `socks-proxy`, for example, can produce one row for each configured
+proxy. Messages are operator-facing text and are not a stable interface. Consumers should therefore
+select rows by `id` and `status`, allow repeats, and use the summary and `exit` fields for the overall
+result.
+
 ### Tuning
 
 RigForge auto-configures the hashrate-critical settings, so a freshly-deployed worker already runs well.
