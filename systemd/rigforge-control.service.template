@@ -3,6 +3,9 @@ Description=RigForge control server (writable config endpoint, staged apply)
 After=network.target
 
 [Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=15
 ExecStart=/usr/bin/python3 ${CREDENTIALS_DIRECTORY}/server $CONTROL_BIND $CONTROL_PORT ${STATE_DIRECTORY} ${CREDENTIALS_DIRECTORY}/config
 LoadCredential=config:$SCRIPT_DIR/config.json
 LoadCredential=server:$SCRIPT_DIR/util/control-server.py

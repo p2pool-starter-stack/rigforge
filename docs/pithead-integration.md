@@ -235,6 +235,12 @@ Tokens are read once when the services start, so adding or revoking an entry tak
 `sudo rigforge.sh apply`. `sudo rigforge.sh doctor` reports how many tokens are configured and which
 one XMRig carries.
 
+Setup, upgrade, and apply report control reconciliation failures after reconciling the firewall.
+The receiver signals readiness only after loading its credentials and binding its listener. If
+replacement fails, the receiver is stopped so a revoked bearer cannot keep submitting changes.
+Fix the reported service error and re-run apply to restore control access.
+If stopping also fails, revocation is reported as unconfirmed; stop the service before retrying.
+
 Likewise, don't bind the API to localhost only and don't change the port without matching it on the stack
 side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host than the one it
 connects from, also need matching configuration on both sides

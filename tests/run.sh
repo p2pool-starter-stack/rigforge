@@ -8874,6 +8874,7 @@ bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
 assert_eq "control writable-keys match across rigforge.sh + control-server.py (#236)" "$bash_ckeys" "$py_ckeys"
 echo "== black-box: the control server (#236) =="
+bash "$ROOT/tests/test-control-revocation.sh" && ok "receiver revocation fails closed (#626)" || bad "receiver revocation fails closed (#626)" "regression failed"
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the control-server wire suite runs in the other CI jobs"
 else
@@ -9025,7 +9026,6 @@ else
     assert_eq "no-token control server: POST -> 403 (fail closed)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer anything" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "403"
     kill "$NT_PID" 2>/dev/null || true
     wait "$NT_PID" 2>/dev/null || true
-
     # #243: the WRITABLE control server must bind IPv6 dual-stack when its bind addr is v6, same as the
     # sister API — an IPv6-primary stack has to reach the control port too. Mirrors the api-server IPv6
     # test; skip cleanly if the host has no IPv6 loopback.
