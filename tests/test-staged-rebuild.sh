@@ -8,6 +8,7 @@ export RIGFORGE_HOME="$D"
 STUBS="$D/stubs"
 mkdir -p "$STUBS"
 printf '#!/usr/bin/env bash\ncase "$*" in *rev-parse*) echo "$XMRIG_COMMIT" ;; *clone*) mkdir -p xmrig.new/src; printf "constexpr const int kDefaultDonateLevel = 1;\\nconstexpr const int kMinimumDonateLevel = 1;\\n" >xmrig.new/src/donate.h ;; esac\n' >"$STUBS/git"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$STUBS/sudo"
 for c in cmake nproc sysctl; do printf '#!/usr/bin/env bash\necho 1\n' >"$STUBS/$c"; done
 printf '#!/usr/bin/env bash\nmkdir -p build\n' >"$STUBS/make"
 chmod +x "$STUBS"/*
@@ -30,7 +31,9 @@ for stage in git make; do
             DONATION=1
             XMRIG_REBUILD=true
             export XMRIG_COMMIT=ABC
-            PATH="$D/fail-$stage:$STUBS:$PATH" compile_xmrig >/dev/null 2>&1
+            PATH="$D/fail-$stage:$STUBS:$PATH"
+            prepare_workspace >/dev/null 2>&1
+            compile_xmrig >/dev/null 2>&1
         )
         rc=$?
         set -e
@@ -64,7 +67,9 @@ printf 'good\n' >"$W/xmrig/build/xmrig"
     DONATION=1
     XMRIG_REBUILD=true
     export XMRIG_COMMIT=ABC
-    PATH="$STUBS:$PATH" compile_xmrig >/dev/null 2>&1
+    PATH="$STUBS:$PATH"
+    prepare_workspace >/dev/null 2>&1
+    compile_xmrig >/dev/null 2>&1
 ) || {
     echo "FAIL: successful rebuild exited non-zero"
     fail=1
