@@ -796,11 +796,16 @@ prepare_workspace() {
 
 _activate_xmrig_build() {
     cd "$WORKER_ROOT"
+    local archived=""
     if [ -d xmrig ]; then
         log "Archiving existing worker installation..."
-        mv xmrig "xmrig-$(date +%Y%m%d_%H%M%S)"
+        archived="xmrig-$(date +%Y%m%d_%H%M%S)"
+        mv xmrig "$archived"
     fi
-    mv xmrig.new xmrig
+    mv xmrig.new xmrig || {
+        [ -z "$archived" ] || mv "$archived" xmrig
+        error "Could not swap in the new XMRig build."
+    }
 
     local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
@@ -1849,7 +1854,7 @@ _setup_plan() {
     else
         _p "checking the build" "skip the build — XMRig $XMRIG_VERSION already built at the pinned commit"
     fi
-    _p "preparing workspace" "workspace at $WORKER_ROOT (an existing prior install would be archived first)"
+    _p "preparing workspace" "workspace at $WORKER_ROOT"
     if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
         # Same check install_dependencies runs (shared _missing_appliance_tools — no second copy).
         local _mt
@@ -1873,7 +1878,7 @@ _setup_plan() {
         _p "installing dependencies" "no supported package manager found — manual install"
     fi
     if [ "$XMRIG_REBUILD" = true ]; then
-        _p "compiling XMRig" "compile in $WORKER_ROOT/xmrig/build and record the binary SHA-256"
+        _p "compiling XMRig" "compile in $WORKER_ROOT/xmrig.new/build, record the binary SHA-256, then archive any prior install and swap the build in"
     else
         _p "compiling XMRig" "skipped (already built; SHA-256 record kept)"
     fi

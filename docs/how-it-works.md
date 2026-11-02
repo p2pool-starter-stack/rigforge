@@ -19,14 +19,15 @@ already done.
 3. Rebuild decision: decide whether XMRig needs (re)building, based on the pinned
    version/commit vs. what's already compiled, a zero compiled-minimum marker, and a valid binary
    checksum.
-4. Workspace: prepare the worker root. A rebuild is cloned and built in `xmrig.new` beside the live
-   tree; only after it builds is the prior install archived and the new one swapped in, so a failed
-   fetch or build leaves the running miner's binary and config untouched. Old archives are pruned
-   after the swap so re-runs don't leak disk and failed attempts never evict the last good archive.
+4. Workspace: prepare the worker root. The prior install stays in place until its replacement has
+   built (step 6).
 5. Dependencies: install the build toolchain and runtime libraries for the OS (`cmake`, `libuv`,
    `hwloc`, OpenSSL, …).
-6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it. Output is
-   captured to a logfile; `make -j` is capped by available RAM to avoid OOM on low-memory hosts.
+6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it in `xmrig.new`
+   beside the live tree. Only after it builds is the prior install archived, the build swapped in and
+   old archives pruned, so a failed fetch or build leaves the running miner's binary and config
+   untouched. Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on
+   low-memory hosts.
 7. Generate config: detect the CPU and write the tuned XMRig `config.json` (pools, donate level,
    HTTP API, and the per-CPU `cpu`/`randomx` sections).
 8. Kernel tuning (Linux): HugePages, MSR, and module loading.
