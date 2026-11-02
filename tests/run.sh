@@ -7183,7 +7183,7 @@ assert_contains "firewall: loopback always accepted (#142)" "$nft_body" 'iifname
 assert_contains "firewall: the configured source is accepted (#142)" "$nft_body" "ip saddr 192.168.1.10 accept"
 assert_contains "firewall: :8080 guarded, others dropped (#142)" "$nft_body" "tcp dport { 8080 }"
 assert_contains "firewall: applied via nft -f (#142)" "$(cat "$FW/calls.log")" "[nft] -f"
-# API enabled -> :8081 joins the guarded set.
+assert_contains "firewall: blocked requests have a measurable counter (#586)" "$nft_body" "counter drop"
 run_fw "192.168.1.0/24" enabled >/dev/null
 assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/api-firewall.nft")" "8080, 8081"
 # Cleared -> table destroyed, file removed.
@@ -9549,8 +9549,8 @@ else
     assert_eq "no util/__pycache__ left in the tracked tree (#418)" "$pycache_post" "absent"
 fi
 
-# ---------------------------------------------------------------------------
-echo ""
+bash "$ROOT/tests/docs-replay-commands.sh"
+assert_rc "docs replay markers (#586)" "$?" 0
 SUITE_COMPLETE=1
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then

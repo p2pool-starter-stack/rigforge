@@ -1379,7 +1379,7 @@ table inet rigforge {
         type filter hook input priority filter; policy accept;
         tcp dport { $ports } iifname "lo" accept
         tcp dport { $ports } ${API_ALLOW_FAMILY:-ip} saddr $API_ALLOW_FROM accept
-        tcp dport { $ports } drop
+        tcp dport { $ports } counter drop
     }
 }
 NFT
