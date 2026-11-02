@@ -72,7 +72,12 @@ Not every verb needs root — the design, in four lines:
 | `help` (`-h`, `--help`) | Show usage. |
 
 `setup` is the default, so `sudo ./rigforge.sh` with no argument provisions (or re-provisions) the
-worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
+worker. Both `doctor` and `status` also report whether the source config and tune overlay match
+the last recorded generation. Changed sources produce an advisory warning with the `apply`
+command; a missing stamp on an older install is informational. These rows do not change either
+command's exit status. See [generated config provenance](configuration.md#how-the-generated-xmrig-config-is-built).
+
+The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
 and macOS: systemd on Linux, a launchd login agent on macOS (`enable`/`disable`). `doctor`,
 `tune --live`, and `autotune` are Linux-only. See [Running on macOS](#running-on-macos).
 
