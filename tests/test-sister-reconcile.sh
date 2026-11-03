@@ -6,6 +6,7 @@ SCRIPT="${1:-$ROOT/rigforge.sh}"
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
 source "$SCRIPT"
+eval "$(declare -f _apply_runtime | sed 's/^_apply_runtime/_real_apply_runtime/')"
 OS_TYPE=Linux
 SYSTEMD_DIR="$TEST_DIR/systemd"
 SCRIPT_DIR="$ROOT"
@@ -154,6 +155,33 @@ for WATCHDOG_RC in 0 1; do
         fi
     done
 done
+(
+    OS_TYPE=Linux WORKER_ROOT="$TEST_DIR/w" SERVICE_NAME=xmrig-fixture
+    mkdir -p "$WORKER_ROOT/xmrig/build"
+    parse_config() { :; }
+    generate_xmrig_config() { :; }
+    _reown_worker() { :; }
+    _miner_deliberately_stopped() { return 1; }
+    sudo() { return 1; }
+    if _real_apply_runtime preserve-run-state >/dev/null 2>&1; then
+        echo "_apply_runtime swallowed a rejected restart" >&2
+        exit 1
+    fi
+    sudo() { :; }
+    _real_apply_runtime preserve-run-state >/dev/null 2>&1
+)
+_apply_runtime() { return 1; }
+WATCHDOG_RC=0 API_RC=0
+if apply >"$TEST_DIR/result" 2>&1; then
+    echo "apply returned success despite a rejected miner restart" >&2
+    exit 1
+fi
+[ "$RIGFORGE_APPLY_FAIL_REASON" = 'could not restart the miner' ]
+_miner_deliberately_stopped() { return 1; }
+if _control_do_apply; then
+    echo "control apply returned success despite a rejected miner restart" >&2
+    exit 1
+fi
 source "$ROOT/tests/e2e-pithead-control.sh"
 systemctl() { printf 'failed\n'; }
 journalctl() { printf 'Permission denied: fixture-private-value\nTraceback: fixture-private-value\n'; }
