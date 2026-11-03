@@ -155,27 +155,24 @@ for WATCHDOG_RC in 0 1; do
         fi
     done
 done
-(
-    OS_TYPE=Linux WORKER_ROOT="$TEST_DIR/w" SERVICE_NAME=xmrig-fixture
-    mkdir -p "$WORKER_ROOT/xmrig/build"
-    parse_config() { :; }
-    generate_xmrig_config() { :; }
-    _reown_worker() { :; }
-    _miner_deliberately_stopped() { return 1; }
-    sudo() { return 1; }
-    _real_apply_runtime preserve-run-state >/dev/null 2>&1
-    [ "$RIGFORGE_RESTART_FAILED" = 1 ]
-    sudo() { :; }
-    _real_apply_runtime preserve-run-state >/dev/null 2>&1
-    [ "$RIGFORGE_RESTART_FAILED" = 0 ]
-)
-_apply_runtime() { RIGFORGE_RESTART_FAILED=1; }
-WATCHDOG_RC=0 API_RC=0 RIGFORGE_APPLY_FAIL_REASON=""
+WORKER_ROOT="$TEST_DIR/w" SERVICE_NAME=xmrig-fixture WATCHDOG_RC=0 API_RC=0
+mkdir -p "$WORKER_ROOT/xmrig/build"
+_apply_runtime() { _real_apply_runtime "$@"; }
+generate_xmrig_config() { :; }
+_miner_deliberately_stopped() { return 1; }
+sudo() { return 1; }
+RIGFORGE_APPLY_FAIL_REASON=""
 if apply >"$TEST_DIR/result" 2>&1; then
     echo "apply returned success despite a rejected miner restart" >&2
     exit 1
 fi
+[ "$RIGFORGE_RESTART_FAILED" = 1 ]
 [ "$RIGFORGE_APPLY_FAIL_REASON" = 'could not restart the miner' ]
+grep -q 'restarting xmrig-fixture failed' "$TEST_DIR/result"
+sudo() { :; }
+apply >"$TEST_DIR/result" 2>&1
+[ "$RIGFORGE_RESTART_FAILED" = 0 ]
+sudo() { return 1; }
 _miner_deliberately_stopped() { return 1; }
 RIGFORGE_APPLY_FAIL_REASON=""
 if _control_do_apply; then
