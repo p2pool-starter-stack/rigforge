@@ -39,7 +39,7 @@ trap 'rc=$?
         [ "$rc" -ne 0 ] || rc=1
     fi
     exit "$rc"' EXIT
-export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock"
+export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).

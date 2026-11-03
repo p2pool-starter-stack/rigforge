@@ -83,9 +83,11 @@ pithead#235):
   `watchdog` (armed state, thermal-hold, `max_temp_c`), `config` (the effective **writable**
   config — exactly the control-path allowlist, pool secrets masked to `{"__secret__": true}`; see
   the prefill note in §3), and
-  `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a content hash of the
-  writable config that changes iff that config changes, so a poller can detect a change made directly
-  on the rig; `source` is `control`/`local`/`restore`; see §3), `control` (the last control-path
+  `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a keyed digest of the
+  writable config (a persistent 0600 secret in `.rigforge-revision-key`, created on first use and never
+  served by the API) that changes iff that config changes, so a poller can detect a change made
+  directly on the rig without being able to test password guesses offline; deleting the key re-bases
+  the revision once; `source` is `control`/`local`/`restore`; see §3), `control` (the last control-path
   outcome, `{change_id, status, reason}` mirrored from the control status file, so a poller that
   missed a slow rollback catches the terminal outcome here without dialing the control port; `null`
   when the rig has never taken a control change or the status file is unreadable), and
