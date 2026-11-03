@@ -163,21 +163,21 @@ done
     _reown_worker() { :; }
     _miner_deliberately_stopped() { return 1; }
     sudo() { return 1; }
-    if _real_apply_runtime preserve-run-state >/dev/null 2>&1; then
-        echo "_apply_runtime swallowed a rejected restart" >&2
-        exit 1
-    fi
+    _real_apply_runtime preserve-run-state >/dev/null 2>&1
+    [ "$RIGFORGE_RESTART_FAILED" = 1 ]
     sudo() { :; }
     _real_apply_runtime preserve-run-state >/dev/null 2>&1
+    [ "$RIGFORGE_RESTART_FAILED" = 0 ]
 )
-_apply_runtime() { return 1; }
-WATCHDOG_RC=0 API_RC=0
+_apply_runtime() { RIGFORGE_RESTART_FAILED=1; }
+WATCHDOG_RC=0 API_RC=0 RIGFORGE_APPLY_FAIL_REASON=""
 if apply >"$TEST_DIR/result" 2>&1; then
     echo "apply returned success despite a rejected miner restart" >&2
     exit 1
 fi
 [ "$RIGFORGE_APPLY_FAIL_REASON" = 'could not restart the miner' ]
 _miner_deliberately_stopped() { return 1; }
+RIGFORGE_APPLY_FAIL_REASON=""
 if _control_do_apply; then
     echo "control apply returned success despite a rejected miner restart" >&2
     exit 1

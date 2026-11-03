@@ -4144,7 +4144,8 @@ _apply_runtime() { # [preserve-run-state]
     parse_config
     local build="$WORKER_ROOT/xmrig/build"
     [ -d "$build" ] || error "No built worker at $build. Run 'setup' first."
-    local held=no restart_rc=0
+    local held=no
+    RIGFORGE_RESTART_FAILED=0
     [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
     (cd "$build" && generate_xmrig_config)
     if [ "$OS_TYPE" != "Linux" ]; then
@@ -4154,11 +4155,10 @@ _apply_runtime() { # [preserve-run-state]
         [ -f "$WORKER_ROOT/watchdog.thermal-hold" ] && why=" (the watchdog is holding it below max_temp_c)"
         log "Applied config. $SERVICE_NAME was stopped$why, so it was left stopped — the new config takes effect at the next 'sudo $0 start'."
     else
-        sudo systemctl restart "$SERVICE_NAME" || restart_rc=1
-        [ "$restart_rc" -eq 0 ] && log "Applied config and restarted $SERVICE_NAME." || warn "Config regenerated, but restarting $SERVICE_NAME failed."
+        sudo systemctl restart "$SERVICE_NAME" || RIGFORGE_RESTART_FAILED=1
+        [ "$RIGFORGE_RESTART_FAILED" -eq 0 ] && log "Applied config and restarted $SERVICE_NAME." || warn "Config regenerated, but restarting $SERVICE_NAME failed."
     fi
     _reown_worker
-    return "$restart_rc"
 }
 
 # apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
@@ -4206,8 +4206,8 @@ apply() {
         _render_xmrig_unit
         sudo systemctl daemon-reload 2>/dev/null || true
     fi
-    local _wd_rc=0 _api_rc=0 _rt_rc=0
-    _apply_runtime preserve-run-state || _rt_rc=1
+    local _wd_rc=0 _api_rc=0
+    _apply_runtime preserve-run-state
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || _wd_rc=1
@@ -4226,8 +4226,8 @@ apply() {
         RIGFORGE_APPLY_FAIL_REASON="could not start the sister API"
         warn "The configured sister API could NOT be reconciled; check journalctl -u rigforge-api.service, then re-run 'sudo $0 apply'."
     fi
-    if [ "$_rt_rc" -ne 0 ]; then RIGFORGE_APPLY_FAIL_REASON="could not restart the miner"; fi
-    [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ] && [ "$_rt_rc" -eq 0 ]
+    [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ] || : "${RIGFORGE_APPLY_FAIL_REASON:=could not restart the miner}"
+    [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ] && [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ]
 }
 
 # #343: apply's honesty check. "Applied config and restarted" used to be the last word even when the
