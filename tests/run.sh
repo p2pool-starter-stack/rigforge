@@ -7608,8 +7608,8 @@ assert_eq "server has a writable StateDirectory spool" "$(grep -c '^StateDirecto
 assert_contains "applier unit baked with the operator (#reown)" "$(cat "$CPS/systemd/rigforge-control-apply.service")" "RIGFORGE_OPERATOR=rfop"
 assert_contains "path watcher globs the pending files" "$(cat "$CPS/systemd/rigforge-control-apply.path")" "PathExistsGlob=/var/lib/rigforge-control/spool/pending-*.json"
 assert_absent "no token baked into any control unit" "$(cat "$CPS/systemd/rigforge-control.service" "$CPS/systemd/rigforge-control-apply.service" "$CPS/systemd/rigforge-control-apply.path")" "tok-secret"
-out="$(run_control_install enabled 9099)"
-assert_contains "control server honours the port override" "$(cat "$CPS/systemd/rigforge-control.service")" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 9099'
+out="$(run_control_install enabled 9099)" && assert_contains "control server honours the port override" "$(cat "$CPS/systemd/rigforge-control.service")" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 9099'
+if bash "$ROOT/tests/test-control-firewall.sh" "$SCRIPT" "$CPS" "$BADNFT" "$STUBS" >/dev/null; then ok "control receiver is stopped or blocked when firewall loading fails (#628)"; else bad "control receiver is stopped or blocked when firewall loading fails (#628)" "regression failed"; fi
 out="$(run_control_install disabled)"
 assert_eq "control disable removes the server unit" "$([ -f "$CPS/systemd/rigforge-control.service" ] && echo y || echo n)" "n"
 assert_eq "control disable removes the applier unit" "$([ -f "$CPS/systemd/rigforge-control-apply.service" ] && echo y || echo n)" "n"
