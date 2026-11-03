@@ -9511,9 +9511,6 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     OS_TYPE=Linux
     SCRIPT_DIR="$FEEDFX"
     CONFIG_JSON="$FEEDFX/config.json"
-    # source-time CONFIG_META_FILE was derived from the REAL $SCRIPT_DIR (above), not this sandbox —
-    # override it explicitly (same reason the #253/#254 contract-pin test above does) or this reads
-    # whatever `apply()` left at the real repo root from an earlier test in this same run.
     CONFIG_META_FILE="$FEEDFX/meta.json"
     RIGFORGE_REVISION_KEY="$FEEDFX/revkey"
     RIGFORGE_API_DATA="$FEEDFX/data"

@@ -5255,9 +5255,7 @@ _writable_config_canonical() {
     jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
 }
 
-# #254: a short content hash of the canonical writable config — the load-bearing "did it change"
-# signal a polling consumer compares against. Changes iff the effective writable config changes.
-_writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL_USER" "$(_script_dir)/util/revision-key.sh" "${RIGFORGE_REVISION_KEY:-$SCRIPT_DIR/.rigforge-revision-key}"; }
+_writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL_USER" "$(_script_dir)/util/revision-key.sh" "${RIGFORGE_REVISION_KEY:-$SCRIPT_DIR/.rigforge-revision-key}" || :; }
 
 # #253: the MASKED view for the open feed — no pool credential is ever served on the token-optional
 # read. #415: a SET secret is masked to the {"__secret__": true} sentinel rather than deleted
