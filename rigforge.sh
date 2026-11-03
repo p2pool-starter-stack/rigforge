@@ -1460,7 +1460,6 @@ install_control() {
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     sudo systemctl stop rigforge-control.service 2>/dev/null || true
-    install_api_firewall
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
     CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" \
         envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH' \
@@ -1479,6 +1478,7 @@ install_control() {
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || true
         sudo rm -f "$usvc" "$upath"
     fi
+    install_api_firewall
     sudo systemctl daemon-reload
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-apply.path 2>/dev/null || true
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
