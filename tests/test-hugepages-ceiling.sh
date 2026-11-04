@@ -127,11 +127,13 @@ if [ "$(uname -s)" = Linux ]; then
             _ensure_hugepages() { :; }
             update-grub() { :; }
             sudo() {
-                case "$1" in
-                cp | sed | update-grub) "$@" ;;
-                modprobe) : ;;
-                *) return 1 ;;
-                esac
+                if [ "$1" = cp ] || [ "$1" = sed ] || [ "$1" = update-grub ]; then
+                    "$@"
+                elif [ "$1" = modprobe ]; then
+                    :
+                else
+                    return 1
+                fi
             }
             tune_kernel >/dev/null 2>&1
             printf '%s|%s\n' "$(cat "$GRUB_DEFAULT")" "$REBOOT_REQUIRED"
