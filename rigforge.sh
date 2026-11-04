@@ -4691,32 +4691,33 @@ control_apply() {
     return 0
 }
 
-# Pre-dial throttle for the remote-upgrade path (#308, ADR 0002 D6): a persisted stamp under a flock
-# bounds how often a rig will fetch from GitHub / rebuild, so a looping or hostile trigger can't turn
-# the fleet into a beacon or thrash the miner with rebuilds. Returns 0 if allowed (and stamps the
-# attempt), 1 if still inside the window, 2 if the throttle state itself is unusable (fail-closed,
-# #321). Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
 _control_upgrade_throttle_ok() { # <state-dir>
     local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
     now=$(date +%s)
     mkdir -p "$dir" 2>/dev/null || true
-    # Can't open the lock (unwritable/full state dir)? Fail CLOSED (#321): this guard exists to bound
-    # how often a compromised trigger can make the rig dial out, and a degraded state dir is exactly
-    # what an attacker might arrange — fail-open would invert the posture right there. An operator
-    # with a broken state dir has bigger problems than a delayed upgrade. rc 2 (not 1) so the caller
-    # reports the real cause instead of "throttled — retry later".
+    [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2
     exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
         warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
         return 2
     }
     flock 9 2>/dev/null || true
-    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
-    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+    if [ -L "$stamp" ] || { [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null); }; then
+        case "$last" in '' | *[!0-9]*) last=0 ;; esac
+    fi
     if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
         exec 9>&-
         return 1
     fi
-    printf '%s\n' "$now" >"$stamp" 2>/dev/null || true
+    local tmp
+    tmp=$(mktemp "$dir/.upgrade-last.XXXXXX") || {
+        exec 9>&-
+        return 2
+    }
+    if ! printf '%s\n' "$now" >"$tmp" || ! mv -f "$tmp" "$stamp"; then
+        rm -f "$tmp" 2>/dev/null
+        exec 9>&-
+        return 2
+    fi
     exec 9>&-
     return 0
 }
