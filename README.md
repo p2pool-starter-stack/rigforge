@@ -171,8 +171,9 @@ RigForge runs as root, so it's worth being explicit about what it does and doesn
   The only outbound traffic is
   to *your* pool, to the pinned XMRig source on GitHub (cloned and commit-verified before building),
   and to your distro's package mirrors.
-- The XMRig donation defaults to **1%**. That's XMRig's own upstream default, not a RigForge markup,
-  and it goes to the XMRig project. Set `"DONATION": 0` to turn it off.
+- The XMRig donation defaults to **0%**. Set `"DONATION"` to a nonzero percentage to support
+  the XMRig developers. After the one-time build migration on upgrade, lowering it takes effect
+  with `apply`, without rebuilding. Explicit values in `config.json` are preserved.
 - Each worker exposes XMRig's HTTP API on `:8080` for the
   [Pithead](https://github.com/p2pool-starter-stack/pithead) dashboard. It's `restricted` (read-only,
   can't control the miner) and open by default (set `ACCESS_TOKEN` in `config.json` to require a Bearer token). It binds the LAN by default; if you mine solo or to a public

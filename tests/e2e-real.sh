@@ -212,12 +212,8 @@ check_api_refresh() {
     if [ "$epoch" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then ok "sister-feed payload is fresh (${age}s old, generated $stamp)"; elif [ "$epoch" -gt 0 ] && [ "$age" -le 300 ] && [ "$age" -ge 0 ] && [ "$refresh_active" = 1 ]; then ok "sister-feed retained payload is available while refresh runs (${age}s old, generated $stamp)"; else bad "sister-feed payload has no fresh generated_at stamp (value '${stamp:-missing}', age ${age}s)"; fi
 }
 ensure_config() {
-    # setup needs a valid config.json. Benching is OFFLINE so any valid pool entry suffices for the build +
-    # bench + tune phases; default to an unroutable TEST-NET-3 (RFC 5737) host so the installed service
-    # never mines to a real destination. NOTE: verify's live-pool round-trip is mandatory and FAILS on this
-    # placeholder — set a real pool, or E2E_ALLOW_OFFLINE_POOL=1 for a deliberate offline run.
     if [ ! -f "$HERE/config.json" ]; then
-        printf '{ "pools": [{ "url": "203.0.113.1:3333" }], "DONATION": 1, "add_to_path": true, "autotune": "performance" }\n' >"$HERE/config.json"
+        printf '{ "pools": [{ "url": "203.0.113.1:3333" }], "DONATION": 0, "add_to_path": true, "autotune": "performance" }\n' >"$HERE/config.json"
         ok "wrote a placeholder config.json (offline bench; the service won't mine; add_to_path + autotune on to exercise the CLI and the periodic-tune timer)"
     else
         ok "using the existing config.json"
@@ -658,12 +654,10 @@ control() {
     _snapshot_control_state
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _control_cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true; exit "$E2E_EXIT_RC"' EXIT
 
-    # Ephemeral bearer token for this run only: generated, used over loopback, and discarded. Never
-    # echoed, never written anywhere but config.json itself (which the snapshot above restores).
     local tok cur_donation new_donation control_port api_port read_tok rev_before rev_after cid st tmp
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
-    cur_donation=$(jq -r '.DONATION // 1' "$HERE/config.json" 2>/dev/null || echo 1)
-    new_donation=$(((cur_donation + 1) % 101)) # DONATION is 0-100 (rigforge.sh); always differs from cur_donation
+    cur_donation=$(jq -r '.DONATION // 0' "$HERE/config.json" 2>/dev/null || echo 0)
+    new_donation=$(((cur_donation + 1) % 101))
 
     # Every request is local, so restrict the temporary receiver to loopback.
     tmp="$(mktemp)"

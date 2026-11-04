@@ -35,7 +35,7 @@ phase_access_tokens() {
     local master bench cur new port api_port resp code cid st waited=0 body bread curl_rc=0 control_active=0
     master=$(head -c 32 /dev/urandom | xxd -p -c 256)
     bench=$(head -c 32 /dev/urandom | xxd -p -c 256)
-    cur=$(jq -r '.DONATION // 1' "$CFG")
+    cur=$(jq -r '.DONATION // 0' "$CFG")
     new=$(((cur + 1) % 101))
     printf '{"master":"%s","bench":"%s"}' "$master" "$bench" | set_cfg '.api="enabled" | .control="enabled" | .ACCESS_TOKEN=$tokens[0].master | .ACCESS_TOKENS={"bench":$tokens[0].bench} | .api_allow_from="127.0.0.1/32"' soft --slurpfile tokens /dev/stdin ||
         bad "could not enable api+control with a named ACCESS_TOKENS entry"

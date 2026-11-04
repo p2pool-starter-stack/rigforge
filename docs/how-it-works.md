@@ -17,13 +17,17 @@ already done.
 2. Config: create a minimal `config.json` interactively if none exists, then parse and validate
    it (see [Configuration](configuration.md)).
 3. Rebuild decision: decide whether XMRig needs (re)building, based on the pinned
-   version/commit vs. what's already compiled.
-4. Workspace: prepare the worker root. Any prior install is archived rather than clobbered, and
-   old archives are pruned so re-runs don't leak disk.
+   version/commit vs. what's already compiled, a zero compiled-minimum marker, and a valid binary
+   checksum.
+4. Workspace: prepare the worker root. The prior install stays in place until its replacement has
+   built (step 6).
 5. Dependencies: install the build toolchain and runtime libraries for the OS (`cmake`, `libuv`,
    `hwloc`, OpenSSL, …).
-6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it. Output is
-   captured to a logfile; `make -j` is capped by available RAM to avoid OOM on low-memory hosts.
+6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it in `xmrig.new`
+   beside the live tree. Only after it builds is the prior install archived, the build swapped in and
+   old archives pruned, so a failed fetch or build leaves the running miner's binary and config
+   untouched. Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on
+   low-memory hosts.
 7. Generate config: detect the CPU and write the tuned XMRig `config.json` (pools, donate level,
    HTTP API, and the per-CPU `cpu`/`randomx` sections).
 8. Kernel tuning (Linux): HugePages, MSR, and module loading.
@@ -41,15 +45,15 @@ RigForge builds XMRig from source rather than shipping a binary:
 - Pinned to a known `XMRIG_VERSION` / `XMRIG_COMMIT`. The checkout is verified against the pinned
   commit (`git rev-parse HEAD` must match `XMRIG_COMMIT`, or the build aborts), so every worker runs the
   same audited source and supply-chain risk is bounded.
-- Donate level patched at build time. The configured `DONATION` is `sed`'d into `donate.h` so the
-  compiled binary honors it (XMRig's floor is otherwise 1%). It's also written into the runtime config.
-  Because this patch happens during the compile, changing `DONATION` after XMRig is already built only
-  updates the runtime config; re-patching the binary requires a rebuild (see
-  [Configuration](configuration.md#changing-settings-later)).
+- The compiled donation minimum is always zero; the compiled default follows `DONATION` (zero when
+  omitted). The runtime config controls the effective donation after a miner restart. Existing builds
+  rebuild once on upgrade, recorded by the compiled-minimum marker; subsequent changes use `apply`
+  without recompiling (see [Configuration](configuration.md#changing-settings-later)).
 - Memory-guarded parallelism. `make -j` is capped based on available RAM, so the build doesn't OOM
   on small machines.
 - Idempotent. If the pinned build already exists, setup skips the recompile. The
-  [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy) command rebuilds only when the pin changes.
+  [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy) command rebuilds when the pin changes, the compiled-minimum marker is missing or nonzero, or the
+  binary checksum no longer matches.
 
 ---
 
@@ -244,7 +248,7 @@ RigForge is built to be re-run:
 
 - Idempotent edits. System-file changes (`fstab`, `limits.conf`, `/etc/modules`) are append-only
   and deduplicated, so running setup twice never doubles a line.
-- Non-destructive workspace. A prior install is archived, not overwritten.
+- Non-destructive workspace. A prior install is archived, not overwritten, and only once its replacement has built.
 - Fail-fast with context. An `ERR` trap names the step that failed; config input is validated
   before the build starts.
 - Tested. A dependency-free suite fakes all hardware and privileged commands so every supported

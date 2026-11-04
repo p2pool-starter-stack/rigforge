@@ -183,15 +183,10 @@ _sha256() { # <file>
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
 }
 
-# True if a finished XMRig build for the pinned commit already exists, so we can skip the recompile.
-# Requires BOTH the built binary and a commit marker that matches XMRIG_COMMIT (a marker without a
-# binary means an incomplete build → rebuild).
 xmrig_already_built() {
     local marker="$WORKER_ROOT/xmrig/.rigforge-commit" sums="$WORKER_ROOT/xmrig/.rigforge-sha256"
     [ -x "$WORKER_ROOT/xmrig/build/xmrig" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$XMRIG_COMMIT" ] || return 1
-    # Tamper evidence (#141): a binary that no longer matches its build-time SHA-256 is NOT "already
-    # built" — the next setup/upgrade rebuilds it (self-healing). A missing record is a build from an
-    # older RigForge: still built (don't force a 10-minute recompile fleet-wide on first upgrade).
+    [ "$(cat "$WORKER_ROOT/xmrig/.rigforge-donate-min" 2>/dev/null)" = 0 ] || return 1
     [ ! -f "$sums" ] || [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$WORKER_ROOT/xmrig/build/xmrig")" ]
 }
 
@@ -424,9 +419,7 @@ parse_config() {
     if ! WORKER_ROOT=$(_worker_root_for_home "$RAW_HOME"); then
         error "HOME_DIR must be \"DYNAMIC_HOME\" or an absolute path (letters, digits, . _ - /); got: '$RAW_HOME'."
     fi
-    DONATION=$(jq -r '.DONATION // 1' "$CONFIG_JSON")
-    # donate-level is a percentage; the compile step also seds this into donate.h, so a malformed
-    # value would corrupt both the XMRig config and the source patch. Require an integer 0-100.
+    DONATION=$(jq -r '.DONATION // 0' "$CONFIG_JSON")
     if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
@@ -799,22 +792,23 @@ prepare_workspace() {
     fi
 
     cd "$WORKER_ROOT"
+}
 
-    GIT_DIR="xmrig"
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-    # Archive the existing installation only when we're about to rebuild (a no-op re-run keeps it).
-    if [ "$XMRIG_REBUILD" = true ] && [ -d "$GIT_DIR" ]; then
+_activate_xmrig_build() {
+    cd "$WORKER_ROOT"
+    local archived=""
+    if [ -d xmrig ]; then
         log "Archiving existing worker installation..."
-        mv "$GIT_DIR" "${GIT_DIR}-${TIMESTAMP}"
+        archived="xmrig-$(date +%Y%m%d_%H%M%S)"
+        mv xmrig "$archived"
     fi
-
-    # Prune old build archives so re-runs don't grow the disk without bound (keep the most recent
-    # few). Override the retention count with KEEP_ARCHIVES. The `|| true` keeps an empty glob (no
-    # archives yet) from tripping `set -e`/`pipefail`.
+    mv xmrig.new xmrig || {
+        [ -z "$archived" ] || mv "$archived" xmrig
+        error "Could not swap in the new XMRig build."
+    }
     local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
-    archives="$(ls -dt "${GIT_DIR}-"* 2>/dev/null || true)"
+    archives="$(ls -dt xmrig-* 2>/dev/null || true)"
     if [ -n "$archives" ]; then
         printf '%s\n' "$archives" | tail -n +"$((keep + 1))" | while IFS= read -r old; do
             [ -n "$old" ] || continue
@@ -822,6 +816,7 @@ prepare_workspace() {
             rm -rf "$old" 2>/dev/null || sudo rm -rf "$old"
         done
     fi
+    cd "$WORKER_ROOT/xmrig/build"
 }
 
 # Package-manager detection (read-only) — sets DEP_LIST / DEP_CHECK / DEP_INSTALL, rc 1 when no
@@ -952,65 +947,50 @@ install_dependencies() {
 compile_xmrig() {
     if [ "$XMRIG_REBUILD" != true ]; then
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
-        # Enter the build dir the rebuild path also ends in, so generate_xmrig_config (which writes a
-        # relative config.json) emits it where the service actually reads it: --config=$BUILD_DIR/config.json
-        # with BUILD_DIR=$WORKER_ROOT/xmrig/build. Without this, a no-rebuild setup re-run would drop the
-        # regenerated config.json in $WORKER_ROOT and the miner would keep loading the stale build/config.json
-        # — config edits would silently never take effect. The dir is guaranteed to exist here (a no-rebuild
-        # decision requires the built binary under it). `apply` and the rebuild path already cd here.
         cd "$WORKER_ROOT/xmrig/build"
         return 0
     fi
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
-    # Remove any partial/stale clone an interrupted or commit-mismatched prior run left behind — otherwise
-    # `git clone` aborts with "destination path 'xmrig' already exists and is not empty".
-    rm -rf xmrig
-    git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git
+    cd "$WORKER_ROOT"
+    rm -rf xmrig.new
+    git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git xmrig.new
 
-    # Verify we built the exact commit we pinned (supply-chain hardening). On a mismatch, drop the clone so
-    # the next run starts clean rather than tripping the not-empty error above.
     local actual
-    actual="$(git -C xmrig rev-parse HEAD)"
+    actual="$(git -C xmrig.new rev-parse HEAD)"
     [ "$actual" = "$XMRIG_COMMIT" ] || {
-        rm -rf xmrig
+        rm -rf xmrig.new
         error "XMRig commit mismatch: expected $XMRIG_COMMIT, got $actual"
     }
     log "Verified XMRig $XMRIG_VERSION at commit $XMRIG_COMMIT"
 
-    # Build output goes to a logfile (not /dev/null) so a failed compile is diagnosable; the ERR trap
-    # points the user at it. BUILD_LOG is global so on_err can find it.
     BUILD_LOG="$WORKER_ROOT/build.log"
     : >"$BUILD_LOG" 2>/dev/null || true
 
+    sed "s/kDefaultDonateLevel = 1;/kDefaultDonateLevel = $DONATION;/; s/kMinimumDonateLevel = 1;/kMinimumDonateLevel = 0;/" xmrig.new/src/donate.h >xmrig.new/src/donate.h.new
+    mv xmrig.new/src/donate.h.new xmrig.new/src/donate.h
+    grep -Fxq "constexpr const int kDefaultDonateLevel = $DONATION;" xmrig.new/src/donate.h &&
+        grep -Fxq 'constexpr const int kMinimumDonateLevel = 0;' xmrig.new/src/donate.h || error "XMRig donation patch verification failed; refusing to build."
     local cores jobs
     if [ "$OS_TYPE" == "Darwin" ]; then
-        sed -i '' "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
         cores=$(sysctl -n hw.ncpu)
         jobs=$(compute_build_jobs "$cores")
         log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
-        mkdir -p xmrig/build && cd xmrig/build
-        # macOS often needs explicit OpenSSL root for cmake if installed via brew
+        mkdir -p xmrig.new/build && cd xmrig.new/build
         cmake .. -DWITH_HWLOC=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" >>"$BUILD_LOG" 2>&1
     else
-        sed -i "s/DonateLevel = 1;/DonateLevel = $DONATION;/g" xmrig/src/donate.h
         cores=$(nproc)
         jobs=$(compute_build_jobs "$cores")
         log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
-        mkdir -p xmrig/build && cd xmrig/build
+        mkdir -p xmrig.new/build && cd xmrig.new/build
         cmake .. -DWITH_HWLOC=ON >>"$BUILD_LOG" 2>&1
     fi
 
     make -j"$jobs" >>"$BUILD_LOG" 2>&1
 
-    # Record the built commit so a later run can detect "already built" and skip the recompile (#4).
-    echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig/.rigforge-commit"
-    # And the binary's SHA-256 (#141): tamper EVIDENCE, not proofing — root can rewrite this too,
-    # but it reliably catches the accidental and unsophisticated cases, same honest posture as
-    # `restricted:true`. Guarded if: the stubbed-make tests produce no binary, and a trailing
-    # false `&&` would abort the function under set -e.
-    if [ -f "$WORKER_ROOT/xmrig/build/xmrig" ]; then
-        _sha256 "$WORKER_ROOT/xmrig/build/xmrig" >"$WORKER_ROOT/xmrig/.rigforge-sha256"
-    fi
+    echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig.new/.rigforge-commit"
+    printf '0\n' >"$WORKER_ROOT/xmrig.new/.rigforge-donate-min"
+    [ ! -f "$WORKER_ROOT/xmrig.new/build/xmrig" ] || _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
+    _activate_xmrig_build
 }
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
@@ -1453,6 +1433,7 @@ install_api() {
     sudo systemctl start rigforge-api-refresh.service || return 1
     _wait_sister_api
 }
+_sister_api_failed() { ! warn "The configured sister API could NOT be started; check journalctl -u rigforge-api.service, then re-run 'sudo $0 $1'."; }
 install_control() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
@@ -1866,7 +1847,7 @@ _setup_plan() {
     else
         _p "checking the build" "skip the build — XMRig $XMRIG_VERSION already built at the pinned commit"
     fi
-    _p "preparing workspace" "workspace at $WORKER_ROOT (an existing prior install would be archived first)"
+    _p "preparing workspace" "workspace at $WORKER_ROOT"
     if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
         # Same check install_dependencies runs (shared _missing_appliance_tools — no second copy).
         local _mt
@@ -1890,7 +1871,7 @@ _setup_plan() {
         _p "installing dependencies" "no supported package manager found — manual install"
     fi
     if [ "$XMRIG_REBUILD" = true ]; then
-        _p "compiling XMRig" "compile in $WORKER_ROOT/xmrig/build and record the binary SHA-256"
+        _p "compiling XMRig" "compile in $WORKER_ROOT/xmrig.new/build, record the binary SHA-256, then archive any prior install and swap the build in"
     else
         _p "compiling XMRig" "skipped (already built; SHA-256 record kept)"
     fi
@@ -1983,7 +1964,7 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg
+    local _arg _api_rc=0
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
@@ -2021,7 +2002,7 @@ main() {
     CURRENT_STEP="configuring the watchdog"
     install_watchdog
     CURRENT_STEP="configuring the sister API"
-    install_api
+    install_api || _api_rc=1
     CURRENT_STEP="configuring the control path"
     install_control
     CURRENT_STEP="configuring the API firewall"
@@ -2032,6 +2013,7 @@ main() {
     _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
     CURRENT_STEP="finishing up"
     finish_deployment
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed setup
 }
 
 # --- Lifecycle: upgrade & uninstall ---
@@ -2140,7 +2122,7 @@ _upgrade_check() {
 # what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
 # (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
-    local arg
+    local arg _api_rc=0
     for arg in "$@"; do
         case "$arg" in
         --check)
@@ -2166,7 +2148,7 @@ upgrade() {
     install_service
     install_autotune
     install_watchdog
-    install_api
+    install_api || _api_rc=1
     install_control
     install_api_firewall
     if [ "$XMRIG_REBUILD" = true ]; then
@@ -2177,6 +2159,7 @@ upgrade() {
     _upgrade_restart "$was_active"
     _post_upgrade_retune
     _reown_worker
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -4161,21 +4144,19 @@ _apply_runtime() { # [preserve-run-state]
     parse_config
     local build="$WORKER_ROOT/xmrig/build"
     [ -d "$build" ] || error "No built worker at $build. Run 'setup' first."
-    # Sampled BEFORE the regen, so the decision is about the state the operator or the watchdog left the
-    # rig in — nothing between here and the restart below changes it.
     local held=no
+    RIGFORGE_RESTART_FAILED=0
     [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
     (cd "$build" && generate_xmrig_config)
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Config regenerated. Restart the miner to apply."
     elif [ "$held" = yes ]; then
-        # The thermal hold is named only when it is there, and only to explain the stop — the decision
-        # above never reads the marker, so a manual stop with no marker takes the same branch.
         local why=""
         [ -f "$WORKER_ROOT/watchdog.thermal-hold" ] && why=" (the watchdog is holding it below max_temp_c)"
         log "Applied config. $SERVICE_NAME was stopped$why, so it was left stopped — the new config takes effect at the next 'sudo $0 start'."
     else
-        sudo systemctl restart "$SERVICE_NAME" && log "Applied config and restarted $SERVICE_NAME."
+        sudo systemctl restart "$SERVICE_NAME" || RIGFORGE_RESTART_FAILED=1
+        [ "$RIGFORGE_RESTART_FAILED" -eq 0 ] && log "Applied config and restarted $SERVICE_NAME." || warn "Config regenerated, but restarting $SERVICE_NAME failed."
     fi
     _reown_worker
 }
@@ -4225,8 +4206,8 @@ apply() {
         _render_xmrig_unit
         sudo systemctl daemon-reload 2>/dev/null || true
     fi
-    _apply_runtime preserve-run-state
     local _wd_rc=0 _api_rc=0
+    _apply_runtime preserve-run-state
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || _wd_rc=1
@@ -4245,7 +4226,8 @@ apply() {
         RIGFORGE_APPLY_FAIL_REASON="could not start the sister API"
         warn "The configured sister API could NOT be reconciled; check journalctl -u rigforge-api.service, then re-run 'sudo $0 apply'."
     fi
-    [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ]
+    [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ] || : "${RIGFORGE_APPLY_FAIL_REASON:=could not restart the miner}"
+    [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ] && [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ]
 }
 
 # #343: apply's honesty check. "Applied config and restarted" used to be the last word even when the
@@ -5269,7 +5251,7 @@ _writable_config_canonical() {
     local pools
     pools=$(jq -c '.pools // []' "$CONFIG_JSON" 2>/dev/null || echo '[]')
     [ -n "$pools" ] || pools='[]'
-    jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-1}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
+    jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
 }
 
 # #254: a short content hash of the canonical writable config — the load-bearing "did it change"
@@ -5424,6 +5406,21 @@ _tcp_probe() { # <host> <port>
     fi
 }
 
+_check_donation() {
+    local want got
+    want=$(jq -r '.DONATION // 0' "$CONFIG_JSON" 2>/dev/null) || return 0
+    _uint_in_range "$want" 0 100 || return 0
+    got=$(_read_api_summary | jq -er '.donate_level | select(type == "number" and . >= 0 and . <= 100 and floor == .)' 2>/dev/null) || got=""
+    if [ -z "$got" ]; then
+        _ck_info "XMRig donation level unavailable — cannot verify DONATION"
+    elif [ "$got" != "$want" ]; then
+        _ck_warn "XMRig donate_level $got differs from DONATION $want — upgrade an older build, then apply and restart"
+        return 1
+    else
+        _ck_ok "XMRig donate_level matches DONATION ($want%)"
+    fi
+}
+
 doctor() {
     cmd_version
     if [ "$OS_TYPE" != "Linux" ]; then
@@ -5468,9 +5465,11 @@ doctor() {
             ph=${ph#\[}
             ph=${ph%\]}
             _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed"
-            # Reject control characters before line framing can split one invalid value into valid ones.
         done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
+            if ! ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _check_donation; then
+                issues=$((issues + 1))
+            fi
             IFS="$(printf '\t')" read -r pc_st pc_pool pc_n1 pc_n2 <<EOF
 $(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _pool_conn_status)
 EOF
