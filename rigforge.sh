@@ -1015,6 +1015,7 @@ compile_xmrig() {
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
 
+source "$(_script_dir)/util/rx-profile.sh" # #588: cpu.rx forms + auto-profile probe (SCRIPT_DIR may be a worker home, not the script tree)
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
 
@@ -1190,14 +1191,8 @@ generate_xmrig_config() {
         fi
     fi
 
-    # First-class thread cap (#305): clamp cpu.rx to the ceiling AFTER any tune overlay, so a stale
-    # tuned thread count can't exceed the operator's headroom guarantee (e.g. a co-located miner told to
-    # stay at nproc-2). Auto (-1) or any value above the cap becomes the cap; a valid count at or under
-    # the cap is left untouched — a true ceiling, never a raise.
-    if [ -n "${THREADS_CAP:-}" ]; then
-        local _capped
-        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json 2>/dev/null) && printf '%s\n' "$_capped" >config.json
-    fi
+    # #305/#588: emit cpu.rx in a form XMRig honours; cap + tuned clamp the observed auto, never raise it.
+    _rx_finalize_cpu_rx config.json
 
     # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
     # redirect would otherwise leave it world-readable). _reown_worker hands ownership to the operator
@@ -1517,7 +1512,7 @@ _rx_setup_threads() {
     if [ -n "${RIGFORGE_THREADS:-}" ]; then
         RX_SETUP_THREADS="$RIGFORGE_THREADS"
     elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        RX_SETUP_THREADS=$(jq -r '.cpu.rx // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
+        RX_SETUP_THREADS=$(jq -r '(.cpu.rx | if type == "object" then .threads elif type == "array" then length else . end) // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
     fi
     case "$RX_SETUP_THREADS" in -1 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
 }
@@ -2562,11 +2557,14 @@ _now_s() { date +%s.%N 2>/dev/null; }
 
 # A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
+    # #588: XMRig ignores an integer cpu.rx, so candidates/overlays carry the object form (auto omits it).
     jq -cn --argjson p "$1" --argjson y "$2" --arg t "$3" --argjson g "$4" --argjson pr "$5" \
         --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
         { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq, wrmsr: $wr },
-          cpu: { yield: $y, priority: $pr, "huge-pages-jit": $hj,
-                 rx: (if $t == "-1" then -1 else ($t|tonumber) end) } }'
+          cpu: ({ yield: $y, priority: $pr, "huge-pages-jit": $hj } +
+                (if $t == "-1" then {} else
+                    { rx: { mode: 0, threads: ($t | tonumber), max_threads_cnt: ($t | tonumber), intensity: 1, affinity: -1 } }
+                end)) }'
 }
 
 # Materialize a full candidate config by merging the knob snippet over the base config.
@@ -2574,6 +2572,8 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     local out="$1"
     shift
     _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out"
+    chmod 600 "$out" # the candidate embeds pool credentials
+    _rx_clamp_candidate "$out" "$TUNE_BASE"
 }
 
 # Run `xmrig --bench=<size>` headlessly and echo its full output. XMRig's `--bench` prints the result and
@@ -3039,7 +3039,7 @@ _tune_history() { # <overrides_file> <log_file>
     echo ""
     if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then
         echo "  Winning tune options (applied — $ovr):"
-        jq -r '[(.randomx.scratchpad_prefetch_mode|select(.!=null)|"prefetch_mode=\(.)"),(.cpu.rx|select(.!=null)|"threads=\(.)"),(.cpu.yield|select(.!=null)|"yield=\(.)"),(.randomx."1gb-pages"|select(.!=null)|"1gb-pages=\(.)"),(.cpu.priority|select(.!=null)|"priority=\(.)"),(.cpu."huge-pages-jit"|select(.!=null)|"huge-pages-jit=\(.)"),(.randomx.cache_qos|select(.!=null)|"cache_qos=\(.)"),(.randomx.wrmsr|select(.!=null)|"wrmsr=\(.)")]|.[]|"    • "+.' "$ovr" 2>/dev/null || true
+        jq -r '[(.randomx.scratchpad_prefetch_mode|select(.!=null)|"prefetch_mode=\(.)"),(.cpu.rx|if type=="object" then .threads elif type=="array" then length else . end|select(.!=null)|"threads=\(.)"),(.cpu.yield|select(.!=null)|"yield=\(.)"),(.randomx."1gb-pages"|select(.!=null)|"1gb-pages=\(.)"),(.cpu.priority|select(.!=null)|"priority=\(.)"),(.cpu."huge-pages-jit"|select(.!=null)|"huge-pages-jit=\(.)"),(.randomx.cache_qos|select(.!=null)|"cache_qos=\(.)"),(.randomx.wrmsr|select(.!=null)|"wrmsr=\(.)")]|.[]|"    • "+.' "$ovr" 2>/dev/null || true
         echo "    -> merged into the generated config; the miner is using these now."
     else
         echo "  Winning tune options: none yet — running XMRig's auto defaults."
@@ -3325,7 +3325,7 @@ tune() {
     # we never freeze a knob the search didn't explore.
     local ovr
     ovr=$(jq -n --argjson p "$G_p" --argjson y "$G_y" '{randomx:{scratchpad_prefetch_mode:$p}, cpu:{yield:$y}}')
-    [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = $t')
+    [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = {mode: 0, threads: $t, max_threads_cnt: $t, intensity: 1, affinity: -1}') # #588: object form only
     case " $ACTIVE_KNOBS " in *" priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
     case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
     case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
