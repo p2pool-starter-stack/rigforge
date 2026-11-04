@@ -7,6 +7,11 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **The thread cap and tuned thread counts now reach XMRig 6.x (#588, #601).**
+  XMRig 6.26's per-algorithm thread-profile parser accepts an array or an object and silently ignores a bare integer, so the generated `cpu.rx: -1` / integer forms fell back to the all-core auto profile — a `threads` ceiling or a tuned count was never enforced. RigForge now observes XMRig's own auto profile once (a brief run against a sink config) and emits only forms XMRig honours: XMRig's own profile verbatim when nothing is set, a threads object when the cap or a tuned count lands below auto, never anything above the observed auto count — including bench candidates, which are clamped under the same ceiling.
+
 ## [1.18.0] - 2026-10-02
 
 ### Added
