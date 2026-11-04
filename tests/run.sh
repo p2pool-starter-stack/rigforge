@@ -9050,15 +9050,24 @@ fi
 
 # ---------------------------------------------------------------------------
 # #183: rig_lock — the flock both release gates take before touching the shared rig (miner-0).
-# The function under test is extracted from the suites themselves (duplicated there on purpose —
-# no shared lib), so first pin that contract: the two copies must be identical, verbatim. The
-# behaviour tests then drive the real function against sandboxed RIG_LOCK_FILE/RIG_LOCK_HOLDER
-# paths — no root, no /var/lock — with background subshells as the competing "suites".
-# #214: perf recording judges BEFORE it writes — the recording run is the only perf gate most
-# rigs ever get, so a regressed measurement must fail the phase and leave the baseline untouched
-# (E2E_PERF_FORCE=1 is the conscious override). #267: the harness must exercise the REAL
-# summary/exit plumbing (ok/bad/summary extracted verbatim from e2e-real.sh, same as the rig_lock
-# tests do it below) rather than reimplement it — only phase and the bench are stubbed.
+echo "== unit: _control_upgrade_throttle_ok stamp failures (#636) =="
+badStamp="$SANDBOX/thr-bad"
+mkdir -p "$badStamp/ro" && chmod 500 "$badStamp/ro"
+printf '0\n' >"$badStamp/upgrade-last"
+ln -sf "$badStamp/ro/upgrade-last" "$badStamp/upgrade-last"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=0
+    _control_upgrade_throttle_ok "$badStamp"
+) >/dev/null 2>&1
+assert_eq "throttle: symlink stamp fails CLOSED (rc 2)" "$?" "2"
+td="$SANDBOX/thr-stamp"
+mkdir -p "$td" && source "$SCRIPT"
+set +e
+_control_upgrade_throttle_ok "$td"
+assert_eq "throttle: atomic stamp on first attempt" "$?" "0"
+_control_upgrade_throttle_ok "$td"
+assert_eq "throttle: second attempt blocked" "$?" "1"
 echo "== unit: e2e-real perf record gate (#214/#267) =="
 PJ="$(mktemp -d "$SANDBOX/pj.XXXXXX")"
 sed -n '/^ok() {$/,/^}/p; /^bad() {$/,/^}/p; /^summary() {$/,/^}/p; /^_perf_judge()/,/^}/p; /^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
