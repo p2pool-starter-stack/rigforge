@@ -120,10 +120,6 @@ assert_eq "throttle: second attempt within the window blocked" "$?" "1"
     _control_upgrade_throttle_ok "$td"
 )
 assert_eq "throttle: zero interval always allowed" "$?" "0"
-# Fail CLOSED when the lock can't be opened (#321): the anti-beacon throttle must not silently
-# disable itself on exactly the degraded state dir an attacker might arrange. rc 2, not 1, so the
-# caller can report the real cause instead of "throttled — retry later". The dangling symlink into
-# a missing dir makes the open fail for ANY uid (root included), unlike a chmod-based setup.
 roThr="$SANDBOX/thr-ro"
 mkdir -p "$roThr"
 ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
