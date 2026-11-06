@@ -28,7 +28,7 @@ already done.
    configuration are both ready is the prior install archived, the build swapped in and old archives
    pruned, so a failed fetch, build or configuration leaves the running miner's binary and config
    untouched. The swap records `xmrig.swap` first; if it is interrupted between its two renames, the
-   next `setup` or `upgrade` completes it (or restores the archive) before doing anything else. Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on
+   next `setup` or `upgrade` completes it (or restores the archive) before it builds. Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on
    low-memory hosts.
 7. Generate config: detect the CPU and write the tuned XMRig `config.json` (pools, donate level,
    HTTP API, and the per-CPU `cpu`/`randomx` sections).

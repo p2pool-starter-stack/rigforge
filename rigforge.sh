@@ -797,7 +797,7 @@ prepare_workspace() {
 _recover_xmrig_swap() {
     [ -f "$WORKER_ROOT/xmrig.swap" ] || return 0
     [ -d "$WORKER_ROOT/xmrig" ] || {
-        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig" 2>/dev/null || :
+        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig" 2>/dev/null || warn "Could not recover the interrupted XMRig swap; rebuilding."
     }
     rm -f "$WORKER_ROOT/xmrig.swap"
     decide_rebuild
@@ -1002,7 +1002,7 @@ compile_xmrig() {
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig.new/.rigforge-commit"
     printf '0\n' >"$WORKER_ROOT/xmrig.new/.rigforge-donate-min"
     [ ! -f "$WORKER_ROOT/xmrig.new/build/xmrig" ] || _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
-    (cd "$WORKER_ROOT/xmrig.new/build" && generate_xmrig_config stage) || error "Could not prepare the XMRig configuration for the new build; the live miner is unchanged."
+    (cd "$WORKER_ROOT/xmrig.new/build" && generate_xmrig_config stage)
     _activate_xmrig_build
 }
 
