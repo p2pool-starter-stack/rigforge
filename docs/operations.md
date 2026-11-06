@@ -466,7 +466,8 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 > success; `apply` was the workaround. Fixed in #413.
 
 > Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk. A failed
-> XMRig fetch or build aborts the upgrade and leaves the live `xmrig/` tree (binary and config) untouched.
+> XMRig fetch, build or configuration step aborts the upgrade and leaves the live `xmrig/` tree (binary
+> and config) untouched. A swap interrupted mid-way is recovered by the next `setup` or `upgrade`.
 
 ---
 
