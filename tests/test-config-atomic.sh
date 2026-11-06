@@ -18,8 +18,10 @@ mkdir "$D/pf"
 cp "$D/jqfail" "$D/pf/jq"
 chmod +x "$STUBS"/* "$BAD/jq" "$D/pf/jq"
 REAL_JQ=$(command -v jq)
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/chown.log"\nexec "%s" "$@"\n' "$D" "$(command -v chown)" >"$STUBS/chown"
+chmod +x "$STUBS/chown"
 
-render() { # <dir> <path-prefix> [THREADS_CAP]
+render() {
     (
         cd "$1"
         source "$SCRIPT"
@@ -68,6 +70,7 @@ printf '{"_orig":true}\n' >"$W/config.json"
 check "successful render returns success" "$(render "$W" "$D" 4)" 0
 check "successful render replaces the config" "$("$REAL_JQ" -r '.cpu.rx' "$W/config.json")" 4
 check "successful render is owner-only" "$(stat -c '%a' "$W/config.json" 2>/dev/null || stat -f '%Lp' "$W/config.json")" 600
+check "successful render carries the replaced file's owner over" "$(grep -c "^$(id -u):$(id -g) config\.json\." "$D/chown.log")" 1
 
 [ "$fail" = 0 ] && echo "config-atomic: all passed"
 exit "$fail"

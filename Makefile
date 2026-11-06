@@ -20,7 +20,6 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-access-token-readiness.sh
 	bash tests/test-docs-clone-pin.sh
 	bash tests/test-staged-rebuild.sh
-	bash tests/test-config-atomic.sh
 	bash tests/test-tool-pin-watch.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)

@@ -1177,7 +1177,7 @@ generate_xmrig_config() {
         }
     fi
 
-    jq -e . "$_new" >/dev/null && chmod 600 "$_new" && mv -f "$_new" config.json || {
+    jq -e . "$_new" >/dev/null && chmod 600 "$_new" && { [ ! -f config.json ] || chown "$(stat -c '%u:%g' config.json 2>/dev/null || stat -f '%u:%g' config.json)" "$_new"; } && mv -f "$_new" config.json || {
         rm -f "$_new"
         warn "Validating or installing the XMRig config failed; the previous config.json is unchanged."
         return 1
