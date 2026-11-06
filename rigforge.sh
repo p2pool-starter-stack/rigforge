@@ -794,18 +794,29 @@ prepare_workspace() {
     cd "$WORKER_ROOT"
 }
 
+_recover_xmrig_swap() {
+    [ -f "$WORKER_ROOT/xmrig.swap" ] || return 0
+    [ -d "$WORKER_ROOT/xmrig" ] || {
+        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig"
+    }
+    rm -f "$WORKER_ROOT/xmrig.swap"
+    decide_rebuild
+}
+
 _activate_xmrig_build() {
     cd "$WORKER_ROOT"
     local archived=""
     if [ -d xmrig ]; then
         log "Archiving existing worker installation..."
         archived="xmrig-$(date +%Y%m%d_%H%M%S)"
+        printf '%s\n' "$archived" >xmrig.swap.tmp && mv xmrig.swap.tmp xmrig.swap
         mv xmrig "$archived"
     fi
     mv xmrig.new xmrig || {
         [ -z "$archived" ] || mv "$archived" xmrig
         error "Could not swap in the new XMRig build."
     }
+    rm -f xmrig.swap
     local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
     archives="$(ls -dt xmrig-* 2>/dev/null || true)"
@@ -945,6 +956,7 @@ install_dependencies() {
 # --- Setup: build XMRig from source ---
 
 compile_xmrig() {
+    _recover_xmrig_swap
     if [ "$XMRIG_REBUILD" != true ]; then
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
         cd "$WORKER_ROOT/xmrig/build"
@@ -990,20 +1002,17 @@ compile_xmrig() {
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig.new/.rigforge-commit"
     printf '0\n' >"$WORKER_ROOT/xmrig.new/.rigforge-donate-min"
     [ ! -f "$WORKER_ROOT/xmrig.new/build/xmrig" ] || _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
+    (cd "$WORKER_ROOT/xmrig.new/build" && generate_xmrig_config stage) || error "Could not prepare the XMRig configuration for the new build; the live miner is unchanged."
     _activate_xmrig_build
 }
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
 
-generate_xmrig_config() {
+generate_xmrig_config() { # [stage]
     log "Generating hardware-optimized XMRig configuration..."
-
-    # Identify CPU Topology
     if [ "$OS_TYPE" == "Darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
     else
-        # Anchor to "^Model name:" — as root, lscpu also prints a "BIOS Model name:" line (a DMI string
-        # like "...  Unknown CPU @ 4.2GHz"), and an unanchored grep would concatenate both into one line.
         CPU_MODEL=$(lscpu | grep -E '^Model name:' | cut -d':' -f2 | xargs)
     fi
     LOG_FILE_PATH=""
@@ -1155,36 +1164,28 @@ generate_xmrig_config() {
             },
             opencl: false,
             cuda: false
-        } + (if $log == "" then {} else {"log-file": $log} end)' >config.json
+        } + (if $log == "" then {} else {"log-file": $log} end)' >config.json.new
 
-    # Overlay any tuned knobs (#46) on top — kept in a separate file (written by `tune`) so the user's
-    # config.json is never touched. A recursive merge lets tuning win for just the keys it sets.
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         local _ovr
         _ovr=$(mktemp)
-        if jq -s '.[0] * .[1]' config.json "$WORKER_ROOT/tune-overrides.json" >"$_ovr" 2>/dev/null; then
-            mv "$_ovr" config.json
+        if jq -s '.[0] * .[1]' config.json.new "$WORKER_ROOT/tune-overrides.json" >"$_ovr" 2>/dev/null; then
+            mv "$_ovr" config.json.new
             log "Applied tuned overrides from tune-overrides.json."
         else
             rm -f "$_ovr"
         fi
     fi
 
-    # First-class thread cap (#305): clamp cpu.rx to the ceiling AFTER any tune overlay, so a stale
-    # tuned thread count can't exceed the operator's headroom guarantee (e.g. a co-located miner told to
-    # stay at nproc-2). Auto (-1) or any value above the cap becomes the cap; a valid count at or under
-    # the cap is left untouched — a true ceiling, never a raise.
     if [ -n "${THREADS_CAP:-}" ]; then
         local _capped
-        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json 2>/dev/null) && printf '%s\n' "$_capped" >config.json
+        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json.new 2>/dev/null) && printf '%s\n' "$_capped" >config.json.new
     fi
 
-    # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
-    # redirect would otherwise leave it world-readable). _reown_worker hands ownership to the operator
-    # later; chmod here is preserved across that chown, and root (the service) reads it regardless.
-    chmod 600 config.json
-
-    if [ "$OS_TYPE" == "Linux" ]; then
+    chmod 600 config.json.new
+    jq -e . config.json.new >/dev/null || error "Generated XMRig configuration is not valid JSON."
+    mv config.json.new config.json
+    if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
         # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
         # which re-renders the miner's config every boot and can cap or journald-route the log there.
