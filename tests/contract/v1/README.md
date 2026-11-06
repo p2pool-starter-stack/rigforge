@@ -17,7 +17,7 @@ normalized and byte-compared against the committed file on every run — see
 [`tests/run.sh`](../../run.sh), section `== contract guard: wire-shape fixtures (#351) ==`.
 
 The feed guard omits `DONATION` from its input config, so `feed.json` pins the zero default and the
-revision of that effective configuration. Both values stay byte-strict when the default changes.
+revision of that effective configuration under a fixed test key. Both values stay byte-strict when the default changes.
 
 `control-status.json` has two producers because it has two servers of truth. `_control_status()` is
 the single choke point `control_apply`/`control_upgrade` write terminal outcomes through — the right

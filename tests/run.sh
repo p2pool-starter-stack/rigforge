@@ -39,7 +39,7 @@ trap 'rc=$?
         [ "$rc" -ne 0 ] || rc=1
     fi
     exit "$rc"' EXIT
-export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock"
+export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).
@@ -9496,13 +9496,10 @@ else
     assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
 fi
 
-# --- feed: the rigforge block's shape, produced by the real api_refresh path. This file's own
-# HARDWARE INDEPENDENCE exports (top of file: MEMINFO/GOVERNOR_FILE/RAPL_DIR/...) already make
-# health/tune/watchdog fully deterministic on any machine; only installed-software provenance
-# varies release to release, so that's all that needs normalizing.
 FEEDFX="$(mktemp -d "$SANDBOX/feedfx.XXXXXX")"
 mkdir -p "$FEEDFX/home" "$FEEDFX/data" "$FEEDFX/control"
 printf 'v0.0.0-fixture\n' >"$FEEDFX/VERSION"
+printf 'fixture-revision-key' >"$FEEDFX/revkey"
 printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333", "pass": "secret"}], "watchdog": "enabled", "max_temp_c": 85 }\n' "$FEEDFX" >"$FEEDFX/config.json"
 printf '%s' '{"status":"rolled_back","change_id":"7777777777777777","source":"control","applied_at":"2026-01-01T00:00:00Z","changed_keys":["watchdog","DONATION"],"reason":"miner did not return to a live hashrate; rolled back and live","backup":"/b","warnings":["thermal protection changed: watchdog"]}' >"$FEEDFX/control/status.json"
 printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}' >"$FEEDFX/xmrig-body.json"
@@ -9511,10 +9508,8 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     OS_TYPE=Linux
     SCRIPT_DIR="$FEEDFX"
     CONFIG_JSON="$FEEDFX/config.json"
-    # source-time CONFIG_META_FILE was derived from the REAL $SCRIPT_DIR (above), not this sandbox —
-    # override it explicitly (same reason the #253/#254 contract-pin test above does) or this reads
-    # whatever `apply()` left at the real repo root from an earlier test in this same run.
     CONFIG_META_FILE="$FEEDFX/meta.json"
+    RIGFORGE_REVISION_KEY="$FEEDFX/revkey"
     RIGFORGE_API_DATA="$FEEDFX/data"
     RIGFORGE_CONTROL_STATE="$FEEDFX/control"
     API_CMD="cat '$FEEDFX/xmrig-body.json'"
