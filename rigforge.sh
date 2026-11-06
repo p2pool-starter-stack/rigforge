@@ -1096,7 +1096,7 @@ generate_xmrig_config() {
     # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
-    local _new
+    local _new _step
     _new=$(mktemp config.json.XXXXXX) || return 1
 
     jq -n --argjson pools "$POOLS_JSON" \
@@ -1161,17 +1161,17 @@ generate_xmrig_config() {
     }
 
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        jq -s '.[0] * .[1]' "$_new" "$WORKER_ROOT/tune-overrides.json" >"$_new.step" && mv -f "$_new.step" "$_new" || {
-            rm -f "$_new" "$_new.step"
-            warn "Applying tune-overrides.json failed; the previous config.json is unchanged."
+        _step=$(jq -s '.[0] * .[1]' "$_new" "$WORKER_ROOT/tune-overrides.json") && printf '%s\n' "$_step" >"$_new" || {
+            rm -f "$_new"
+            warn "Applying $WORKER_ROOT/tune-overrides.json failed (fix or remove it); the previous config.json is unchanged."
             return 1
         }
         log "Applied tuned overrides from tune-overrides.json."
     fi
 
     if [ -n "${THREADS_CAP:-}" ]; then
-        jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new" >"$_new.step" && mv -f "$_new.step" "$_new" || {
-            rm -f "$_new" "$_new.step"
+        _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || {
+            rm -f "$_new"
             warn "Clamping cpu.rx to the thread cap failed; the previous config.json is unchanged."
             return 1
         }
@@ -4146,7 +4146,7 @@ _apply_runtime() { # [preserve-run-state]
     local held=no
     RIGFORGE_RESTART_FAILED=0
     [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
-    (cd "$build" && generate_xmrig_config)
+    (cd "$build" && generate_xmrig_config) || return 1
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Config regenerated. Restart the miner to apply."
     elif [ "$held" = yes ]; then

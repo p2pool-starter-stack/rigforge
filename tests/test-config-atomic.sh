@@ -13,7 +13,10 @@ printf '#!/usr/bin/env bash\necho 8\n' >"$STUBS/nproc"
 printf '#!/usr/bin/env bash\necho rigbox\n' >"$STUBS/hostname"
 printf '#!/usr/bin/env bash\nexec "$@"\n' >"$STUBS/sudo"
 printf '#!/usr/bin/env bash\nprintf %%s "{\\"pools\\":[{\\"ur"\nexit 5\n' >"$BAD/jq"
-chmod +x "$STUBS"/* "$BAD/jq"
+printf '#!/usr/bin/env bash\ncase " $* " in *" $JQ_FAIL "*) exit 5 ;; esac\nexec "%s" "$@"\n' "$(command -v jq)" >"$D/jqfail"
+mkdir "$D/pf"
+cp "$D/jqfail" "$D/pf/jq"
+chmod +x "$STUBS"/* "$BAD/jq" "$D/pf/jq"
 REAL_JQ=$(command -v jq)
 
 render() { # <dir> <path-prefix> [THREADS_CAP]
@@ -48,6 +51,16 @@ printf '{"_orig":true}\n' >"$W/config.json"
 printf '{not json\n' >"$W/tune-overrides.json"
 check "unreadable tune overlay returns failure" "$(render "$W" "$D")" 1
 check "last good config.json survives a bad overlay" "$("$REAL_JQ" -r '._orig' "$W/config.json")" true
+
+for mode in "--argjson cap:clamp" "-e:validation"; do
+    W="$D/${mode#*:}"
+    mkdir "$W"
+    printf '{"_orig":true}\n' >"$W/config.json"
+    export JQ_FAIL="${mode%%:*}"
+    check "failed ${mode#*:} returns failure" "$(render "$W" "$D/pf" 4)" 1
+    check "last good config.json survives a failed ${mode#*:}" "$("$REAL_JQ" -r '._orig' "$W/config.json")" true
+    unset JQ_FAIL
+done
 
 W="$D/ok"
 mkdir "$W"
