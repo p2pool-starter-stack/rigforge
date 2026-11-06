@@ -1010,8 +1010,16 @@ compile_xmrig() {
 
 _config_render_fail() {
     rm -f "$1"
-    warn "$2; the previous config.json is unchanged."
+    warn "$2${3:-; the previous config.json is unchanged.}"
     return 1
+}
+
+_config_install() { # <rendered temp> [stage]
+    local bak
+    jq -e . "$1" >/dev/null && chmod 600 "$1" && bak=$(mktemp config.json.bak.XXXXXX) && { [ ! -f config.json ] || cat config.json >"$bak" || ! rm -f "$bak"; } || _config_render_fail "$1" "Validating or backing up the XMRig config failed" || return 1
+    if [ "${2:-}" = stage ]; then mv -f "$1" config.json; else cat "$1" >config.json && cmp -s "$1" config.json && chmod 600 config.json; fi && rm -f "$1" "$bak" && return 0
+    { [ -s "$bak" ] && cat "$bak" >config.json && cmp -s "$bak" config.json || { [ ! -s "$bak" ] && rm -f config.json; }; } && rm -f "$bak" && bak=""
+    _config_render_fail "$1" "Installing the XMRig config failed" "${bak:+; restoring it failed too, so config.json may be incomplete (the previous copy is $PWD/$bak).}"
 }
 
 generate_xmrig_config() {
@@ -1107,13 +1115,10 @@ generate_xmrig_config() {
         [[ " $_missing_isa " == *" avx2 "* ]] && warn "This CPU has no AVX2: dataset init will be slower (steady-state hashrate is unaffected)."
     fi
 
-    # Rig label for the pool `user` field (#22): any pool entry that didn't set its own `user` gets the
-    # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
     local _new _step
     _new=$(mktemp config.json.XXXXXX) || return 1
-
     jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
@@ -1180,18 +1185,14 @@ generate_xmrig_config() {
         _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
 
-    jq -e . "$_new" >/dev/null && chmod 600 "$_new" && { { [ "${1:-}" != stage ] && cat "$_new" >config.json && chmod 600 config.json && rm -f "$_new"; } || { [ "${1:-}" = stage ] && mv -f "$_new" config.json; }; } || _config_render_fail "$_new" "Validating or installing the XMRig config failed" || return 1
+    _config_install "$_new" "${1:-}" || return 1
 
     if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
-        # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
-        # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
-        # which re-renders the miner's config every boot and can cap or journald-route the log there.
         if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
             log "Appliance mode: skipping the logrotate policy (image-owned logging)."
             return
         fi
         log "Configuring log rotation policy..."
-        # Install logrotate configuration
         sudo tee "$LOGROTATE_DIR/xmrig" >/dev/null <<EOF
     $LOG_FILE_PATH {
         daily

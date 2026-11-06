@@ -62,6 +62,31 @@ for mode in "--argjson cap:clamp" "-e:validation"; do
     unset JQ_FAIL
 done
 
+mkdir "$D/pc"
+printf '#!/usr/bin/env bash\ncase "$1" in config.json.bak.*) [ -z "${CAT_BAK_FAIL:-}" ] || exit 5 ;; config.json.*) head -c 20 "$1"; exit "$CAT_RC" ;; esac\nexec "%s" "$@"\n' "$(command -v cat)" >"$D/pc/cat"
+chmod +x "$D/pc/cat"
+for CAT_RC in 28 0; do
+    export CAT_RC
+    W="$D/short$CAT_RC"
+    mkdir "$W"
+    printf '{"_orig":true}\n' >"$W/config.json"
+    chmod 644 "$W/config.json"
+    inode_before="$(ls -i "$W/config.json" | awk '{print $1}')"
+    check "short final write (exit $CAT_RC) returns failure" "$(render "$W" "$D/pc")" 1
+    check "last good config.json is restored after a short final write (exit $CAT_RC)" "$("$REAL_JQ" -r '._orig' "$W/config.json")" true
+    check "restore keeps the live inode (exit $CAT_RC)" "$(ls -i "$W/config.json" | awk '{print $1}')" "$inode_before"
+    check "short final write leaves no temp or backup file (exit $CAT_RC)" "$(find "$W" -name 'config.json.*' | wc -l | tr -d ' ')" 0
+done
+
+W="$D/norestore"
+mkdir "$W"
+printf '{"_orig":true}\n' >"$W/config.json"
+out="$(cd "$W" && source "$SCRIPT" && OS_TYPE=Linux WORKER_ROOT="$W" LOGROTATE_DIR="$W" ACCESS_TOKEN=t DONATION=1 POOLS_JSON='[{"url":"h:3333"}]' && PATH="$D/pc:$STUBS:$PATH" CAT_RC=28 CAT_BAK_FAIL=1 generate_xmrig_config 2>&1)" && rc=0 || rc=1
+check "failed restore returns failure" "$rc" 1
+check "failed restore does not claim the config is unchanged" "$(printf '%s' "$out" | grep -c 'previous config.json is unchanged')" 0
+bak="$(find "$W" -name 'config.json.bak.*')"
+check "failed restore keeps the last good copy it names" "$("$REAL_JQ" -r '._orig' "$bak") $(printf '%s' "$out" | grep -c "previous copy is $bak")" "true 1"
+
 W="$D/ok"
 mkdir "$W"
 printf '{"_orig":true}\n' >"$W/config.json"
