@@ -1008,6 +1008,23 @@ compile_xmrig() {
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
 
+_config_render_fail() {
+    rm -f "$1"
+    [ -n "${3:-}" ] || [ -z "$1" ] || rm -f "$1.bak"
+    warn "$2${3:-; the previous config.json is unchanged.}"
+    return 1
+}
+
+_config_install() {
+    jq -e . "$1" >/dev/null && chmod 600 "$1" && { [ ! -f config.json ] || (umask 077 && cat config.json >"$1.bak"); } || _config_render_fail "$1" "Validating or backing up the XMRig config failed" || return 1
+    if [ "${2:-}" = stage ]; then mv -f "$1" config.json; else cat "$1" >config.json && cmp -s "$1" config.json && chmod 600 config.json; fi && { rm -f "$1" "$1.bak" || true; } && return 0
+    if { [ -f "$1.bak" ] && cat "$1.bak" >config.json && cmp -s "$1.bak" config.json; } || { [ ! -f "$1.bak" ] && rm -f config.json; }; then
+        _config_render_fail "$1" "Installing the XMRig config failed"
+    else
+        _config_render_fail "$1" "Installing the XMRig config failed" "; restoring it failed too, so config.json may be incomplete (the previous copy is $PWD/$1.bak)."
+    fi
+}
+
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
     if [ "$OS_TYPE" == "Darwin" ]; then
@@ -1101,14 +1118,10 @@ generate_xmrig_config() {
         [[ " $_missing_isa " == *" avx2 "* ]] && warn "This CPU has no AVX2: dataset init will be slower (steady-state hashrate is unaffected)."
     fi
 
-    # Rig label for the pool `user` field (#22): any pool entry that didn't set its own `user` gets the
-    # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
-    # Build the whole XMRig config from scratch (issue #55). There's no template file to keep in sync:
-    # the tuned parts (pools, donate-level, the http block, the cpu/randomx sections) come from the
-    # variables above, and the few static defaults (autosave, randomx mode, opencl/cuda off) are
-    # emitted inline. `jq -n` builds the object from null input; any tuned overrides are merged below.
+    local _new _step
+    _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
     jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
@@ -1164,35 +1177,25 @@ generate_xmrig_config() {
             },
             opencl: false,
             cuda: false
-        } + (if $log == "" then {} else {"log-file": $log} end)' >config.json.new
+        } + (if $log == "" then {} else {"log-file": $log} end)' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
 
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        local _ovr
-        _ovr=$(mktemp)
-        if jq -s '.[0] * .[1]' config.json.new "$WORKER_ROOT/tune-overrides.json" >"$_ovr" 2>/dev/null; then
-            mv "$_ovr" config.json.new
-            log "Applied tuned overrides from tune-overrides.json."
-        else
-            rm -f "$_ovr"
-        fi
+        _step=$(jq -s '.[0] * .[1]' "$_new" "$WORKER_ROOT/tune-overrides.json") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Applying $WORKER_ROOT/tune-overrides.json failed (fix or remove it)" || return 1
+        log "Applied tuned overrides from tune-overrides.json."
     fi
 
     if [ -n "${THREADS_CAP:-}" ]; then
-        local _capped
-        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json.new 2>/dev/null) && printf '%s\n' "$_capped" >config.json.new
+        _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
 
-    chmod 600 config.json.new && jq -e . config.json.new >/dev/null && { { [ "${1:-}" != stage ] && cat config.json.new >config.json && chmod 600 config.json && rm -f config.json.new; } || { [ "${1:-}" = stage ] && mv config.json.new config.json; }; } || error "Could not write a valid XMRig configuration."
+    _config_install "$_new" "${1:-}" || return 1
+
     if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
-        # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
-        # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
-        # which re-renders the miner's config every boot and can cap or journald-route the log there.
         if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
             log "Appliance mode: skipping the logrotate policy (image-owned logging)."
             return
         fi
         log "Configuring log rotation policy..."
-        # Install logrotate configuration
         sudo tee "$LOGROTATE_DIR/xmrig" >/dev/null <<EOF
     $LOG_FILE_PATH {
         daily
@@ -4144,7 +4147,7 @@ _apply_runtime() { # [preserve-run-state]
     local held=no
     RIGFORGE_RESTART_FAILED=0
     [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
-    (cd "$build" && generate_xmrig_config)
+    (cd "$build" && generate_xmrig_config) || return 1
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Config regenerated. Restart the miner to apply."
     elif [ "$held" = yes ]; then

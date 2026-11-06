@@ -751,7 +751,7 @@ ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
     printf 'y\nbad\nstack.lan:3333\n' | PATH="$STUBS:$PATH" ensure_config_exists >/dev/null 2>&1
 )
 assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
-
+assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
