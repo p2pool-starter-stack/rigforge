@@ -95,6 +95,12 @@ sl="$(
 assert_contains "staged symlink refused (D8 spool handoff)" "$sl" "symlink"
 
 echo "== unit: _control_upgrade_throttle_ok (#308) =="
+if ! command -v flock >/dev/null; then
+    mkdir -p "$SANDBOX/flock-stub"
+    printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/flock-stub/flock"
+    chmod +x "$SANDBOX/flock-stub/flock"
+    PATH="$SANDBOX/flock-stub:$PATH"
+fi
 td=$(mktemp -d "$SANDBOX/thr.XXXXXX")
 (
     source "$SCRIPT"
