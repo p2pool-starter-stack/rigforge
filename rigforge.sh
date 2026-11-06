@@ -1011,6 +1011,7 @@ compile_xmrig() {
 _config_render_fail() {
     rm -f "$1"
     warn "$2; the previous config.json is unchanged."
+    return 1
 }
 
 generate_xmrig_config() {
