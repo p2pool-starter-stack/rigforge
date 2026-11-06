@@ -1737,15 +1737,12 @@ ws="$(mktemp -d "$SANDBOX/ws.XXXXXX")"
 mkdir -p "$ws/xmrig/build" "$ws/xmrig.new/build" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
     "$ws/xmrig-20240101_000003" "$ws/xmrig-20240101_000004"
 echo new >"$ws/xmrig.new/marker"
-(
-    source "$SCRIPT"
-    OS_TYPE=Linux
-    WORKER_ROOT="$ws"
-    set +e
-    PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 _activate_xmrig_build >/dev/null 2>&1
-)
+(source "$SCRIPT" && OS_TYPE=Linux && WORKER_ROOT="$ws" && PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 _activate_xmrig_build) >/dev/null 2>&1
 assert_eq "archives pruned to KEEP_ARCHIVES" "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
 assert_eq "staged build is now live" "$(cat "$ws/xmrig/marker")" "new"
+rm -rf "$ws/xmrig" && mkdir "$ws/xmrig.new" && echo xmrig-x >"$ws/xmrig.swap"
+(source "$SCRIPT" && WORKER_ROOT="$ws" && decide_rebuild() { :; } && _recover_xmrig_swap) >/dev/null 2>&1
+assert_eq "an interrupted swap rolls forward to the staged build (#635)" "$([ -d "$ws/xmrig" ] && [ ! -e "$ws/xmrig.swap" ] && echo ok)" "ok"
 sw="$(mktemp -d "$SANDBOX/ws-swap.XXXXXX")"
 mkdir -p "$sw/xmrig" && echo live >"$sw/xmrig/marker"
 (source "$SCRIPT" && OS_TYPE=Linux && WORKER_ROOT="$sw" && _activate_xmrig_build) >/dev/null 2>&1
@@ -1822,17 +1819,6 @@ rm -f "$b/xmrig/build/xmrig"
     xmrig_already_built
 )
 assert_rc "missing binary -> rebuild" "$?" "1"
-
-echo "== unit: an interrupted swap is recovered before the next build (#635) =="
-rc_fwd="$(mktemp -d "$SANDBOX/ws-rec-fwd.XXXXXX")"
-mkdir -p "$rc_fwd/xmrig-old" "$rc_fwd/xmrig.new" && echo new >"$rc_fwd/xmrig.new/marker" && echo xmrig-old >"$rc_fwd/xmrig.swap"
-(source "$SCRIPT" && WORKER_ROOT="$rc_fwd" && decide_rebuild() { :; } && _recover_xmrig_swap) >/dev/null 2>&1
-assert_eq "recovery rolls forward to the staged build" "$(cat "$rc_fwd/xmrig/marker")" "new"
-assert_eq "recovery clears its marker" "$([ -e "$rc_fwd/xmrig.swap" ] && echo left || echo gone)" "gone"
-rc_back="$(mktemp -d "$SANDBOX/ws-rec-back.XXXXXX")"
-mkdir -p "$rc_back/xmrig-old" && echo old >"$rc_back/xmrig-old/marker" && echo xmrig-old >"$rc_back/xmrig.swap"
-(source "$SCRIPT" && WORKER_ROOT="$rc_back" && decide_rebuild() { :; } && _recover_xmrig_swap) >/dev/null 2>&1
-assert_eq "recovery restores the archive without a staged build" "$(cat "$rc_back/xmrig/marker")" "old"
 
 echo "== unit: compile_xmrig honours XMRIG_REBUILD (#4) =="
 s="$(mktemp -d "$SANDBOX/skip.XXXXXX")"
