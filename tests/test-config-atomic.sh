@@ -98,11 +98,12 @@ check "failed backup leaves the live config untouched" "$("$REAL_JQ" -r '._orig'
 W="$D/norestore"
 mkdir "$W"
 printf '{"_orig":true}\n' >"$W/config.json"
-out="$(cd "$W" && source "$SCRIPT" && OS_TYPE=Linux WORKER_ROOT="$W" LOGROTATE_DIR="$W" ACCESS_TOKEN=t DONATION=1 POOLS_JSON='[{"url":"h:3333"}]' && PATH="$D/pc:$STUBS:$PATH" CAT_RC=28 CAT_BAK_FAIL=1 generate_xmrig_config 2>&1)" && rc=0 || rc=1
+out="$(cd "$W" && umask 022 && source "$SCRIPT" && OS_TYPE=Linux WORKER_ROOT="$W" LOGROTATE_DIR="$W" ACCESS_TOKEN=t DONATION=1 POOLS_JSON='[{"url":"h:3333"}]' && PATH="$D/pc:$STUBS:$PATH" CAT_RC=28 CAT_BAK_FAIL=1 generate_xmrig_config 2>&1)" && rc=0 || rc=1
 check "failed restore returns failure" "$rc" 1
 check "failed restore does not claim the config is unchanged" "$(printf '%s' "$out" | grep -c 'previous config.json is unchanged')" 0
 bak="$(find "$W" -name 'config.json.*.bak')"
 check "failed restore keeps the last good copy it names" "$("$REAL_JQ" -r '._orig' "$bak") $(printf '%s' "$out" | grep -c "previous copy is $bak")" "true 1"
+check "the kept backup is owner-only under a permissive umask" "$(stat -c '%a' "$bak" 2>/dev/null || stat -f '%Lp' "$bak")" 600
 
 W="$D/ok"
 mkdir "$W"

@@ -1016,7 +1016,7 @@ _config_render_fail() {
 }
 
 _config_install() {
-    jq -e . "$1" >/dev/null && chmod 600 "$1" && { [ ! -f config.json ] || cat config.json >"$1.bak"; } || _config_render_fail "$1" "Validating or backing up the XMRig config failed" || return 1
+    jq -e . "$1" >/dev/null && chmod 600 "$1" && { [ ! -f config.json ] || (umask 077 && cat config.json >"$1.bak"); } || _config_render_fail "$1" "Validating or backing up the XMRig config failed" || return 1
     if [ "${2:-}" = stage ]; then mv -f "$1" config.json; else cat "$1" >config.json && cmp -s "$1" config.json && chmod 600 config.json; fi && { rm -f "$1" "$1.bak" || true; } && return 0
     if { [ -f "$1.bak" ] && cat "$1.bak" >config.json && cmp -s "$1.bak" config.json; } || { [ ! -f "$1.bak" ] && rm -f config.json; }; then
         _config_render_fail "$1" "Installing the XMRig config failed"
