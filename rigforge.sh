@@ -4695,29 +4695,26 @@ _control_upgrade_throttle_ok() { # <state-dir>
     local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
     now=$(date +%s)
     mkdir -p "$dir" 2>/dev/null || true
-    [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2
     exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
         warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
         return 2
     }
-    flock 9 2>/dev/null || true
-    if [ -L "$stamp" ] || { [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null); }; then
-        case "$last" in '' | *[!0-9]*) last=0 ;; esac
-    fi
+    flock 9 2>/dev/null || {
+        warn "control-upgrade: couldn't lock the throttle state under $dir — refusing the upgrade (fail-closed)."
+        exec 9>&-
+        return 2
+    }
+    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+    case "$last" in '' | *[!0-9]*) last=0 ;; esac
     if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
         exec 9>&-
         return 1
     fi
-    local tmp
-    tmp=$(mktemp "$dir/.upgrade-last.XXXXXX") || {
+    printf '%s\n' "$now" >"$stamp" 2>/dev/null || {
+        warn "control-upgrade: couldn't record the attempt under $dir — refusing the upgrade (fail-closed)."
         exec 9>&-
         return 2
     }
-    if ! printf '%s\n' "$now" >"$tmp" || ! mv -f "$tmp" "$stamp"; then
-        rm -f "$tmp" 2>/dev/null
-        exec 9>&-
-        return 2
-    fi
     exec 9>&-
     return 0
 }

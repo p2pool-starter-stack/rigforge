@@ -128,6 +128,26 @@ ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
 ) >/dev/null 2>&1
 assert_eq "throttle: unopenable lock fails CLOSED (rc 2) (#321)" "$?" "2"
 
+badStamp="$SANDBOX/thr-stamp"
+mkdir -p "$badStamp/upgrade-last"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$badStamp"
+) >/dev/null 2>&1
+assert_eq "throttle: unwritable stamp fails CLOSED (rc 2) (#636)" "$?" "2"
+noFlock="$SANDBOX/thr-flock"
+mkdir -p "$noFlock/bin"
+printf '#!/bin/sh\nexit 1\n' >"$noFlock/bin/flock"
+chmod +x "$noFlock/bin/flock"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    PATH="$noFlock/bin:$PATH"
+    _control_upgrade_throttle_ok "$noFlock"
+) >/dev/null 2>&1
+assert_eq "throttle: rejected lock fails CLOSED (rc 2) (#636)" "$?" "2"
+
 # _control_upgrade_do against a STUB git (+ stub rigforge.sh) so the real fetch/reachability/checkout
 # lines run under coverage — and, more importantly, the D10 reachability guard is exercised for real.
 echo "== unit: _control_upgrade_do fetch + reachability + checkout (#308, stub git) =="
