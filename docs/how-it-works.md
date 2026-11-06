@@ -34,7 +34,7 @@ already done.
    hosts.
 7. Generate config: detect the CPU and write the tuned XMRig `config.json` (pools, donate level,
    HTTP API, and the per-CPU `cpu`/`randomx` sections). The file is rendered, overlaid, clamped and validated in a temp file beside it and
-   renamed into place only on success, so a failure leaves the previous `config.json` intact.
+   written into `config.json` only on success, so a failure leaves the previous `config.json` intact.
 8. Kernel tuning (Linux): HugePages, MSR, and module loading.
 9. Limits (Linux): `hugetlbfs` mounts, `fstab`, and memlock limits.
 10. Service (Linux): install and enable the `xmrig` systemd unit with a performance governor and

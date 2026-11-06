@@ -1180,7 +1180,7 @@ generate_xmrig_config() {
         _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
 
-    jq -e . "$_new" >/dev/null && chmod 600 "$_new" && { [ ! -f config.json ] || chown "$(stat -c '%u:%g' config.json 2>/dev/null || stat -f '%u:%g' config.json)" "$_new"; } && mv -f "$_new" config.json || _config_render_fail "$_new" "Validating or installing the XMRig config failed" || return 1
+    jq -e . "$_new" >/dev/null && chmod 600 "$_new" && { { [ "${1:-}" != stage ] && cat "$_new" >config.json && chmod 600 config.json && rm -f "$_new"; } || { [ "${1:-}" = stage ] && mv -f "$_new" config.json; }; } || _config_render_fail "$_new" "Validating or installing the XMRig config failed" || return 1
 
     if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run

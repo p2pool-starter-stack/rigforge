@@ -137,7 +137,7 @@ W="$D/mvfail"
 mkdir -p "$W/xmrig/build" "$D/fail-mv"
 printf 'good\n' >"$W/xmrig/build/xmrig"
 printf '{"live":true}\n' >"$W/xmrig/build/config.json"
-printf '#!/usr/bin/env bash\n[ "$*" = "config.json.new config.json" ] && exit 1\nexec /bin/mv "$@"\n' >"$D/fail-mv/mv"
+printf '#!/usr/bin/env bash\ncase "$*" in "-f config.json."* config.json) exit 1 ;; esac\nexec /bin/mv "$@"\n' >"$D/fail-mv/mv"
 chmod +x "$D/fail-mv/mv"
 set +e
 (
