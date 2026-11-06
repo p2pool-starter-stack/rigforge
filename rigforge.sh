@@ -1096,10 +1096,9 @@ generate_xmrig_config() {
     # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
-    # Build the whole XMRig config from scratch (issue #55). There's no template file to keep in sync:
-    # the tuned parts (pools, donate-level, the http block, the cpu/randomx sections) come from the
-    # variables above, and the few static defaults (autosave, randomx mode, opencl/cuda off) are
-    # emitted inline. `jq -n` builds the object from null input; any tuned overrides are merged below.
+    local _new
+    _new=$(mktemp config.json.XXXXXX) || return 1
+
     jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
@@ -1155,34 +1154,34 @@ generate_xmrig_config() {
             },
             opencl: false,
             cuda: false
-        } + (if $log == "" then {} else {"log-file": $log} end)' >config.json
+        } + (if $log == "" then {} else {"log-file": $log} end)' >"$_new" || {
+        rm -f "$_new"
+        warn "Rendering the XMRig config failed; the previous config.json is unchanged."
+        return 1
+    }
 
-    # Overlay any tuned knobs (#46) on top — kept in a separate file (written by `tune`) so the user's
-    # config.json is never touched. A recursive merge lets tuning win for just the keys it sets.
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        local _ovr
-        _ovr=$(mktemp)
-        if jq -s '.[0] * .[1]' config.json "$WORKER_ROOT/tune-overrides.json" >"$_ovr" 2>/dev/null; then
-            mv "$_ovr" config.json
-            log "Applied tuned overrides from tune-overrides.json."
-        else
-            rm -f "$_ovr"
-        fi
+        jq -s '.[0] * .[1]' "$_new" "$WORKER_ROOT/tune-overrides.json" >"$_new.step" && mv -f "$_new.step" "$_new" || {
+            rm -f "$_new" "$_new.step"
+            warn "Applying tune-overrides.json failed; the previous config.json is unchanged."
+            return 1
+        }
+        log "Applied tuned overrides from tune-overrides.json."
     fi
 
-    # First-class thread cap (#305): clamp cpu.rx to the ceiling AFTER any tune overlay, so a stale
-    # tuned thread count can't exceed the operator's headroom guarantee (e.g. a co-located miner told to
-    # stay at nproc-2). Auto (-1) or any value above the cap becomes the cap; a valid count at or under
-    # the cap is left untouched — a true ceiling, never a raise.
     if [ -n "${THREADS_CAP:-}" ]; then
-        local _capped
-        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json 2>/dev/null) && printf '%s\n' "$_capped" >config.json
+        jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new" >"$_new.step" && mv -f "$_new.step" "$_new" || {
+            rm -f "$_new" "$_new.step"
+            warn "Clamping cpu.rx to the thread cap failed; the previous config.json is unchanged."
+            return 1
+        }
     fi
 
-    # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
-    # redirect would otherwise leave it world-readable). _reown_worker hands ownership to the operator
-    # later; chmod here is preserved across that chown, and root (the service) reads it regardless.
-    chmod 600 config.json
+    jq -e . "$_new" >/dev/null && chmod 600 "$_new" && mv -f "$_new" config.json || {
+        rm -f "$_new"
+        warn "Validating or installing the XMRig config failed; the previous config.json is unchanged."
+        return 1
+    }
 
     if [ "$OS_TYPE" == "Linux" ]; then
         # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
