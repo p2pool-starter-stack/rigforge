@@ -1010,16 +1010,19 @@ compile_xmrig() {
 
 _config_render_fail() {
     rm -f "$1"
+    [ -n "${3:-}" ] || [ -z "$1" ] || rm -f "$1.bak"
     warn "$2${3:-; the previous config.json is unchanged.}"
     return 1
 }
 
-_config_install() { # <rendered temp> [stage]
-    local bak
-    jq -e . "$1" >/dev/null && chmod 600 "$1" && bak=$(mktemp config.json.bak.XXXXXX) && { [ ! -f config.json ] || cat config.json >"$bak" || ! rm -f "$bak"; } || _config_render_fail "$1" "Validating or backing up the XMRig config failed" || return 1
-    if [ "${2:-}" = stage ]; then mv -f "$1" config.json; else cat "$1" >config.json && cmp -s "$1" config.json && chmod 600 config.json; fi && rm -f "$1" "$bak" && return 0
-    { [ -s "$bak" ] && cat "$bak" >config.json && cmp -s "$bak" config.json || { [ ! -s "$bak" ] && rm -f config.json; }; } && rm -f "$bak" && bak=""
-    _config_render_fail "$1" "Installing the XMRig config failed" "${bak:+; restoring it failed too, so config.json may be incomplete (the previous copy is $PWD/$bak).}"
+_config_install() {
+    jq -e . "$1" >/dev/null && chmod 600 "$1" && { [ ! -f config.json ] || cat config.json >"$1.bak"; } || _config_render_fail "$1" "Validating or backing up the XMRig config failed" || return 1
+    if [ "${2:-}" = stage ]; then mv -f "$1" config.json; else cat "$1" >config.json && cmp -s "$1" config.json && chmod 600 config.json; fi && { rm -f "$1" "$1.bak" || true; } && return 0
+    if { [ -f "$1.bak" ] && cat "$1.bak" >config.json && cmp -s "$1.bak" config.json; } || { [ ! -f "$1.bak" ] && rm -f config.json; }; then
+        _config_render_fail "$1" "Installing the XMRig config failed"
+    else
+        _config_render_fail "$1" "Installing the XMRig config failed" "; restoring it failed too, so config.json may be incomplete (the previous copy is $PWD/$1.bak)."
+    fi
 }
 
 generate_xmrig_config() {
@@ -1118,7 +1121,7 @@ generate_xmrig_config() {
     FULL_USER="$(hostname)"
 
     local _new _step
-    _new=$(mktemp config.json.XXXXXX) || return 1
+    _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
     jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \

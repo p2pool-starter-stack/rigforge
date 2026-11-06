@@ -63,7 +63,7 @@ for mode in "--argjson cap:clamp" "-e:validation"; do
 done
 
 mkdir "$D/pc"
-printf '#!/usr/bin/env bash\ncase "$1" in config.json.bak.*) [ -z "${CAT_BAK_FAIL:-}" ] || exit 5 ;; config.json.*) head -c 20 "$1"; exit "$CAT_RC" ;; esac\nexec "%s" "$@"\n' "$(command -v cat)" >"$D/pc/cat"
+printf '#!/usr/bin/env bash\ncase "$1" in config.json) [ -z "${CAT_SRC_FAIL:-}" ] || exit 5 ;; *.bak) [ -z "${CAT_BAK_FAIL:-}" ] || exit 5 ;; config.json.*) head -c 20 "$1"; exit "$CAT_RC" ;; esac\nexec "%s" "$@"\n' "$(command -v cat)" >"$D/pc/cat"
 chmod +x "$D/pc/cat"
 for CAT_RC in 28 0; do
     export CAT_RC
@@ -78,13 +78,30 @@ for CAT_RC in 28 0; do
     check "short final write leaves no temp or backup file (exit $CAT_RC)" "$(find "$W" -name 'config.json.*' | wc -l | tr -d ' ')" 0
 done
 
+W="$D/empty"
+mkdir "$W"
+: >"$W/config.json"
+check "short final write over an empty config returns failure" "$(CAT_RC=28 render "$W" "$D/pc")" 1
+check "an empty prior config.json is restored, not deleted" "$([ -f "$W/config.json" ] && wc -c <"$W/config.json" | tr -d ' ')" 0
+
+W="$D/absent"
+mkdir "$W"
+check "short final write with no prior config returns failure" "$(CAT_RC=28 render "$W" "$D/pc")" 1
+check "no partial config.json is left when there was none before" "$(find "$W" -name 'config.json*' | wc -l | tr -d ' ')" 0
+
+W="$D/nobackup"
+mkdir "$W"
+printf '{"_orig":true}\n' >"$W/config.json"
+check "failed backup returns failure" "$(CAT_RC=28 CAT_SRC_FAIL=1 render "$W" "$D/pc")" 1
+check "failed backup leaves the live config untouched" "$("$REAL_JQ" -r '._orig' "$W/config.json") $(find "$W" -name 'config.json.*' | wc -l | tr -d ' ')" "true 0"
+
 W="$D/norestore"
 mkdir "$W"
 printf '{"_orig":true}\n' >"$W/config.json"
 out="$(cd "$W" && source "$SCRIPT" && OS_TYPE=Linux WORKER_ROOT="$W" LOGROTATE_DIR="$W" ACCESS_TOKEN=t DONATION=1 POOLS_JSON='[{"url":"h:3333"}]' && PATH="$D/pc:$STUBS:$PATH" CAT_RC=28 CAT_BAK_FAIL=1 generate_xmrig_config 2>&1)" && rc=0 || rc=1
 check "failed restore returns failure" "$rc" 1
 check "failed restore does not claim the config is unchanged" "$(printf '%s' "$out" | grep -c 'previous config.json is unchanged')" 0
-bak="$(find "$W" -name 'config.json.bak.*')"
+bak="$(find "$W" -name 'config.json.*.bak')"
 check "failed restore keeps the last good copy it names" "$("$REAL_JQ" -r '._orig' "$bak") $(printf '%s' "$out" | grep -c "previous copy is $bak")" "true 1"
 
 W="$D/ok"
