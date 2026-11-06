@@ -1823,6 +1823,17 @@ rm -f "$b/xmrig/build/xmrig"
 )
 assert_rc "missing binary -> rebuild" "$?" "1"
 
+echo "== unit: an interrupted swap is recovered before the next build (#635) =="
+rc_fwd="$(mktemp -d "$SANDBOX/ws-rec-fwd.XXXXXX")"
+mkdir -p "$rc_fwd/xmrig-old" "$rc_fwd/xmrig.new" && echo new >"$rc_fwd/xmrig.new/marker" && echo xmrig-old >"$rc_fwd/xmrig.swap"
+(source "$SCRIPT" && WORKER_ROOT="$rc_fwd" && decide_rebuild() { :; } && _recover_xmrig_swap) >/dev/null 2>&1
+assert_eq "recovery rolls forward to the staged build" "$(cat "$rc_fwd/xmrig/marker")" "new"
+assert_eq "recovery clears its marker" "$([ -e "$rc_fwd/xmrig.swap" ] && echo left || echo gone)" "gone"
+rc_back="$(mktemp -d "$SANDBOX/ws-rec-back.XXXXXX")"
+mkdir -p "$rc_back/xmrig-old" && echo old >"$rc_back/xmrig-old/marker" && echo xmrig-old >"$rc_back/xmrig.swap"
+(source "$SCRIPT" && WORKER_ROOT="$rc_back" && decide_rebuild() { :; } && _recover_xmrig_swap) >/dev/null 2>&1
+assert_eq "recovery restores the archive without a staged build" "$(cat "$rc_back/xmrig/marker")" "old"
+
 echo "== unit: compile_xmrig honours XMRIG_REBUILD (#4) =="
 s="$(mktemp -d "$SANDBOX/skip.XXXXXX")"
 (
