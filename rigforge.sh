@@ -1182,7 +1182,7 @@ generate_xmrig_config() {
         _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json.new 2>/dev/null) && printf '%s\n' "$_capped" >config.json.new
     fi
 
-    chmod 600 config.json.new && jq -e . config.json.new >/dev/null && { { [ "${1:-}" != stage ] && cat config.json.new >config.json && rm -f config.json.new; } || { [ "${1:-}" = stage ] && mv config.json.new config.json; }; } || error "Could not write a valid XMRig configuration."
+    chmod 600 config.json.new && jq -e . config.json.new >/dev/null && { { [ "${1:-}" != stage ] && cat config.json.new >config.json && chmod 600 config.json && rm -f config.json.new; } || { [ "${1:-}" = stage ] && mv config.json.new config.json; }; } || error "Could not write a valid XMRig configuration."
     if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
         # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),

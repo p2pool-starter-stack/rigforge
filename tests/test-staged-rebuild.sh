@@ -217,6 +217,7 @@ printf 'xmrig-old\n' >"$W/xmrig.swap"
 W="$D/inplace"
 mkdir -p "$W/xmrig/build"
 printf '{}\n' >"$W/xmrig/build/config.json"
+chmod 644 "$W/xmrig/build/config.json"
 before="$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')"
 (
     cd "$W/xmrig/build"
@@ -228,8 +229,8 @@ before="$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')"
     PATH="$STUBS:$PATH"
     generate_xmrig_config >/dev/null 2>&1
 )
-[ "$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')" = "$before" ] && jq -e .pools "$W/xmrig/build/config.json" >/dev/null && [ ! -e "$W/xmrig/build/config.json.new" ] || {
-    echo "FAIL: regenerating the live config replaced its inode (owner/mode must survive)"
+[ "$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')" = "$before" ] && jq -e .pools "$W/xmrig/build/config.json" >/dev/null && [ ! -e "$W/xmrig/build/config.json.new" ] && [ -n "$(find "$W/xmrig/build/config.json" -perm 600)" ] || {
+    echo "FAIL: regenerating the live config replaced its inode or left it group/world readable"
     fail=1
 }
 
