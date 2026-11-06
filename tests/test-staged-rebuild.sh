@@ -11,7 +11,9 @@ printf '#!/usr/bin/env bash\ncase "$*" in *rev-parse*) echo "$XMRIG_COMMIT" ;; *
 printf '#!/usr/bin/env bash\nexit 0\n' >"$STUBS/sudo"
 for c in cmake nproc sysctl; do printf '#!/usr/bin/env bash\necho 1\n' >"$STUBS/$c"; done
 printf '#!/usr/bin/env bash\nmkdir -p build\n' >"$STUBS/make"
+printf '#!/usr/bin/env bash\necho "Model name: stub"\n' >"$STUBS/lscpu"
 chmod +x "$STUBS"/*
+GEN='RIGFORGE_APPLIANCE=0 POOLS_JSON=[] ACCESS_TOKEN= CPUINFO=/dev/null LOGROTATE_DIR='"$D"'/lr REAL_USER=x'
 
 fail=0
 for stage in git make; do
@@ -29,6 +31,7 @@ for stage in git make; do
             OS_TYPE=Linux
             WORKER_ROOT="$W"
             DONATION=1
+            eval "$GEN"
             XMRIG_REBUILD=true
             export XMRIG_COMMIT=ABC
             PATH="$D/fail-$stage:$STUBS:$PATH"
@@ -65,6 +68,7 @@ printf 'good\n' >"$W/xmrig/build/xmrig"
     OS_TYPE=Linux
     WORKER_ROOT="$W"
     DONATION=1
+    eval "$GEN"
     XMRIG_REBUILD=true
     export XMRIG_COMMIT=ABC
     PATH="$STUBS:$PATH"
@@ -86,5 +90,149 @@ printf 'good\n' >"$W/xmrig/build/xmrig"
     echo "FAIL: staging dir left behind"
     fail=1
 }
+jq -e . "$W/xmrig/build/config.json" >/dev/null || {
+    echo "FAIL: activated build has no valid configuration"
+    fail=1
+}
+[ "$(stat -c %a "$W/xmrig/build/config.json" 2>/dev/null || stat -f %Lp "$W/xmrig/build/config.json")" = 600 ] || {
+    echo "FAIL: activated configuration is not owner-only"
+    fail=1
+}
+
+W="$D/badcfg"
+mkdir -p "$W/xmrig/build"
+printf 'good\n' >"$W/xmrig/build/xmrig"
+printf '{"live":true}\n' >"$W/xmrig/build/config.json"
+set +e
+(
+    cd "$W"
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$W"
+    DONATION=1
+    eval "$GEN"
+    POOLS_JSON='not json'
+    XMRIG_REBUILD=true
+    export XMRIG_COMMIT=ABC
+    PATH="$STUBS:$PATH"
+    prepare_workspace >/dev/null 2>&1
+    compile_xmrig >/dev/null 2>&1
+)
+rc=$?
+set -e
+[ "$rc" != 0 ] || {
+    echo "FAIL: configuration failure exited 0"
+    fail=1
+}
+[ "$(cat "$W/xmrig/build/xmrig")" = good ] && [ "$(cat "$W/xmrig/build/config.json")" = '{"live":true}' ] || {
+    echo "FAIL: configuration failure lost the live pair"
+    fail=1
+}
+[ -z "$(find "$W" -maxdepth 1 -name 'xmrig-*')" ] || {
+    echo "FAIL: configuration failure archived the live tree"
+    fail=1
+}
+
+W="$D/mvfail"
+mkdir -p "$W/xmrig/build" "$D/fail-mv"
+printf 'good\n' >"$W/xmrig/build/xmrig"
+printf '{"live":true}\n' >"$W/xmrig/build/config.json"
+printf '#!/usr/bin/env bash\n[ "$*" = "config.json.new config.json" ] && exit 1\nexec /bin/mv "$@"\n' >"$D/fail-mv/mv"
+chmod +x "$D/fail-mv/mv"
+set +e
+(
+    cd "$W"
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$W"
+    DONATION=1
+    eval "$GEN"
+    XMRIG_REBUILD=true
+    export XMRIG_COMMIT=ABC
+    PATH="$D/fail-mv:$STUBS:$PATH"
+    prepare_workspace >/dev/null 2>&1
+    compile_xmrig >/dev/null 2>&1
+)
+rc=$?
+set -e
+[ "$rc" != 0 ] && [ "$(cat "$W/xmrig/build/config.json")" = '{"live":true}' ] && [ -z "$(find "$W" -maxdepth 1 -name 'xmrig-*')" ] || {
+    echo "FAIL: a failed configuration write still activated the build"
+    fail=1
+}
+
+W="$D/killed"
+mkdir -p "$W/xmrig/build" "$D/kill-mv"
+printf 'good\n' >"$W/xmrig/build/xmrig"
+printf '{"live":true}\n' >"$W/xmrig/build/config.json"
+printf '#!/usr/bin/env bash\n[ "$*" = "xmrig.new xmrig" ] && kill -9 $PPID\nexec /bin/mv "$@"\n' >"$D/kill-mv/mv"
+chmod +x "$D/kill-mv/mv"
+set +e
+(
+    cd "$W"
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$W"
+    DONATION=1
+    eval "$GEN"
+    XMRIG_REBUILD=true
+    export XMRIG_COMMIT=ABC
+    PATH="$D/kill-mv:$STUBS:$PATH"
+    prepare_workspace >/dev/null 2>&1
+    compile_xmrig >/dev/null 2>&1
+)
+rc=$?
+set -e
+[ "$rc" != 0 ] && [ ! -d "$W/xmrig" ] && [ -f "$W/xmrig.swap" ] || {
+    echo "FAIL: could not interrupt the swap between its renames"
+    fail=1
+}
+(
+    cd "$W"
+    source "$SCRIPT"
+    WORKER_ROOT="$W"
+    decide_rebuild() { :; }
+    _recover_xmrig_swap >/dev/null 2>&1
+)
+jq -e . "$W/xmrig/build/config.json" >/dev/null 2>&1 && [ ! -e "$W/xmrig.swap" ] && [ ! -e "$W/xmrig.new" ] || {
+    echo "FAIL: interrupted swap did not recover a valid live pair"
+    fail=1
+}
+
+W="$D/killed-no-new"
+mkdir -p "$W/xmrig-old/build"
+printf 'good\n' >"$W/xmrig-old/build/xmrig"
+printf 'xmrig-old\n' >"$W/xmrig.swap"
+(
+    cd "$W"
+    source "$SCRIPT"
+    WORKER_ROOT="$W"
+    decide_rebuild() { :; }
+    _recover_xmrig_swap >/dev/null 2>&1
+)
+[ "$(cat "$W/xmrig/build/xmrig")" = good ] && [ ! -e "$W/xmrig.swap" ] || {
+    echo "FAIL: interrupted swap without a staged build did not restore the archive"
+    fail=1
+}
+
+W="$D/inplace"
+mkdir -p "$W/xmrig/build"
+printf '{}\n' >"$W/xmrig/build/config.json"
+chmod 644 "$W/xmrig/build/config.json"
+before="$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')"
+(
+    cd "$W/xmrig/build"
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$W"
+    DONATION=1
+    eval "$GEN"
+    PATH="$STUBS:$PATH"
+    generate_xmrig_config >/dev/null 2>&1
+)
+[ "$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')" = "$before" ] && jq -e .pools "$W/xmrig/build/config.json" >/dev/null && [ ! -e "$W/xmrig/build/config.json.new" ] && [ -n "$(find "$W/xmrig/build/config.json" -perm 600)" ] || {
+    echo "FAIL: regenerating the live config replaced its inode or left it group/world readable"
+    fail=1
+}
+
 [ "$fail" = 0 ] || exit 1
-echo "failed rebuilds keep the live miner; a good rebuild swaps in: PASS"
+echo "failed rebuilds keep the live miner; a good rebuild swaps in with a valid config; an interrupted swap recovers: PASS"

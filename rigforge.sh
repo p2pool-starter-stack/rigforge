@@ -794,18 +794,29 @@ prepare_workspace() {
     cd "$WORKER_ROOT"
 }
 
+_recover_xmrig_swap() {
+    [ -f "$WORKER_ROOT/xmrig.swap" ] || return 0
+    [ -d "$WORKER_ROOT/xmrig" ] || {
+        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig" 2>/dev/null || warn "Could not recover the interrupted XMRig swap; rebuilding."
+    }
+    rm -f "$WORKER_ROOT/xmrig.swap"
+    decide_rebuild
+}
+
 _activate_xmrig_build() {
     cd "$WORKER_ROOT"
     local archived=""
     if [ -d xmrig ]; then
         log "Archiving existing worker installation..."
         archived="xmrig-$(date +%Y%m%d_%H%M%S)"
+        printf '%s\n' "$archived" >xmrig.swap.tmp && mv xmrig.swap.tmp xmrig.swap || error "Could not record the XMRig swap."
         mv xmrig "$archived"
     fi
     mv xmrig.new xmrig || {
         [ -z "$archived" ] || mv "$archived" xmrig
         error "Could not swap in the new XMRig build."
     }
+    rm -f xmrig.swap
     local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
     archives="$(ls -dt xmrig-* 2>/dev/null || true)"
@@ -945,6 +956,7 @@ install_dependencies() {
 # --- Setup: build XMRig from source ---
 
 compile_xmrig() {
+    _recover_xmrig_swap
     if [ "$XMRIG_REBUILD" != true ]; then
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
         cd "$WORKER_ROOT/xmrig/build"
@@ -990,6 +1002,7 @@ compile_xmrig() {
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig.new/.rigforge-commit"
     printf '0\n' >"$WORKER_ROOT/xmrig.new/.rigforge-donate-min"
     [ ! -f "$WORKER_ROOT/xmrig.new/build/xmrig" ] || _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
+    (cd "$WORKER_ROOT/xmrig.new/build" && generate_xmrig_config stage)
     _activate_xmrig_build
 }
 
@@ -997,18 +1010,14 @@ compile_xmrig() {
 
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
-
-    # Identify CPU Topology
     if [ "$OS_TYPE" == "Darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
     else
-        # Anchor to "^Model name:" — as root, lscpu also prints a "BIOS Model name:" line (a DMI string
-        # like "...  Unknown CPU @ 4.2GHz"), and an unanchored grep would concatenate both into one line.
         CPU_MODEL=$(lscpu | grep -E '^Model name:' | cut -d':' -f2 | xargs)
     fi
     LOG_FILE_PATH=""
     if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
-        sudo rm -f "$WORKER_ROOT/xmrig.log"
+        [ "${1:-}" = stage ] || sudo rm -f "$WORKER_ROOT/xmrig.log"
     else
         LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
     fi
@@ -1183,7 +1192,7 @@ generate_xmrig_config() {
         return 1
     }
 
-    if [ "$OS_TYPE" == "Linux" ]; then
+    if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
         # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
         # which re-renders the miner's config every boot and can cap or journald-route the log there.
