@@ -214,5 +214,24 @@ printf 'xmrig-old\n' >"$W/xmrig.swap"
     fail=1
 }
 
+W="$D/inplace"
+mkdir -p "$W/xmrig/build"
+printf '{}\n' >"$W/xmrig/build/config.json"
+before="$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')"
+(
+    cd "$W/xmrig/build"
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$W"
+    DONATION=1
+    eval "$GEN"
+    PATH="$STUBS:$PATH"
+    generate_xmrig_config >/dev/null 2>&1
+)
+[ "$(ls -i "$W/xmrig/build/config.json" | awk '{print $1}')" = "$before" ] && jq -e .pools "$W/xmrig/build/config.json" >/dev/null && [ ! -e "$W/xmrig/build/config.json.new" ] || {
+    echo "FAIL: regenerating the live config replaced its inode (owner/mode must survive)"
+    fail=1
+}
+
 [ "$fail" = 0 ] || exit 1
 echo "failed rebuilds keep the live miner; a good rebuild swaps in with a valid config; an interrupted swap recovers: PASS"
