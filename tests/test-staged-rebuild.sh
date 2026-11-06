@@ -133,6 +133,33 @@ set -e
     fail=1
 }
 
+W="$D/mvfail"
+mkdir -p "$W/xmrig/build" "$D/fail-mv"
+printf 'good\n' >"$W/xmrig/build/xmrig"
+printf '{"live":true}\n' >"$W/xmrig/build/config.json"
+printf '#!/usr/bin/env bash\n[ "$*" = "config.json.new config.json" ] && exit 1\nexec /bin/mv "$@"\n' >"$D/fail-mv/mv"
+chmod +x "$D/fail-mv/mv"
+set +e
+(
+    cd "$W"
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    WORKER_ROOT="$W"
+    DONATION=1
+    eval "$GEN"
+    XMRIG_REBUILD=true
+    export XMRIG_COMMIT=ABC
+    PATH="$D/fail-mv:$STUBS:$PATH"
+    prepare_workspace >/dev/null 2>&1
+    compile_xmrig >/dev/null 2>&1
+)
+rc=$?
+set -e
+[ "$rc" != 0 ] && [ "$(cat "$W/xmrig/build/config.json")" = '{"live":true}' ] && [ -z "$(find "$W" -maxdepth 1 -name 'xmrig-*')" ] || {
+    echo "FAIL: a failed configuration write still activated the build"
+    fail=1
+}
+
 W="$D/killed"
 mkdir -p "$W/xmrig/build" "$D/kill-mv"
 printf 'good\n' >"$W/xmrig/build/xmrig"

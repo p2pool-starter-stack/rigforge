@@ -797,7 +797,7 @@ prepare_workspace() {
 _recover_xmrig_swap() {
     [ -f "$WORKER_ROOT/xmrig.swap" ] || return 0
     [ -d "$WORKER_ROOT/xmrig" ] || {
-        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig"
+        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig" 2>/dev/null || :
     }
     rm -f "$WORKER_ROOT/xmrig.swap"
     decide_rebuild
@@ -809,7 +809,7 @@ _activate_xmrig_build() {
     if [ -d xmrig ]; then
         log "Archiving existing worker installation..."
         archived="xmrig-$(date +%Y%m%d_%H%M%S)"
-        printf '%s\n' "$archived" >xmrig.swap.tmp && mv xmrig.swap.tmp xmrig.swap
+        printf '%s\n' "$archived" >xmrig.swap.tmp && mv xmrig.swap.tmp xmrig.swap || error "Could not record the XMRig swap."
         mv xmrig "$archived"
     fi
     mv xmrig.new xmrig || {
@@ -1008,7 +1008,7 @@ compile_xmrig() {
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
 
-generate_xmrig_config() { # [stage]
+generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
     if [ "$OS_TYPE" == "Darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
@@ -1017,7 +1017,7 @@ generate_xmrig_config() { # [stage]
     fi
     LOG_FILE_PATH=""
     if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
-        sudo rm -f "$WORKER_ROOT/xmrig.log"
+        [ "${1:-}" = stage ] || sudo rm -f "$WORKER_ROOT/xmrig.log"
     else
         LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
     fi
@@ -1182,9 +1182,7 @@ generate_xmrig_config() { # [stage]
         _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json.new 2>/dev/null) && printf '%s\n' "$_capped" >config.json.new
     fi
 
-    chmod 600 config.json.new
-    jq -e . config.json.new >/dev/null || error "Generated XMRig configuration is not valid JSON."
-    mv config.json.new config.json
+    chmod 600 config.json.new && jq -e . config.json.new >/dev/null && mv config.json.new config.json || error "Could not write a valid XMRig configuration."
     if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
         # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
