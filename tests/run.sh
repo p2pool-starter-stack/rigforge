@@ -1737,15 +1737,12 @@ ws="$(mktemp -d "$SANDBOX/ws.XXXXXX")"
 mkdir -p "$ws/xmrig/build" "$ws/xmrig.new/build" "$ws/xmrig-20240101_000001" "$ws/xmrig-20240101_000002" \
     "$ws/xmrig-20240101_000003" "$ws/xmrig-20240101_000004"
 echo new >"$ws/xmrig.new/marker"
-(
-    source "$SCRIPT"
-    OS_TYPE=Linux
-    WORKER_ROOT="$ws"
-    set +e
-    PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 _activate_xmrig_build >/dev/null 2>&1
-)
+(source "$SCRIPT" && OS_TYPE=Linux && WORKER_ROOT="$ws" && PATH="$STUBS:$PATH" KEEP_ARCHIVES=2 _activate_xmrig_build) >/dev/null 2>&1
 assert_eq "archives pruned to KEEP_ARCHIVES" "$(find "$ws" -maxdepth 1 -type d -name 'xmrig-*' | wc -l | tr -d ' ')" "2"
 assert_eq "staged build is now live" "$(cat "$ws/xmrig/marker")" "new"
+rm -rf "$ws/xmrig" && mkdir "$ws/xmrig.new" && echo xmrig-x >"$ws/xmrig.swap"
+(source "$SCRIPT" && WORKER_ROOT="$ws" && decide_rebuild() { :; } && _recover_xmrig_swap) >/dev/null 2>&1
+assert_eq "an interrupted swap rolls forward to the staged build (#635)" "$([ -d "$ws/xmrig" ] && [ ! -e "$ws/xmrig.swap" ] && echo ok)" "ok"
 sw="$(mktemp -d "$SANDBOX/ws-swap.XXXXXX")"
 mkdir -p "$sw/xmrig" && echo live >"$sw/xmrig/marker"
 (source "$SCRIPT" && OS_TYPE=Linux && WORKER_ROOT="$sw" && _activate_xmrig_build) >/dev/null 2>&1
