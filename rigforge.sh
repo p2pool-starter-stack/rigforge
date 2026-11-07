@@ -1016,7 +1016,6 @@ generate_xmrig_config() {
         LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
     fi
 
-    # XMRig detects topology; these defaults favor a dedicated miner.
     YIELD="false"
     PRIORITY="2"
     ASM="\"auto\""
@@ -1088,7 +1087,6 @@ generate_xmrig_config() {
     # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
-    # Rebuild defaults before applying measured tuning and operator settings.
     jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \

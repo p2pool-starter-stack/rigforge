@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 #
-# Measure product Bash coverage with kcov and enforce the committed floor.
 #
 # kcov is Linux + ptrace based, so this runs the suite inside a PINNED kcov Docker image (by digest,
 # matching how the e2e job pins its Ubuntu image). The suite needs jq, which the kcov image lacks, so
@@ -48,7 +47,6 @@ if [ ! -x "$JQ_BIN" ]; then
 fi
 
 # --- Run the suite under kcov ------------------------------------------------
-# Include checked-out product scripts so sandbox copies do not dilute coverage.
 rm -rf "$OUT"
 mkdir -p "$OUT"
 echo "coverage: running tests/run.sh under kcov (this is slower than 'make test')..."
