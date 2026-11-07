@@ -130,3 +130,13 @@ _stage_xmrig_config() (
         fi
     fi
 )
+
+_refresh_xmrig_unit() {
+    NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
+    export NFT_PATH
+    export BUILD_DIR="$WORKER_ROOT/xmrig/build"
+    CPUPOWER_PATH=$(command -v cpupower || echo "/usr/bin/cpupower")
+    export CPUPOWER_PATH
+    _render_xmrig_unit || return 1
+    sudo systemctl daemon-reload 2>/dev/null || true
+}
