@@ -459,7 +459,6 @@ parse_config() {
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON") || error "Could not parse daemon pool fields."
-    # Compact objects keep empty fields aligned while validating each pool.
     while IFS= read -r _pool; do
         _u=$(jq -r '.url' <<<"$_pool")
         _user=$(jq -r '.user' <<<"$_pool")
@@ -4229,7 +4228,6 @@ apply() {
     [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ]
 }
 
-# Warn after apply because the configured endpoint can be temporarily unavailable.
 _apply_pool_check() {
     [ "$OS_TYPE" = Linux ] || return 0                                  # no restart happened (macOS apply only regenerates)
     systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0 # stopped service: nothing to verify
@@ -5313,7 +5311,6 @@ api_refresh() {
     printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
     hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
     rf=$(_api_rigforge_block "$hr")
-    # Preserve XMRig fields so existing feed consumers retain their statistics.
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
     printf '%s' "$body" >"$dir/summary.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json"
@@ -5360,7 +5357,6 @@ _api_refresh_status() {
     printf 'sister feed refresh scheduled (next: %s; last: %s; payload age: %ss)' "$next" "${last:-never}" "$age"
 }
 # --- Doctor: one-stop health check ---
-# The miner's verdict avoids a second Stratum dial disagreeing with a proxied or TLS connection.
 _pool_conn_status() {
     local body pool cup fails acc daemon_pool
     body=$(_read_api_summary)
@@ -5442,7 +5438,6 @@ doctor() {
         issues=$((issues + 1))
     fi
 
-    # Daemon RPC health also works while the miner is stopped.
     if [ -f "$CONFIG_JSON" ]; then
         local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool
         pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
