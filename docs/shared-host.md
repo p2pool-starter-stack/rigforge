@@ -53,8 +53,14 @@ configuration. Shared selection or the retained history marker makes uninstall p
 tuning, even after disabling the profile, because ownership of inherited settings cannot be proven.
 
 Apply the profile with `sudo ./rigforge.sh apply` after editing `config.json`. Repeated setup, apply,
-upgrade, and reboot preserve the selected profile. A real co-resident foreground workload and a
-reserved Linux/systemd bench are still required to validate measured acceptance; the CPU quota and
+upgrade, and reboot preserve the selected profile.
+
+The opt-in `shared-host` phase of `tests/e2e-pithead.sh` (bench `tier4-e2e`, not part of `all`)
+switches a provisioned rig to the profile, checks the effective slice limits, the miner's cgroup,
+the generated XMRig settings, `status`, and an accepted share, then restores the dedicated
+configuration. It compares HugePages, governors, the MSR module, the kernel command line and the
+fstab, limits, modules and GRUB files before, during and after. Measured coexistence with a
+foreground workload is the separate bench coexistence scenario owned by #579; the CPU quota and
 memory ceiling alone do not establish that workload's service-level budget.
 
 The XMRig controls follow the [XMRig CPU configuration](https://xmrig.com/docs/miner/config/cpu).

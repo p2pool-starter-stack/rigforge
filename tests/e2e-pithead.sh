@@ -504,7 +504,7 @@ phase_dashboard() {
     "$RIGFORGE" start >/dev/null 2>&1
 }
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-shared-host.sh"
 
 summary() {
     printf '\ne2e-pithead: \033[1;32m%d ok\033[0m, ' "$PASS"
@@ -518,7 +518,7 @@ summary() {
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)"
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|shared-host|all)"
 replay_lock "${1:-all}"
 
 snapshot_config
@@ -534,13 +534,14 @@ dev-fee) phase_dev_fee ;;
 control) phase_control ;;
 control-replay-thermal | control-replay-pools) phase_control_replay "${1##*-}" ;;
 access-tokens) phase_access_tokens ;;
+shared-host) phase_shared_host ;;
 all)
     for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens; do
         "$run_phase"
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|shared-host|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT
