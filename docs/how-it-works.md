@@ -19,14 +19,25 @@ already done.
 3. Rebuild decision: decide whether XMRig needs (re)building, based on the pinned
    version/commit vs. what's already compiled, a zero compiled-minimum marker, and a valid binary
    checksum.
-4. Workspace: prepare the worker root. Any prior install is archived rather than clobbered, and
-   old archives are pruned so re-runs don't leak disk.
+4. Workspace: prepare the worker root. The prior install stays in place until its replacement has
+   built (step 6).
 5. Dependencies: install the build toolchain and runtime libraries for the OS (`cmake`, `libuv`,
    `hwloc`, OpenSSL, …).
-6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it. Output is
-   captured to a logfile; `make -j` is capped by available RAM to avoid OOM on low-memory hosts.
+6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it in `xmrig.new`
+   beside the live tree, then write and validate its `config.json` there. Only after the binary and
+   configuration are both ready is the prior install archived, the build swapped in and old archives
+   pruned, so a failed fetch, build or configuration leaves the running miner's binary and config
+   untouched. The swap records `xmrig.swap` first; if it is interrupted between its two renames, the
+   next `setup` or `upgrade` completes it (or restores the archive) once it reaches the compile step,
+   before it builds.
+   Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on low-memory
+   hosts.
 7. Generate config: detect the CPU and write the tuned XMRig `config.json` (pools, donate level,
-   HTTP API, and the per-CPU `cpu`/`randomx` sections).
+   HTTP API, and the per-CPU `cpu`/`randomx` sections). The file is rendered, overlaid, clamped and validated in a temp file beside it and
+   written into `config.json` only on success, so a failure leaves the previous `config.json` intact.
+   The live file is rewritten in place to keep its inode, owner and mode; a copy of the previous
+   contents is taken first and written back if that final write fails or comes up short. If even
+   that restore fails, the warning names the kept copy. A staged rebuild renames the file instead.
 8. Kernel tuning (Linux): HugePages, MSR, and module loading.
 9. Limits (Linux): `hugetlbfs` mounts, `fstab`, and memlock limits.
 10. Service (Linux): install and enable the `xmrig` systemd unit with a performance governor and
@@ -259,7 +270,7 @@ RigForge is built to be re-run:
 
 - Idempotent edits. System-file changes (`fstab`, `limits.conf`, `/etc/modules`) are append-only
   and deduplicated, so running setup twice never doubles a line.
-- Non-destructive workspace. A prior install is archived, not overwritten.
+- Non-destructive workspace. A prior install is archived, not overwritten, and only once its replacement has built.
 - Fail-fast with context. An `ERR` trap names the step that failed; config input is validated
   before the build starts.
 - Tested. A dependency-free suite fakes all hardware and privileged commands so every supported
