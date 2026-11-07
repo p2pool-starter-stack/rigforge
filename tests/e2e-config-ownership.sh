@@ -32,9 +32,9 @@ _co_hand_edit() {
     donate=$(_co_donate)
     [ -n "$donate" ] || return 1
     want=$((donate + 1))
-    orig=$(mktemp)
-    edited=$(mktemp)
-    cp "$GEN_CFG" "$orig"
+    orig=$(mktemp) || return 1
+    edited=$(mktemp) || return 1
+    cp "$GEN_CFG" "$orig" && cmp -s "$GEN_CFG" "$orig" || return 1
     if ! jq --argjson d "$want" '."donate-level" = $d' "$orig" >"$edited" || ! cat "$edited" >"$GEN_CFG" ||
         [ "$(jq -r '."donate-level"' "$GEN_CFG")" != "$want" ]; then
         rc=1
