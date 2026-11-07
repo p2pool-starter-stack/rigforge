@@ -40,6 +40,7 @@ assert_eq "summary diagnostics: multiple records refused" "$(summary_diag_case '
     }
     api8080() { printf '{"hashrate":{}}'; }
     api8081() { printf '{"rigforge":{"xmrig_api":"unreachable"}}'; }
+    phase_api_allowlist() { :; }
     ok() { :; }
     bad() {
         printf 'FAIL:%s\n' "$1"
