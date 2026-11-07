@@ -1520,7 +1520,6 @@ _grub_proposed() {
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
 
-    # Avoid a co-resident reboot only when the existing reservation meets demand and the 2MB ceiling.
     if [ "${HUGEPAGES_RESERVE_EXTRA_MB:-0}" -gt 0 ] 2>/dev/null; then
         if [ "${HUGEPAGES_POOL_CEILING_MB:-0}" -gt 0 ] &&
             [ "$(_cmdline_reserved_2mb "$CURRENT" 2M)" -gt "$((HUGEPAGES_POOL_CEILING_MB / 2))" ]; then
