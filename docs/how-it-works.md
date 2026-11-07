@@ -24,12 +24,20 @@ already done.
 5. Dependencies: install the build toolchain and runtime libraries for the OS (`cmake`, `libuv`,
    `hwloc`, OpenSSL, …).
 6. Compile: clone XMRig at the pinned commit, patch the donate level, and build it in `xmrig.new`
-   beside the live tree. Only after it builds is the prior install archived, the build swapped in and
-   old archives pruned, so a failed fetch or build leaves the running miner's binary and config
-   untouched. Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on
-   low-memory hosts.
+   beside the live tree, then write and validate its `config.json` there. Only after the binary and
+   configuration are both ready is the prior install archived, the build swapped in and old archives
+   pruned, so a failed fetch, build or configuration leaves the running miner's binary and config
+   untouched. The swap records `xmrig.swap` first; if it is interrupted between its two renames, the
+   next `setup` or `upgrade` completes it (or restores the archive) once it reaches the compile step,
+   before it builds.
+   Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on low-memory
+   hosts.
 7. Generate config: detect the CPU and write the tuned XMRig `config.json` (pools, donate level,
-   HTTP API, and the per-CPU `cpu`/`randomx` sections).
+   HTTP API, and the per-CPU `cpu`/`randomx` sections). The file is rendered, overlaid, clamped and validated in a temp file beside it and
+   written into `config.json` only on success, so a failure leaves the previous `config.json` intact.
+   The live file is rewritten in place to keep its inode, owner and mode; a copy of the previous
+   contents is taken first and written back if that final write fails or comes up short. If even
+   that restore fails, the warning names the kept copy. A staged rebuild renames the file instead.
 8. Kernel tuning (Linux): HugePages, MSR, and module loading.
 9. Limits (Linux): `hugetlbfs` mounts, `fstab`, and memlock limits.
 10. Service (Linux): install and enable the `xmrig` systemd unit with a performance governor and

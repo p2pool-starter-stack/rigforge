@@ -97,6 +97,12 @@ sl="$(
 assert_contains "staged symlink refused (D8 spool handoff)" "$sl" "symlink"
 
 echo "== unit: _control_upgrade_throttle_ok (#308) =="
+if ! command -v flock >/dev/null; then
+    mkdir -p "$SANDBOX/flock-stub"
+    printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/flock-stub/flock"
+    chmod +x "$SANDBOX/flock-stub/flock"
+    PATH="$SANDBOX/flock-stub:$PATH"
+fi
 td=$(mktemp -d "$SANDBOX/thr.XXXXXX")
 (
     source "$SCRIPT"
@@ -116,10 +122,6 @@ assert_eq "throttle: second attempt within the window blocked" "$?" "1"
     _control_upgrade_throttle_ok "$td"
 )
 assert_eq "throttle: zero interval always allowed" "$?" "0"
-# Fail CLOSED when the lock can't be opened (#321): the anti-beacon throttle must not silently
-# disable itself on exactly the degraded state dir an attacker might arrange. rc 2, not 1, so the
-# caller can report the real cause instead of "throttled — retry later". The dangling symlink into
-# a missing dir makes the open fail for ANY uid (root included), unlike a chmod-based setup.
 roThr="$SANDBOX/thr-ro"
 mkdir -m 700 "$roThr"
 ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
@@ -129,6 +131,26 @@ ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
     _control_upgrade_throttle_ok "$roThr"
 ) >/dev/null 2>&1
 assert_eq "throttle: unopenable lock fails CLOSED (rc 2) (#321)" "$?" "2"
+
+badStamp="$SANDBOX/thr-stamp"
+mkdir -p "$badStamp/upgrade-last"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$badStamp"
+) >/dev/null 2>&1
+assert_eq "throttle: unwritable stamp fails CLOSED (rc 2) (#636)" "$?" "2"
+noFlock="$SANDBOX/thr-flock"
+mkdir -p "$noFlock/bin"
+printf '#!/bin/sh\nexit 1\n' >"$noFlock/bin/flock"
+chmod +x "$noFlock/bin/flock"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    PATH="$noFlock/bin:$PATH"
+    _control_upgrade_throttle_ok "$noFlock"
+) >/dev/null 2>&1
+assert_eq "throttle: rejected lock fails CLOSED (rc 2) (#636)" "$?" "2"
 
 # _control_upgrade_do against a STUB git (+ stub rigforge.sh) so the real fetch/reachability/checkout
 # lines run under coverage — and, more importantly, the D10 reachability guard is exercised for real.
