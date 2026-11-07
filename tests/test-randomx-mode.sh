@@ -192,6 +192,8 @@ if (SCRIPT_DIR="$D/no-proposed" RX_MODE=light tune_kernel >/dev/null 2>&1); then
     fail 'light mode accepted the generic HugePages fallback'
 fi
 [ ! -e "$D/unsafe-allocation" ] || fail 'light mode allocated the generic HugePages fallback'
+has "$(SCRIPT_DIR="$D/no-proposed" RX_MODE=light _setup_plan 2>&1)" 'RandomX light mode requires util/proposed-grub.sh'
+if RX_MODE=bogus bash "$PROPOSED" -q >/dev/null 2>&1; then fail 'proposed-grub accepted an invalid RandomX mode'; fi
 
 _ck_info() { printf 'INFO:%s\n' "$*"; }
 _ck_warn() { printf 'WARN:%s\n' "$*"; }
@@ -246,6 +248,8 @@ printf 'HugePages_Free: 0\n' >"$D/mem-unknown"
 out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-unknown")
 has "$out" 'Available memory unknown'
 absent "$out" 'WARN:'
+if out=$(memory_check '{"xmrig":{"randomx":{"mode":"bogus"}}}' "$D/mem-low"); then fail 'invalid RandomX settings passed the memory check'; fi
+has "$out" 'Invalid xmrig.randomx settings'
 
 cmd_version() { :; }
 systemctl() { return 1; }

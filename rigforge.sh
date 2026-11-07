@@ -3206,13 +3206,11 @@ tune() {
     # leave it at the base value and say so, rather than benchmarking a no-op.
     local nr=0
     [ -r "$HUGEPAGES_1G_NR" ] && nr=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
-    if [ "${RX_MODE:-fast}" = light ]; then
-        TUNE_ONEGB=false
-    elif [ "${nr:-0}" -gt 0 ] 2>/dev/null; then
+    if [ "${nr:-0}" -gt 0 ] 2>/dev/null && [ "${RX_MODE:-fast}" != light ]; then
         TUNE_ONEGB="${TUNE_ONEGB:-true false}"
     else
         TUNE_ONEGB="$(_seed_g)"
-        log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
+        [ "${RX_MODE:-fast}" = light ] || log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
     fi
 
     # Active knobs = those with more than one candidate value (the rest are fixed, not searched).
