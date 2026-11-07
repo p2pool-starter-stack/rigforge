@@ -62,6 +62,7 @@ check() {
     if "$@"; then PASS=$((PASS + 1)); else
         FAIL=$((FAIL + 1))
         printf 'FAIL: %s\n' "$*"
+        printf '%s\n' "${OUT:-}" | tail -n 15
     fi
 }
 contains() { [[ "$OUT" == *"$1"* ]]; }
