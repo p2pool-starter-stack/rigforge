@@ -7,6 +7,9 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 contract credential regression, plus access-token readiness, release clone-pin and offline tool-pin
 watcher regressions. The Bash suite exits nonzero if it aborts before its final
 `rigforge tests: ... passed, ... failed` summary, even when the shell would otherwise return zero.
+Worker proof schema/join and dispatcher regressions also run in `make test-suite`;
+see [ordered worker proof receipts](../docs/dev/worker-proof.md) for the retained
+phase inventory, binding contract and rollout requirements.
 The kcov container measures the Bash suite only; the credential regression always runs in the
 GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
 
