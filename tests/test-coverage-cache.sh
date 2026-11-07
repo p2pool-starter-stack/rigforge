@@ -315,7 +315,7 @@ fi
 [ -f "$next_cache" ] || fail "changed jq pin reused the previous identity"
 [ "$(count_log "$COVERAGE_TEST_CURL_LOG")" -eq $((curl_before + 1)) ] || fail "changed jq pin did not download its own bytes"
 
-parent_head=$(git -C "$PROJECT" rev-parse HEAD^)
+parent_head=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t git -C "$PROJECT" commit-tree -p HEAD -m next "$(git -C "$PROJECT" rev-parse "HEAD^{tree}")")
 git -C "$PROJECT" update-ref --no-deref HEAD "$parent_head"
 docker_before=$(count_log "$COVERAGE_TEST_DOCKER_LOG")
 if ! run_coverage "$OUT"; then
