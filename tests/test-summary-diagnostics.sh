@@ -30,7 +30,7 @@ assert_eq "summary diagnostics: multiple records refused" "$(summary_diag_case '
     HERE="$ROOT" PITHEAD_URL=pool.invalid:3333
     phase() { :; }
     set_cfg() { :; }
-    sleep() { :; }
+    sleep() { SECONDS=$((SECONDS + 2)); }
     ss() {
         case "$1" in
         -Htnp) printf 'ESTAB 0 0 local pool.invalid:3333 xmrig\n' ;;
@@ -57,7 +57,7 @@ assert_contains "summary diagnostics: original failing row retained" "$(cat "$SA
     HERE="$ROOT" PITHEAD_URL=pool.invalid:3333
     phase() { :; }
     set_cfg() { :; }
-    sleep() { :; }
+    sleep() { SECONDS=$((SECONDS + 2)); }
     ss() {
         case "$1" in
         -Htnp) printf 'ESTAB 0 0 local pool.invalid:3333 xmrig\n' ;;
