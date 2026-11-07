@@ -37,6 +37,7 @@ proof_begin() {
 }
 
 proof_phase() {
+    [ "${E2E_PROOF_ACTIVE:-0}" = 1 ] || return 0
     local id="${1#phase_}" group
     id=${id//_/-}
     group=$(printf '%s' "$E2E_PROOF_CONTEXT" | jq -r .group) || return 1
@@ -52,6 +53,7 @@ proof_assert() {
 }
 
 proof_skip() {
+    [ "${E2E_PROOF_ACTIVE:-0}" = 1 ] || return 0
     local reason=unexplained
     case "$1" in
     'E2E_STRATUM_PASS not set (stack auth off, or secret not provided) — phases skipped') reason=stratum-fixture-absent ;;

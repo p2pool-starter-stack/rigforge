@@ -14,8 +14,7 @@ RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh"
-source "$HERE/tests/e2e-worker-proof.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-worker-proof.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
@@ -29,14 +28,8 @@ bad() {
     printf '  \033[1;31m✗\033[0m %s\n' "$1" >&2
     return 1
 }
-skip() {
-    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_skip "$1"
-    printf '  \033[1;33m∙\033[0m SKIP: %s\n' "$1"
-}
-phase() {
-    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_phase "${FUNCNAME[1]}"
-    printf '\n\033[1m== e2e-pithead: %s ==\033[0m\n' "$1"
-}
+skip() { proof_skip "$1" && printf '  \033[1;33m∙\033[0m SKIP: %s\n' "$1"; }
+phase() { proof_phase "${FUNCNAME[1]}" && printf '\n\033[1m== e2e-pithead: %s ==\033[0m\n' "$1"; }
 die() {
     printf '\033[31me2e-pithead: %s\033[0m\n' "$1" >&2
     exit 2
