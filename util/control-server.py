@@ -371,21 +371,17 @@ class Handler(BaseHTTPRequestHandler):
 
     do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _read_only
 
-
 if __name__ == "__main__":
     if len(sys.argv) != 5:
         sys.exit("usage: control-server.py <bind> <port> <state-dir> <config.json>")
     bind, port, STATE_DIR, cfg = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
     TOKENS = load_tokens(cfg)
-    UPGRADE_ENABLED = load_upgrade_enabled(cfg)  # #308: /upgrade stays 403 unless control_upgrade is on
+    UPGRADE_ENABLED = load_upgrade_enabled(cfg)
     os.makedirs(os.path.join(STATE_DIR, "spool"), exist_ok=True)
-    # Single-threaded like the read server: staging is microseconds, concurrency would only add ways
-    # to race the spool. Cap request-arrival time so one held-open connection can't wedge it.
     Handler.timeout = 10
-    if ":" in bind:  # IPv6 bind (bind = :: or a v6 addr, #243); dual-stack so IPv4 clients still reach it
+    if ":" in bind:
         class _V6(HTTPServer):
             address_family = socket.AF_INET6
-
             def server_bind(self):
                 try:
                     self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
@@ -393,6 +389,12 @@ if __name__ == "__main__":
                     pass
                 HTTPServer.server_bind(self)
 
-        _V6((bind, port), Handler).serve_forever()
+        server = _V6((bind, port), Handler)
     else:
-        HTTPServer((bind, port), Handler).serve_forever()
+        server = HTTPServer((bind, port), Handler)
+    address = os.environ.get("NOTIFY_SOCKET")
+    if address:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
+            notify.connect("\0" + address[1:] if address.startswith("@") else address)
+            notify.sendall(b"READY=1")
+    server.serve_forever()

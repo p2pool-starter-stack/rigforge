@@ -1441,54 +1441,57 @@ install_api() {
     _wait_sister_api
 }
 _sister_api_failed() { ! warn "The configured sister API could NOT be started; check journalctl -u rigforge-api.service, then re-run 'sudo $0 $1'."; }
-install_control() {
+_control_failed() { warn "The writable control receiver could NOT be reconciled; check journalctl -u rigforge-control.service, then re-run 'sudo $0 $1'."; }
+_stop_control_receiver() {
+    sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
+    if [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" = not-found ] && [ "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" = inactive ]; then return 0; fi
+    sudo systemctl kill --kill-who=all --signal=KILL rigforge-control.service 2>/dev/null || true
+    sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
+    ! warn "Could not stop the control receiver; revocation is NOT confirmed. Stop rigforge-control.service before retrying."
+}
+install_control() (
     [ "$OS_TYPE" == "Linux" ] || return 0
+    trap 'rc=$?; if [ "$rc" -ne 0 ]; then _stop_control_receiver || true; fi; exit "$rc"' EXIT
     local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
     local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service" upath="$SYSTEMD_DIR/rigforge-control-upgrade.path"
+    _stop_control_receiver || return 1
     if [ "${CONTROL_MODE:-disabled}" = "disabled" ]; then
-        if [ -f "$svc" ] || [ -f "$apath" ] || [ -f "$upath" ]; then
-            # #308: tear down the remote-upgrade units alongside the control path — they never outlive it.
-            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
-            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath"
-            sudo systemctl daemon-reload 2>/dev/null || true
-            # Under load systemctl can transiently drop the stop half of `disable --now` (real
-            # miner-0 gate, 2026-07-19: unit files removed, receiver left running orphaned — a live
-            # write surface with control "disabled"). One explicit re-stop closes it; no-op when
-            # the stop already landed.
-            sudo systemctl stop rigforge-control.service 2>/dev/null || true
+        local u units=()
+        for u in rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path; do [ ! -f "$SYSTEMD_DIR/$u" ] || units+=("$u"); done
+        if [ "${#units[@]}" -gt 0 ]; then
+            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now "${units[@]}" 2>/dev/null || return 1
+            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath" && sudo systemctl daemon-reload 2>/dev/null || return 1
             log "Writable control path disabled."
         fi
         return 0
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
-    sudo systemctl stop rigforge-control.service 2>/dev/null || true
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
     CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" \
         envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH' \
-        <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null
+        <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-        <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null
-    sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null
+        <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null || return 1
+    sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null || return 1
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
         RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
             envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-            <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null
-        sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null
+            <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null || return 1
+        sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null || return 1
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
     elif [ -f "$upath" ] || [ -f "$usvc" ]; then
-        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || true
-        sudo rm -f "$usvc" "$upath"
+        { [ ! -f "$upath" ] || sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null; } && sudo rm -f "$usvc" "$upath" || return 1
     fi
-    install_api_firewall
-    sudo systemctl daemon-reload
-    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-apply.path 2>/dev/null || true
+    install_api_firewall || return 1
+    sudo systemctl daemon-reload || return 1
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-apply.path 2>/dev/null || return 1
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
-        sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || true
+        sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || return 1
     fi
-    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-control.service 2>/dev/null || true
-    sudo systemctl restart rigforge-control.service 2>/dev/null || true
-}
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-control.service 2>/dev/null || return 1
+    sudo systemctl restart rigforge-control.service || return 1
+)
 
 # #65 (read-only): the thread count the HugePages reservation is sized for — the tuned cpu.rx if
 # `tune` pinned one (so setup + tune stay consistent), or an explicit RIGFORGE_THREADS override (the
@@ -1969,7 +1972,7 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0
+    local _arg _api_rc=0 _control_rc=0
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
@@ -2009,7 +2012,7 @@ main() {
     CURRENT_STEP="configuring the sister API"
     install_api || _api_rc=1
     CURRENT_STEP="configuring the control path"
-    install_control
+    install_control || _control_rc=1
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
     CURRENT_STEP="linking the rigforge command"
@@ -2018,7 +2021,9 @@ main() {
     _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
     CURRENT_STEP="finishing up"
     finish_deployment
-    [ "$_api_rc" -eq 0 ] || _sister_api_failed setup
+    [ "$_control_rc" -eq 0 ] || _control_failed setup
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed setup || true
+    [ "$_api_rc:$_control_rc" = 0:0 ]
 }
 
 # --- Lifecycle: upgrade & uninstall ---
@@ -2127,7 +2132,7 @@ _upgrade_check() {
 # what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
 # (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
-    local arg _api_rc=0
+    local arg _api_rc=0 _control_rc=0
     for arg in "$@"; do
         case "$arg" in
         --check)
@@ -2154,7 +2159,7 @@ upgrade() {
     install_autotune
     install_watchdog
     install_api || _api_rc=1
-    install_control
+    install_control || _control_rc=1
     install_api_firewall
     if [ "$XMRIG_REBUILD" = true ]; then
         log "Upgraded to XMRig $XMRIG_VERSION."
@@ -2164,7 +2169,9 @@ upgrade() {
     _upgrade_restart "$was_active"
     _post_upgrade_retune
     _reown_worker
-    [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade
+    [ "$_control_rc" -eq 0 ] || _control_failed upgrade
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
+    [ "$_api_rc:$_control_rc" = 0:0 ]
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -4129,10 +4136,6 @@ _miner_deliberately_stopped() {
     [ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" = inactive ]
 }
 
-# The config-regen + restart core of `apply`, WITHOUT touching the autotune timer. Used directly by
-# tune/autotune — which call it in a loop and own the timer themselves — so they don't re-render the unit
-# on every prefetch trial.
-#
 # `preserve-run-state` (#396) is passed by `apply` and by nothing else. With it, a rig that is
 # deliberately stopped is left stopped: the regenerated config sits on disk and takes effect at the next
 # deliberate start (the operator's, or the watchdog's own tick once the temperature is back under the
@@ -4161,12 +4164,6 @@ _apply_runtime() { # [preserve-run-state]
     _reown_worker
 }
 
-# apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
-# recompiling. The fast path after editing config.json. As the config-change path it also RECONCILES the
-# periodic-autotune timer with config (#95) — so changing the `autotune` target and running `apply`
-# actually takes effect (not just shows the new value) — then reports the target. install_autotune is the
-# autotune analog of restarting the service; its own log is suppressed in favour of the single status line.
-# apply --dry-run (#146): the three-line plan — symmetric with setup --dry-run.
 _apply_plan() {
     parse_config >/dev/null
     echo "apply --dry-run — the plan:"
@@ -4206,13 +4203,13 @@ apply() {
         _render_xmrig_unit
         sudo systemctl daemon-reload 2>/dev/null || true
     fi
-    local _wd_rc=0 _api_rc=0
+    local _wd_rc=0 _api_rc=0 _control_rc=0
     _apply_runtime preserve-run-state
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || _wd_rc=1
         install_api || _api_rc=1
-        install_control >/dev/null 2>&1 || true
+        install_control >/dev/null || _control_rc=1
         install_api_firewall || true
         _autotune_apply_notice
     fi
@@ -4226,8 +4223,12 @@ apply() {
         RIGFORGE_APPLY_FAIL_REASON="could not start the sister API"
         warn "The configured sister API could NOT be reconciled; check journalctl -u rigforge-api.service, then re-run 'sudo $0 apply'."
     fi
+    if [ "$_control_rc" -ne 0 ]; then
+        RIGFORGE_APPLY_FAIL_REASON="could not reconcile the control receiver"
+        _control_failed apply
+    fi
     [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ] || : "${RIGFORGE_APPLY_FAIL_REASON:=could not restart the miner}"
-    [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ] && [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ]
+    [ "$_wd_rc:$_api_rc:$_control_rc" = 0:0:0 ] && [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ]
 }
 
 # #343: apply's honesty check. "Applied config and restarted" used to be the last word even when the
