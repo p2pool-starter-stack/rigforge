@@ -2,11 +2,12 @@
 
 RigForge automates setup and tuning of upstream XMRig; it is not a separate mining engine.
 
-**Evidence status, 2026-11-02: historical observations only.** The measurements below are retained
-from the report at repository revision `ff4e60f8a8e48ac791c4372252edd2ec0308eb20`. That is the
-report's source revision, not the tested RigForge revision. The measurement date, baked RigForge SHA,
-full upstream XMRig commit and build flags are not recorded in that report. It does not validate
-the RigForge baked into Pithead 2.0.0 or establish a current candidate's percentage uplift.
+**Evidence status, 2026-11-02: historical observations only.** The measurements below were first
+committed in `0790840` (#107, 2026-06-12) and are retained unchanged from the report as reviewed
+in #580 at revision `ff4e60f8a8e48ac791c4372252edd2ec0308eb20`. Neither is the tested RigForge revision.
+The measurement date, baked RigForge SHA, full upstream XMRig commit and build flags are not recorded
+in that report. It does not validate the RigForge baked into Pithead 2.0.0 or establish a current
+candidate's percentage uplift.
 
 All power readings below are **CPU-package RAPL**, and efficiency is H/s per CPU-package watt.
 Wall power and wall energy are unavailable in this report. These readings do not establish
@@ -72,16 +73,17 @@ versus expert tuning; it is not evidence of equivalence.
 
 Other reported differences included `cpu.yield` off for RigForge and on for the hand-tuned worker,
 and 266 versus 1,280 reserved HugePages (both reported full HugePages use). Prefetch mode 2 was
-reported at approximately 17,900 H/s on this EPYC, while it was selected on the desktop. These
+reported at approximately 17,900 H/s on this EPYC, about half the tuned rows above, while it was selected on the desktop. These
 observations motivate measuring each machine separately, not a universal tuning claim.
 
 ## Caveats (read before quoting a number)
 
 - CPU, RAM, firmware, socket count, NUMA layout, kernel and starting OS state affect results.
   Missing fields in the historical record must remain unknown, not inferred from a CPU model.
-- Modern kernels narrow the stock gap. Ubuntu 24.04's `madvise` Transparent HugePages back some of
-  even the stock allocation with 2 MB pages, so the stock baseline is closer to tuned than on an older
-  kernel or with THP off. Don't expect the 20–30% some older write-ups quote.
+- Modern kernels likely narrow the stock gap. Ubuntu 24.04's `madvise` Transparent HugePages can back
+  some of even the stock allocation with 2 MB pages, so the stock baseline may sit closer to tuned than
+  on an older kernel or with THP off; these tables did not measure that effect. Don't expect the
+  20–30% some older write-ups quote.
 - Stopping the RigForge service does not undo persistent HugePages, MSR, governor, boot-parameter
   or service changes. A stock run on that OS is not automatically a clean baseline.
 - These tables cannot support a universal uplift, expert-equivalence claim or wall-efficiency claim.
