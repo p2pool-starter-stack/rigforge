@@ -291,6 +291,15 @@ grep -q 'could not restore xmrig' "$CASE_DIR/output" || fail 'restoration failur
 if grep -q 'Stress PASS' "$CASE_DIR/output"; then fail 'PASS was printed before failed restoration'; fi
 printf 'PASS: restoration failure changes the final verdict\n'
 
+for timer in autotune watchdog; do
+    make_case "restore-$timer-timer" 1
+    FAIL_START="rigforge-$timer.timer"
+    make_xmrig
+    [ "$(run_case)" -ne 0 ] || fail "$timer timer restoration failure passed"
+    grep -q "could not restore rigforge-$timer.timer" "$CASE_DIR/output" || fail "$timer timer restoration failure was not reported"
+done
+printf 'PASS: timer restoration failures change the final verdict\n'
+
 make_case signal 1
 make_xmrig
 _stress_sleep() {
@@ -313,5 +322,18 @@ kill "$sentinel_pid"
 wait "$sentinel_pid" 2>/dev/null || true
 grep -q '^start xmrig$' "$CALLS" || fail 'signal cleanup did not restore miner'
 printf 'PASS: signal cleanup stops only the owned process and restores state\n'
+
+make_case argument-errors 1
+for bad in '--bogus' '--minutes'; do
+    if (stress "$bad" >/dev/null 2>&1); then fail "stress accepted $bad"; fi
+done
+if (OS_TYPE=Darwin stress --minutes 1 >/dev/null 2>&1); then fail 'stress ran on a non-Linux host'; fi
+for sig in HUP:129 INT:130 TERM:143; do
+    sig_rc=0
+    (_stress_signal "${sig%:*}") || sig_rc=$?
+    [ "$sig_rc" = "${sig#*:}" ] || fail "_stress_signal ${sig%:*} exited $sig_rc"
+done
+if bash "$SCRIPT" stress --bogus >/dev/null 2>&1; then fail 'the stress subcommand accepted an unknown option'; fi
+printf 'PASS: stress rejects bad arguments and maps signals to exit codes\n'
 
 printf 'stress tests: PASS\n'

@@ -24,6 +24,7 @@ printf '%s\n' "$mode" >>"$RF_TEST_ROOT/calls"
 color=32 rate=1000.0 hash=898B6E0431C28A6B
 case "$STUB_MODE" in
 mismatch) color=31 ;;
+hang) sleep 30 ;;
 missing) echo 'speed 9000.0 H/s'; exit 0 ;;
 plain) color='' ;;
 fatal) echo 'MEMORY ALLOC FAILED' ;;
@@ -164,5 +165,22 @@ for STUB_MODE in tune_bad tune_mixed; do
     check test "$(jq -r '.randomx.scratchpad_prefetch_mode' "$D/tune-overrides.json" 2>/dev/null)" = 1
     check contains correctness
 done
+STUB_MODE=hang BENCH_TIMEOUT=1 run_bench
+check test "$RC" != 0
+check contains 'rigforge-bench-timeout'
+STUB_MODE=ok
+run_bench --verify=AbC123
+check test "$RC" = 0
+check test "$(tail -n 1 "$D/calls")" = verify
+for fn in _bench_capture_signal:129 _bench_run_signal:143 _bench_capture_signal:130; do
+    sig_rc=0
+    bashc 'source "$SCRIPT"; '"${fn%:*} ${fn#*:}" >/dev/null 2>&1 || sig_rc=$?
+    check test "$sig_rc" = "${fn#*:}"
+done
+for bad in 'bad-size' '-x'; do
+    check test "$(bashc 'source "$SCRIPT"; _xmrig_bench /bin/true "$1" ""' "$bad" 2>&1 | grep -c rigforge-bench-config-error)" = 1
+done
+check test "$(bashc 'source "$SCRIPT"; _xmrig_bench /bin/true 1M "" verify "bad id!"' 2>&1 | grep -c rigforge-bench-config-error)" = 1
+check test "$(bashc 'source "$SCRIPT"; _xmrig_bench /bin/true 1M "" nonsense' 2>&1 | grep -c rigforge-bench-config-error)" = 1
 printf 'benchmark verification: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

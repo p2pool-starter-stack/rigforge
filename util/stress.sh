@@ -6,20 +6,7 @@ _stress_sleep() { sleep "$1"; }
 _stress_hashing() {
     local input="$1"
     [ -s "$input" ] || input="$2"
-    awk '
-        /speed.*H\/s/ {
-            ok = 0
-            seen = 0
-            for (i = 1; i <= NF; i++) {
-                if ($i == "speed") seen = 1
-                else if (seen && ($i == "n/a" || $i ~ /^[0-9]+([.][0-9]+)?$/)) {
-                    if ($i != "n/a" && $i + 0 > 0) ok = 1
-                    break
-                }
-            }
-        }
-        END { exit !ok }
-    ' "$input" 2>/dev/null
+    awk '/speed.*H\/s/ { ok = 0; seen = 0; for (i = 1; i <= NF; i++) { if ($i == "speed") seen = 1; else if (seen && ($i == "n/a" || $i ~ /^[0-9]+([.][0-9]+)?$/)) { if ($i != "n/a" && $i + 0 > 0) ok = 1; break } } } END { exit !ok }' "$input" 2>/dev/null
 }
 
 _stress_fatal() { grep -qiE 'MEMORY ALLOC FAILED|unable to (open|parse) config|error parsing config' "$@" 2>/dev/null; }

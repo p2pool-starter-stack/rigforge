@@ -20,43 +20,14 @@ _bench_safe_config() { # <source-or-empty> <destination>
     local src="${1:-}" dst="$2"
     if [ -n "$src" ]; then
         [ -f "$src" ] || return 1
-        jq '
-            if type != "object" then error("config must be an object") else . end
-            | del(.http, .pools, ."log-file", .benchmark, .bench, ."bench-algo",
-                  ."bench-size", .seed, .hash, .submit, .verify, .stress)
-            | .colors = true
-            | .background = false
-            | .autosave = false
-            | .watch = false
-            | ."pause-on-active" = false
-            | ."pause-on-battery" = false
-        ' "$src" >"$dst" 2>/dev/null
+        jq 'if type != "object" then error("config must be an object") else . end | del(.http, .pools, ."log-file", .benchmark, .bench, ."bench-algo", ."bench-size", .seed, .hash, .submit, .verify, .stress) | .colors = true | .background = false | .autosave = false | .watch = false | ."pause-on-active" = false | ."pause-on-battery" = false' "$src" >"$dst" 2>/dev/null
     else
-        printf '{}\n' | jq '
-            .colors = true
-            | .background = false
-            | .autosave = false
-            | .watch = false
-            | ."pause-on-active" = false
-            | ."pause-on-battery" = false
-        ' >"$dst" 2>/dev/null
+        printf '{}\n' | jq '.colors = true | .background = false | .autosave = false | .watch = false | ."pause-on-active" = false | ."pause-on-battery" = false' >"$dst" 2>/dev/null
     fi
 }
 
 _bench_submission_id() {
-    awk '
-        /^rigforge-bench-id: [[:alnum:]]+$/ {
-            line = $2
-            if (length(line) <= 128) id = line
-        }
-        /benchmark submitted/ {
-            line = $0
-            sub(/^.*\//, "", line)
-            gsub(/[^[:alnum:]].*$/, "", line)
-            if (line ~ /^[[:alnum:]]+$/ && length(line) <= 128) id = line
-        }
-        END { print id }
-    '
+    awk '/^rigforge-bench-id: [[:alnum:]]+$/ { line = $2; if (length(line) <= 128) id = line } /benchmark submitted/ { line = $0; sub(/^.*\//, "", line); gsub(/[^[:alnum:]].*$/, "", line); if (line ~ /^[[:alnum:]]+$/ && length(line) <= 128) id = line } END { print id }'
 }
 
 _bench_capture_cleanup() {
@@ -185,24 +156,7 @@ _bench_result() { # <captured-output>
     BENCH_HR=""
     BENCH_ID=""
 
-    parsed=$(printf '%s\n' "$raw" | LC_ALL=C awk '
-        BEGIN { esc = sprintf("%c", 27) }
-        /benchmark finished/ { final = $0 }
-        END {
-            rest = final
-            sub(/^.*hash sum = /, "", rest)
-            while (match(rest, /[[:xdigit:]]+/)) {
-                token = substr(rest, RSTART, RLENGTH)
-                if (length(token) == 16) {
-                    hash = token
-                    if (index(final, esc "[1;32m" token esc "[0m")) verdict = "verified"
-                    else if (index(final, esc "[1;31m" token esc "[0m")) verdict = "mismatch"
-                }
-                rest = substr(rest, RSTART + RLENGTH)
-            }
-            print verdict "\t" hash
-        }
-    ')
+    parsed=$(printf '%s\n' "$raw" | LC_ALL=C awk 'BEGIN { esc = sprintf("%c", 27) } /benchmark finished/ { final = $0 } END { rest = final; sub(/^.*hash sum = /, "", rest); while (match(rest, /[[:xdigit:]]+/)) { token = substr(rest, RSTART, RLENGTH); if (length(token) == 16) { hash = token; if (index(final, esc "[1;32m" token esc "[0m")) verdict = "verified"; else if (index(final, esc "[1;31m" token esc "[0m")) verdict = "mismatch" } rest = substr(rest, RSTART + RLENGTH) } print verdict "\t" hash }')
     BENCH_VERDICT=${parsed%%$'\t'*}
     BENCH_HASH=${parsed#*$'\t'}
     if [ -z "$BENCH_VERDICT" ] || [ "$BENCH_VERDICT" = "$parsed" ]; then BENCH_VERDICT="unverified"; fi
@@ -235,8 +189,7 @@ _bench_record() { # <captured-output>
     jq -n --arg saved "$(date '+%Y-%m-%d %H:%M:%S')" --arg seed "$BENCH_SEED" \
         --arg hash "$BENCH_HASH" --arg verdict "$BENCH_VERDICT" --arg hr "$BENCH_HR" \
         --arg id "$BENCH_ID" --argjson passed "$([ "$verdict_rc" -eq 0 ] && echo true || echo false)" \
-        '{saved: $saved, seed: $seed, hash: $hash, verdict: $verdict, hashrate: $hr,
-          id: (if $id == "" then null else $id end), passed: $passed}' >"$tmp" 2>/dev/null || {
+        '{saved: $saved, seed: $seed, hash: $hash, verdict: $verdict, hashrate: $hr, id: (if $id == "" then null else $id end), passed: $passed}' >"$tmp" 2>/dev/null || {
         rm -f "$tmp"
         warn "Could not record the latest benchmark result."
         return 0
@@ -248,21 +201,7 @@ _bench_record() { # <captured-output>
 }
 
 _bench_bundle() { # <record>
-    jq -e '
-        . as $r
-        | if type != "object"
-            or (($r.seed // "") | test("^[[:xdigit:]]+$") | not)
-            or (($r.hash | type) != "string")
-            or (if $r.hash == ""
-                then (["failed", "unverified"] | index($r.verdict) | not)
-                else ($r.hash | test("^[[:xdigit:]]{16}$") | not)
-                end)
-            or (["verified", "mismatch", "unverified", "failed"] | index($r.verdict) | not)
-            or ($r.id != null and (($r.id | type) != "string" or ($r.id | test("^[[:alnum:]]{1,128}$") | not)))
-        then error("invalid benchmark record")
-        else {seed, hash, verdict, id}
-        end
-    ' "$1"
+    jq -e '. as $r | if type != "object" or (($r.seed // "") | test("^[[:xdigit:]]+$") | not) or (($r.hash | type) != "string") or (if $r.hash == "" then (["failed", "unverified"] | index($r.verdict) | not) else ($r.hash | test("^[[:xdigit:]]{16}$") | not) end) or (["verified", "mismatch", "unverified", "failed"] | index($r.verdict) | not) or ($r.id != null and (($r.id | type) != "string" or ($r.id | test("^[[:alnum:]]{1,128}$") | not))) then error("invalid benchmark record") else {seed, hash, verdict, id} end' "$1"
 }
 
 _bench_run_cleanup() {
