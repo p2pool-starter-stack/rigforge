@@ -118,6 +118,69 @@ installed by this diagnostic.
 Both stop at a failed mutation prerequisite and make restoration failure fail the process; recovery
 snapshots remain on disk when cleanup cannot prove the original config bytes and runtime were restored.
 
+### Documentation replay on a disposable VM
+
+`make e2e-docs-replay` is the VM job entry point for the documented installation and
+uninstall lifecycle. Run it on a Linux KVM controller with Python 3 and `virsh` access to
+the local system libvirt instance. The job requires these environment variables:
+
+| Variable | Required value |
+|---|---|
+| `E2E_DOCS_DISPOSABLE` | `1`, acknowledging that setup, uninstall and two reboots will mutate the guest. |
+| `E2E_DOCS_VM_UUID` | UUID of a running, transient, disposable Ubuntu cloud VM with AVX2 exposed. Persistent domains are refused. |
+| `E2E_DOCS_CONFIG` | Path to the prepared configuration for this run, kept outside the checkout. |
+
+The VM owner supplies and disposes the guest and a throwaway plain-Stratum endpoint
+that issues RandomX jobs and accepts low-difficulty shares. Provision only the test
+transport and observation tools beforehand: QEMU guest agent with guest execution
+enabled, Git, sudo, jq, curl, nftables and iproute2. The guest needs systemd, a stock
+Ubuntu GRUB installation and enough memory for RandomX; it must have no prior
+RigForge installation or reserved HugePages. No live rig is a valid fixture.
+The prepared config must contain one pool, donation zero and a nonempty
+`api_allow_from`. Use `docs-replay` as the pool user and an empty password or `x`;
+do not supply a wallet, production endpoint or credential. Leave `ACCESS_TOKEN`
+and control disabled and use the default worker location. Only `pools`, `DONATION`,
+`api_allow_from`, `HOME_DIR` and optional `threads` are accepted; pool objects accept
+only `url`, `user` and `pass`. The guest must be able
+to download the documented release and its build dependencies.
+
+The driver extracts the marked Bash blocks from the README and walkthrough,
+checks their quick-start commands agree, and executes them unchanged through the
+guest agent. It inserts the prepared config before the documented dry run and
+setup. This deliberately tests the release pinned by the documentation; it does
+not silently replace that release with the candidate branch. Marker and command
+agreement lint runs in `tests/run.sh` without Python. The host-driver regression
+and guest-check negative controls run under `make test-suite`.
+
+The job snapshots the system changes before dry run, checks autostart after a new
+boot ID, donation zero, the configured pool as the only miner peer, increasing
+accepted shares with no rejects, and a refused base-API write. After uninstall and
+a second new boot ID it checks units, processes, listeners, pool sockets, the nft
+table, 2 MiB HugePages and GRUB restoration. A stopped or unreachable guest after
+reboot is a platform failure (exit 2), never an autostart failure. Other failed
+assertions exit 1. The controller emits only fixed progress messages; raw guest
+output stays out of public evidence. Always discard the fixture after success,
+failure or timeout; the driver never deletes a caller-owned VM.
+
+The existing worker-to-stack `network` phase also makes a bounded request from a
+temporary network namespace, bracketed by successful requests from the allowed
+source. It requires the API drop counter to increase and the miner to keep hashing,
+then removes its namespace and veth. The production rule now includes that counter.
+Local negative controls cover an admitted namespace and an uninstall that leaves
+the nft table. The real AVX2 reboot/mining job and reserved-worker network phase
+remain required evidence beyond the hardware-free tests and container checks.
+
+The namespace probe also has an isolated Linux kernel test, using a small HTTP
+server and a fixed test hashrate instead of a miner. It proves filtering and
+cleanup, including the admitted-source and unchanged-counter negative controls. The
+`e2e` CI job runs it with:
+
+```bash
+docker run --rm --privileged -v "$PWD:/src:ro" \
+  alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
+  sh -c 'apk add --no-cache bash iproute2 nftables curl jq python3 >/dev/null && bash /src/tests/test-api-allowlist-linux.sh'
+```
+
 ### The shared rig (miner-0)
 
 miner-0 is the e2e bench for both RigForge's release gates and Pithead's e2e testing, and the two

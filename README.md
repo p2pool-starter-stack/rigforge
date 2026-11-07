@@ -90,12 +90,16 @@ both CPUs, and the caveats: [Benchmarks](docs/benchmarks.md).
 
 On the machine you want to turn into a miner:
 
+<!-- docs-replay:quick-start:begin -->
+
 ```bash
 git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 sudo ./rigforge.sh
 ```
+
+<!-- docs-replay:quick-start:end -->
 
 The script needs root to install packages and tune the system. First-run setup asks for your pool URL
 and optional password. For an `.onion` pool it offers a validated SOCKS proxy override, defaulting to

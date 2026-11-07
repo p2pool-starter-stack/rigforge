@@ -13,6 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh"
 
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
@@ -359,6 +360,11 @@ phase_network() {
     ss -Htln 2>/dev/null | grep -q ':8081 ' && ok ":8081 listening from control alone, api never set (#507)" || bad ":8081 not listening though control implies api (#507)"
     set_cfg '.api = "enabled"'
     sleep 3
+    if phase_api_allowlist; then
+        ok "API allowlist rejects a second source while mining"
+    else
+        bad "API allowlist live probe failed"
+    fi
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
         ok ":8081 listening while api enabled"
     else
