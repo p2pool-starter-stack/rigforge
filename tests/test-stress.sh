@@ -300,6 +300,14 @@ for timer in autotune watchdog; do
 done
 printf 'PASS: timer restoration failures change the final verdict\n'
 
+make_case diagnostics 1
+XMRIG_MODE=zero
+make_xmrig
+[ "$(run_case)" -ne 0 ] || fail 'zero final rate passed'
+grep -q 'last XMRig output' "$CASE_DIR/output" && grep -q '0.0 n/a n/a H/s' "$CASE_DIR/output" || fail 'failed stress did not print the last XMRig output'
+[ "$(jq -r '."print-time"' "$CASE_DIR/stress-config")" = 10 ] || fail 'stress config does not shorten print-time'
+printf 'PASS: failed stress prints the last XMRig output and shortens print-time\n'
+
 make_case signal 1
 make_xmrig
 _stress_sleep() {

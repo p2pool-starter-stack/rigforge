@@ -173,6 +173,7 @@ It pauses active watchdog/autotune timers, refuses to interrupt an already-runni
 stops an active miner, and runs XMRig's continuous offline stress mode. The test samples the same
 CPU temperature source as the watchdog and reports peak temperature (or unavailable). A process
 failure, failure to hash, or temperature above configured `max_temp_c` fails the test.
+The run asks XMRig for a speed report every 10 seconds, and a failed run prints the last lines of XMRig's output.
 
 Normal completion, errors and interrupt signals restore the previously active miner and timers.
 An over-temperature failure leaves the miner stopped with a watchdog thermal hold; the watchdog

@@ -66,7 +66,7 @@ stress() {
     fi
 
     local minutes=30 seconds deadline now temp peak="" peak_label rc=0 reason=""
-    local bin cfg safe_cfg out logf
+    local bin cfg safe_cfg out logf last
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --minutes)
@@ -103,7 +103,7 @@ stress() {
     safe_cfg="$_STRESS_TMP/config.json"
     out="$_STRESS_TMP/stdout"
     logf="$_STRESS_TMP/xmrig.log"
-    jq 'del(.http, .pools, ."log-file", .benchmark, .bench, ."bench-algo", ."bench-size", .seed, .hash, .submit, .verify, .stress) | .background = false | .autosave = false | .watch = false | ."pause-on-active" = false | ."pause-on-battery" = false' "$cfg" >"$safe_cfg" || error "Could not prepare the offline stress config."
+    jq 'del(.http, .pools, ."log-file", .benchmark, .bench, ."bench-algo", ."bench-size", .seed, .hash, .submit, .verify, .stress) | .background = false | ."print-time" = 10 | .autosave = false | .watch = false | ."pause-on-active" = false | ."pause-on-battery" = false' "$cfg" >"$safe_cfg" || error "Could not prepare the offline stress config."
 
     if systemctl is-active --quiet rigforge-autotune.timer 2>/dev/null; then
         _STRESS_AUTOTUNE_TIMER_ACTIVE=1
@@ -165,6 +165,8 @@ stress() {
         rc=1
         reason="XMRig's latest speed report was not a positive hashrate"
     fi
+    last=""
+    if [ "$rc" -ne 0 ]; then last=$(tail -n 15 "$logf" "$out" 2>/dev/null | sed $'s/\x1b\\[[0-9;]*m//g'); fi
     peak_label=unavailable
     [ -z "$peak" ] || peak_label="${peak}°C"
     if ! _stress_cleanup "$rc"; then
@@ -176,6 +178,7 @@ stress() {
         log "Stress PASS: hashed for $minutes minute(s); peak temperature $peak_label."
     else
         warn "Stress FAIL: $reason; peak temperature $peak_label."
+        if [ -n "$last" ]; then warn "stress: last XMRig output:"$'\n'"$last"; fi
     fi
     return "$rc"
 }
