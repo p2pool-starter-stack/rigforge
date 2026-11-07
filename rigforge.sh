@@ -168,6 +168,7 @@ compute_build_jobs() { # <ncpu>
     local mem_kb mem_gb jobs="$1" max
     mem_kb=$(awk '/^MemTotal:/ {print $2}' "${MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)
     mem_kb="${mem_kb:-0}" # a meminfo with no MemTotal line yields empty (awk exits 0), not the || fallback
+    [ "${SHARED_HOST:-false}" != true ] || mem_kb=$((SHARED_MEMORY_MAX_MB * 1024))
     mem_gb=$((mem_kb / 1024 / 1024))
     # Guard on mem_kb (readable at all), not mem_gb (truncates to 0 for BOTH a real sub-1GB host and an
     # unreadable meminfo) — a sub-1GB host must still hit the cap below (falls to the max<1 floor -> 1
@@ -997,6 +998,10 @@ compile_xmrig() {
         cores=$(nproc)
         jobs=$(compute_build_jobs "$cores")
         log "Compiling binary ($jobs of $cores cores; output -> $BUILD_LOG)..."
+        if [ "${SHARED_HOST:-false}" = true ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            log "Shared host: stopping the miner so the build gets the whole memory ceiling."
+            sudo systemctl stop "$SERVICE_NAME.service" || error "Could not stop the miner before the shared-host build."
+        fi
         mkdir -p xmrig.new/build && cd xmrig.new/build
         _shared_host_run cmake .. -DWITH_HWLOC=ON >>"$BUILD_LOG" 2>&1
     fi

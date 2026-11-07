@@ -141,6 +141,36 @@ autotune() { printf 'bounded live trial\n' >"$D/live-trial"; }
 tune --now >/dev/null
 [ -f "$D/live-trial" ] || fail 'bounded quick tune did not use autotune'
 
+printf 'MemTotal: 16777216 kB\n' >"$D/meminfo16"
+[ "$(SHARED_HOST=false MEMINFO="$D/meminfo16" compute_build_jobs 8)" = 8 ] || fail 'dedicated build parallelism changed'
+[ "$(SHARED_HOST=true SHARED_MEMORY_MAX_MB=3072 MEMINFO="$D/meminfo16" compute_build_jobs 8)" = 1 ] || fail 'shared build sized from host RAM'
+[ "$(SHARED_HOST=true SHARED_MEMORY_MAX_MB=8192 MEMINFO="$D/meminfo16" compute_build_jobs 8)" = 4 ] || fail 'shared build ignored its ceiling'
+(
+    git() {
+        case "$1" in
+        clone)
+            mkdir -p xmrig.new/src
+            printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' >xmrig.new/src/donate.h
+            ;;
+        -C) printf '%s\n' "$XMRIG_COMMIT" ;;
+        esac
+    }
+    nproc() { printf '8\n'; }
+    systemctl() {
+        case "$1" in
+        is-active) return 0 ;;
+        stop) printf 'stop %s\n' "$2" >>"$D/compile-calls" ;;
+        esac
+    }
+    _shared_host_run() { printf '%s\n' "$*" >>"$D/compile-calls"; }
+    generate_xmrig_config() { :; }
+    _activate_xmrig_build() { :; }
+    MEMINFO="$D/meminfo16" SHARED_HOST=true SHARED_MEMORY_MAX_MB=3072 XMRIG_REBUILD=true XMRIG_VERSION=v0 XMRIG_COMMIT=fixture DONATION=3
+    compile_xmrig >/dev/null
+)
+[ "$(head -n1 "$D/compile-calls")" = "stop $SERVICE_NAME.service" ] || fail 'shared build started beside a running miner'
+grep -qFx 'make -j1' "$D/compile-calls" || fail 'shared build parallelism exceeded the memory ceiling'
+
 printf 'external slice\n' >"$SYSTEMD_DIR/rigforge.slice"
 _shared_host_remove
 [ -f "$SYSTEMD_DIR/rigforge.slice" ] || fail 'unowned slice was removed'

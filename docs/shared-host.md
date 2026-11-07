@@ -35,6 +35,11 @@ controls, and one dataset. The miner and RigForge's compile, prefetch, and perio
 run in the owned `rigforge.slice` budget. Full `tune` and `bench` are refused; `tune --now` and
 periodic autotune only perform the limited prefetch work supported by the profile.
 
+A rebuild during setup or `upgrade` sizes compiler parallelism from `memory_max_mb` (one job per
+2 GiB, at least one) instead of host RAM, and stops a running miner first so the compiler has the
+whole ceiling. Setup restarts the miner after the rebuild; `upgrade` restarts it when it was running
+before. If the build fails the miner stays stopped; fix the cause and run `sudo ./rigforge.sh start`.
+
 The existing `miner_user` choice remains in force (root when omitted). The unit drops capabilities,
 uses `Nice=19` with CPU weight 10, and disables automatic restart so a failed budget check or memory
 exhaustion leaves the miner stopped with a reason. This bounds trusted mining workloads; it is not a
