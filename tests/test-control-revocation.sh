@@ -147,6 +147,53 @@ chmod +x "$recovery/bin/"*
 ) || fail "install_control did not recover a rejected stop"
 grep -q '^kill --kill-who=all --signal=KILL rigforge-control.service$' "$recovery/calls" || fail "stop rejection did not target the exact receiver unit"
 
+disabled_case() {
+    local mode=$1 d="$T/disabled-$1" rc unit
+    mkdir -p "$d/bin" "$d/units"
+    for unit in rigforge-control.service rigforge-control-apply.service rigforge-control-apply.path; do
+        : >"$d/units/$unit"
+    done
+    cat >"$d/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+exec "$@"
+EOF
+    cat >"$d/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$CALL_LOG"
+if [ "$1" = disable ]; then
+    [ "$DISABLE_MODE" = fail ] && exit 1
+    for unit in "$@"; do
+        case "$unit" in rigforge-*) [ -f "$UNIT_DIR/$unit" ] || exit 1 ;; esac
+    done
+fi
+exit 0
+EOF
+    chmod +x "$d/bin/"*
+    : >"$d/calls"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux CONTROL_MODE=disabled CONTROL_UPGRADE=disabled SYSTEMD_DIR="$d/units"
+        CALL_LOG="$d/calls" UNIT_DIR="$d/units" DISABLE_MODE="$mode" PATH="$d/bin:$PATH"
+        export CALL_LOG UNIT_DIR DISABLE_MODE PATH
+        install_control >/dev/null 2>&1
+    )
+    rc=$?
+    case "$mode" in
+    absent-upgrade)
+        [ "$rc" -eq 0 ] || fail "control-disabled teardown failed when the upgrade unit was absent"
+        ! grep -q 'rigforge-control-upgrade.path' "$d/calls" || fail "control-disabled teardown named the absent upgrade unit"
+        [ -z "$(ls -A "$d/units")" ] || fail "control-disabled teardown left unit files behind"
+        ;;
+    fail)
+        [ "$rc" -ne 0 ] || fail "control-disabled teardown hid a failing disable"
+        [ "$(grep -c '^stop rigforge-control.service$' "$d/calls")" -ge 2 ] || fail "failing disable left the receiver unstopped on exit"
+        ;;
+    esac
+}
+
+disabled_case absent-upgrade
+disabled_case fail
+
 caller_case() {
     local caller=$1 d="$T/caller-$1" rc
     mkdir -p "$d"

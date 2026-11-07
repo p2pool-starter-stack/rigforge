@@ -1456,10 +1456,11 @@ install_control() (
     local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service" upath="$SYSTEMD_DIR/rigforge-control-upgrade.path"
     _stop_control_receiver || return 1
     if [ "${CONTROL_MODE:-disabled}" = "disabled" ]; then
-        if [ -f "$svc" ] || [ -f "$apath" ] || [ -f "$upath" ]; then
-            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || return 1
-            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath" || return 1
-            sudo systemctl daemon-reload 2>/dev/null || return 1
+        local u units=()
+        for u in rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path; do [ ! -f "$SYSTEMD_DIR/$u" ] || units+=("$u"); done
+        if [ "${#units[@]}" -gt 0 ]; then
+            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now "${units[@]}" 2>/dev/null || return 1
+            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath" && sudo systemctl daemon-reload 2>/dev/null || return 1
             log "Writable control path disabled."
         fi
         return 0
@@ -1480,8 +1481,7 @@ install_control() (
         sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null || return 1
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
     elif [ -f "$upath" ] || [ -f "$usvc" ]; then
-        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || return 1
-        sudo rm -f "$usvc" "$upath" || return 1
+        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null && sudo rm -f "$usvc" "$upath" || return 1
     fi
     install_api_firewall || return 1
     sudo systemctl daemon-reload || return 1

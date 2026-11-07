@@ -9023,6 +9023,7 @@ else
     assert_eq "no-token control server: POST -> 403 (fail closed)" "$(hc -X POST "$U/apply" -H "Authorization: Bearer anything" -H 'Content-Type: application/json' -d '{"DONATION":2}')" "403"
     kill "$NT_PID" 2>/dev/null || true
     wait "$NT_PID" 2>/dev/null || true
+
     # #243: the WRITABLE control server must bind IPv6 dual-stack when its bind addr is v6, same as the
     # sister API — an IPv6-primary stack has to reach the control port too. Mirrors the api-server IPv6
     # test; skip cleanly if the host has no IPv6 loopback.
