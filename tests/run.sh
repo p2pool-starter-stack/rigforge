@@ -3188,7 +3188,7 @@ printf 'hugetlbfs /dev/hugepages hugetlbfs defaults 0 0\nhugetlbfs_1g %s hugetlb
 cat >"$DR3/config.json" <<EOF
 { "HOME_DIR": "$DR3/home", "pools": [{"url": "poolbox.lan:3333"}], "api_allow_from": "10.0.0.9" }
 EOF
-touch "$DR3/home/worker/tune-overrides.json"
+printf '{}\n' >"$DR3/home/worker/tune-overrides.json"
 # A genuinely "already built" worker: executable + matching commit marker (no sha record = legacy build).
 printf '#!/bin/sh\n' >"$DR3/home/worker/xmrig/build/xmrig"
 chmod +x "$DR3/home/worker/xmrig/build/xmrig"
