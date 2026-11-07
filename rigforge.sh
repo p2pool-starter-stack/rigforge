@@ -1015,7 +1015,6 @@ generate_xmrig_config() {
         LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
     fi
 
-    # XMRig detects topology; shared-host safeguards override these dedicated defaults after tuning.
     YIELD="false"
     PRIORITY="2"
     ASM="\"auto\""
@@ -1027,7 +1026,6 @@ generate_xmrig_config() {
     HUGE_PAGES="true"
     MEMORY_POOL="true"
     ONE_GB_PAGES="true"
-    # JIT HugePages can make hashrate unstable.
     JIT="false"
     INIT_AVX2="-1"
     # Lock down the HTTP API to READ-ONLY (restricted) so it can't be used to *control* the miner
@@ -1193,7 +1191,6 @@ EOF
 
 # --- Setup: service, kernel tuning & deployment ---
 
-# Keep an existing miner account because its ownership cannot be inferred.
 _ensure_miner_user() {
     if [ -n "${MINER_USER:-}" ] && ! id -u "$MINER_USER" >/dev/null 2>&1; then
         log "Creating system user '$MINER_USER' for the miner..."
@@ -1241,7 +1238,6 @@ install_service() {
             # nothing is started or restarted.
             log "Service unit installed and enabled — the caller decides whether to restart."
         elif [ "$XMRIG_REBUILD" = true ] || [ "${SHARED_HOST:-false}" = true ]; then
-            # Shared settings also need a restart when the binary is unchanged.
             log "Restarting XMRig service..."
             sudo systemctl restart "$SERVICE_NAME.service"
         else
@@ -2266,27 +2262,22 @@ uninstall() {
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
-        # 3. fstab HugePage mounts
         remove_line "$FSTAB" "hugetlbfs /dev/hugepages hugetlbfs defaults 0 0"
         remove_line "$FSTAB" "hugetlbfs_1g $HUGEPAGES_1G_DIR hugetlbfs pagesize=1G 0 0"
 
-        # 4. memlock limits (current per-user form + the legacy wildcard form, for older installs)
         remove_line "$LIMITS_CONF" "$REAL_USER soft memlock unlimited"
         remove_line "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
         remove_line "$LIMITS_CONF" "* soft memlock unlimited"
         remove_line "$LIMITS_CONF" "* hard memlock unlimited"
 
-        # 5. msr module autoload
         sudo rm -f "$MODULES_LOAD_DIR/msr.conf"
         remove_line "$MODULES_FILE" "msr"
 
-        # 6. 1G HugePage mount
         if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$HUGEPAGES_1G_DIR" 2>/dev/null; then
             sudo umount "$HUGEPAGES_1G_DIR" 2>/dev/null || true
         fi
         sudo rmdir "$HUGEPAGES_1G_DIR" 2>/dev/null || true
 
-        # 7. GRUB cmdline — strip only the params we added
         if [ -f "$GRUB_DEFAULT" ]; then
             local cur stripped
             cur=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
@@ -4133,7 +4124,6 @@ _miner_deliberately_stopped() {
     [ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" = inactive ]
 }
 
-# Autotune needs a restart between trials; ordinary apply preserves a deliberate stop.
 _apply_runtime() { # [preserve-run-state]
     parse_config
     _shared_host_start_guard
@@ -5518,7 +5508,6 @@ EOF
             issues=$((issues + 1))
         fi
 
-        # 1GB HugePages (optional bonus)
         local g=0
         [ -f "$HUGEPAGES_1G_NR" ] && g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
         if [ "${g:-0}" -gt 0 ] 2>/dev/null; then
@@ -5528,7 +5517,6 @@ EOF
         fi
 
     fi
-    # Missing AES-NI is a failure; missing AVX2 only slows initialization.
     local miss_isa
     miss_isa=$(_cpu_missing_isa)
     if [[ " $miss_isa " == *" aes "* ]]; then
@@ -5654,7 +5642,6 @@ EOF
         esac
     fi
 
-    # Lockdown explains failed MSR writes even when the boot parameters permit them.
     if [ "${SHARED_HOST:-false}" != true ]; then
         local ld
         ld=$(_lockdown_state)
@@ -5670,9 +5657,6 @@ EOF
         if [ -d "$MSR_MODULE_DIR" ]; then
             _ck_ok "msr kernel module loaded"
         else
-            # Secure Boot does NOT stop the in-tree, distro-signed `msr` module from loading, so the old
-            # "disable Secure Boot" hint pointed the wrong way here (#333). A missing module is a modprobe /
-            # packaging problem; lockdown is reported separately above.
             _ck_warn "msr module not loaded — the MSR mod won't apply; check 'sudo modprobe msr' and $MODULES_LOAD_DIR/msr.conf"
             issues=$((issues + 1))
         fi
@@ -5684,10 +5668,6 @@ EOF
             case "$msrstat" in
             ok)
                 _ck_ok "MSR mod applied — XMRig set the '${preset:-?}' preset (per its log)"
-                # Register-level read-back (rdmsr) needs root + the msr device; it's the strong check that
-                # catches a write a hypervisor/lockdown silently dropped. Degrade gracefully otherwise — the
-                # log line above already confirms XMRig wrote the preset, so missing rdmsr is advisory, never
-                # an issue. Mirrors the #67 RAM check, which also asks for root rather than crying wolf.
                 if [ "$(id -u)" -ne 0 ]; then
                     _ck_warn "run 'doctor' as root (sudo) to verify the MSRs at the register level (advisory; XMRig's log already confirms the write)"
                 elif ! command -v "$RDMSR_BIN" >/dev/null 2>&1; then
@@ -5697,9 +5677,6 @@ EOF
                     if [ "${_MSR_OK:-0}" -gt 0 ] && [ "${_MSR_OK:-0}" -eq "${_MSR_TOTAL:-0}" ]; then
                         _ck_ok "MSR registers verified via rdmsr ($_MSR_OK/$_MSR_TOTAL match the $preset preset)"
                     elif [ -n "$_MSR_BAD" ]; then
-                        # A genuine value mismatch — the write didn't take. This is the real failure (#66).
-                        # #333: when lockdown is active we already know which of the three causes it was —
-                        # say so instead of listing all of them.
                         if _lockdown_blocks_msr "$ld"; then
                             _ck_warn "MSR registers don't match the $preset preset ($_MSR_OK/$_MSR_TOTAL ok;${_MSR_BAD}) — kernel lockdown ('$ld') dropped the write; see the lockdown item above"
                         else
@@ -5707,14 +5684,11 @@ EOF
                         fi
                         issues=$((issues + 1))
                     else
-                        # No mismatch, but some/all registers were unreadable (e.g. msr module not loaded). Advisory.
                         _ck_warn "couldn't read $_MSR_UNREAD/$_MSR_TOTAL MSR(s) via rdmsr (is the 'msr' module loaded?) — relying on XMRig's log confirmation"
                     fi
                 fi
                 ;;
             fail)
-                # #333: msr.allow_writes=on is only the answer when lockdown is NOT the blocker — under
-                # lockdown the kernel rejects the write before the filter ever runs.
                 if _lockdown_blocks_msr "$ld"; then
                     _ck_warn "XMRig reports the MSR preset FAILED to set — kernel lockdown ('$ld') is denying the write; see the lockdown item above"
                 else
@@ -5722,8 +5696,6 @@ EOF
                 fi
                 issues=$((issues + 1))
                 ;;
-                # not-found is not proof of not-applied (miner hasn't started a RandomX job yet, or a
-            # copytruncate rotation just cleared the live log) — stay quiet.
             *) : ;;
             esac
             if [ "$msrstat" = none ]; then
@@ -5731,12 +5703,9 @@ EOF
                 [ -n "$log_file" ] && [ ! -f "$log_file" ] && _ck_info "MSR unverifiable — no xmrig.log at $log_file and no journal confirmation"
             fi
         elif [ -z "$wr" ]; then
-            # #367: no config.json, so the worker root above never resolved. Distinct wording from the
-            # "resolved but no log" case below — an absent block must not read as a failed check.
             _ck_info "MSR unverifiable — no config.json, so the worker root couldn't be resolved"
         fi
 
-        # CPU governor
         local gov
         gov=$(cat "$GOVERNOR_FILE" 2>/dev/null || echo "")
         if [ "$gov" = "performance" ]; then
