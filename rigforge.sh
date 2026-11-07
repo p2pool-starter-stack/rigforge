@@ -6259,7 +6259,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     doctor)
         shift
         doctor_command "$@" || exit 1
-        ;; # `||`: a mere unhealthy report must not fire the ERR trap's "aborted while" line
+        ;;
     bios)
         shift
         bios "$@"
