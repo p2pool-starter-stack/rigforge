@@ -22,6 +22,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-staged-rebuild.sh
 	bash tests/test-tool-pin-watch.sh
 	python3 tests/test-control-readiness.py
+	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
