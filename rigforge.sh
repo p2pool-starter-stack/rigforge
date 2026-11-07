@@ -62,10 +62,9 @@ _script_dir() {
     cd -P "$(dirname "$src")" &>/dev/null && pwd
 }
 
-# Base for bundled assets and runtime state. RIGFORGE_HOME lets tests sandbox this real script so
-# black-box runs remain isolated while coverage still credits the production file (#68).
+# shellcheck source=util/config-apply-state.sh
+source "$(_script_dir)/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
-# Operator for root-written files; timer units bake it into RIGFORGE_OPERATOR when SUDO_USER is absent.
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
@@ -408,6 +407,7 @@ parse_config() {
     if [ ! -f "$CONFIG_JSON" ]; then
         error "No configuration at $CONFIG_JSON — run 'sudo $0 setup' first (it creates one on first run)."
     fi
+    CONFIG_INPUT_HASH=$(_sha256 "$CONFIG_JSON" 2>/dev/null) || CONFIG_INPUT_HASH=""
     if ! jq -e . "$CONFIG_JSON" >/dev/null 2>&1; then
         error "$CONFIG_JSON is not valid JSON."
     fi
@@ -1027,6 +1027,7 @@ _config_install() {
 
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
+    _config_apply_begin "${1:-}"
     if [ "$OS_TYPE" == "Darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
     else
@@ -1189,6 +1190,7 @@ generate_xmrig_config() {
     fi
 
     _config_install "$_new" "${1:-}" || return 1
+    _config_apply_stamp "${CONFIG_INPUT_HASH:-}" "${1:-}"
 
     if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
@@ -3988,10 +3990,9 @@ _render_duration() {
 }
 
 svc_status() {
+    _config_apply_check
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
-        # parse_config in a subshell: it error-exits on a bad config, and ACCESS_TOKEN only exists
-        # after it — a bad/missing config must degrade to the platform block, never crash status.
         (parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
@@ -5425,7 +5426,7 @@ doctor() {
     fi
     log "Checking the worker (read-only)..."
     local issues=0
-
+    _config_apply_check
     case "$(jq -r 'if (.control | tostring) | test("^(enabled|true|on)$") then "enabled" else (.api // "disabled") end' "$CONFIG_JSON" 2>/dev/null || true)" in # #507: doctor has no parse_config, so it re-derives control's api implication here
     enabled | true | on)
         local refresh_state
