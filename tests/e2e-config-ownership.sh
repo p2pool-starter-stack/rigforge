@@ -52,7 +52,7 @@ _co_hand_edit() {
 
 phase_config_ownership() {
     phase "config-ownership — XMRig neither rewrites nor hot-reloads the generated config; setup restarts on a change (#529)"
-    local before rc plan binary binary_before pid keepalive tmp setup_log
+    local before rc plan risky binary binary_before pid keepalive tmp setup_log
     "$RIGFORGE" stop >/dev/null 2>&1 || true
     set_cfg '.'
     before=$(_co_sum "$GEN_CFG")
@@ -82,6 +82,11 @@ phase_config_ownership() {
     plan=$("$RIGFORGE" setup --dry-run </dev/null 2>&1 || true)
     if ! grep -q 'skip the build' <<<"$plan"; then
         bad "setup restart check needs an already-built worker, but setup --dry-run plans a rebuild (#529)" || true
+        return 0
+    fi
+    risky=$(grep -E 'install packages:|GRUB cmdline:|a reboot WILL be required' <<<"$plan" || true)
+    if [ -n "$risky" ]; then
+        bad "setup would change the rig beyond a config restart (package install, GRUB or reboot); setup was not run. Plan lines: $(tr '\n' ' ' <<<"$risky") (#529)" || true
         return 0
     fi
     binary="$(dirname "$GEN_CFG")/xmrig"

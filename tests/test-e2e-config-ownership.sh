@@ -38,8 +38,14 @@ co_rigforge() {
     case "$1 ${2:-}" in
     'stop ' | 'start ') ;;
     'restart ') [ "$mode" = no-load ] && printf '%s' "$(($(cat "$D/pid") + 1))" >"$D/pid" || load ;;
-    'setup --dry-run') [ "$mode" = rebuild ] || echo 'skip the build' ;;
+    'setup --dry-run')
+        [ "$mode" = rebuild ] || echo 'skip the build'
+        [ "$mode" != packages ] || echo 'installing dependencies: install packages: cmake'
+        [ "$mode" != grub ] || echo "tuning the kernel: GRUB cmdline: 'a' -> 'b'"
+        [ "$mode" != reboot ] || echo 'tuning the kernel: x — a reboot WILL be required'
+        ;;
     'setup ')
+        : >"$D/setup-ran"
         render
         echo 'XMRig already built at the pinned commit — recompile will be skipped.'
         [ "$mode" = no-restart ] || {
@@ -52,7 +58,7 @@ co_rigforge() {
 
 run_case() {
     mode=$1
-    rm -rf "$D/build" "$D/rows"
+    rm -rf "$D/build" "$D/rows" "$D/setup-ran"
     mkdir -p "$D/build"
     printf '{"pools":[{"url":"pool:3333"}]}' >"$CFG"
     printf '41' >"$D/pid"
@@ -89,6 +95,16 @@ run_case no-load
 expect no-load bad 'probe proves nothing'
 run_case rebuild
 expect rebuild bad 'plans a rebuild'
+run_case packages
+expect packages bad 'install packages'
+run_case grub
+expect grub bad 'GRUB cmdline'
+run_case reboot
+expect reboot bad 'reboot WILL be required'
+for _m in packages grub reboot; do
+    run_case "$_m"
+    [ ! -f "$D/setup-ran" ] && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
+done
 run_case no-restart
 expect no-restart bad 'did not restart'
 
