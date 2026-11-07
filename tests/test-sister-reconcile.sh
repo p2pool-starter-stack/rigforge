@@ -172,7 +172,10 @@ grep -q 'restarting xmrig-fixture failed' "$TEST_DIR/result"
 sudo() { :; }
 apply >"$TEST_DIR/result" 2>&1
 [ "$RIGFORGE_RESTART_FAILED" = 0 ]
-install_control() { printf control >"$TEST_DIR/later"; return "${CONTROL_RC:-0}"; }
+install_control() {
+    printf control >"$TEST_DIR/later"
+    return "${CONTROL_RC:-0}"
+}
 CONTROL_RC=1
 sudo() { return 1; }
 RIGFORGE_APPLY_FAIL_REASON=""

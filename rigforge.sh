@@ -794,18 +794,29 @@ prepare_workspace() {
     cd "$WORKER_ROOT"
 }
 
+_recover_xmrig_swap() {
+    [ -f "$WORKER_ROOT/xmrig.swap" ] || return 0
+    [ -d "$WORKER_ROOT/xmrig" ] || {
+        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig" 2>/dev/null || warn "Could not recover the interrupted XMRig swap; rebuilding."
+    }
+    rm -f "$WORKER_ROOT/xmrig.swap"
+    decide_rebuild
+}
+
 _activate_xmrig_build() {
     cd "$WORKER_ROOT"
     local archived=""
     if [ -d xmrig ]; then
         log "Archiving existing worker installation..."
         archived="xmrig-$(date +%Y%m%d_%H%M%S)"
+        printf '%s\n' "$archived" >xmrig.swap.tmp && mv xmrig.swap.tmp xmrig.swap || error "Could not record the XMRig swap."
         mv xmrig "$archived"
     fi
     mv xmrig.new xmrig || {
         [ -z "$archived" ] || mv "$archived" xmrig
         error "Could not swap in the new XMRig build."
     }
+    rm -f xmrig.swap
     local keep="${KEEP_ARCHIVES:-3}" archives
     # shellcheck disable=SC2012  # archive names are controlled (xmrig-YYYYmmdd_HHMMSS); ls -t orders by recency
     archives="$(ls -dt xmrig-* 2>/dev/null || true)"
@@ -945,6 +956,7 @@ install_dependencies() {
 # --- Setup: build XMRig from source ---
 
 compile_xmrig() {
+    _recover_xmrig_swap
     if [ "$XMRIG_REBUILD" != true ]; then
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) already built — skipping clone/compile."
         cd "$WORKER_ROOT/xmrig/build"
@@ -990,25 +1002,39 @@ compile_xmrig() {
     echo "$XMRIG_COMMIT" >"$WORKER_ROOT/xmrig.new/.rigforge-commit"
     printf '0\n' >"$WORKER_ROOT/xmrig.new/.rigforge-donate-min"
     [ ! -f "$WORKER_ROOT/xmrig.new/build/xmrig" ] || _sha256 "$WORKER_ROOT/xmrig.new/build/xmrig" >"$WORKER_ROOT/xmrig.new/.rigforge-sha256"
+    (cd "$WORKER_ROOT/xmrig.new/build" && generate_xmrig_config stage)
     _activate_xmrig_build
 }
 
 # --- Setup: XMRig config generation (CPU / NUMA / MSR layout) ---
 
+_config_render_fail() {
+    rm -f "$1"
+    [ -n "${3:-}" ] || [ -z "$1" ] || rm -f "$1.bak"
+    warn "$2${3:-; the previous config.json is unchanged.}"
+    return 1
+}
+
+_config_install() {
+    jq -e . "$1" >/dev/null && chmod 600 "$1" && { [ ! -f config.json ] || (umask 077 && cat config.json >"$1.bak"); } || _config_render_fail "$1" "Validating or backing up the XMRig config failed" || return 1
+    if [ "${2:-}" = stage ]; then mv -f "$1" config.json; else cat "$1" >config.json && cmp -s "$1" config.json && chmod 600 config.json; fi && { rm -f "$1" "$1.bak" || true; } && return 0
+    if { [ -f "$1.bak" ] && cat "$1.bak" >config.json && cmp -s "$1.bak" config.json; } || { [ ! -f "$1.bak" ] && rm -f config.json; }; then
+        _config_render_fail "$1" "Installing the XMRig config failed"
+    else
+        _config_render_fail "$1" "Installing the XMRig config failed" "; restoring it failed too, so config.json may be incomplete (the previous copy is $PWD/$1.bak)."
+    fi
+}
+
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
-
-    # Identify CPU Topology
     if [ "$OS_TYPE" == "Darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
     else
-        # Anchor to "^Model name:" — as root, lscpu also prints a "BIOS Model name:" line (a DMI string
-        # like "...  Unknown CPU @ 4.2GHz"), and an unanchored grep would concatenate both into one line.
         CPU_MODEL=$(lscpu | grep -E '^Model name:' | cut -d':' -f2 | xargs)
     fi
     LOG_FILE_PATH=""
     if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
-        sudo rm -f "$WORKER_ROOT/xmrig.log"
+        [ "${1:-}" = stage ] || sudo rm -f "$WORKER_ROOT/xmrig.log"
     else
         LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
     fi
@@ -1092,14 +1118,10 @@ generate_xmrig_config() {
         [[ " $_missing_isa " == *" avx2 "* ]] && warn "This CPU has no AVX2: dataset init will be slower (steady-state hashrate is unaffected)."
     fi
 
-    # Rig label for the pool `user` field (#22): any pool entry that didn't set its own `user` gets the
-    # machine hostname, so the worker shows up named on the dashboard.
     FULL_USER="$(hostname)"
 
-    # Build the whole XMRig config from scratch (issue #55). There's no template file to keep in sync:
-    # the tuned parts (pools, donate-level, the http block, the cpu/randomx sections) come from the
-    # variables above, and the few static defaults (autosave, randomx mode, opencl/cuda off) are
-    # emitted inline. `jq -n` builds the object from null input; any tuned overrides are merged below.
+    local _new _step
+    _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
     jq -n --argjson pools "$POOLS_JSON" \
         --arg user "$FULL_USER" \
         --arg access_token "$ACCESS_TOKEN" \
@@ -1155,45 +1177,25 @@ generate_xmrig_config() {
             },
             opencl: false,
             cuda: false
-        } + (if $log == "" then {} else {"log-file": $log} end)' >config.json
+        } + (if $log == "" then {} else {"log-file": $log} end)' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
 
-    # Overlay any tuned knobs (#46) on top — kept in a separate file (written by `tune`) so the user's
-    # config.json is never touched. A recursive merge lets tuning win for just the keys it sets.
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        local _ovr
-        _ovr=$(mktemp)
-        if jq -s '.[0] * .[1]' config.json "$WORKER_ROOT/tune-overrides.json" >"$_ovr" 2>/dev/null; then
-            mv "$_ovr" config.json
-            log "Applied tuned overrides from tune-overrides.json."
-        else
-            rm -f "$_ovr"
-        fi
+        _step=$(jq -s '.[0] * .[1]' "$_new" "$WORKER_ROOT/tune-overrides.json") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Applying $WORKER_ROOT/tune-overrides.json failed (fix or remove it)" || return 1
+        log "Applied tuned overrides from tune-overrides.json."
     fi
 
-    # First-class thread cap (#305): clamp cpu.rx to the ceiling AFTER any tune overlay, so a stale
-    # tuned thread count can't exceed the operator's headroom guarantee (e.g. a co-located miner told to
-    # stay at nproc-2). Auto (-1) or any value above the cap becomes the cap; a valid count at or under
-    # the cap is left untouched — a true ceiling, never a raise.
     if [ -n "${THREADS_CAP:-}" ]; then
-        local _capped
-        _capped=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' config.json 2>/dev/null) && printf '%s\n' "$_capped" >config.json
+        _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
 
-    # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
-    # redirect would otherwise leave it world-readable). _reown_worker hands ownership to the operator
-    # later; chmod here is preserved across that chown, and root (the service) reads it regardless.
-    chmod 600 config.json
+    _config_install "$_new" "${1:-}" || return 1
 
-    if [ "$OS_TYPE" == "Linux" ]; then
-        # Appliance mode: no logrotate drop-in — /etc is a volatile overlay and the image does not run
-        # logrotate; log policy on the appliance belongs to the integration layer (pithead#797 R2),
-        # which re-renders the miner's config every boot and can cap or journald-route the log there.
+    if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
             log "Appliance mode: skipping the logrotate policy (image-owned logging)."
             return
         fi
         log "Configuring log rotation policy..."
-        # Install logrotate configuration
         sudo tee "$LOGROTATE_DIR/xmrig" >/dev/null <<EOF
     $LOG_FILE_PATH {
         daily
@@ -1445,8 +1447,7 @@ _stop_control_receiver() {
     if [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" = not-found ] && [ "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" = inactive ]; then return 0; fi
     sudo systemctl kill --kill-who=all --signal=KILL rigforge-control.service 2>/dev/null || true
     sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
-    warn "Could not stop the control receiver; revocation is NOT confirmed. Stop rigforge-control.service before retrying."
-    return 1
+    ! warn "Could not stop the control receiver; revocation is NOT confirmed. Stop rigforge-control.service before retrying."
 }
 install_control() (
     [ "$OS_TYPE" == "Linux" ] || return 0
@@ -1465,8 +1466,8 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT' \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH' \
         <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
@@ -1482,6 +1483,7 @@ install_control() (
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || return 1
         sudo rm -f "$usvc" "$upath" || return 1
     fi
+    install_api_firewall || return 1
     sudo systemctl daemon-reload || return 1
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-apply.path 2>/dev/null || return 1
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
@@ -4148,7 +4150,7 @@ _apply_runtime() { # [preserve-run-state]
     local held=no
     RIGFORGE_RESTART_FAILED=0
     [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
-    (cd "$build" && generate_xmrig_config)
+    (cd "$build" && generate_xmrig_config) || return 1
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Config regenerated. Restart the miner to apply."
     elif [ "$held" = yes ]; then
@@ -4690,32 +4692,30 @@ control_apply() {
     return 0
 }
 
-# Pre-dial throttle for the remote-upgrade path (#308, ADR 0002 D6): a persisted stamp under a flock
-# bounds how often a rig will fetch from GitHub / rebuild, so a looping or hostile trigger can't turn
-# the fleet into a beacon or thrash the miner with rebuilds. Returns 0 if allowed (and stamps the
-# attempt), 1 if still inside the window, 2 if the throttle state itself is unusable (fail-closed,
-# #321). Default 6h; override with CONTROL_UPGRADE_MIN_INTERVAL (s).
 _control_upgrade_throttle_ok() { # <state-dir>
     local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
     now=$(date +%s)
     mkdir -p "$dir" 2>/dev/null || true
-    # Can't open the lock (unwritable/full state dir)? Fail CLOSED (#321): this guard exists to bound
-    # how often a compromised trigger can make the rig dial out, and a degraded state dir is exactly
-    # what an attacker might arrange — fail-open would invert the posture right there. An operator
-    # with a broken state dir has bigger problems than a delayed upgrade. rc 2 (not 1) so the caller
-    # reports the real cause instead of "throttled — retry later".
     exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
         warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
         return 2
     }
-    flock 9 2>/dev/null || true
+    flock 9 2>/dev/null || {
+        warn "control-upgrade: couldn't lock the throttle state under $dir — refusing the upgrade (fail-closed)."
+        exec 9>&-
+        return 2
+    }
     [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
     case "$last" in '' | *[!0-9]*) last=0 ;; esac
     if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
         exec 9>&-
         return 1
     fi
-    printf '%s\n' "$now" >"$stamp" 2>/dev/null || true
+    printf '%s\n' "$now" >"$stamp" 2>/dev/null || {
+        warn "control-upgrade: couldn't record the attempt under $dir — refusing the upgrade (fail-closed)."
+        exec 9>&-
+        return 2
+    }
     exec 9>&-
     return 0
 }
@@ -5253,9 +5253,7 @@ _writable_config_canonical() {
     jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
 }
 
-# #254: a short content hash of the canonical writable config — the load-bearing "did it change"
-# signal a polling consumer compares against. Changes iff the effective writable config changes.
-_writable_config_hash() { _sha256 <(_writable_config_canonical) | cut -c1-16; }
+_writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL_USER" "$(_script_dir)/util/revision-key.sh" "${RIGFORGE_REVISION_KEY:-$SCRIPT_DIR/.rigforge-revision-key}" || :; }
 
 # #253: the MASKED view for the open feed — no pool credential is ever served on the token-optional
 # read. #415: a SET secret is masked to the {"__secret__": true} sentinel rather than deleted
