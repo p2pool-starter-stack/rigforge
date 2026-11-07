@@ -752,10 +752,10 @@ ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
 )
 assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
 assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
-bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
-for _sh in shared-host:profile shared-host-lifecycle:lifecycle; do
-    if _sh_out="$(PATH="$STUBS:$PATH" bash "$ROOT/tests/test-${_sh%%:*}.sh" "$SCRIPT" 2>&1)"; then ok "shared-host ${_sh##*:} regressions (#577)"; else bad "shared-host ${_sh##*:} regressions (#577)" "$(printf '%s' "$_sh_out" | tail -5)"; fi
+for _sh in "shared-host profile $PATH" "shared-host-lifecycle lifecycle $STUBS:$PATH"; do
+    if read -r _f _l _p <<<"$_sh" && _o="$(PATH="$_p" bash "$ROOT/tests/test-$_f.sh" "$SCRIPT" 2>&1)"; then ok "shared-host $_l regressions (#577)"; else bad "shared-host $_l regressions (#577)" "$(printf '%s' "$_o" | tail -5)"; fi
 done
+bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
