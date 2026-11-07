@@ -10,6 +10,31 @@ watcher regressions. The Bash suite exits nonzero if it aborts before its final
 The kcov container measures the Bash suite only; the credential regression always runs in the
 GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
 
+The offline `test-coverage-cache.sh` regression also runs in `make test-suite`.
+Coverage caches only the pinned jq download, keyed by release, Linux architecture and SHA256.
+Every invocation copies it into private disposable storage and verifies the checksum before use;
+the container mounts that verified copy read-only. A corrupt entry fails before coverage runs;
+remove the invalid entry from `.coverage-cache` and retry. Downloads publish atomically only after
+verification, and cache hits need no writable cache. Old reports are cleared even when setup fails.
+Each run records the real checkout commit in `coverage/source-commit.txt` and input identities in
+`coverage/source-files.sha256` before executing the suite. Each sorted row records type, SHA256 and
+a shell-escaped relative name; regular files distinguish executable status, symlinks hash the link
+target plus its terminating newline without following it, and missing tracked files record `absent`.
+Tracked and non-ignored untracked inputs are included; generated coverage, download caches and
+other ignored files are excluded. These identify local edits as well as the commit, not a
+successful test result. Coverage therefore requires a Git checkout.
+The jq setup log records hit/miss, total setup seconds and checksum verification seconds; these
+are whole-second observations, so zero means less than one clock interval, not free work.
+
+No shared hosted cache is enabled. Profile setup misses before adding archive, wheel or image-layer
+reuse; untrusted pull requests must never publish trusted cache entries. Preserve fresh writable
+fixtures, exact candidate revisions and every existing per-PR assertion when comparing cold/warm
+runs. Stock-home installs, real package acquisition, historical negative controls, compilation,
+donation/release builds and hardware cold starts remain fresh at their current gates. Never reuse a
+miner, populated build tree, report or previous PASS as proof for another candidate. Before rollout,
+compare complete assertion/input/platform manifests and collect a week of setup/verification time,
+CI median/p90, failures and occupied hours; missing evidence leaves rollout acceptance open.
+
 > The split exists so CI proves everything it can on a GitHub runner, while the things a runner
 > physically can't do (compile XMRig, reserve HugePages, write MSRs, set the governor, hash) are
 > proven once, by hand, on a real rig before tagging a release.
