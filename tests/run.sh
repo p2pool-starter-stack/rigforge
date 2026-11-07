@@ -753,6 +753,8 @@ ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
 assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
 assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
+assert_rc "shared-host profile regressions (#577)" "$(bash "$ROOT/tests/test-shared-host.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
+assert_rc "shared-host lifecycle regressions (#577)" "$(bash "$ROOT/tests/test-shared-host-lifecycle.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
@@ -5063,6 +5065,9 @@ assert_contains "doctor: rdmsr verifies the registers (#66)" "$out" "verified vi
 # Readable but wrong values (a silently-dropped write) -> mismatch WARN.
 out="$(run_doctor_msr "$DOC/rdmsr_bad")"
 assert_contains "doctor: rdmsr mismatch WARN (#66)" "$out" "don't match the ryzen_19h_zen4 preset"
+assert_absent "doctor: rdmsr mismatch without lockdown keeps the hypervisor hint (#333)" "$out" "dropped the write; see"
+out="$(LOCKDOWN_FILE="$DOC/lockdown_integrity" run_doctor_msr "$DOC/rdmsr_bad")"
+assert_contains "doctor: rdmsr mismatch attributed to lockdown (#333)" "$out" "kernel lockdown ('integrity') dropped the write"
 # Non-root: the read-back is SKIPPED with an advisory — NOT a false mismatch (regression guard for the gate).
 out="$(run_doctor_msr "$DOC/rdmsr_ok" user)"
 assert_contains "doctor: non-root asks for sudo to verify MSRs (#66)" "$out" "run 'doctor' as root"

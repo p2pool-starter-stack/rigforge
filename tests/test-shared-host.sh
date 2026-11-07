@@ -276,7 +276,22 @@ sudo() {
         done
         command rm "$@"
         ;;
-    nft) ;;
+    nft | update-grub) ;;
+    rmdir)
+        shift
+        [[ "$1" == "$D"/* ]] || fail 'uninstall tried to remove a directory outside sandbox'
+        command rmdir "$@" || true
+        ;;
+    cp)
+        shift
+        command cp "$@"
+        ;;
+    sed)
+        shift
+        [ "$1" = -i ] || fail 'uninstall invoked an unexpected sed'
+        shift
+        command sed "$@" >"${!#}.new" && command mv "${!#}.new" "${!#}"
+        ;;
     *) fail 'uninstall invoked an unexpected privileged command' ;;
     esac
 }
@@ -287,5 +302,12 @@ grep -qFx "$REAL_USER soft memlock unlimited" "$LIMITS_CONF" || fail 'shared uni
 grep -qFx 'msr' "$MODULES_FILE" || fail 'shared uninstall rewrote existing MSR policy'
 [ -f "$MODULES_LOAD_DIR/msr.conf" ] || fail 'shared uninstall removed existing MSR module policy'
 grep -qFx 'GRUB_CMDLINE_LINUX_DEFAULT="hugepagesz=2M hugepages=4 msr.allow_writes=on"' "$GRUB_DEFAULT" || fail 'shared uninstall rewrote existing boot tuning'
+
+update-grub() { :; }
+rm -rf "$D/data/worker"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet hugepagesz=2M hugepages=4 msr.allow_writes=on"\n' >"$GRUB_DEFAULT"
+uninstall --yes >/dev/null
+grep -qFx 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' "$GRUB_DEFAULT" || fail 'dedicated uninstall left managed boot tuning'
+[ ! -f "$MODULES_LOAD_DIR/msr.conf" ] || fail 'dedicated uninstall kept MSR module policy'
 
 printf 'shared host parse, config, host tuning and cgroup regressions: PASS\n'
