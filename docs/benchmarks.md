@@ -95,3 +95,16 @@ sudo ./rigforge.sh                       # build + HugePages + MSR + governor + 
 sudo ./rigforge.sh tune --now --long     # full live tune (or just let setup's defaults ride)
 sudo ./rigforge.sh doctor                # confirms HugePages 100%, MSR applied, governor, clocks
 ```
+
+## Verifiable release benchmarks
+
+The live measurements above predate benchmark submission and have no submitted IDs.
+For a new release baseline, explicitly opt in with `bench --submit`, or use the release perf gate's
+`E2E_PERF_SUBMIT=1` option. Submission publishes hardware and performance information and is off by
+default. RigForge prints the ID only after a separate verification run succeeds.
+
+Record that returned ID here alongside the CPU, release tag, XMRig version and measured H/s when
+publishing a new benchmark. Anyone can check it with `bench --verify ID`. The release perf gate also
+stores `benchmark_id` in its baseline and history records; see
+[the baseline procedure](../tests/perf-baselines/README.md). No new hardware result or ID is claimed
+by adding this procedure.

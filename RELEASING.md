@@ -205,6 +205,17 @@ test "$(gh api "repos/$repo/releases/latest" --jq .tag_name)" = vX.Y.Z \
 The `Release latest marker` workflow repeats that read after every non-prerelease publish and fails
 loudly if the marker differs. It is a guard, not a substitute for the explicit publish step above.
 
+For a publicly verifiable perf baseline, explicitly opt into submission:
+
+```bash
+sudo env E2E_PERF_SUBMIT=1 E2E_PERF_RECORD=1 E2E_PERF_TAG=vX.Y.Z bash tests/e2e-real.sh perf
+```
+
+This publishes hardware and performance information. The gate verifies the submitted result and
+stores its `benchmark_id` in both the baseline and release history. Copy the returned ID into
+[`docs/benchmarks.md`](./docs/benchmarks.md) beside the release and CPU. Without this opt-in, the
+gate remains offline and records no ID. A failed verification or missing ID fails the recording.
+
 After a rig is re-tagged, record its benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
 the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate

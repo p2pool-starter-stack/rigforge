@@ -18,7 +18,8 @@ reference](#commands) is below.
 | Check the worker is healthy | `sudo ./rigforge.sh doctor` | HugePages, MSR, governor, service, pool connection, with a fix hint for anything off. |
 | Watch it mining | `./rigforge.sh logs` | Live logs, no root needed; `Ctrl-C` stops following (the miner keeps running). |
 | Stop / start / restart | `sudo ./rigforge.sh stop` · `start` · `restart` | Control the miner service. |
-| Quick speed check | `sudo ./rigforge.sh bench` | One-off offline benchmark; reports H/s. |
+| Quick correctness and speed check | `sudo ./rigforge.sh bench` | Offline benchmark; requires a verified hash and reports H/s. |
+| Confirm BIOS stability | `sudo ./rigforge.sh stress --minutes 30` | Linux offline load test; reports pass/fail and peak temperature. |
 | Save config + tuning | `./rigforge.sh backup` | Snapshots the only hard-to-recreate state to `./backups`. No root needed. |
 
 > On macOS, drop the `sudo` (the privileged steps are Linux-only) and run `./rigforge.sh restart` after
@@ -32,7 +33,7 @@ reference](#commands) is below.
 The complete surface. Most days you only need the handful in [Common tasks](#common-tasks) above; the
 rest are here for completeness.
 
-RigForge is a single script. Run it as `sudo ./rigforge.sh [command]`. Optional: set
+Keep `rigforge.sh` together with its bundled `util/` directory. Run it as `sudo ./rigforge.sh [command]`. Optional: set
 `"add_to_path": true` in `config.json` and setup installs a `rigforge` command on your PATH, so you can
 run `sudo rigforge [command]` from any directory; `uninstall` removes it.
 
@@ -43,7 +44,7 @@ Not every verb needs root — the design, in four lines:
 - `setup` / `upgrade` / `apply` / `uninstall` and the service verbs (`start` / `stop` / `restart` /
   `enable` / `disable`) call `sudo` inline for each privileged step — run them with `sudo` (or be
   ready for the inline password prompts).
-- `tune` and `bios` re-run themselves under `sudo` automatically (interactive terminals only, so a
+- `tune`, `bios`, and `stress` re-run themselves under `sudo` automatically (interactive terminals only, so a
   script never hangs on a password prompt). `autotune` uses inline `sudo systemctl` calls instead.
 - `status`, `logs`, `backup`, and `restore` never need root — you shouldn't type a password just to
   look at your own rig.
@@ -57,7 +58,8 @@ Not every verb needs root — the design, in four lines:
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. A miner that is deliberately stopped — a watchdog thermal hold, or your own `stop` — is left stopped, and picks up the new config at its next start. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled), then asks the running miner whether a live pool connection came up — and warns when none did (a bad `pools[0].url` otherwise mines nothing while looking applied, #343). Warn only, never a failure: the pool may be legitimately down at apply time. `apply` exits non-zero when the miner restart is rejected (#630; the control path then rolls the change back instead of reporting it applied), and when the watchdog units could not be re-rendered (#395) — that one is a real failure, because the cadence the rig is running would otherwise diverge from `config.json` silently. |
 | `uninstall` | Remove the service and revert all system changes (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, the miner has a live pool connection (read from the miner's own local API — a running miner with no connection is not mining, #343; with the service stopped, one TCP dial of `pools[0]` stands in for a direct pool; a proxied connection cannot be verified until mining starts), HugePages are reserved, kernel lockdown isn't blocking MSR writes (read from `/sys/kernel/security/lockdown` — active lockdown means the MSR mod cannot apply, and `msr.allow_writes=on` can't override it), the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): an unreachable configured SOCKS proxy for an enabled pool (a successful TCP dial stays quiet and does not prove SOCKS/Tor health), CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. When the [writable control path](#writable-control-path-opt-in) is enabled, it's also a counted issue: `doctor` checks `rigforge-control` is active and its `/status` endpoint answers (#278), staying silent when control is disabled. Exits non-zero when critical issues are found (cron-friendly, matching Pithead's `status`). |
-| `bench` | Run a one-off `xmrig --bench` and report the hashrate (a quick perf/health check; set `BENCH=10M` for a longer run). |
+| `bench` | Verify an offline benchmark and report H/s (`BENCH=10M` for a longer run). `--submit` opts into publishing and verifying an online benchmark; `--verify ID` checks a submitted result. See [Self-tests](#self-tests). |
+| `stress [--minutes N]` | Linux stability test after firmware changes; default 30 minutes, range 1–1440. Stops the miner, samples temperature under offline load, and restores its prior state. See [Self-tests](#self-tests). |
 | `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them, an optional, one-time step. Live variants: `--now` / `--short` (a quick prefetch re-tune against the running miner, the *run a live tune now* path), `--now --long` (a full live search of every knob, = `--live`), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
 | `bios` | Guided, resumable walk-through of the BIOS/UEFI changes for your hardware — the settings `tune` can't reach from the OS (Secure Boot when kernel lockdown is blocking the MSR mod, memory profile XMP/EXPO/DOCP, SMT, PBO/Eco-Mode, NUMA-per-socket NPS on EPYC; `--efficiency` picks the low-power set). Detects the current firmware state via the same probes `doctor` uses, hands you a board-specific checklist one item at a time, saves the pending items, and on the next run re-verifies which changes actually took. RigForge never writes BIOS itself; plan for console access (keyboard/KVM) for the reboot-into-BIOS step. Linux-only. See [Guided BIOS tuning](#guided-bios-tuning). |
 | `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
@@ -148,8 +150,35 @@ those items against fresh probes — an item only counts as applied when its OS-
 flips (lockdown reading `none`, memory running at rated speed, SMT on, loaded clock above the boost
 threshold). The CPU
 boost item needs the miner running to measure; with it stopped, `bios` says so and keeps the item
-pending rather than guessing. After everything took, re-run `tune --live` — the hardware envelope
-changed.
+pending rather than guessing. After everything took, run `stress` to confirm stability, then
+`tune --live` to measure the changed hardware.
+
+### Self-tests
+
+`bench` runs XMRig's offline RandomX benchmark with its known all-zero seed and built-in reference
+hash. RigForge reads XMRig's own verification verdict, including the different reference for a
+single hashing thread. A mismatch, missing verdict, failed process, or fatal allocation/configuration
+error exits nonzero as a correctness failure. Speed alone cannot pass. Offline `tune` rejects the
+whole candidate if any measured iteration fails verification; live tuning still measures pool work.
+
+`bench --submit` explicitly opts into network access and publishes the benchmark's hardware and
+performance information. RigForge waits for the submission ID, then runs XMRig's `--verify=ID`
+against that result before reporting success. `bench --verify ID` repeats this online check.
+Plain `bench`, offline `tune`, and `stress` do not submit anything. The last benchmark's seed, hash,
+verdict and optional ID are saved in `rigforge-bench.json` under the worker directory and included
+in `support-bundle`. Missing or invalid records are reported as skipped.
+
+After BIOS changes, run `sudo ./rigforge.sh stress` (30 minutes), or set `--minutes N`.
+It pauses active watchdog/autotune timers, refuses to interrupt an already-running scheduled check,
+stops an active miner, and runs XMRig's continuous offline stress mode. The test samples the same
+CPU temperature source as the watchdog and reports peak temperature (or unavailable). A process
+failure, failure to hash, or temperature above configured `max_temp_c` fails the test.
+
+Normal completion, errors and interrupt signals restore the previously active miner and timers.
+An over-temperature failure leaves the miner stopped with a watchdog thermal hold; the watchdog
+can resume it after it cools below the existing recovery threshold. If the watchdog is disabled,
+let the rig cool and run `watchdog` manually before resuming. Stress applies no new thermal control
+or firmware changes. Run it without other manual tuning or service-management commands.
 
 ### Live auto-tuning (opt-in)
 

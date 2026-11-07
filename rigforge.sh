@@ -2559,97 +2559,21 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out"
 }
 
-# Run `xmrig --bench=<size>` headlessly and echo its full output. XMRig's `--bench` prints the result and
-# then waits for Ctrl+C instead of exiting (#75). It block-buffers stdout to a non-TTY, but flushes its
-# `--log-file` per line — so we point that at a temp file and poll it for the 'benchmark finished' line
-# (which carries the hashrate), then stop xmrig. We also keep stdout (a fake xmrig in the tests writes
-# there and exits — process-gone ends the loop too). `http`/`pools`/`log-file`/`background` are stripped
-# from the config so xmrig doesn't serve the API, mine, or daemonize. `BENCH_TIMEOUT` bounds a stuck run.
-_xmrig_bench() { # <bin> <bench-size> <config|"">
-    local bin="$1" size="$2" cfg="${3:-}" bcfg="" tmpcfg="" out logf xpid deadline freqs="" f
-    local wsamples="" pe0="" pt0="" pmax="" w # #81: power-window state
-    out="$(mktemp 2>/dev/null || echo "/tmp/rf-bo-$$")"
-    logf="$(mktemp 2>/dev/null || echo "/tmp/rf-bl-$$")"
-    if [ -n "$cfg" ] && [ -f "$cfg" ] && command -v jq >/dev/null 2>&1; then
-        tmpcfg="$(mktemp 2>/dev/null || true)"
-        if [ -n "$tmpcfg" ] && jq 'del(.http, .pools, ."log-file", .background)' "$cfg" >"$tmpcfg" 2>/dev/null; then bcfg="$tmpcfg"; fi
-    fi
-    # shellcheck disable=SC2086 # the :+ expansion is an intentional optional word
-    "$bin" --bench="$size" ${bcfg:+--config="$bcfg"} --log-file="$logf" >"$out" 2>&1 &
-    xpid=$!
-    # #62: when asked, sample the effective CPU clock THROUGHOUT the (sustained) window and keep the min,
-    # so the caller can tell a throttled run from a genuinely slow config. One sample up front covers a
-    # very short (test) run; the poll loop adds samples across a real ~minutes-long benchmark.
-    if [ -n "${BENCH_FREQ_FILE:-}" ]; then
-        f=$(_cpu_eff_khz)
-        [ -n "$f" ] && freqs="$f"
-    fi
-    # #81: bracket the same loaded window for power. With TUNE_POWER_CMD we poll instantaneous watts in the
-    # loop; otherwise we read the RAPL package energy counter now and at the end and divide by the elapsed
-    # time. Averaged into BENCH_WATTS_FILE, so hs_per_watt reflects LOAD power, not the old idle reading.
-    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
-        if [ -n "${TUNE_POWER_CMD:-}" ]; then
-            w=$(_read_watts_now)
-            case "$w" in '') ;; *) wsamples="$w" ;; esac
-        else
-            # `|| true` (same idiom as _autotune_sample's RAPL guard, #81/#290): no powercap sysfs is an
-            # expected "no RAPL" outcome, not a failure — an unguarded _rapl_sum here fires the ERR trap.
-            pe0=$(_rapl_sum energy_uj || true)
-            pt0=$(_now_s)
-            pmax=$(_rapl_sum max_energy_range_uj || true)
-        fi
-    fi
-    deadline=$(($(date +%s) + ${BENCH_TIMEOUT:-1800}))
-    while kill -0 "$xpid" 2>/dev/null; do
-        grep -qs 'benchmark finished' "$logf" "$out" && break
-        [ "$(date +%s)" -ge "$deadline" ] && break
-        if [ -n "${BENCH_FREQ_FILE:-}" ]; then
-            f=$(_cpu_eff_khz)
-            [ -n "$f" ] && freqs="$freqs $f"
-        fi
-        if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -n "${TUNE_POWER_CMD:-}" ]; then
-            w=$(_read_watts_now)
-            case "$w" in '') ;; *) wsamples="$wsamples $w" ;; esac
-        fi
-        sleep 0.2
-    done
-    # #81: read the end-of-window energy BEFORE killing xmrig (still loaded), then average over the window.
-    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
-        local pe1="" pt1="" secs="" wout=""
-        if [ -n "${TUNE_POWER_CMD:-}" ]; then
-            # shellcheck disable=SC2086 # intentional word-split of the sample list
-            wout=$(_mean $wsamples)
-        elif [ -n "$pe0" ]; then
-            pe1=$(_rapl_sum energy_uj || true) # guard (#290): a mid-window sysfs read can still miss
-            pt1=$(_now_s)
-            secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
-            wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
-        fi
-        printf '%s' "$wout" >"$BENCH_WATTS_FILE"
-    fi
-    # `|| true`: xmrig --bench exits ON ITS OWN when the benchmark finishes, so by here it's often already
-    # gone — an unguarded kill then returns non-zero and, under set -Eeuo, fires the ERR trap INSIDE this
-    # measurement subshell, aborting it before it echoes the result (→ spurious "aborted" spam + a 0 H/s
-    # reading). Guarding it keeps the bench result intact whether or not xmrig is still alive.
-    kill "$xpid" 2>/dev/null || true
-    wait "$xpid" 2>/dev/null || true
-    # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
-    # min would mistake for thermal throttling (#62).
-    # shellcheck disable=SC2086 # $freqs is an intentional word-split list of samples
-    if [ -n "${BENCH_FREQ_FILE:-}" ]; then _median $freqs | awk 'NF{printf "%d", $0+0}' >"$BENCH_FREQ_FILE"; fi
-    cat "$logf" "$out" 2>/dev/null
-    rm -f "$out" "$logf" "$tmpcfg" 2>/dev/null || true
-}
+# shellcheck source=util/benchmark.sh
+source "$(_script_dir)/util/benchmark.sh"
+# shellcheck source=util/stress.sh
+source "$(_script_dir)/util/stress.sh"
 
 # One offline benchmark of a config file → peak H/s (empty on failure).
 _bench_once() {
     local out
-    out=$(_xmrig_bench "$TUNE_BIN" "${TUNE_BENCH:-10M}" "$1")
-    # `|| true` (same idiom as the watchdog's `_read_api_hashrate || true` guard): a candidate with no H/s
-    # line is expected (a zero-hashrate iteration, not a crash) — under pipefail this grep's failure would
-    # otherwise ride out as _bench_once's own exit status and fire the ERR trap ("aborted while ...") at
-    # every call site (#277).
-    printf '%s' "$out" | _parse_hashrate || true
+    out=$(_xmrig_bench "$TUNE_BIN" "${TUNE_BENCH:-10M}" "$1") || true
+    if _bench_result "$out"; then
+        printf '%s' "$BENCH_HR"
+    else
+        warn "Benchmark correctness failure ($BENCH_VERDICT): rejecting this tune candidate."
+        return 1
+    fi
 }
 
 # Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
@@ -2722,7 +2646,10 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
             : >"$TUNE_TMP/freq"  # #62: _xmrig_bench writes the effective clock seen during this run
             : >"$TUNE_TMP/watts" # #81: ... and the average watts under load
-            s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" BENCH_WATTS_FILE="$TUNE_TMP/watts" _bench_once "$cfg")
+            if ! s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" BENCH_WATTS_FILE="$TUNE_TMP/watts" _bench_once "$cfg"); then
+                samples=(0)
+                break
+            fi
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
@@ -3788,6 +3715,12 @@ support_bundle() {
     if [ -n "$wr" ] && [ -f "$wr/xmrig.log" ]; then
         tail -n 500 "$wr/xmrig.log" >"$STAGE_DIR/xmrig.log.tail" 2>/dev/null && _take xmrig.log.tail
     fi
+    if [ -f "$wr/rigforge-bench.json" ] && _bench_bundle "$wr/rigforge-bench.json" >"$STAGE_DIR/rigforge-bench.json"; then
+        _take rigforge-bench.json
+    else
+        rm -f "$STAGE_DIR/rigforge-bench.json"
+        _skip "rigforge-bench.json(absent-or-invalid)"
+    fi
     for f in tune-overrides.json rigforge-tune.json; do
         [ -n "$wr" ] && [ -f "$wr/$f" ] && cp "$wr/$f" "$STAGE_DIR/$f" && _take "$f"
     done
@@ -4054,7 +3987,7 @@ svc_disable() {
 # verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
-_rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
+_rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios stress status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
 _rigforge() {
     local cur verb
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -4067,6 +4000,8 @@ _rigforge() {
     tune) COMPREPLY=($(compgen -W "--now --short --long --live --bench --confirm --efficiency --perf --history --clear" -- "$cur")) ;;
     setup | apply) COMPREPLY=($(compgen -W "--dry-run" -- "$cur")) ;;
     upgrade) COMPREPLY=($(compgen -W "--check" -- "$cur")) ;;
+    bench) COMPREPLY=($(compgen -W "--submit --verify" -- "$cur")) ;;
+    stress) COMPREPLY=($(compgen -W "--minutes" -- "$cur")) ;;
     bios) COMPREPLY=($(compgen -W "--perf --efficiency" -- "$cur")) ;;
     uninstall | backup) COMPREPLY=($(compgen -W "-y --yes" -- "$cur")) ;;
     restore) COMPREPLY=($(compgen -W "-y --yes" -- "$cur") $(compgen -f -- "$cur")) ;;
@@ -4917,31 +4852,6 @@ watchdog() {
     fi
     rm -f "$fails_f"
     log "watchdog: healthy ($hr H/s)."
-}
-
-# bench (#11): run a one-off xmrig --bench and report the hashrate. A quick perf/health check.
-bench() {
-    parse_config
-    local bin="$WORKER_ROOT/xmrig/build/xmrig" cfg="$WORKER_ROOT/xmrig/build/config.json"
-    [ -x "$bin" ] || error "No built worker at $bin. Run 'setup' first."
-    local b="${BENCH:-1M}" out hr
-    log "Running 'xmrig --bench=$b' (this can take a minute or two)..."
-    out=$(_xmrig_bench "$bin" "$b" "$cfg")             # strips the API/pool/log-file and stops xmrig once done (#75)
-    hr=$(printf '%s' "$out" | _parse_hashrate) || true # empty when nothing hashed; handled below
-    # A healthy bench must (a) report a hashrate — proving the build ran, the config parsed and the
-    # RandomX dataset initialised — and (b) not have hit a fatal allocation/config error (XMRig's
-    # "MEMORY ALLOC FAILED" covers a failed dataset / HugePages / memlock allocation). On failure, echo
-    # the raw XMRig output so a broken build/config is diagnosable — this is what the release smoke
-    # check (tests/smoke.sh, #61) gates on.
-    if printf '%s' "$out" | grep -qiE 'MEMORY ALLOC FAILED|unable to (open|parse) config|error parsing config'; then
-        printf '%s\n' "$out" >&2
-        error "Benchmark hit a fatal memory/config error — see the XMRig output above."
-    fi
-    if [ -z "$hr" ]; then
-        printf '%s\n' "$out" >&2
-        error "Could not read a hashrate from the benchmark output — see the XMRig output above."
-    fi
-    log "Benchmark hashrate: $hr H/s"
 }
 
 # doctor (#45): verify the optimizations actually took effect. Read-only and best-effort — it never
@@ -6104,7 +6014,7 @@ _bios_verify() { # <state_file>
     if [ -z "$kept" ]; then
         rm -f "$state"
         log "All BIOS items applied. Firmware is tuned for: $(_autotune_desc "$target")."
-        log "Next: 'sudo $0 tune --live' — the hardware envelope changed, so re-tune XMRig against it."
+        log "Next: 'sudo $0 stress' to confirm stability, then 'sudo $0 tune --live' to re-tune XMRig."
     else
         # Rewrite the state with only the still-pending items: re-detect filled the B_* globals, so
         # neutralize the ones that took and let the writer keep the rest.
@@ -6185,7 +6095,8 @@ Tuning:
              the whole machine — fastest/cleanest, but rx/0 only. '--confirm' A/B-checks the winner live
              before keeping it. '--efficiency' optimizes hashrate-per-watt (default '--perf' = raw H/s),
              '--history' shows the current tuning + recent runs, '--clear' resets
-  bench      run a one-off 'xmrig --bench' and report the hashrate
+  bench      verify a one-off XMRig benchmark; '--submit' publishes and verifies an ID, '--verify ID' checks one
+  stress     Linux stability check after BIOS changes; '--minutes N' (default 30), reports peak temperature
   autotune   alias of 'tune --now' (and the verb the scheduled timer runs); turn on the schedule with
              autotune:"performance"|"efficiency" in config.json
   watchdog   one health check: restart a wedged miner (alive but 0 H/s, two strikes), enforce
@@ -6229,7 +6140,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
     # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
     case "${1:-setup}" in
-    autotune | watchdog | doctor | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
+    autotune | watchdog | doctor | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | version | --version | -v | help | -h | --help)
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
@@ -6278,7 +6189,14 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         apply "$@"
         ;;
-    bench) bench ;;
+    bench)
+        shift
+        bench "$@"
+        ;;
+    stress)
+        shift
+        stress "$@"
+        ;;
     backup)
         shift
         backup "$@"
