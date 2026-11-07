@@ -81,7 +81,7 @@ if [ "${1:-}" = --case ]; then
         [ "$fault" != missing ] || return 0
         phase network
         printf reached >"$CASE_DIR/network"
-        passes 8
+        passes 9
     }
     phase_stratum_auth() {
         phase stratum-auth

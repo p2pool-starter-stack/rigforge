@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -22,18 +23,43 @@ ALL_PHASES = [
     "control",
     "access-tokens",
 ]
+HARNESS = HERE / "e2e-pithead.sh"
+FUNCTION = re.compile(r"([a-z_][a-z0-9_]*)\(\) *[{(](.*)$")
+OK_CALL = re.compile(r"(?<![\w-])ok \"")
+WORD = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def harness_functions():
+    text = HARNESS.read_text(encoding="utf-8")
+    sources = [HARNESS] + [HERE / name for name in re.findall(r"/(e2e-[a-z-]+\.sh)\"", text)]
+    functions = {}
+    for path in sources:
+        name = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = FUNCTION.match(line)
+            if name is None and match:
+                name, rest = match.groups()
+                if rest.rstrip().endswith(("}", ")")):
+                    functions[name], name = rest, None
+                else:
+                    functions[name] = ""
+            elif name is not None and line in ("}", ")"):
+                name = None
+            elif name is not None and not line.lstrip().startswith("#"):
+                functions[name] += line + "\n"
+    return functions
+
+
+def harness_passes(functions, name, seen=()):
+    body = functions[name]
+    called = {word for word in WORD.findall(body) if word in functions and word not in seen and word != name}
+    return len(OK_CALL.findall(body)) + sum(harness_passes(functions, call, seen + (name,)) for call in called)
+
+
+HARNESS_FUNCTIONS = harness_functions()
 PASS_COUNTS = {
-    "connect": 3,
-    "worker-api": 5,
-    "api-impact": 3,
-    "network": 8,
-    "stratum-auth": 4,
-    "dashboard": 2,
-    "dev-fee": 1,
-    "control": 5,
-    "access-tokens": 7,
-    "control-replay-thermal": 4,
-    "control-replay-pools": 4,
+    group: harness_passes(HARNESS_FUNCTIONS, "phase_" + group.replace("-", "_"))
+    for group in ALL_PHASES + ["control-replay-thermal", "control-replay-pools"]
 }
 
 
@@ -175,7 +201,7 @@ class WorkerProofTest(unittest.TestCase):
         result, receipt = self.make_receipt(context())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([row["id"] for row in receipt["phases"]], ALL_PHASES[:4])
-        self.assertEqual([row["passed"] for row in receipt["phases"]], [3, 5, 3, 8])
+        self.assertEqual([row["passed"] for row in receipt["phases"]], [PASS_COUNTS[phase] for phase in ALL_PHASES[:4]])
 
     def test_receipt_emits_failed_evidence(self):
         ctx = context("connect")
@@ -227,6 +253,13 @@ class WorkerProofTest(unittest.TestCase):
     def test_receipt_rejects_malformed_event_json(self):
         paths = self.files([context("connect"), '{"event":"phase","id":"connect"}\n{'])
         self.assert_failed_evidence(self.invoke("receipt", paths[0], paths[1], "pass", 0))
+
+    def test_pass_counts_follow_harness_phase_bodies(self):
+        self.assertEqual(PASS_COUNTS["network"], 9)
+        for group in PASS_COUNTS:
+            result, receipt = self.make_receipt(context(group))
+            self.assertEqual(result.returncode, 0, group)
+            self.assertEqual(receipt["phases"][0]["passed"], PASS_COUNTS[group])
 
     def test_receipt_rejects_fewer_and_extra_passes(self):
         ctx = context("connect")

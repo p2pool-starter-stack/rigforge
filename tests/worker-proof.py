@@ -37,7 +37,7 @@ PASS_COUNTS = {
     "connect": 3,
     "worker-api": 5,
     "api-impact": 3,
-    "network": 8,
+    "network": 9,
     "stratum-auth": 4,
     "dashboard": 2,
     "dev-fee": 1,
