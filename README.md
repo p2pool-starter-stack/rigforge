@@ -128,7 +128,7 @@ doesn't prove — deploying from a git checkout at the release tag is the strong
 |---|---|
 | **[Getting Started](docs/getting-started.md)** | Prerequisites, install, first-run setup, the Linux reboot, and verification. |
 | **[Hardware Requirements](docs/hardware.md)** | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles. |
-| **[Benchmarks](docs/benchmarks.md)** | Historical stock-vs-tuned observations, package-power limits, and the candidate comparison protocol. |
+| **[Benchmarks](docs/benchmarks.md)** | Historical stock-vs-tuned observations, CPU-package (RAPL) power only, not wall power, and the candidate comparison protocol. |
 | **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | **[How It Works](docs/how-it-works.md)** | What the script actually does: compile, HugePages, MSR, NUMA, governor, service. |
