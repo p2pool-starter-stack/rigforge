@@ -214,4 +214,19 @@ apply >/dev/null 2>&1 || true
 check_state
 contains "$CHECK_OUT" 'no apply stamp' 'invalid tune overlay cannot leave a current stamp'
 
+rm -f "$WORKER_ROOT/tune-overrides.json"
+apply_now
+STAGE_DIR="$TEST_TMP/stage"
+mkdir -p "$STAGE_DIR"
+BEFORE=$(cat "$STAMP")
+(cd "$STAGE_DIR" && generate_xmrig_config stage) >/dev/null 2>"$TEST_TMP/stage.err" || fail 'stage generation succeeds'
+[ ! -s "$TEST_TMP/stage.err" ] || fail 'stage generation is silent on stderr'
+[ "$(cat "$STAMP")" = "$BEFORE" ] || fail 'stage generation leaves the live apply stamp untouched'
+[ -f "$STAGE_DIR/config.json" ] || fail 'stage generation writes the staged config'
+WORKER_ROOT="$TEST_TMP/fresh-worker"
+rm -rf "$STAGE_DIR" && mkdir -p "$STAGE_DIR"
+(cd "$STAGE_DIR" && generate_xmrig_config stage) >/dev/null 2>"$TEST_TMP/stage.err" || fail 'fresh-install stage generation succeeds'
+[ ! -s "$TEST_TMP/stage.err" ] || fail 'fresh-install stage generation is silent on stderr'
+[ ! -e "$WORKER_ROOT" ] || fail 'stage generation creates nothing under a fresh worker root'
+
 printf 'config apply state: PASS\n'

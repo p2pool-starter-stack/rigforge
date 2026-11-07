@@ -11,6 +11,7 @@ _config_tune_hash() {
 }
 
 _config_apply_begin() {
+    [ "${1:-}" != stage ] || return 0
     CONFIG_TUNE_HASH=$(_config_tune_hash 2>/dev/null) || CONFIG_TUNE_HASH=""
     if [ -n "$CONFIG_TUNE_HASH" ] && [ "$CONFIG_TUNE_HASH" != absent ]; then
         jq -se 'length == 1 and (.[0] | type == "object")' "$WORKER_ROOT/tune-overrides.json" >/dev/null 2>&1 || CONFIG_TUNE_HASH=""
@@ -20,6 +21,7 @@ _config_apply_begin() {
 
 _config_apply_stamp() {
     local config_hash tune_hash stamp tmp
+    [ "${2:-}" != stage ] || return 0
     [ -f "$CONFIG_JSON" ] || return 0
     config_hash=$(_sha256 "$CONFIG_JSON" 2>/dev/null) || return 0
     tune_hash=$(_config_tune_hash 2>/dev/null) || return 0

@@ -1027,7 +1027,7 @@ _config_install() {
 
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
-    _config_apply_begin
+    _config_apply_begin "${1:-}"
     if [ "$OS_TYPE" == "Darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
     else
@@ -1190,7 +1190,7 @@ generate_xmrig_config() {
     fi
 
     _config_install "$_new" "${1:-}" || return 1
-    _config_apply_stamp "${CONFIG_INPUT_HASH:-}"
+    _config_apply_stamp "${CONFIG_INPUT_HASH:-}" "${1:-}"
 
     if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
         if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
