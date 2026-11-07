@@ -6,6 +6,7 @@ SCRIPT="${1:-$ROOT/rigforge.sh}"
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
 source "$SCRIPT"
+eval "$(declare -f _apply_runtime | sed 's/^_apply_runtime/_real_apply_runtime/')"
 OS_TYPE=Linux
 SYSTEMD_DIR="$TEST_DIR/systemd"
 SCRIPT_DIR="$ROOT"
@@ -72,6 +73,61 @@ if [ "${2:-all}" = all ]; then
     API_MODE=disabled
     install_api
 fi
+for _fn in check_prerequisites ensure_config_exists parse_config decide_rebuild prepare_workspace install_dependencies compile_xmrig \
+    generate_xmrig_config tune_kernel configure_limits install_service install_autotune install_watchdog link_cli finish_deployment \
+    _persist_appliance_mode _post_upgrade_retune; do
+    eval "$_fn() { :; }"
+done
+API_MODE=enabled
+_upgrade_restart() { printf restart >"$TEST_DIR/restart"; }
+_reown_worker() { printf reown >"$TEST_DIR/reown"; }
+install_control() { printf control >"$TEST_DIR/control"; }
+install_api_firewall() { printf firewall >"$TEST_DIR/firewall"; }
+_run_verb() {
+    rm -f "$TEST_DIR/firewall" "$TEST_DIR/control" "$TEST_DIR/reown" "$TEST_DIR/restart"
+    set +e
+    (
+        set -e
+        "$1"
+    ) >"$TEST_DIR/result" 2>&1
+    _verb_rc=$?
+    set -e
+    for _step in firewall control reown; do
+        [ -f "$TEST_DIR/$_step" ] || {
+            echo "$1 (rebuild=$XMRIG_REBUILD) skipped $_step" >&2
+            exit 1
+        }
+    done
+    if [ "$1" = upgrade ] && [ ! -f "$TEST_DIR/restart" ]; then
+        echo "upgrade (rebuild=$XMRIG_REBUILD) skipped the miner restart" >&2
+        exit 1
+    fi
+}
+systemctl() {
+    case "$*" in
+    'is-active --quiet'*) return 1 ;;
+    esac
+    [ "$*" != 'enable rigforge-api.service' ]
+}
+for _case in main:false upgrade:false upgrade:true; do
+    XMRIG_REBUILD=${_case#*:}
+    _run_verb "${_case%%:*}"
+    [ "$_verb_rc" -ne 0 ] || {
+        echo "${_case%%:*} returned success despite a failed sister API" >&2
+        exit 1
+    }
+    grep -q 'sister API could NOT be started' "$TEST_DIR/result"
+done
+systemctl() { :; }
+HTTP_CODE=401
+for _case in main:false upgrade:false upgrade:true; do
+    XMRIG_REBUILD=${_case#*:}
+    _run_verb "${_case%%:*}"
+    [ "$_verb_rc" -eq 0 ] || {
+        echo "${_case%%:*} failed with a healthy sister API" >&2
+        exit 1
+    }
+done
 parse_config() { :; }
 _apply_runtime() { :; }
 install_autotune() { :; }
@@ -99,6 +155,30 @@ for WATCHDOG_RC in 0 1; do
         fi
     done
 done
+WORKER_ROOT="$TEST_DIR/w" SERVICE_NAME=xmrig-fixture WATCHDOG_RC=0 API_RC=0
+mkdir -p "$WORKER_ROOT/xmrig/build"
+_apply_runtime() { _real_apply_runtime "$@"; }
+generate_xmrig_config() { :; }
+_miner_deliberately_stopped() { return 1; }
+sudo() { return 1; }
+RIGFORGE_APPLY_FAIL_REASON=""
+if apply >"$TEST_DIR/result" 2>&1; then
+    echo "apply returned success despite a rejected miner restart" >&2
+    exit 1
+fi
+[ "$RIGFORGE_RESTART_FAILED" = 1 ]
+[ "$RIGFORGE_APPLY_FAIL_REASON" = 'could not restart the miner' ]
+grep -q 'restarting xmrig-fixture failed' "$TEST_DIR/result"
+sudo() { :; }
+apply >"$TEST_DIR/result" 2>&1
+[ "$RIGFORGE_RESTART_FAILED" = 0 ]
+sudo() { return 1; }
+_miner_deliberately_stopped() { return 1; }
+RIGFORGE_APPLY_FAIL_REASON=""
+if _control_do_apply; then
+    echo "control apply returned success despite a rejected miner restart" >&2
+    exit 1
+fi
 source "$ROOT/tests/e2e-pithead-control.sh"
 systemctl() { printf 'failed\n'; }
 journalctl() { printf 'Permission denied: fixture-private-value\nTraceback: fixture-private-value\n'; }
