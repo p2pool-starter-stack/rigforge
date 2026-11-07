@@ -1,27 +1,36 @@
 # Benchmarks
 
-What RigForge's tuning buys you over stock XMRig. Every number here is measured on real hardware, mining
-live, not synthetic `--bench` runs.
+RigForge automates setup and tuning of upstream XMRig; it is not a separate mining engine.
 
-> TL;DR: across two very different CPUs, RigForge's one-command tuning beats stock XMRig by +3.5%
-> (desktop Ryzen 7800X3D) to +6.6% (48-core EPYC 7642) in hashrate, and +7.6% / +6.0% in efficiency (H/s
-> per watt). On the EPYC it also matched an expert's hand-tuned config, and auto-dodged a CPU-specific
-> landmine: a prefetch setting that halves RandomX there but wins on the X3D.
+**Evidence status, 2026-11-02: historical observations only.** The measurements below are retained
+from the report at repository revision `ff4e60f8a8e48ac791c4372252edd2ec0308eb20`. That is the
+report's source revision, not the tested RigForge revision. The measurement date, baked RigForge SHA,
+full upstream XMRig commit and build flags are not recorded in that report. It does not validate
+the RigForge baked into Pithead 2.0.0 or establish a current candidate's percentage uplift.
 
-## How it's measured
+All power readings below are **CPU-package RAPL**, and efficiency is H/s per CPU-package watt.
+Wall power and wall energy are unavailable in this report. These readings do not establish
+whole-system efficiency, electricity savings or temperature improvements.
 
-Each configuration runs as its own XMRig process mining to the live pool. After a warm-up to steady
-state, we sample the hashrate (XMRig's HTTP API, 60-second average) and CPU-package power (RAPL energy
-counter) over several-minute windows, repeated across rounds. RandomX is low-variance and both rigs were
-thermally steady, so the means are solid (hashrate within ~0.1%).
+## Historical method and its limits
 
-The baselines:
+The historical report describes separate XMRig processes mining live, with warm-up followed by
+several-minute sampling windows across rounds. Hashrate came from XMRig's HTTP API (60-second
+average), and package power from the RAPL energy counter. This was not a standard RandomX
+correctness benchmark. Individual trials, spread and uncertainty are not published here, so the
+reported means alone do not establish repeatability or a precision bound.
 
-- Stock XMRig: upstream `./xmrig` on a fresh box: no explicit HugePages, prefetcher MSRs at firmware
-  default, default governor. Transparent HugePages stay at Ubuntu's `madvise` default, as a real user
-  would have.
-- RigForge: `setup`'s kernel work (2 MB + 1 GB HugePages, the per-family MSR prefetcher preset,
-  `performance` governor) plus the winning knobs from a full live `tune`.
+The reported configurations were:
+
+- Stock XMRig: upstream automatic configuration, described as a fresh OS with no explicit
+  HugePages reservation, firmware-default prefetcher MSRs, default governor and Ubuntu's
+  `madvise` Transparent HugePages setting.
+- RigForge: `setup`'s kernel work (2 MB + 1 GB HugePages, per-family MSR prefetcher preset,
+  `performance` governor) plus the winning knobs from a live `tune`.
+
+A verified clean-baseline restoration between arms, counterbalanced order, identical source/build
+and donation settings, and difficulty-weighted accepted work are not documented. The figures below
+remain illustrative historical observations, not a controlled comparison of the frozen candidate.
 
 ## Rig 1 — Ryzen 7800X3D (desktop)
 
@@ -31,7 +40,7 @@ The baselines:
 | **RAM** | 2 × 16 GB G.Skill DDR5-**6000** (EXPO, dual-channel) |
 | **OS / algo** | Ubuntu 24.04, kernel 6.8 · live Monero **rx/0** |
 
-| Configuration | Hashrate (H/s) | Power (W) | Efficiency (H/s per W) |
+| Configuration | Hashrate (H/s) | CPU-package power (W, RAPL) | Efficiency (H/s per CPU-package W) |
 |---|--:|--:|--:|
 | **Stock XMRig** (no tuning) | 10,416 | 86.8 | 120.1 |
 | **RigForge** — system tuning only | 10,756 | 83.6 | 128.7 |
@@ -39,59 +48,83 @@ The baselines:
 | **RigForge** — tuned (efficiency) | 10,779 | 83.5 | **129.2** |
 | **Stock → tuned** | **+3.5%** | **−3.8%** | **+7.6%** |
 
-Stock XMRig here burns more watts for less work. Without HugePages the CPU stalls on memory, drawing
-~87 W to produce fewer hashes; tuned is faster and cooler. Performance and efficiency tuning landed on the
-same config: RigForge measured the power and found this chip pins ~84 W in any all-core setup, so there's
-no hashrate-for-watts trade-off to make, and it didn't invent one.
+The reported performance and efficiency tuning runs selected the same configuration. The table
+records higher local hashrate and lower package power in those tuned runs; it does not isolate
+which tuning change caused the difference or measure cooling or wall-power savings.
 
-## Rig 2 — EPYC 7642 (48-core server) · RigForge vs an expert hand-tune
+## Rig 2 — EPYC 7642 (48-core server)
 
-This box was already running a hand-tuned miner (the worker an operator had configured for this EPYC by
-hand) at 36,860 H/s. So it's not just "RigForge vs naive XMRig"; it's RigForge's one-command auto-tune
-against a human who tuned it themselves.
+The historical report also included a hand-tuned worker. It used XMRig 6.25, while the RigForge
+run used 6.26. This version mismatch prevents attributing their similar hashrates to automation
+versus expert tuning; it is not evidence of equivalence.
 
 | | |
 |---|---|
 | **CPU** | AMD **EPYC 7642** — 48C/96T, 256 MiB L3, **4 NUMA nodes**, 2300 MHz |
 | **RAM / OS / algo** | 62 GB · Ubuntu 24.04, kernel 6.8 · live Monero **rx/0** |
 
-| Configuration | Hashrate (H/s) | Power (W) | Efficiency (H/s per W) |
+| Configuration | Hashrate (H/s) | CPU-package power (W, RAPL) | Efficiency (H/s per CPU-package W) |
 |---|--:|--:|--:|
 | **Stock XMRig** (no tuning) | 34,599 | 228.4 | 151.5 |
 | **Expert hand-tuned** worker (XMRig 6.25) | 36,860 | 230.2 | 160.1 |
 | **RigForge** — tuned (XMRig 6.26) | **36,866** | 229.5 | **160.6** |
 | **Stock → RigForge** | **+6.6%** | ~flat | **+6.0%** |
 
-- RigForge matched the human expert (within 0.02%), and did it with a newer XMRig (6.26 vs 6.25),
-  `cpu.yield` off (the expert left it on), and 5× fewer HugePages (266 vs 1,280 reserved, both hitting
-  100%): the same result with ~2 GB less RAM tied up.
-- The auto-tune dodged a landmine. On this EPYC, prefetch mode 2 halves the hashrate (~17,900 H/s), the
-  exact opposite of the 7800X3D, where mode 2 is the winner. A fixed "golden profile" would get one of
-  these two chips badly wrong; the per-CPU live tune measured it and stayed on the right mode for each.
-- The HugePages win is bigger here (+6.6% vs the X3D's +3.5%): a 4-NUMA EPYC with a per-node dataset leans
-  much harder on huge pages than a single-die desktop chip. Efficiency and performance tuning again
-  converged (power ~230 W in any config).
+Other reported differences included `cpu.yield` off for RigForge and on for the hand-tuned worker,
+and 266 versus 1,280 reserved HugePages (both reported full HugePages use). Prefetch mode 2 was
+reported at approximately 17,900 H/s on this EPYC, while it was selected on the desktop. These
+observations motivate measuring each machine separately, not a universal tuning claim.
 
 ## Caveats (read before quoting a number)
 
-- Two CPUs, two systems, and RandomX gains vary a lot. A desktop X3D and a 48-core EPYC already differ by
-  more than 3× in raw hashrate; your CPU, RAM speed, NUMA layout, and kernel all matter. Treat the
-  percentages as illustrative, not a guarantee.
-- Modern kernels narrow the stock gap. Ubuntu 24.04's Transparent HugePages (`madvise`) back some of even
-  the "stock" allocation with 2 MB pages, so the stock baseline is closer to tuned than on an older kernel
-  or with THP off. Don't expect the 20–30% some older write-ups quote.
-- `setup` does the heavy lifting; `tune` refines. Most of the win is the system tuning; the knob search
-  confirms you're at the optimum (and, as the EPYC shows, keeps you off the landmines) rather than adding
-  a big jump on top.
+- CPU, RAM, firmware, socket count, NUMA layout, kernel and starting OS state affect results.
+  Missing fields in the historical record must remain unknown, not inferred from a CPU model.
+- Stopping the RigForge service does not undo persistent HugePages, MSR, governor, boot-parameter
+  or service changes. A stock run on that OS is not automatically a clean baseline.
+- These tables cannot support a universal uplift, expert-equivalence claim or wall-efficiency claim.
+  Keep launch percentages removed or qualified until the exact candidate has suitable evidence.
 
-## Reproduce it
+## Candidate comparison protocol
 
-```bash
-# bare baseline: stock upstream XMRig, no system tuning
-./xmrig -o <pool> -u <wallet>           # no HugePages reserved, MSRs default
+This work remains pending under #580. It gates numeric launch claims, not GA by itself. Coordinate
+with #564 and Pithead #2602 before scheduling hardware; benchmark/stress tooling belongs to #533,
+and shared-host coexistence to #579 with #577/#578 prerequisites. No tuner change is needed for this
+evidence task.
 
-# RigForge: one command does the setup + tuning
-sudo ./rigforge.sh                       # build + HugePages + MSR + governor + service
-sudo ./rigforge.sh tune --now --long     # full live tune (or just let setup's defaults ride)
-sudo ./rigforge.sh doctor                # confirms HugePages 100%, MSR applied, governor, clocks
-```
+1. **Freeze identity and scope.** Record the Pithead source revision and image identity, baked
+   RigForge SHA, upstream XMRig commit, compiler, dependencies, build flags, source patches and binary
+   identity. Test the baked revision, not a newer tag. A required RigForge code change needs a re-pin
+   and renewed Pithead release proof under #564. Use one representative desktop and one server/NUMA
+   system if making claims about both; publish each separately. Record actual sockets, CPU, RAM,
+   firmware, kernel, thread allocation, ambient and thermal conditions, and measurement scope.
+2. **Reserve and predeclare.** Use separate, uncontended hardware through the approved bench-ci
+   reservation/restoration workflow; leave the active RC/soak host untouched. Before reading results,
+   declare stabilization, measurement duration, repeat count, exclusions and the smallest effect of
+   interest. Freeze each arm's selected configuration after tuning and keep search windows out of
+   evaluation. A short pilot may size the run: 4–6 hours per host plus restores can be a starting point
+   for hashrate/power, but accepted-share precision may need longer.
+3. **Match arms and restore.** Compare upstream stock automatic configuration on a clean OS with
+   the normal RigForge setup/tune workflow. Keep XMRig source/build, donation, endpoint and workload
+   fixed; disclose intended tuning differences. RigForge changes XMRig's donation default/minimum;
+   use a common supported nonzero donation and verify its effective value in both arms. Include a
+   properly hand-tuned stock arm only for an automation-versus-expert claim. Restore a reproducible
+   clean OS image/snapshot and verify the clean baseline between arms, including HugePages, MSRs,
+   governor, kernel parameters and services; reboot where needed. Record the restoration result
+   rather than treating a stopped service as a reset.
+4. **Repeat and counterbalance.** For example, run stock → RigForge → RigForge → stock, then reverse
+   that order, restoring the required starting state each time. Run a full standard RandomX benchmark
+   for correctness/repeatability, retaining completion and reference-hash verification, and live
+   mining for sustained operational results. A smoke pass or one favorable window is not comparative
+   evidence; the existing benchmark wrapper's parsed H/s alone does not verify the reference hash.
+5. **Measure and retain.** Capture local H/s, difficulty-weighted accepted work, rejects/stales,
+   temperatures, clocks, throttling, wall energy and H/s per wall watt. Keep CPU-package RAPL separate;
+   label unavailable wall readings unavailable. Retain all trials and exclusions, spread/uncertainty,
+   material confounders and final restoration evidence. Keep raw logs, machine identities and local
+   topology private; publish only sanitized evidence references and command outcomes.
+6. **Publish and decide.** Produce a dated, reproducible report with tested configurations, all arms
+   and a per-machine statement of what each result supports. Check that repeated arms are consistent
+   and report uncertainty against the predeclared effect bound. An inconclusive result or a percentage
+   that does not reproduce means qualifying/removing that launch claim, not choosing a favorable run.
+   “No detected difference” does not establish “no overhead” without sufficient precision. Apply the
+   same limits to README, website and organization copy: automated upstream XMRig tuning, package
+   versus wall power, and historical versus current-candidate measurements must remain distinct.
