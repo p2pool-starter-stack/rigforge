@@ -159,19 +159,23 @@ echo "== unit: daemon pool rendering and scope boundary (#528) =="
 
 all_daemon_input='{"daemon":true,"daemon-poll-interval":1.0,"daemon-job-timeout":1e3,"daemon-zmq-port":65535}'
 all_daemon_fields='{"daemon":true,"daemon-poll-interval":1,"daemon-job-timeout":1000,"daemon-zmq-port":65535}'
+daemon_render() { # <config> <dir>
+    (
+        CONFIG_JSON="$1"
+        SCRIPT_DIR="$ROOT"
+        set +e
+        PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
+        OS_TYPE=Linux
+        WORKER_ROOT="$2"
+        LOGROTATE_DIR="$2"
+        cd "$2" || exit 1
+        PATH="$STUBS:$PATH" generate_xmrig_config >/dev/null 2>&1
+    )
+}
+
 c=$(mkconf daemon_render "{\"pools\":[{\"url\":\"daemon+https://$daemon_target\",${all_daemon_input#\{}]}")
 daemon_render_dir=$(mktemp -d "$SANDBOX/daemon-render.XXXXXX")
-(
-    CONFIG_JSON="$c"
-    SCRIPT_DIR="$ROOT"
-    set +e
-    PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
-    OS_TYPE=Linux
-    WORKER_ROOT="$daemon_render_dir"
-    LOGROTATE_DIR="$daemon_render_dir"
-    cd "$daemon_render_dir" || exit 1
-    PATH="$STUBS:$PATH" generate_xmrig_config >/dev/null 2>&1
-)
+daemon_render "$c" "$daemon_render_dir"
 rendered_pool=$(jq -c '.pools[0]' "$daemon_render_dir/config.json")
 assert_eq "daemon fields survive into generated miner config (#528)" \
     "$(printf '%s' "$rendered_pool" | jq -c '{daemon, "daemon-poll-interval", "daemon-job-timeout", "daemon-zmq-port"}')" \
@@ -179,17 +183,7 @@ assert_eq "daemon fields survive into generated miner config (#528)" \
 
 c=$(daemon_conf daemon_render_absent "$daemon_target" '{}')
 daemon_absent_dir=$(mktemp -d "$SANDBOX/daemon-absent.XXXXXX")
-(
-    CONFIG_JSON="$c"
-    SCRIPT_DIR="$ROOT"
-    set +e
-    PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
-    OS_TYPE=Linux
-    WORKER_ROOT="$daemon_absent_dir"
-    LOGROTATE_DIR="$daemon_absent_dir"
-    cd "$daemon_absent_dir" || exit 1
-    PATH="$STUBS:$PATH" generate_xmrig_config >/dev/null 2>&1
-)
+daemon_render "$c" "$daemon_absent_dir"
 assert_eq "unset daemon fields stay absent from generated Stratum config (#528)" \
     "$(jq -c '[.pools[0] | has("daemon"), has("daemon-poll-interval"), has("daemon-job-timeout"), has("daemon-zmq-port")]' "$daemon_absent_dir/config.json")" \
     '[false,false,false,false]'
@@ -265,12 +259,10 @@ assert_eq "syncing daemon summary reports height and state (#528)" \
 for state in down slow malformed rpc-error two-json; do
     assert_eq "$state daemon response becomes a warning state (#528)" "$(daemon_pool_status "$state" "$c")" "daemon-down"
 done
-assert_contains "daemon RPC uses a bounded total timeout (#528)" "$(cat "$SANDBOX/daemon-curl.log")" \
-    "$(printf '<--max-time>\n<5>')"
-assert_contains "daemon RPC uses a bounded connect timeout (#528)" "$(cat "$SANDBOX/daemon-curl.log")" \
-    "$(printf '<--connect-timeout>\n<2>')"
-assert_contains "direct daemon RPC bypasses ambient proxies (#528)" "$(cat "$SANDBOX/daemon-curl.log")" \
-    "$(printf '<--noproxy>\n<*>')"
+curl_log=$(cat "$SANDBOX/daemon-curl.log")
+assert_contains "daemon RPC uses a bounded total timeout (#528)" "$curl_log" "$(printf '<--max-time>\n<5>')"
+assert_contains "daemon RPC uses a bounded connect timeout (#528)" "$curl_log" "$(printf '<--connect-timeout>\n<2>')"
+assert_contains "direct daemon RPC bypasses ambient proxies (#528)" "$curl_log" "$(printf '<--noproxy>\n<*>')"
 
 mixed_body=$(jq -cn --arg stratum "$daemon_target" --arg daemon "daemon+http://$daemon_ipv4" \
     '{pools:[{url:$stratum},{url:$daemon,daemon:true}]}')
@@ -346,10 +338,8 @@ for state in down slow malformed; do
     assert_contains "$state daemon response counts as a doctor issue (#528)" "$out" "issue(s) found"
 done
 
-out=$(DAEMON_SVC_RC=1 daemon_doctor healthy)
-assert_contains "doctor checks the daemon node while the miner is stopped (#528)" "$out" "height 42"
-out=$(DAEMON_SVC_RC=1 daemon_doctor down)
-assert_contains "stopped-miner doctor flags an unreachable node (#528)" "$out" "issue(s) found"
+assert_contains "doctor checks the daemon node while the miner is stopped (#528)" "$(DAEMON_SVC_RC=1 daemon_doctor healthy)" "height 42"
+assert_contains "stopped-miner doctor flags an unreachable node (#528)" "$(DAEMON_SVC_RC=1 daemon_doctor down)" "issue(s) found"
 
 daemon_apply_check() {
     (
@@ -371,8 +361,7 @@ out=$(daemon_apply_check)
 assert_contains "apply reports daemon node health (#528)" "$out" "height 42"
 assert_absent "daemon apply does not use live-pool wording (#528)" "$out" "live pool connection"
 assert_absent "daemon apply does not use share wording (#528)" "$out" "share(s) accepted"
-out=$(DAEMON_APPLY_CASE=down daemon_apply_check)
-assert_contains "apply warns when the daemon node is unavailable (#528)" "$out" "Node get_info is unavailable"
+assert_contains "apply warns when the daemon node is unavailable (#528)" "$(DAEMON_APPLY_CASE=down daemon_apply_check)" "Node get_info is unavailable"
 
 echo "== unit: daemon sister-feed mode (#528) =="
 
