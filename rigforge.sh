@@ -4134,8 +4134,6 @@ _miner_deliberately_stopped() {
     [ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" = inactive ]
 }
 
-# Tune owns its timers while repeatedly regenerating config and restarting the miner.
-#
 # `preserve-run-state` (#396) is passed by `apply` and by nothing else. With it, a rig that is
 # deliberately stopped is left stopped: the regenerated config sits on disk and takes effect at the next
 # deliberate start (the operator's, or the watchdog's own tick once the temperature is back under the
@@ -4164,7 +4162,6 @@ _apply_runtime() { # [preserve-run-state]
     _reown_worker
 }
 
-# Apply reconciles the live config and services without recompiling.
 _apply_plan() {
     parse_config >/dev/null
     echo "apply --dry-run — the plan:"
