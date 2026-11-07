@@ -75,6 +75,9 @@ A bound invocation emits the prefix `worker-proof:`, a space, and a JSON object:
 include assertions made in child shells. No assertion prose or response data is
 copied into the receipt. Counts are checked against the complete rows above;
 neither fewer nor extra assertions silently pass.
+`tests/test-worker-proof.py` derives each row's count from the `ok` calls in the
+harness phase bodies and their helpers, so an assertion added to a phase fails
+the suite until the checker's table matches it.
 
 Only two existing fixture-absence skips are eligible for explicit authorization:
 
