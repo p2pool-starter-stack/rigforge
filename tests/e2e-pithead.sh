@@ -13,6 +13,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-xmrig.sh"
 
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
@@ -245,21 +247,7 @@ phase_worker_api() {
         bad "custom token: matching Bearer failed"
     fi
     set_cfg '.ACCESS_TOKEN = ""' # back to the open default before the next phase
-    local feed="" pool_before ts_before
-    pool_before=$(jq -c '.cpu."memory-pool"' "$GEN_CFG" 2>/dev/null)
-    ts_before=$(systemctl show -p ExecMainStartTimestamp --value xmrig 2>/dev/null || true)
-    set_cfg '.xmrig = {"cpu": {"memory-pool": false}} | .api = "enabled"'
-    jq -e '.cpu."memory-pool" == false' "$GEN_CFG" >/dev/null 2>&1 && ok "xmrig overlay merged into the generated config" || bad "xmrig overlay did not reach the generated config"
-    [ "$(systemctl show -p ExecMainStartTimestamp --value xmrig 2>/dev/null || true)" != "$ts_before" ] && ok "unit restarted by the overlay apply" || bad "unit not restarted by the overlay apply"
-    for _ in $(seq 1 15); do
-        feed=$(api8081 http://127.0.0.1:8081/2/summary)
-        printf '%s' "$feed" | jq -e '.hashrate.total[0] > 0' >/dev/null 2>&1 && break
-        sleep 6
-    done
-    printf '%s' "$feed" | jq -e '.hashrate.total[0] > 0' >/dev/null 2>&1 && ok "worker mining after the overlay restart" || bad "worker not mining after the overlay restart"
-    printf '%s' "$feed" | jq -e '.rigforge.config.xmrig.cpu."memory-pool" == false' >/dev/null 2>&1 && ok "feed config carries the xmrig overlay" || bad "feed config lacks the xmrig overlay"
-    set_cfg 'del(.xmrig) | .api = "disabled"'
-    [ "$(jq -c '.cpu."memory-pool"' "$GEN_CFG" 2>/dev/null)" = "$pool_before" ] && ok "overlay removal restored the generated config" || bad "overlay removal left the generated config changed"
+    _xmrig_overlay_rows
 }
 
 phase_api_impact() {
@@ -374,6 +362,11 @@ phase_network() {
     ss -Htln 2>/dev/null | grep -q ':8081 ' && ok ":8081 listening from control alone, api never set (#507)" || bad ":8081 not listening though control implies api (#507)"
     set_cfg '.api = "enabled"'
     sleep 3
+    if phase_api_allowlist; then
+        ok "API allowlist rejects a second source while mining"
+    else
+        bad "API allowlist live probe failed"
+    fi
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
         ok ":8081 listening while api enabled"
     else
@@ -519,7 +512,7 @@ phase_dashboard() {
     "$RIGFORGE" start >/dev/null 2>&1
 }
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-shared-host.sh"
 
 summary() {
     printf '\ne2e-pithead: \033[1;32m%d ok\033[0m, ' "$PASS"
@@ -533,7 +526,7 @@ summary() {
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)"
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|shared-host|all)"
 replay_lock "${1:-all}"
 
 snapshot_config
@@ -549,13 +542,14 @@ dev-fee) phase_dev_fee ;;
 control) phase_control ;;
 control-replay-thermal | control-replay-pools) phase_control_replay "${1##*-}" ;;
 access-tokens) phase_access_tokens ;;
+shared-host) phase_shared_host ;;
 all)
     for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens; do
         "$run_phase"
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|shared-host|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT

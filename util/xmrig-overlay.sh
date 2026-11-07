@@ -138,5 +138,5 @@ _refresh_xmrig_unit() {
     CPUPOWER_PATH=$(command -v cpupower || echo "/usr/bin/cpupower")
     export CPUPOWER_PATH
     _render_xmrig_unit || return 1
-    sudo systemctl daemon-reload 2>/dev/null || true
+    _shared_host_reload
 }

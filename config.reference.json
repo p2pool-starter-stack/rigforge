@@ -30,6 +30,7 @@
     "hugepages_pool_ceiling_mb": 0,
     "threads": null,
     "xmrig": {},
+    "shared_host": false,
 
     "HOME_DIR": "DYNAMIC_HOME"
 }
