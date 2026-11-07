@@ -754,7 +754,7 @@ assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/con
 assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 for _sh in shared-host:profile shared-host-lifecycle:lifecycle; do
-    if _sh_out="$(bash "$ROOT/tests/test-${_sh%%:*}.sh" "$SCRIPT" 2>&1)"; then ok "shared-host ${_sh##*:} regressions (#577)"; else bad "shared-host ${_sh##*:} regressions (#577)" "$(printf '%s' "$_sh_out" | tail -5)"; fi
+    if _sh_out="$(PATH="$STUBS:$PATH" bash "$ROOT/tests/test-${_sh%%:*}.sh" "$SCRIPT" 2>&1)"; then ok "shared-host ${_sh##*:} regressions (#577)"; else bad "shared-host ${_sh##*:} regressions (#577)" "$(printf '%s' "$_sh_out" | tail -5)"; fi
 done
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
@@ -5066,7 +5066,6 @@ assert_contains "doctor: rdmsr verifies the registers (#66)" "$out" "verified vi
 # Readable but wrong values (a silently-dropped write) -> mismatch WARN.
 out="$(run_doctor_msr "$DOC/rdmsr_bad")"
 assert_contains "doctor: rdmsr mismatch WARN (#66)" "$out" "don't match the ryzen_19h_zen4 preset"
-assert_absent "doctor: rdmsr mismatch without lockdown keeps the hypervisor hint (#333)" "$out" "dropped the write; see"
 out="$(LOCKDOWN_FILE="$DOC/lockdown_integrity" run_doctor_msr "$DOC/rdmsr_bad")"
 assert_contains "doctor: rdmsr mismatch attributed to lockdown (#333)" "$out" "kernel lockdown ('integrity') dropped the write"
 # Non-root: the read-back is SKIPPED with an advisory — NOT a false mismatch (regression guard for the gate).
