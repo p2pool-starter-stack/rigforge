@@ -466,7 +466,8 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 > success; `apply` was the workaround. Fixed in #413.
 
 > Old build artifacts are archived/pruned across runs, so repeated upgrades don't leak disk. A failed
-> XMRig fetch or build aborts the upgrade and leaves the live `xmrig/` tree (binary and config) untouched.
+> XMRig fetch, build or configuration step aborts the upgrade and leaves the live `xmrig/` tree (binary
+> and config) untouched. A swap interrupted mid-way is recovered by the next `setup` or `upgrade`.
 
 ---
 
@@ -608,7 +609,10 @@ Turn it on by setting three things in `config.json` and running `sudo ./rigforge
 Both `ACCESS_TOKEN` and `api_allow_from` are mandatory when `control` is enabled — setup/apply
 **hard-errors** without them, because a writable path with no token or no pinned source is an open
 remote config write. The control port (default `:8082`, `control_port`/`control_bind`) is scoped by
-the same nftables rule as the read API, so only the stack host and loopback can reach it.
+the same nftables rule as the read API, so only the stack host and loopback can reach it. The receiver
+is stopped before its firewall is loaded and started only after the load succeeds, and its unit loads
+the rule file before every start (including at boot) and refuses to start if `nft` rejects it, so a
+rejected firewall load leaves the writable port stopped, never open.
 
 How a change flows:
 
