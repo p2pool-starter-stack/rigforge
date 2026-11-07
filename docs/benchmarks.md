@@ -79,6 +79,9 @@ observations motivate measuring each machine separately, not a universal tuning 
 
 - CPU, RAM, firmware, socket count, NUMA layout, kernel and starting OS state affect results.
   Missing fields in the historical record must remain unknown, not inferred from a CPU model.
+- Modern kernels narrow the stock gap. Ubuntu 24.04's `madvise` Transparent HugePages back some of
+  even the stock allocation with 2 MB pages, so the stock baseline is closer to tuned than on an older
+  kernel or with THP off. Don't expect the 20–30% some older write-ups quote.
 - Stopping the RigForge service does not undo persistent HugePages, MSR, governor, boot-parameter
   or service changes. A stock run on that OS is not automatically a clean baseline.
 - These tables cannot support a universal uplift, expert-equivalence claim or wall-efficiency claim.
@@ -86,15 +89,15 @@ observations motivate measuring each machine separately, not a universal tuning 
 
 ## Candidate comparison protocol
 
-This work remains pending under #580. It gates numeric launch claims, not GA by itself. Coordinate
-with #564 and Pithead #2602 before scheduling hardware; benchmark/stress tooling belongs to #533,
-and shared-host coexistence to #579 with #577/#578 prerequisites. No tuner change is needed for this
-evidence task.
+This work remains pending under #580 and gates numeric launch claims. Benchmark/stress tooling
+belongs to #533, and shared-host coexistence to #579 with #577/#578 prerequisites. No tuner change is
+needed for this evidence task.
 
 1. **Freeze identity and scope.** Record the Pithead source revision and image identity, baked
    RigForge SHA, upstream XMRig commit, compiler, dependencies, build flags, source patches and binary
-   identity. Test the baked revision, not a newer tag. A required RigForge code change needs a re-pin
-   and renewed Pithead release proof under #564. Use one representative desktop and one server/NUMA
+   identity. Test the baked revision, not a newer tag. A required RigForge code change needs a new
+   RigForge release and Pithead re-pin before it is the baked candidate. Use one representative
+   desktop and one server/NUMA
    system if making claims about both; publish each separately. Record actual sockets, CPU, RAM,
    firmware, kernel, thread allocation, ambient and thermal conditions, and measurement scope.
 2. **Reserve and predeclare.** Use separate, uncontended hardware through the approved bench-ci
