@@ -755,6 +755,7 @@ assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 if bash "$ROOT/tests/test-config-ownership.sh" "$SCRIPT"; then ok "config ownership regressions (#529)"; else bad "config ownership regressions (#529)" "regression failed"; fi
+if bash "$ROOT/tests/test-e2e-config-ownership.sh"; then ok "e2e config-ownership phase rows (#529)"; else bad "e2e config-ownership phase rows (#529)" "regression failed"; fi
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
     c="$(mkconf "don$d" "{ \"DONATION\": $d, $POOL }")"
