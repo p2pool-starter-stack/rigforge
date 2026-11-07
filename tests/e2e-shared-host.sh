@@ -86,7 +86,11 @@ phase_shared_host() {
     "$RIGFORGE" stop >/dev/null 2>&1 || true
     if cp "$SAVED_CFG" "$CFG" && "$RIGFORGE" apply >/dev/null 2>&1 && _restore_xmrig; then ok "dedicated configuration and run state restored"; else bad "dedicated restoration failed"; fi
     cg=$(systemctl show xmrig -p ControlGroup --value)
-    if [ "$(systemctl show rigforge.slice -p LoadState --value 2>/dev/null)" = not-found ] && [ "$(systemctl show xmrig -p Slice --value)" != rigforge.slice ] && [ "${cg#/rigforge.slice/}" = "$cg" ]; then ok "owned slice removed after disabling the profile"; else bad "rigforge.slice survived disabling the profile"; fi
+    if [ -z "$(systemctl show rigforge.slice -p FragmentPath --value 2>/dev/null)" ] && [ "$(systemctl show rigforge.slice -p ActiveState --value 2>/dev/null)" != active ] &&
+        [ "$(systemctl show xmrig -p Slice --value)" != rigforge.slice ] && [ "${cg#/rigforge.slice/}" = "$cg" ]; then ok "owned slice stopped and removed after disabling the profile"; else
+        systemctl show rigforge.slice -p LoadState -p ActiveState -p FragmentPath 2>&1 | sed 's/^/shared-host: slice /'
+        bad "rigforge.slice survived disabling the profile"
+    fi
     after=$(_shared_host_state)
     if [ "$after" = "$before" ]; then ok "unrelated host settings unchanged after restoration"; else bad "host settings changed after restoration: $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | tr '\n' ' ')"; fi
 }
