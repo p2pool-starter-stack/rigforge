@@ -332,7 +332,7 @@ phase_api_impact() {
 
 phase_network() {
     phase "network — nothing listens or leaks beyond what the config defines"
-    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0
+    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0 settle=0
     # Wait up to 45s, then require the pool to be XMRig's only established TCP peer.
     remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
     while [ -z "$remotes" ] && [ "$waited" -lt 45 ]; do
@@ -370,8 +370,13 @@ phase_network() {
     else
         bad "miner has unexpected listeners: $xl"
     fi
+    while [ "$settle" -lt 15 ]; do
+        settle=$((settle + 1))
+        k2=$(api8081 http://127.0.0.1:8081/2/summary)
+        printf '%s' "$k2" | jq -e '.rigforge.xmrig_api != "unreachable"' >/dev/null 2>&1 && break
+        sleep 2
+    done
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
-    k2=$(api8081 http://127.0.0.1:8081/2/summary)
     printf '%s\n' "${k1:-null}" "${k2:-null}" | summary_contract_diagnostics
     if [ -n "$k1" ] && printf '%s' "$k2" | jq -e '(.rigforge | type) == "object" and (.generated_at | type) == "string" and (.generated_at as $g | [try ($g | fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch empty] == [$g])' >/dev/null 2>&1 &&
         [ "$k1" = "$(printf '%s' "$k2" | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)" ]; then
