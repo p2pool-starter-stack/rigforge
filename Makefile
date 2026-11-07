@@ -30,7 +30,7 @@ test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
 
 e2e-docs-replay: ## Replay documented setup and two reboots in an explicitly supplied disposable KVM guest
-	bash tests/e2e-docs-replay.sh
+	python3 tests/docs_replay.py
 
 test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) — BSD sed, launchd, nohup (macOS only, deprecated, not run in CI)
 	bash tests/e2e/macos.sh

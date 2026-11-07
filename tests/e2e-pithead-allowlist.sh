@@ -15,7 +15,7 @@ api_allowlist_drop_packets() {
     '
 }
 
-api_allowlist_probe() { # <allowed-source> <api-target> <api-port> <token>
+api_allowlist_probe() {
     (
         local allowed_source=$1 target=$2 port=$3 token=$4
         local ns="rfapi-$$" host_if="rfah-$$" peer_if="rfan-$$" host_cidr ns_cidr subnet

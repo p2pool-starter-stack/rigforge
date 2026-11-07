@@ -172,7 +172,8 @@ remain required evidence beyond the hardware-free tests and container checks.
 
 The namespace probe also has an isolated Linux kernel test, using a small HTTP
 server and a fixed test hashrate instead of a miner. It proves filtering and
-cleanup, including the admitted-source and unchanged-counter negative controls:
+cleanup, including the admitted-source and unchanged-counter negative controls. The
+`e2e` CI job runs it with:
 
 ```bash
 docker run --rm --privileged -v "$PWD:/src:ro" \
