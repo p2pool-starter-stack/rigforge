@@ -752,6 +752,9 @@ ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
 )
 assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
 assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
+for _sh in "shared-host profile $PATH" "shared-host-lifecycle lifecycle $STUBS:$PATH"; do
+    if read -r _f _l _p <<<"$_sh" && _o="$(PATH="$_p" bash "$ROOT/tests/test-$_f.sh" "$SCRIPT" 2>&1)"; then ok "shared-host $_l regressions (#577)"; else bad "shared-host $_l regressions (#577)" "$(printf '%s' "$_o" | tail -5)"; fi
+done
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
@@ -3267,7 +3270,7 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
 # sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
@@ -5063,6 +5066,8 @@ assert_contains "doctor: rdmsr verifies the registers (#66)" "$out" "verified vi
 # Readable but wrong values (a silently-dropped write) -> mismatch WARN.
 out="$(run_doctor_msr "$DOC/rdmsr_bad")"
 assert_contains "doctor: rdmsr mismatch WARN (#66)" "$out" "don't match the ryzen_19h_zen4 preset"
+out="$(LOCKDOWN_FILE="$DOC/lockdown_integrity" run_doctor_msr "$DOC/rdmsr_bad")"
+assert_contains "doctor: rdmsr mismatch attributed to lockdown (#333)" "$out" "kernel lockdown ('integrity') dropped the write"
 # Non-root: the read-back is SKIPPED with an advisory — NOT a false mismatch (regression guard for the gate).
 out="$(run_doctor_msr "$DOC/rdmsr_ok" user)"
 assert_contains "doctor: non-root asks for sudo to verify MSRs (#66)" "$out" "run 'doctor' as root"
