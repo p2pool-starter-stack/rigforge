@@ -42,7 +42,7 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for selftest in benchmark-verification benchmark-support stress perf-submission; do
+for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest; do
     bash "$ROOT/tests/test-$selftest.sh"
     assert_rc "XMRig $selftest regression (#533)" "$?" 0
 done
