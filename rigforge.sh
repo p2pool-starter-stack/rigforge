@@ -4947,9 +4947,6 @@ bench() {
 
 # shellcheck source=util/doctor-report.sh
 source "$(_script_dir)/util/doctor-report.sh"
-_ck_ok() { _dr_record ok "$1" "${2:-}" && echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
-_ck_warn() { _dr_record warn "$1" "${2:-}" && echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
-_ck_info() { _dr_record info "$1" "${2:-}" && echo -e "  ${C_BLUE}∙${C_RESET} $1"; } # neutral context line (#78), not a pass/fail check
 # Read a /sys/class/dmi/id field (board/BIOS identity; world-readable). Empty if missing. #78.
 _dmi() {
     [ -r "$DMI_DIR/$1" ] || return 0

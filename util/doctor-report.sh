@@ -8,6 +8,10 @@ _dr_record() {
         '{id: $id, status: $status, message: $message}' >>"$_DR_JSON_FILE" || exit 1
 }
 
+_ck_ok() { _dr_record ok "$1" "${2:-}" && echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
+_ck_warn() { _dr_record warn "$1" "${2:-}" && echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
+_ck_info() { _dr_record info "$1" "${2:-}" && echo -e "  ${C_BLUE}∙${C_RESET} $1"; }
+
 doctor_json() (
     local _DR_JSON_FILE rc=0 version
     command -v jq >/dev/null 2>&1 || error "doctor --json requires jq."
