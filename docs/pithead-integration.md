@@ -76,7 +76,10 @@ pithead#235):
 - `GET /1/summary` and `GET /2/summary` — XMRig's own body passed through **verbatim** (a strict
   superset: everything the `:8080` probe returns is here unchanged), a top-level UTC
   `generated_at` timestamp for freshness checks, plus one namespaced
-  `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance), `tune` (applied
+  `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance),
+  `appliance` (boolean, true when the running setup uses appliance mode, re-read from the persisted
+  setup marker unless `RIGFORGE_APPLIANCE` overrides it), `stamp` (the `RIGFORGE_REF` contents beside
+  the running script, `ref=<sha> version=<x.y.z>`; `null` when absent, unreadable or empty), `tune` (applied
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
   as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
@@ -105,6 +108,9 @@ pithead#235):
 - Solo daemon connections carry `connection.mode: "daemon"`, inferred from the active configured
   pool when absent from XMRig's summary. Missing Stratum shares do not indicate a node outage.
   RigForge adds no mode field for Stratum connections.
+
+Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
+show `rigforge.stamp` as the baked release provenance instead.
 
 When a token is set, `:8081` accepts either the exact bearer for existing clients or the
 lowercase hex HMAC-SHA256 derived with that token as the key and `rigforge:api-read:v1` as the
