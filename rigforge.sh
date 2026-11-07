@@ -4691,33 +4691,31 @@ control_apply() {
     return 0
 }
 
-_control_upgrade_throttle_ok() { # <state-dir>
-    local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
-    now=$(date +%s)
-    mkdir -p "$dir" 2>/dev/null || true
-    exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
-        warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
-        return 2
-    }
-    flock 9 2>/dev/null || {
-        warn "control-upgrade: couldn't lock the throttle state under $dir — refusing the upgrade (fail-closed)."
-        exec 9>&-
-        return 2
-    }
-    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
-    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+_control_upgrade_throttle_ok() (
+    local dir="$1" lock="$1/.upgrade-throttle.lock" stamp="$1/upgrade-last" now tmp min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
+    [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2
+    if [ -e "$lock" ] || [ -L "$lock" ]; then
+        [ ! -L "$lock" ] && [ -f "$lock" ] && [ "$(stat -c '%u:%g:%a:%h' "$lock" 2>/dev/null)" = "0:0:600:1" ] || return 2
+    fi
+    umask 077
+    exec 9>>"$lock" 2>/dev/null || return 2
+    flock -x 9 2>/dev/null || return 2
+    if [ -e "$stamp" ] || [ -L "$stamp" ]; then
+        [ ! -L "$stamp" ] && [ -f "$stamp" ] && [ "$(stat -c '%u:%g:%a:%h' "$stamp" 2>/dev/null)" = "0:0:600:1" ] || return 2
+        last=$(cat "$stamp" 2>/dev/null) || return 2
+    fi
+    case "$last" in '' | *[!0-9]*) return 2 ;; esac
+    now=$(date +%s) || return 2
     if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
-        exec 9>&-
         return 1
     fi
-    printf '%s\n' "$now" >"$stamp" 2>/dev/null || {
-        warn "control-upgrade: couldn't record the attempt under $dir — refusing the upgrade (fail-closed)."
-        exec 9>&-
+    tmp=$(mktemp "$dir/.upgrade-last.XXXXXX") || return 2
+    if ! printf '%s\n' "$now" >"$tmp" || ! mv -f "$tmp" "$stamp"; then
+        rm -f "$tmp"
         return 2
-    }
-    exec 9>&-
+    fi
     return 0
-}
+)
 
 # The fetch + reachability + checkout + rebuild half of control-upgrade, split out so the orchestration
 # is unit-testable with this stubbed (like control-apply's _control_do_apply). Returns 0 on a successful
@@ -4810,10 +4808,10 @@ control_upgrade() {
     fi
     # D6 throttle: bound how often a rig fetches/rebuilds. rc 2 = throttle state unavailable — a
     # fail-closed refusal (#321) that must read as a broken rig, not as "throttled — retry later".
-    local thr_rc=0
-    _control_upgrade_throttle_ok "$state" || thr_rc=$?
+    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
+    _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
-        _control_status "$status" failed "$cid" version "throttle state unavailable under $state — refused (fail-closed)" ""
+        _control_status "$status" failed "$cid" version "throttle state unavailable under $throttle — refused (fail-closed)" ""
         warn "control-upgrade: throttle state unavailable — refused."
         return 0
     elif [ "$thr_rc" -ne 0 ]; then
