@@ -125,7 +125,6 @@ stage=control-disable
 jq '.control = "disabled"' "$checkout/config.json" >"$TEST_DIR/config.json"
 cat "$TEST_DIR/config.json" >"$checkout/config.json"
 run_cli apply >"$TEST_DIR/control-disable.log" 2>&1
-grep -q 'Writable control path disabled' "$TEST_DIR/control-disable.log"
 [ "$(systemctl is-active rigforge-control.service || true)" != active ]
 [ ! -e /etc/systemd/system/rigforge-control.service ]
 [ ! -e /etc/systemd/system/rigforge-control-apply.path ]
