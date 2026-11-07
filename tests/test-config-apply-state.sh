@@ -209,7 +209,7 @@ contains "$CHECK_OUT" 'invalid' 'malformed stamp explains the state'
 apply_now
 printf '{broken\n' >"$WORKER_ROOT/tune-overrides.json"
 expect_stale tune-overrides.json
-apply_now
+apply >/dev/null 2>&1 || true
 [ ! -e "$STAMP" ] || fail 'invalid tune overlay invalidates the old apply stamp'
 check_state
 contains "$CHECK_OUT" 'no apply stamp' 'invalid tune overlay cannot leave a current stamp'
