@@ -276,6 +276,7 @@ sudo() {
         done
         command rm "$@"
         ;;
+    nft) ;;
     *) fail 'uninstall invoked an unexpected privileged command' ;;
     esac
 }
