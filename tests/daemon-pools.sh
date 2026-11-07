@@ -318,7 +318,7 @@ daemon_doctor() { # <healthy|syncing|down|slow|malformed>
         CPU_SYSFS="$NOHW/cpu"
         API_CMD="cat '$daemon_summary'"
         DAEMON_CURL_CASE="$1"
-        systemctl() { case "$*" in *"is-active --quiet $SERVICE_NAME"*) return 0 ;; *) return 0 ;; esac }
+        systemctl() { case "$*" in *"is-active --quiet $SERVICE_NAME"*) return "${DAEMON_SVC_RC:-0}" ;; *) return 0 ;; esac }
         curl() {
             case "$DAEMON_CURL_CASE" in
             healthy) printf '%s' '{"result":{"status":"OK","height":42,"synchronized":true}}' ;;
@@ -346,6 +346,11 @@ for state in down slow malformed; do
     assert_contains "$state daemon response counts as a doctor issue (#528)" "$out" "issue(s) found"
 done
 
+out=$(DAEMON_SVC_RC=1 daemon_doctor healthy)
+assert_contains "doctor checks the daemon node while the miner is stopped (#528)" "$out" "height 42"
+out=$(DAEMON_SVC_RC=1 daemon_doctor down)
+assert_contains "stopped-miner doctor flags an unreachable node (#528)" "$out" "issue(s) found"
+
 daemon_apply_check() {
     (
         CONFIG_JSON="$c"
@@ -353,7 +358,10 @@ daemon_apply_check() {
         OS_TYPE=Linux
         API_CMD="cat '$daemon_summary'"
         systemctl() { return 0; }
-        curl() { printf '%s' '{"result":{"status":"OK","height":42,"synchronized":true}}'; }
+        curl() {
+            [ "${DAEMON_APPLY_CASE:-healthy}" = down ] && return 7
+            printf '%s' '{"result":{"status":"OK","height":42,"synchronized":true}}'
+        }
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
         APPLY_POOL_TRIES=1 APPLY_POOL_IVL=0 _apply_pool_check 2>&1
@@ -363,6 +371,8 @@ out=$(daemon_apply_check)
 assert_contains "apply reports daemon node health (#528)" "$out" "height 42"
 assert_absent "daemon apply does not use live-pool wording (#528)" "$out" "live pool connection"
 assert_absent "daemon apply does not use share wording (#528)" "$out" "share(s) accepted"
+out=$(DAEMON_APPLY_CASE=down daemon_apply_check)
+assert_contains "apply warns when the daemon node is unavailable (#528)" "$out" "Node get_info is unavailable"
 
 echo "== unit: daemon sister-feed mode (#528) =="
 
