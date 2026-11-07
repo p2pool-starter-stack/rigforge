@@ -441,15 +441,12 @@ parse_config() {
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # Omit unset optional fields to preserve existing generated configs.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | {"rig-id": .["rig-id"], nicehash, algo, coin, sni} | with_entries(select(.value != null))]] | transpose | map(.[0] + .[1])' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # jq's // treats false as missing, so restore explicit false values from the raw config.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # Validate each pool before it can reach the generated config.
     while IFS= read -r _pool; do
         _u=$(jq -r '.url' <<<"$_pool")
         _user=$(jq -r '.user' <<<"$_pool")
@@ -491,7 +488,6 @@ parse_config() {
         if ! jq -e '.coin == null or (.coin | ascii_downcase | IN("monero", "xmr", "arqma", "arq", "graft", "grft", "wownero", "wow", "zephyr", "zeph", "townforge", "yadacoin", "yda"))' <<<"$_pool" >/dev/null 2>&1; then
             error "Pool coin must be a supported RandomX coin (monero/XMR, arqma/ARQ, graft/GRFT, wownero/WOW, zephyr/ZEPH, townforge, yadacoin/YDA): HugePages reservation and tune --bench assume a RandomX scratchpad."
         fi
-        # Reject unresolved API secret markers before checking the password charset.
         if [ "$(jq -r '.pass | type' <<<"$_pool")" != "string" ]; then
             error "Pool pass must be a string (got a $(jq -r '.pass | type' <<<"$_pool")). A masked-secret marker from the API feed is not a password — send the real value, or omit 'pass' entirely."
         fi
@@ -3949,7 +3945,6 @@ mac_disable() {
 _print_pool_algorithm() {
     jq -r '.algo | select(type == "string" and . != "" and . != "rx/0") | "  Algorithm: \(.)"' 2>/dev/null || true
 }
-# A single fetch keeps the status fields consistent with each other.
 _status_api_summary() {
     local body hs pool up acc rej hp
     body=$(_read_api_summary)
