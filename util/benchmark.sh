@@ -82,7 +82,6 @@ _bench_capture() { # <bin> <size> <config> <offline|submit|verify> [id]
     tmp=$(mktemp -d) || return 1
     fifo="$tmp/stdout.fifo"
     out="$tmp/stdout"
-    # A pipe preserves XMRig's colored verdict and per-line flushing.
     mkfifo "$fifo" || {
         rm -rf "$tmp"
         return 1

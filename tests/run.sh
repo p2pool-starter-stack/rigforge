@@ -2468,7 +2468,6 @@ rc=$?
 assert_rc "bench exits 0" "$rc" "0"
 assert_contains "bench reports hashrate" "$out" "1234.5 H/s"
 
-# Self-tests must isolate the miner from its configured services and pool.
 assert_eq "build config has pools + http (precondition)" "$(J "$U/home/worker/xmrig/build/config.json" '(.pools != null) and (.http != null)')" "true"
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
@@ -2487,7 +2486,6 @@ rc=$?
 assert_rc "bench strips http/pools/log-file (#75)" "$rc" "0"
 assert_contains "bench (stripped) reports hashrate" "$out" "4242.0 H/s"
 
-# Fatal memory errors fail even when a hashrate and verified hash are present.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "MEMORY ALLOC FAILED: mmap failed"
@@ -5361,7 +5359,6 @@ disable_calls="$(grep -F '[systemctl] disable' "$UNA/calls.log" 2>/dev/null)"
 assert_eq "appliance uninstall: every systemctl disable is --runtime (#353)" \
     "$(printf '%s\n' "$disable_calls" | grep -cv -- --runtime)" "0"
 
-# Candidate-dependent rates give the tuning search a known optimum.
 echo "== black-box: tune (iterative hill-climb, multi-knob) (#54) =="
 TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
 cp "$ROOT/VERSION" "$TN/"
@@ -5371,12 +5368,10 @@ mkdir -p "$TN/util"
 cp "$ROOT/util/proposed-grub.sh" "$TN/util/" && chmod +x "$TN/util/proposed-grub.sh"
 BD="$TN/home/worker/xmrig/build"
 mkdir -p "$BD"
-# A controlled healthy clock keeps tuning tests independent of host load.
 mkdir -p "$TN/cpuok/cpu0/cpufreq"
 printf '5000000\n' >"$TN/cpu_max"
 printf '4800000\n' >"$TN/cpuok/cpu0/cpufreq/scaling_cur_freq"
 export CPUFREQ_MAX="$TN/cpu_max" CPU_SYSFS="$TN/cpuok"
-# The guess seed matches the generated worker defaults.
 cat >"$BD/config.json" <<'EOF'
 { "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
 EOF
@@ -5451,7 +5446,6 @@ assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
 
-# Missing hashrate must reject a candidate without firing the unexpected-error trap.
 if [ "$(uname -s)" != Linux ]; then
     echo "  SKIP: tune bench black-box timing tests run in the Linux CI jobs (#292)"
 else

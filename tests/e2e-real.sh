@@ -1248,7 +1248,6 @@ summary() {
     fi
 }
 
-# Release measurements are checked against both the baseline and best history.
 # Judge a measurement against the committed baseline AND the best-ever history entry (#186).
 # Prints the ok/bad verdict lines and returns 1 on any regression — shared by judge mode and
 # record mode (#214), so the two can never disagree about what "regressed" means.
