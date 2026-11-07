@@ -10,11 +10,11 @@ git() {
     case "$*" in
     *clone*)
         printf 'clone\n' >>"$D/build-calls"
-        mkdir -p xmrig/src
+        mkdir -p xmrig.new/src
         if [ "${fixture_drift:-0}" = 1 ]; then
-            printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel=1;\n' >xmrig/src/donate.h
+            printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel=1;\n' >xmrig.new/src/donate.h
         else
-            printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' >xmrig/src/donate.h
+            printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' >xmrig.new/src/donate.h
         fi
         ;;
     *rev-parse*) printf '%s\n' "$XMRIG_COMMIT" ;;
@@ -75,8 +75,9 @@ mkdir -p "$WORKER_ROOT"
 cd "$WORKER_ROOT"
 if (fixture_drift=1 DONATION=2 XMRIG_REBUILD=true compile_xmrig) >"$D/drift.log" 2>&1; then exit 1; fi
 grep -q 'donation patch verification failed' "$D/drift.log"
-[ ! -e "$WORKER_ROOT/xmrig/.rigforge-donate-min" ]
-[ ! -e "$WORKER_ROOT/xmrig/build/xmrig" ]
+[ ! -e "$WORKER_ROOT/xmrig.new/.rigforge-donate-min" ]
+[ ! -e "$WORKER_ROOT/xmrig.new/build/xmrig" ]
+[ ! -e "$WORKER_ROOT/xmrig" ]
 printf 'unmatched donation patch refuses build and marker: PASS\n'
 CONFIG_JSON="$D/config.json"
 printf '{}' >"$CONFIG_JSON"

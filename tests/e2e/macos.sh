@@ -62,7 +62,7 @@ cat >"$STUBS/git" <<'X'
 #!/usr/bin/env bash
 case "$*" in
   *rev-parse*) echo "${XMRIG_COMMIT:-}" ;;
-  *clone*)     mkdir -p xmrig/src; printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' > xmrig/src/donate.h ;;
+  *clone*)     mkdir -p xmrig.new/src; printf 'constexpr const int kDefaultDonateLevel = 1;\nconstexpr const int kMinimumDonateLevel = 1;\n' > xmrig.new/src/donate.h ;;
 esac
 exit 0
 X
