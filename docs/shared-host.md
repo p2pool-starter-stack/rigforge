@@ -44,16 +44,18 @@ fix the cause and run `sudo ./rigforge.sh start`.
 The existing `miner_user` choice remains in force (root when omitted). The unit drops capabilities,
 uses `Nice=19` with CPU weight 10, and disables automatic restart so a failed budget check or memory
 exhaustion leaves the miner stopped with a reason. Because the unit keeps no capabilities, RigForge
-gives the generated XMRig config and `xmrig.log` to the miner account (root when `miner_user` is
-omitted) every time it re-owns the worker directory. This bounds trusted mining workloads; it is not a
+gives the generated XMRig config and `xmrig.log` to the miner account every time it re-owns the
+worker directory. Without `miner_user` they are owned by root with the operator's group, and the
+config is mode 0640 so non-root `doctor` and `support-bundle` can still read it. This bounds trusted mining workloads; it is not a
 security boundary against compromised root code.
 
 Switching an already installed dedicated unit requires stopping the miner and adding
 `"existing_host_tuning": "preserve"` inside `shared_host`. This is an acknowledgement that RigForge
 will preserve inherited host tuning; it does not inspect ownership, undo it, or reclaim it. If the
 owned profile is later disabled, `apply` removes the shared budget and restores RigForge's dedicated
-configuration. The owned `rigforge.slice` is stopped and removed once the miner runs outside it; while a
-running miner is still inside, removal waits for the restart that moves it. Shared selection or the retained history marker makes uninstall preserve global
+configuration. The next `apply`, `upgrade`, setup or uninstall
+stops and removes the owned `rigforge.slice` once no process runs in it; while the miner or a helper
+is still inside, removal waits for a later run of one of those commands. Shared selection or the retained history marker makes uninstall preserve global
 tuning, even after disabling the profile, because ownership of inherited settings cannot be proven.
 
 Apply the profile with `sudo ./rigforge.sh apply` after editing `config.json`. Repeated setup, apply,

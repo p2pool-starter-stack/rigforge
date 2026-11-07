@@ -147,15 +147,17 @@ reown_case() {
         id() { printf '0\n'; }
         chown() { printf 'chown %s\n' "$*" >>"$D/reown-calls"; }
         touch() { printf 'touch %s\n' "$*" >>"$D/reown-calls"; }
+        chmod() { printf 'chmod %s\n' "$*" >>"$D/reown-calls"; }
         OS_TYPE=Linux MINER_USER='' RIGFORGE_APPLIANCE=0 REAL_USER=operator SHARED_HOST="$1"
         _reown_worker
     )
 }
 reown_case true
 grep -qFx "touch $WORKER_ROOT/xmrig.log" "$D/reown-calls" || fail 'shared root miner log not created before re-own'
-grep -qFx "chown root:root $WORKER_ROOT/xmrig/build/config.json $WORKER_ROOT/xmrig.log" "$D/reown-calls" || fail 'shared root miner cannot write its log without DAC capabilities'
+grep -qFx "chown root:operator $WORKER_ROOT/xmrig/build/config.json $WORKER_ROOT/xmrig.log" "$D/reown-calls" || fail 'shared root miner cannot write its log without DAC capabilities'
+grep -qFx "chmod 0640 $WORKER_ROOT/xmrig/build/config.json" "$D/reown-calls" || fail 'shared generated config unreadable for the operator'
 reown_case false
-! grep -q 'root:root' "$D/reown-calls" || fail 'dedicated root miner ownership changed'
+! grep -q 'root:' "$D/reown-calls" || fail 'dedicated root miner ownership changed'
 
 printf 'MemTotal: 16777216 kB\n' >"$D/meminfo16"
 [ "$(SHARED_HOST=false MEMINFO="$D/meminfo16" compute_build_jobs 8)" = 8 ] || fail 'dedicated build parallelism changed'
@@ -191,17 +193,19 @@ printf 'external slice\n' >"$SYSTEMD_DIR/rigforge.slice"
 _shared_host_remove
 [ -f "$SYSTEMD_DIR/rigforge.slice" ] || fail 'unowned slice was removed'
 printf 'Description=RigForge shared-host resource budget\n' >"$SYSTEMD_DIR/rigforge.slice"
-MINER_GROUP=/rigforge.slice/xmrig.service
-systemctl() {
-    case "$*" in
-    "show $SERVICE_NAME -p ControlGroup --value") printf '%s\n' "$MINER_GROUP" ;;
-    *) printf '%s\n' "$*" >>"$D/remove-calls" ;;
-    esac
-}
+RIGFORGE_CGROUP_ROOT="$D/cgroup-remove"
+mkdir -p "$RIGFORGE_CGROUP_ROOT/rigforge.slice/run-helper.service"
+: >"$RIGFORGE_CGROUP_ROOT/rigforge.slice/cgroup.procs"
+printf '4242\n' >"$RIGFORGE_CGROUP_ROOT/rigforge.slice/run-helper.service/cgroup.procs"
+systemctl() { printf '%s\n' "$*" >>"$D/remove-calls"; }
 _shared_host_remove
-[ -f "$SYSTEMD_DIR/rigforge.slice" ] || fail 'owned slice removed while the miner still ran in it'
-[ ! -e "$D/remove-calls" ] || fail 'slice stopped while the miner still ran in it'
-MINER_GROUP=/system.slice/xmrig.service
+[ -f "$SYSTEMD_DIR/rigforge.slice" ] || fail 'owned slice removed while a process still ran in it'
+[ ! -e "$D/remove-calls" ] || fail 'slice stopped while a process still ran in it'
+: >"$RIGFORGE_CGROUP_ROOT/rigforge.slice/run-helper.service/cgroup.procs"
+systemctl() { [ "$1" != stop ] || return 1; }
+_shared_host_remove
+[ -f "$SYSTEMD_DIR/rigforge.slice" ] || fail 'owned fragment deleted although the slice did not stop'
+systemctl() { printf '%s\n' "$*" >>"$D/remove-calls"; }
 _shared_host_remove
 [ ! -e "$SYSTEMD_DIR/rigforge.slice" ] || fail 'owned slice survived removal'
 [ "$(head -n1 "$D/remove-calls")" = 'stop rigforge.slice' ] || fail 'removed slice was left active'

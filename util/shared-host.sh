@@ -243,11 +243,11 @@ _shared_host_start_guard() {
 }
 
 _shared_host_remove() {
-    local slice="$SYSTEMD_DIR/rigforge.slice" group
+    local slice="$SYSTEMD_DIR/rigforge.slice" cg="${RIGFORGE_CGROUP_ROOT:-/sys/fs/cgroup}/rigforge.slice" procs=""
     grep -qFx 'Description=RigForge shared-host resource budget' "$slice" 2>/dev/null || return 0
-    group=$(systemctl show "$SERVICE_NAME" -p ControlGroup --value 2>/dev/null) || group=""
-    case "$group" in /rigforge.slice/*) return 0 ;; esac
-    sudo systemctl stop rigforge.slice 2>/dev/null || true
+    if [ -d "$cg" ]; then procs=$(find "$cg" -name cgroup.procs -exec cat {} + 2>/dev/null) || return 0; fi
+    [ -z "$procs" ] || return 0
+    sudo systemctl stop rigforge.slice 2>/dev/null || return 0
     sudo rm -f "$slice"
     sudo systemctl daemon-reload
 }

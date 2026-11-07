@@ -1806,9 +1806,13 @@ _reown_worker() {
     esac
     if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
     if [ -f "$CONFIG_JSON" ]; then sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true; fi
-    if [ "$OS_TYPE" = Linux ] && { [ -n "${MINER_USER:-}" ] || [ "${SHARED_HOST:-false}" = true ]; }; then
-        if [ "${SHARED_HOST:-false}" = true ] && [ "${RIGFORGE_APPLIANCE:-0}" != 1 ] && [ -d "$WORKER_ROOT" ]; then sudo touch "$WORKER_ROOT/xmrig.log" 2>/dev/null || true; fi
-        sudo chown "${MINER_USER:-root}:${MINER_USER:-root}" "$WORKER_ROOT/xmrig/build/config.json" "$WORKER_ROOT/xmrig.log" 2>/dev/null || true
+    [ "$OS_TYPE" = Linux ] || return 0
+    if [ "${SHARED_HOST:-false}" = true ] && [ "${RIGFORGE_APPLIANCE:-0}" != 1 ] && [ -d "$WORKER_ROOT" ]; then sudo touch "$WORKER_ROOT/xmrig.log" 2>/dev/null || true; fi
+    if [ -n "${MINER_USER:-}" ]; then
+        sudo chown "$MINER_USER:$MINER_USER" "$WORKER_ROOT/xmrig/build/config.json" "$WORKER_ROOT/xmrig.log" 2>/dev/null || true
+    elif [ "${SHARED_HOST:-false}" = true ]; then
+        sudo chown "root:$REAL_USER" "$WORKER_ROOT/xmrig/build/config.json" "$WORKER_ROOT/xmrig.log" 2>/dev/null || true
+        sudo chmod 0640 "$WORKER_ROOT/xmrig/build/config.json" 2>/dev/null || true
     fi
 }
 
