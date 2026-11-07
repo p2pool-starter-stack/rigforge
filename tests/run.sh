@@ -2710,7 +2710,6 @@ assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_tem
 bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
 assert_rc "thermal watchdog command retries (#631)" "$?" 0
 
-# Stub service commands so watchdog checks cannot affect the host.
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
 run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]

@@ -4850,7 +4850,6 @@ control_upgrade() {
     return 0
 }
 
-# A thermal hold records a successful stop until the timer can restart the miner.
 watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
@@ -4858,7 +4857,6 @@ watchdog() {
     parse_config
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
-    # Recover a thermal hold before the inactive-service check can skip it.
     if [ -f "$hold_f" ]; then
         if [ -z "$MAX_TEMP_C" ]; then
             if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
