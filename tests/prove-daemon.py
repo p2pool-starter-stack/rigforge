@@ -185,9 +185,6 @@ sysctl() { case "$*" in *machdep.cpu.brand_string*) printf '%s\n' 'Proof CPU';; 
 sudo() { "$@"; }; parse_config >/dev/null; WORKER_ROOT="$PROOF_OUTPUT_DIR/worker"; mkdir -p "$WORKER_ROOT"; cd "$PROOF_OUTPUT_DIR"; generate_xmrig_config >/dev/null
 '''
     with tempfile.TemporaryDirectory(prefix="rigforge-daemon-render-") as directory:
-        fifo = os.path.join(directory, "config.json")
-        os.mkfifo(fifo)
-        reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
         env = {**os.environ, "PROOF_OPERATOR_CONFIG": operator, "PROOF_OUTPUT_DIR": directory,
                "RIGFORGE_APPLIANCE": "1", "WORKER_ROOT": os.path.join(directory, "worker")}
         process = subprocess.Popen(["bash", "-c", shell, "proof", str(repository)], env=env)
@@ -197,12 +194,11 @@ sudo() { "$@"; }; parse_config >/dev/null; WORKER_ROOT="$PROOF_OUTPUT_DIR/worker
             process.terminate()
             try: process.wait(timeout=3)
             except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=2)
-            os.close(reader)
             raise RuntimeError("RigForge renderer timed out")
-        with os.fdopen(reader) as rendered:
-            config = json.load(rendered)
         if status:
             raise RuntimeError("RigForge failed to render the daemon proof config")
+        with open(os.path.join(directory, "config.json")) as rendered:
+            config = json.load(rendered)
         return config
 def get_summary(host, port, token):
     connection = http.client.HTTPConnection(host, port, timeout=1)
