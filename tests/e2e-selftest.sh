@@ -11,6 +11,7 @@ phase_selftest() {
     phase "selftest — real XMRig benchmark verdict and bounded stress restoration (#533)"
     local out record before after failed=0
     record="$(dirname "$(dirname "$(dirname "$GEN_CFG")")")/rigforge-bench.json"
+    rm -f "$record"
     if out=$("$RIGFORGE" bench 2>&1) && grep -q 'Benchmark correctness: verified' <<<"$out" &&
         [ "$(jq -r '.verdict' "$record" 2>/dev/null)" = verified ]; then
         ok "real XMRig bench verified its RandomX hash and recorded the verdict (#533)"
@@ -26,7 +27,7 @@ phase_selftest() {
         bad "real XMRig stress did not pass (#533)" || failed=1
     fi
     after=$(_selftest_units)
-    if [ "$before" = "$after" ]; then
+    if [ "$before" = "$after" ] && [[ "$before" != *"= "* ]]; then
         ok "stress restored the miner and timer states: $after(#533)"
     else
         bad "stress left units changed: before '$before', after '$after' (#533)" || failed=1

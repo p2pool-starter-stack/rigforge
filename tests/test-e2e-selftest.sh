@@ -11,13 +11,19 @@ cat >"$RIGFORGE" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
 bench)
-    [ "$BENCH_MODE" = verified ] || exit 1
-    printf '{"verdict":"verified"}\n' >"$WORKER/rigforge-bench.json"
+    case "$BENCH_MODE" in
+    mismatch) exit 1 ;;
+    silent) exit 0 ;;
+    norecord) ;;
+    *) printf '{"verdict":"verified"}\n' >"$WORKER/rigforge-bench.json" ;;
+    esac
+    [ "$BENCH_MODE" != nomarker ] || exit 0
     echo 'Benchmark correctness: verified (hash 898B6E0431C28A6B).'
     ;;
 stress)
     [ "$1 $2 $3" = "stress --minutes 1" ] || exit 2
     [ "$STRESS_MODE" != fail ] || exit 1
+    [ "$STRESS_MODE" != silent ] || exit 0
     [ "$STRESS_MODE" != drift ] || : >"$WORKER/drift"
     echo 'Stress PASS: hashed for 1 minute(s); peak temperature 60°C.'
     ;;
@@ -27,6 +33,7 @@ chmod +x "$RIGFORGE"
 export WORKER="$D/worker"
 systemctl() {
     [ "$1" = is-active ] || return 1
+    [ "$STRESS_MODE" != unreadable ] || return 1
     if [ "$2" = rigforge-watchdog.timer ] && [ -e "$WORKER/drift" ]; then
         echo inactive
         return 3
@@ -46,7 +53,8 @@ status=0
 check() {
     local want_rc="$1" want_fail="$2" rc=0
     PASS=0 FAIL=0
-    rm -f "$WORKER/rigforge-bench.json" "$WORKER/drift" "$D/bad"
+    rm -f "$WORKER/drift" "$D/bad"
+    printf '{"verdict":"verified"}\n' >"$WORKER/rigforge-bench.json"
     phase_selftest 2>/dev/null || rc=$?
     if [ "$rc" != "$want_rc" ] || [ "$FAIL" != "$want_fail" ]; then
         printf 'FAIL: bench=%s stress=%s rc=%s fail=%s\n' "$BENCH_MODE" "$STRESS_MODE" "$rc" "$FAIL"
@@ -56,6 +64,11 @@ check() {
 export BENCH_MODE=verified STRESS_MODE=pass
 check 0 0
 BENCH_MODE=mismatch check 1 1
+BENCH_MODE=silent check 1 1
+BENCH_MODE=nomarker check 1 1
+BENCH_MODE=norecord check 1 1
+STRESS_MODE=silent check 1 1
+STRESS_MODE=unreadable check 1 1
 STRESS_MODE=fail check 1 1
 STRESS_MODE=drift check 1 1
 grep -q "before 'xmrig=active rigforge-autotune.timer=active rigforge-watchdog.timer=active '" "$D/bad" || {
