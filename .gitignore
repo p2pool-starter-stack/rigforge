@@ -25,6 +25,7 @@ config.json
 
 # #254 config-change provenance marker (runtime state)
 .rigforge-config-meta.json
+.rigforge-revision-key
 
 # Persisted Pithead appliance posture (runtime state)
 .rigforge-appliance/
