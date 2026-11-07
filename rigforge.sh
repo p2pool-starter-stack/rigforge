@@ -1168,7 +1168,6 @@ generate_xmrig_config() {
     fi
 
     _merge_xmrig_overlay config.json || return 1
-
     _cap_xmrig_threads config.json || return 1
 
     # The live config holds the pool/wallet and the API token, so keep it owner-only (a root `jq`
@@ -4137,7 +4136,6 @@ _miner_deliberately_stopped() {
     [ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" = inactive ]
 }
 
-# Tuning restarts each trial; operator applies preserve an intentionally stopped service.
 _apply_runtime() { # [preserve-run-state]
     parse_config
     local build="$WORKER_ROOT/xmrig/build"

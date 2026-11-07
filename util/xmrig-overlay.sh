@@ -83,7 +83,6 @@ _cap_xmrig_threads() {
 
 _validate_xmrig_config() {
     local bin="$1" config="$2" validation="$3" output
-    # Prevent XMRig from falling back to a different config when every pool is disabled.
     jq -e 'any(.pools[]; .enabled == true)' "$config" >/dev/null || {
         warn "XMRig requires an enabled pool; the live config was left unchanged."
         return 1
@@ -92,7 +91,6 @@ _validate_xmrig_config() {
         warn "No built XMRig executable; run setup before apply validation."
         return 1
     }
-    # XMRig initializes logging and its memory pool even during a parser preview.
     jq '."dry-run" = true | .background = false | ."log-file" = null | .syslog = false | .title = false | .colors = false | if (.cpu | type) == "object" then .cpu."memory-pool" = false else . end' "$config" >"$validation" || return 1
     if output=$("$bin" --config "$validation" --dry-run 2>&1); then
         log "XMRig configuration validation passed."

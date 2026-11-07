@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 #
-# Coverage runner (#68): measure line coverage of rigforge.sh + util/ shell helpers by running the
-# dependency-free suite (tests/run.sh) under kcov, and enforce a committed total floor (a ratchet).
 #
 # kcov is Linux + ptrace based, so this runs the suite inside a PINNED kcov Docker image (by digest,
 # matching how the e2e job pins its Ubuntu image). The suite needs jq, which the kcov image lacks, so
@@ -49,8 +47,6 @@ if [ ! -x "$JQ_BIN" ]; then
 fi
 
 # --- Run the suite under kcov ------------------------------------------------
-# The repo is mounted at /src; include the product and shell helpers by absolute path, which excludes any
-# per-test sandbox copies and keeps the number stable. ptrace needs the seccomp/cap relaxations.
 rm -rf "$OUT"
 mkdir -p "$OUT"
 echo "coverage: running tests/run.sh under kcov (this is slower than 'make test')..."

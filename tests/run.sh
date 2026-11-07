@@ -2254,7 +2254,6 @@ EOF
     if [ "${3:-n}" = y ]; then : >"$ARS/worker/watchdog.thermal-hold"; fi
     (
         source "$SCRIPT"
-        # Stub config staging, unit rendering, and re-ownership to isolate the service action.
         parse_config() { :; }
         _stage_xmrig_config() { :; }
         _render_xmrig_unit() { :; }
@@ -3125,14 +3124,12 @@ assert_eq "macOS bundle still collects system.txt (#147)" "$([ -f "$SBX/system.t
 echo "== black-box: setup --dry-run plan + no-mutation guard (#146) =="
 DR="$(mktemp -d "$SANDBOX/dryrun.XXXXXX")"
 mkdir -p "$DR/etc" "$DR/home/worker/xmrig/build"
-printf '#!/bin/sh\nexit 0\n' >"$DR/home/worker/xmrig/build/xmrig"
-chmod +x "$DR/home/worker/xmrig/build/xmrig"
+printf '#!/bin/sh\nexit 0\n' >"$DR/home/worker/xmrig/build/xmrig" && chmod +x "$DR/home/worker/xmrig/build/xmrig"
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$DR/etc/grub"
 printf 'proc /proc proc defaults 0 0\n' >"$DR/etc/fstab"
 cat >"$DR/config.json" <<EOF
 { "HOME_DIR": "$DR/home", "pools": [{"url": "poolbox.lan:3333"}], "autotune": "performance", "api": "enabled", "add_to_path": true }
 EOF
-# Use a deterministic proposed-grub stand-in for this dry-run fixture.
 mkdir -p "$DR/util"
 cat >"$DR/util/proposed-grub.sh" <<'EOF'
 #!/usr/bin/env bash
