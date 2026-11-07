@@ -62,6 +62,7 @@ default_config=$(generate defaults)
 eq "$(jq -c '.randomx | {mode,init,"init-avx2":."init-avx2"}' "$default_config")" '{"mode":"fast","init":-1,"init-avx2":-1}'
 
 parse_ok '{"xmrig":{"randomx":{"mode":"light","init":7,"init-avx2":0}}}'
+eq "$(bash -c 'printf %s "${RX_MODE:-}"')" light
 overlay='{"randomx":{"mode":"fast","init":19,"init-avx2":1,"1gb-pages":true}}'
 light_config=$(generate light "$overlay")
 eq "$(jq -c '.randomx | {mode,init,"init-avx2":."init-avx2","1gb-pages":."1gb-pages"}' "$light_config")" '{"mode":"light","init":7,"init-avx2":0,"1gb-pages":false}'
@@ -174,7 +175,7 @@ EOF
 chmod +x "$CALL_ROOT/util/proposed-grub.sh"
 export RANDOMX_CALL_LOG="$D/calls"
 SCRIPT_DIR="$CALL_ROOT"
-export RX_MODE=light
+RX_MODE=light
 RX_SETUP_THREADS=10
 HUGEPAGES_RESERVE_EXTRA_MB=0
 HUGEPAGES_POOL_CEILING_MB=0
@@ -308,5 +309,8 @@ has "$fast_doctor" 'doctor: 2 issue(s) found'
 out=$(CONFIG_JSON="$D/missing-config" _check_randomx_memory)
 has "$out" 'RandomX mode unavailable'
 absent "$out" 'WARN:'
+RX_MODE=light
+CONFIG_JSON="$D/missing-config" _check_randomx_memory >/dev/null
+eq "$RX_MODE" ''
 
 printf 'randomx config, sizing, callers, and doctor: PASS\n'

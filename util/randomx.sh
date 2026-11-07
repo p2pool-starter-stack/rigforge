@@ -13,6 +13,7 @@ _apply_randomx_config() {
 
 _check_randomx_memory() {
     local settings available page_size free_1g=0 reserved_1g=0
+    RX_MODE=""
     if [ ! -f "$CONFIG_JSON" ]; then
         _ck_info "RandomX mode unavailable — no config.json"
         return 0
