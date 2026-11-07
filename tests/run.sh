@@ -9524,7 +9524,6 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     RIGFORGE_API_DATA="$FEEDFX/data"
     RIGFORGE_CONTROL_STATE="$FEEDFX/control"
     API_CMD="cat '$FEEDFX/xmrig-body.json'"
-    # A nonexistent service pins health values even on a rig; see contract/v1/README.md.
     SERVICE_NAME="rigforge-contract-fixture-nonexistent"
     set +e
     api_refresh 2>/dev/null
