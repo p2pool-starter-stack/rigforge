@@ -100,7 +100,10 @@ rebuilds the config from five sources:
    your `config.json`.
 5. The three supported `xmrig.randomx` settings from your `config.json`, applied last so your explicit
    mode and initialization choices win. In light mode RigForge still forces `1gb-pages: false`,
-   including over a tuned value, because light mode has no dataset to put in 1 GB pages.
+   including over a tuned value, because light mode has no dataset to put in 1 GB pages. If this step
+   fails, for example because `tune-overrides.json` replaced `randomx` with a non-object, the render
+   stops with a warning and the previous generated `config.json` stays in place. A `tune` candidate
+   that cannot take these settings is skipped rather than benchmarked without them.
 
 Because the config is rebuilt from these sources every time, editing the generated `config.json` by
 hand has no effect. Change your repo-root `config.json` (or `tune`) and re-run instead.

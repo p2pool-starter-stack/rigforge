@@ -12,7 +12,7 @@ _apply_randomx_config() {
 }
 
 _check_randomx_memory() {
-    local settings mode available page_size free_1g=0 reserved_1g=0
+    local settings available page_size free_1g=0 reserved_1g=0
     if [ ! -f "$CONFIG_JSON" ]; then
         _ck_info "RandomX mode unavailable — no config.json"
         return 0
@@ -21,9 +21,9 @@ _check_randomx_memory() {
         _ck_warn "Invalid xmrig.randomx settings — check mode, init and init-avx2"
         return 1
     fi
-    mode=$(jq -r '.mode' <<<"$settings")
-    _ck_info "RandomX mode: $mode"
-    [ "$mode" = fast ] && [ "${1:-n}" != y ] || return 0
+    RX_MODE=$(jq -r '.mode' <<<"$settings")
+    _ck_info "RandomX mode: $RX_MODE"
+    [ "$RX_MODE" = fast ] && [ "${1:-n}" != y ] || return 0
     available=$(awk '/^MemAvailable:/ { available=$2; seen=1 } /^MemFree:/ { free=$2; seen_free=1 } /^HugePages_Free:/ { pages=$2 } /^HugePages_Rsvd:/ { reserved=$2 } /^Hugepagesize:/ { size=$2 } END { if (!seen && !seen_free) exit; if (pages < reserved) pages=reserved; printf "%.0f", (seen ? available : free) + (pages-reserved)*(size ? size : 2048) }' "$MEMINFO" 2>/dev/null) || available=""
     if [ -z "$available" ]; then
         _ck_info "Available memory unknown — cannot check the RandomX fast dataset"

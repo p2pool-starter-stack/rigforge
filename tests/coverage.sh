@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-#
-#
 # kcov is Linux + ptrace based, so this runs the suite inside a PINNED kcov Docker image (by digest,
 # matching how the e2e job pins its Ubuntu image). The suite needs jq, which the kcov image lacks, so
 # we mount a PINNED static jq from the upstream release (the same pin-by-sha256 approach used for the

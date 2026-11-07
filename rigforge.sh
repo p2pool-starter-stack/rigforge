@@ -727,6 +727,7 @@ parse_config() {
     fi
     RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx accepts mode (auto/fast/light), init (-1 or a positive integer), and init-avx2 (-1/0/1) only."
     RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
+    export RX_MODE
     _warn_unknown_config_keys
 }
 
@@ -1175,7 +1176,7 @@ generate_xmrig_config() {
         log "Applied tuned overrides from tune-overrides.json."
     fi
 
-    _apply_randomx_config "$_new"
+    _apply_randomx_config "$_new" || _config_render_fail "$_new" "Applying the xmrig.randomx settings failed" || return 1
     if [ -n "${THREADS_CAP:-}" ]; then
         _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
@@ -1507,7 +1508,7 @@ _rx_setup_threads() {
 # _ensure_hugepages weighs against availability before clamping the write, so clamping it there
 # would move that decision instead of bounding the pool.
 _grub_proposed() {
-    MANAGED=$(RX_MODE="${RX_MODE:-fast}" RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
+    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
@@ -1521,7 +1522,7 @@ _grub_proposed() {
     # enablement, and reboot behaviour are unchanged.
     if [ "${HUGEPAGES_RESERVE_EXTRA_MB:-0}" -gt 0 ] 2>/dev/null; then
         local _need _have
-        _need=$(RX_MODE="${RX_MODE:-fast}" RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
+        _need=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
         _have=$(_cmdline_reserved_2mb "$CURRENT")
         if [ -n "$_need" ] && [ "$_have" -gt 0 ] 2>/dev/null && [ "$_have" -ge "$_need" ] 2>/dev/null; then
             MERGED="$CURRENT"
@@ -1641,14 +1642,14 @@ tune_kernel() {
     log "Applying runtime memory tuning..."
     if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
         # Calculate exact requirement based on hardware, the tuned thread count, and 1GB page status
-        REQUIRED_PAGES=$(RX_MODE="${RX_MODE:-fast}" RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
+        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
         log "Hardware-optimized HugePages: $REQUIRED_PAGES (2MB pages) calculated."
         _ensure_hugepages "$REQUIRED_PAGES"
     else
         # Fallback when proposed-grub.sh is missing: 3072 × 2MB = 6 GB of huge pages — enough for the
         # ~2.3 GB RandomX dataset plus per-thread scratchpads on a large desktop/server, without over-
         # reserving on smaller hosts. proposed-grub.sh computes an exact, hardware-sized value instead.
-        [ "${RX_MODE:-fast}" != light ] || error "RandomX light mode requires util/proposed-grub.sh for safe HugePages sizing."
+        [ "${RX_MODE:-}" != light ] || error "RandomX light mode requires util/proposed-grub.sh for safe HugePages sizing."
         warn "Utility script not found. Fallback to safe default (3072)."
         _ensure_hugepages 3072
     fi
@@ -1890,7 +1891,7 @@ _setup_plan() {
         fi
         if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
             _rx_setup_threads
-            _pages=$(RX_MODE="${RX_MODE:-fast}" RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
+            _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
             if [ "$RIGFORGE_APPLIANCE" != 1 ] && [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
                 if [ "$CURRENT" = "$MERGED" ]; then
@@ -1900,7 +1901,7 @@ _setup_plan() {
                     _reboot=" — a reboot WILL be required"
                 fi
             fi
-        elif [ "${RX_MODE:-fast}" = light ]; then
+        elif [ "${RX_MODE:-}" = light ]; then
             _pages="FAIL: RandomX light mode requires util/proposed-grub.sh"
         fi
         # Grow-only preview (#328): same availability check _ensure_hugepages runs, read-only.
@@ -2551,8 +2552,7 @@ _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <
 _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     local out="$1"
     shift
-    _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out"
-    _apply_randomx_config "$out"
+    _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out" && _apply_randomx_config "$out"
 }
 
 # Run `xmrig --bench=<size>` headlessly and echo its full output. XMRig's `--bench` prints the result and
@@ -2714,7 +2714,7 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
-        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr"
+        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr" || { warn "  tune: rendering the candidate config failed — skipping it." >&2 && printf 0 && return 0; }
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
             : >"$TUNE_TMP/freq"  # #62: _xmrig_bench writes the effective clock seen during this run
             : >"$TUNE_TMP/watts" # #81: ... and the average watts under load
@@ -2816,7 +2816,7 @@ _hugepages_2m_avail() { # echoes the reserved 2MB page count, or nothing (never 
 }
 _hugepages_2m_need() { # <threads> -> 2MB pages needed (via proposed-grub.sh), empty if unavailable
     [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] || return 0
-    RX_MODE="${RX_MODE:-fast}" RX_THREADS="$1" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null
+    RX_THREADS="$1" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null
 }
 
 # A sensible RandomX thread count for this CPU (~one thread per 2 MB of L3, clamped to the core count),
@@ -2957,7 +2957,7 @@ _gridsearch() {
 # from what the generated config actually uses (both default false). Shared by the seeds.
 _seed_hj() { jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE"; }
 _seed_cq() { jq -r '.randomx.cache_qos // false' "$TUNE_BASE"; }
-_seed_g() { if [ "${RX_MODE:-fast}" = light ]; then echo false; else jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; fi; }
+_seed_g() { if [ "${RX_MODE:-}" = light ]; then echo false; else jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; fi; }
 # wrmsr seed: the base config's value as a single token (true/false/number). An array (advanced custom
 # MSRs) isn't a sweepable scalar, so seed from the safe default 'true' and let the operator set TUNE_WRMSR.
 _seed_wr() { jq -r '(.randomx | if has("wrmsr") then .wrmsr else true end) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
@@ -3206,11 +3206,11 @@ tune() {
     # leave it at the base value and say so, rather than benchmarking a no-op.
     local nr=0
     [ -r "$HUGEPAGES_1G_NR" ] && nr=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
-    if [ "${nr:-0}" -gt 0 ] 2>/dev/null && [ "${RX_MODE:-fast}" != light ]; then
+    if [ "${nr:-0}" -gt 0 ] 2>/dev/null && [ "${RX_MODE:-}" != light ]; then
         TUNE_ONEGB="${TUNE_ONEGB:-true false}"
     else
         TUNE_ONEGB="$(_seed_g)"
-        [ "${RX_MODE:-fast}" = light ] || log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
+        [ "${RX_MODE:-}" = light ] || log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
     fi
 
     # Active knobs = those with more than one candidate value (the rest are fixed, not searched).
@@ -5509,7 +5509,7 @@ EOF
     # 1GB HugePages (optional bonus)
     local g=0
     [ -f "$HUGEPAGES_1G_NR" ] && g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
-    if [ "$(jq -r '.xmrig.randomx.mode // "fast"' "$CONFIG_JSON" 2>/dev/null)" = light ]; then
+    if [ "${RX_MODE:-}" = light ]; then
         _ck_info "1GB HugePages disabled in RandomX light mode"
     elif [ "${g:-0}" -gt 0 ] 2>/dev/null; then
         _ck_ok "1GB HugePages reserved ($g)"

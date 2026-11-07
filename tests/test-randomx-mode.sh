@@ -70,6 +70,25 @@ RX_MODE=light
 _tune_config "$D/light-candidate.json" 2 false 4 true 2 false false true
 eq "$(jq -c '.randomx | {mode,init,"init-avx2":."init-avx2","1gb-pages":."1gb-pages"}' "$D/light-candidate.json")" '{"mode":"light","init":7,"init-avx2":0,"1gb-pages":false}'
 eq "$(_seed_g)" false
+if RANDOMX_JSON='[]' _tune_config "$D/bad-candidate.json" 2 false 4 true 2 false false true 2>/dev/null; then fail 'a failed xmrig.randomx overlay still produced a tune candidate'; fi
+TUNE_TMP="$D/tune-tmp"
+MEMO_FILE="$D/tune-memo"
+TUNE_MODE=bench
+mkdir -p "$TUNE_TMP"
+_bench_once() { printf 'benched\n' >"$D/benched"; }
+eq "$(RANDOMX_JSON='[]' _measure 2 false 4 true 2 false false true 2>/dev/null)" 0
+[ ! -e "$D/benched" ] || fail 'tune benchmarked a candidate whose config failed to render'
+
+parse_ok '{"xmrig":{"randomx":{"mode":"light"}}}'
+WORKER_ROOT="$D/null-randomx/worker"
+mkdir -p "$WORKER_ROOT/xmrig/build"
+printf '{"randomx":null}\n' >"$WORKER_ROOT/tune-overrides.json"
+printf '{"previous":true}\n' >"$WORKER_ROOT/xmrig/build/config.json"
+POOLS_JSON='[]'
+if out=$(cd "$WORKER_ROOT/xmrig/build" && OS_TYPE=Linux RIGFORGE_APPLIANCE=1 LOG_FILE_PATH="" generate_xmrig_config 2>&1); then fail 'a failed xmrig.randomx overlay still rendered a config'; fi
+has "$out" 'Applying the xmrig.randomx settings failed'
+eq "$(cat "$WORKER_ROOT/xmrig/build/config.json")" '{"previous":true}'
+eq "$(find "$WORKER_ROOT/xmrig/build" -type f | wc -l | tr -d ' ')" 1
 
 for value in auto fast light; do
     parse_ok "{\"xmrig\":{\"randomx\":{\"mode\":\"$value\",\"init\":2147483647,\"init-avx2\":1}}}"
@@ -155,7 +174,7 @@ EOF
 chmod +x "$CALL_ROOT/util/proposed-grub.sh"
 export RANDOMX_CALL_LOG="$D/calls"
 SCRIPT_DIR="$CALL_ROOT"
-RX_MODE=light
+export RX_MODE=light
 RX_SETUP_THREADS=10
 HUGEPAGES_RESERVE_EXTRA_MB=0
 HUGEPAGES_POOL_CEILING_MB=0
@@ -277,11 +296,13 @@ doctor_config light
 if light_doctor=$(doctor 2>&1); then fail 'light doctor unexpectedly passed the inactive-service baseline'; fi
 has "$light_doctor" 'RandomX mode: light'
 absent "$light_doctor" 'RandomX fast needs'
+has "$light_doctor" '1GB HugePages disabled in RandomX light mode'
 has "$light_doctor" 'doctor: 1 issue(s) found'
 doctor_config fast
 if fast_doctor=$(doctor 2>&1); then fail 'fast doctor unexpectedly passed low memory'; fi
 has "$fast_doctor" 'RandomX mode: fast'
 has "$fast_doctor" 'RandomX fast needs'
+absent "$fast_doctor" '1GB HugePages disabled'
 has "$fast_doctor" 'doctor: 2 issue(s) found'
 
 out=$(CONFIG_JSON="$D/missing-config" _check_randomx_memory)
