@@ -1266,7 +1266,6 @@ install_service() {
             # nothing is started or restarted.
             log "Service unit installed and enabled — the caller decides whether to restart."
         elif [ "$XMRIG_REBUILD" = true ] || [ "${XMRIG_CONFIG_CHANGED:-false}" = true ]; then
-            # The miner needs a restart to load a changed binary or config.
             log "Restarting XMRig service..."
             sudo systemctl restart "$SERVICE_NAME.service"
         else
@@ -1809,7 +1808,6 @@ _reown_worker() {
     esac
     if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
     if [ -f "$CONFIG_JSON" ]; then sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true; fi
-    # Preserve the miner's access to its config and log after re-owning.
     if [ -n "${MINER_USER:-}" ] && [ "$OS_TYPE" = Linux ]; then
         sudo chown "$MINER_USER:$MINER_USER" "$WORKER_ROOT/xmrig/build/config.json" "$WORKER_ROOT/xmrig.log" 2>/dev/null || true
     fi
