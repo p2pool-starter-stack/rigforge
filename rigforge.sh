@@ -2546,7 +2546,6 @@ _now_s() { date +%s.%N 2>/dev/null; }
 
 # --- Auto-tuning: config build & H/s measurement ---
 
-# A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
     jq -cn --argjson p "$1" --argjson y "$2" --argjson t "$3" --argjson g "$4" --argjson pr "$5" \
         --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
@@ -2555,7 +2554,6 @@ _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <
                  rx: $t } }' | _xmrig_unpinned
 }
 
-# Materialize a full candidate config by merging the knob snippet over the base config.
 _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     local out="$1"
     shift
@@ -2760,8 +2758,6 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
 
     local sd temp
     sd=$(_stddev "${samples[@]}") # sample spread, for the variance-aware acceptance gate (#63)
-    # #81: watts is the median UNDER-LOAD reading collected during the window above (no longer a post-bench
-    # idle sample), so hs_per_watt below ranks candidates by real load efficiency.
     temp=$(_read_temp)
     jq -cn --argjson p "$p" --argjson y "$y" --argjson t "$t" --argjson g "$g" --argjson pr "$pr" \
         --argjson hj "$hj" --argjson cq "$cq" --argjson wr "$wr" --argjson med "$med" --arg samples "${samples[*]}" \
@@ -2927,11 +2923,6 @@ _hillclimb() {
     HILL_BEST="$best"
 }
 
-# Exhaustive grid search (#6; opt-in via TUNE_SEARCH=grid). Measures every combination of the knobs'
-# candidate values and keeps the best — slower than the hill-climb but immune to local optima and knob
-# interactions, worth it for this small discrete space. Inactive knobs have a single candidate, so they
-# contribute one iteration each. Sets the G_* winner globals directly (tune()'s locals, via dynamic
-# scope), so it must be called DIRECTLY, not in a $(...) subshell.
 _gridsearch() {
     local vp vy vt vg vpr vhj vcq vwr hr
     while IFS= read -r vp; do
