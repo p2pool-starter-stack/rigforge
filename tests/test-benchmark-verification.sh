@@ -65,6 +65,16 @@ check() {
         printf '%s\n' "${OUT:-}" | tail -n 15
     fi
 }
+bashc() {
+    local f rc
+    f=$(mktemp "$D/drv.XXXXXX")
+    printf '%s\n' "$1" >"$f"
+    shift
+    bash "$f" "$@"
+    rc=$?
+    rm -f "$f"
+    return "$rc"
+}
 contains() { [[ "$OUT" == *"$1"* ]]; }
 file_mode() {
     case "$(uname -s)" in
@@ -74,12 +84,12 @@ file_mode() {
 }
 run_bench() {
     RC=0
-    OUT=$(bash -c '
+    OUT=$(bashc '
         source "$SCRIPT"
         parse_config() { WORKER_ROOT="$RF_TEST_ROOT"; }
         _reown_worker() { :; }
         bench "$@"
-    ' benchmark-test "$@" 2>&1) || RC=$?
+    ' "$@" 2>&1) || RC=$?
 }
 run_bench
 check test "$RC" = 0
@@ -92,7 +102,7 @@ check test "$(jq -r '.verdict' "$D/rigforge-bench.json" 2>/dev/null)" = verified
 check test "$(jq -r '.hash' "$D/rigforge-bench.json" 2>/dev/null)" = 898B6E0431C28A6B
 check test -n "$(jq -r '.seed // empty' "$D/rigforge-bench.json" 2>/dev/null)"
 check test "$(file_mode "$D/rigforge-bench.json")" = 644
-OUT=$(bash -c '
+OUT=$(bashc '
     source "$SCRIPT"
     WORKER_ROOT="$RF_TEST_ROOT"
     mktemp() { return 1; }
@@ -133,7 +143,7 @@ for STUB_MODE in tune_bad tune_mixed; do
     export STUB_MODE
     rm -f "$D/tune-overrides.json" "$D/mixed-count"
     RC=0
-    OUT=$(bash -c '
+    OUT=$(bashc '
         source "$SCRIPT"
         OS_TYPE=test
         parse_config() { WORKER_ROOT="$RF_TEST_ROOT"; }

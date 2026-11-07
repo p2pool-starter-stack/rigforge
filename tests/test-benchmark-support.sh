@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1090,SC2034
+# shellcheck disable=SC1090,SC2016,SC2034
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SCRIPT=${1:-$ROOT/rigforge.sh}
@@ -9,8 +9,19 @@ export SCRIPT RF_TEST_ROOT="$D"
 mkdir -p "$D/worker" "$D/extracted"
 printf '{}\n' >"$D/config.json"
 printf '%s\n' '{"seed":"00000000","hash":"898B6E0431C28A6B","verdict":"verified","id":"AbC123","extra":"excluded"}' >"$D/worker/rigforge-bench.json"
+bashc() {
+    local f rc
+    f=$(mktemp "$D/drv.XXXXXX")
+    printf '%s\n' "$1" >"$f"
+    shift
+    bash "$f" "$@"
+    rc=$?
+    rm -f "$f"
+    return "$rc"
+}
 bundle() {
-    bash -c '
+    bashc '
+        [ "${1:-}" != doctor ] || exit 0
         source "$SCRIPT"
         SCRIPT_DIR="$RF_TEST_ROOT" CONFIG_JSON="$RF_TEST_ROOT/config.json"
         SYSTEMD_DIR="$RF_TEST_ROOT/absent" OS_TYPE=Linux
@@ -21,7 +32,7 @@ bundle() {
         lscpu() { :; }
         free() { :; }
         support_bundle
-    ' /usr/bin/false >"$D/output" 2>&1
+    ' >"$D/output" 2>&1
     tar -xzf "$D"/rigforge-support-*.tar.gz -C "$D/extracted"
 }
 bundle
