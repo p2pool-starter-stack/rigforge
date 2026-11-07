@@ -1257,6 +1257,7 @@ install_service() {
             log "No rebuild — ensuring the service is running (no restart)."
             sudo systemctl start "$SERVICE_NAME.service"
         fi
+        [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
         SERVICE_INSTALLED=true
     else
         warn "Service installation is not supported on $OS_TYPE."
@@ -2158,6 +2159,7 @@ upgrade() {
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) was already built — regenerated the config and reinstalled the units."
     fi
     _upgrade_restart "$was_active"
+    [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
     _reown_worker
     [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade
@@ -4208,6 +4210,7 @@ apply() {
     fi
     local _wd_rc=0 _api_rc=0
     _apply_runtime preserve-run-state
+    [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || _wd_rc=1

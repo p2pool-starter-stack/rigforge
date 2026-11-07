@@ -52,7 +52,8 @@ Switching an already installed dedicated unit requires stopping the miner and ad
 `"existing_host_tuning": "preserve"` inside `shared_host`. This is an acknowledgement that RigForge
 will preserve inherited host tuning; it does not inspect ownership, undo it, or reclaim it. If the
 owned profile is later disabled, `apply` removes the shared budget and restores RigForge's dedicated
-configuration. Shared selection or the retained history marker makes uninstall preserve global
+configuration. The owned `rigforge.slice` is stopped and removed once the miner runs outside it; while a
+running miner is still inside, removal waits for the restart that moves it. Shared selection or the retained history marker makes uninstall preserve global
 tuning, even after disabling the profile, because ownership of inherited settings cannot be proven.
 
 Apply the profile with `sudo ./rigforge.sh apply` after editing `config.json`. Repeated setup, apply,

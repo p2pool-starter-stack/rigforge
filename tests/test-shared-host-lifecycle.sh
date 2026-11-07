@@ -191,8 +191,20 @@ printf 'external slice\n' >"$SYSTEMD_DIR/rigforge.slice"
 _shared_host_remove
 [ -f "$SYSTEMD_DIR/rigforge.slice" ] || fail 'unowned slice was removed'
 printf 'Description=RigForge shared-host resource budget\n' >"$SYSTEMD_DIR/rigforge.slice"
+MINER_GROUP=/rigforge.slice/xmrig.service
+systemctl() {
+    case "$*" in
+    "show $SERVICE_NAME -p ControlGroup --value") printf '%s\n' "$MINER_GROUP" ;;
+    *) printf '%s\n' "$*" >>"$D/remove-calls" ;;
+    esac
+}
+_shared_host_remove
+[ -f "$SYSTEMD_DIR/rigforge.slice" ] || fail 'owned slice removed while the miner still ran in it'
+[ ! -e "$D/remove-calls" ] || fail 'slice stopped while the miner still ran in it'
+MINER_GROUP=/system.slice/xmrig.service
 _shared_host_remove
 [ ! -e "$SYSTEMD_DIR/rigforge.slice" ] || fail 'owned slice survived removal'
+[ "$(head -n1 "$D/remove-calls")" = 'stop rigforge.slice' ] || fail 'removed slice was left active'
 
 trace() { printf '%s\n' "$1" >>"$D/trace"; }
 assert_order() {
