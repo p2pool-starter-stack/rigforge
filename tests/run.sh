@@ -9550,6 +9550,8 @@ else
     [ -e "$ROOT/util/__pycache__" ] && pycache_post=present
     assert_eq "no util/__pycache__ left in the tracked tree (#418)" "$pycache_post" "absent"
 fi
+
+# ---------------------------------------------------------------------------
 echo ""
 SUITE_COMPLETE=1
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"

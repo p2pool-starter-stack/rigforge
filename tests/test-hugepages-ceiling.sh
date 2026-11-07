@@ -29,7 +29,7 @@ printf 'flags : aes avx2 pdpe1gb\n' >"$TMP/cpuinfo-1g"
 printf '0\n' >"$TMP/nr-1g-zero"
 printf '3\n' >"$TMP/nr-1g-three"
 
-run_case() { # <current> <headroom MB> <ceiling MB|unset> <cpuinfo> <1G pages>
+run_case() {
     printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$1" >"$TMP/grub"
     (
         export PATH="$TMP/bin:$PATH"
@@ -50,7 +50,7 @@ run_case() { # <current> <headroom MB> <ceiling MB|unset> <cpuinfo> <1G pages>
     )
 }
 
-runtime_need() { # <headroom MB> <1G pages>
+runtime_need() {
     PATH="$TMP/bin:$PATH" CPUINFO="$TMP/cpuinfo-2m" HUGEPAGES_1G_NR="$2" NODE_SYS="$TMP/node" \
         RX_THREADS="" THREADS_CAP="" RESERVE_EXTRA_MB="$1" "$ROOT/util/proposed-grub.sh" --runtime
 }

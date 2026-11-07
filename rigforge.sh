@@ -1534,12 +1534,7 @@ _grub_proposed() {
     fi
 }
 
-# Total HugePages a kernel cmdline reserves, in 2MB-equivalent pages (a 1G page = 512 × 2MB). Each
-# `hugepages=N` pairs with the preceding `hugepagesz=`, or `default_hugepagesz=` if none precedes it —
-# the kernel's own rule. Used by the #305 co-resident keep-existing guard to tell whether the LIVE
-# reservation already backs miner + headroom.
-_cmdline_reserved_2mb() { # <cmdline> [2M] -> reserved 2MB-equivalent pages, optionally excluding 1GB
-    # One awk statement (not a multi-line string): kcov credits it when a test exercises it.
+_cmdline_reserved_2mb() {
     awk -v size="${2:-}" '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") { if (size!="2M") t+=n*512 } else t+=n } } print t+0 }' <<<"$1"
 }
 
