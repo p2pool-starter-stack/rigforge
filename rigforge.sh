@@ -1966,7 +1966,7 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0 config_before="" config_after XMRIG_CONFIG_CHANGED=false
+    local _arg _api_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
@@ -1994,7 +1994,7 @@ main() {
     CURRENT_STEP="generating XMRig config"
     if [ -f config.json ]; then config_before=$(_sha256 config.json); fi
     generate_xmrig_config
-    config_after=$(_sha256 config.json)
+    if [ -f config.json ]; then config_after=$(_sha256 config.json); fi
     if [ "$config_before" != "$config_after" ]; then XMRIG_CONFIG_CHANGED=true; fi
     CURRENT_STEP="tuning the kernel"
     tune_kernel
