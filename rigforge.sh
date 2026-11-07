@@ -4848,15 +4848,6 @@ control_upgrade() {
     return 0
 }
 
-# Miner watchdog (#139): ONE health check per invocation — rigforge-watchdog.timer provides the
-# cadence. Two jobs systemd's Restart= can't do: restart a WEDGED miner (process alive, 0 H/s or
-# API dead — two consecutive strikes, so one restart-in-progress or dataset-init blip never
-# triggers it), and an opt-in thermal cutoff (stop above max_temp_c, start again 5°C below — the
-# hysteresis is fixed: big enough to outlast the post-restart heat-up on the rigs we run, small
-# enough not to strand the miner, and one less knob to typo). State lives in $WORKER_ROOT (which
-# _reown_worker already re-owns): a bare-integer strike counter and a thermal-hold marker file.
-# The health probe reuses _read_api_hashrate (ACCESS_TOKEN Bearer handled there, token never
-# logged) and _read_temp (THERMAL_ZONE/TUNE_TEMP_CMD overrides handled there).
 watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
@@ -4864,16 +4855,20 @@ watchdog() {
     parse_config
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
-    # Thermal hold first: WE stopped the miner, so the not-active check below must not short-circuit
-    # the recovery. Start again only once we're 5°C under the cutoff (or the cutoff was removed).
     if [ -f "$hold_f" ]; then
         if [ -z "$MAX_TEMP_C" ]; then
+            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
+                return 0
+            fi
             rm -f "$hold_f"
-            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
             log "watchdog: max_temp_c is no longer set — thermal hold lifted, miner started."
         elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
+            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
+                return 0
+            fi
             rm -f "$hold_f"
-            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
             log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, miner started."
         else
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
@@ -4888,7 +4883,10 @@ watchdog() {
     # Thermal cutoff (opt-in). An unreadable temp skips this — a missing sensor must not stop a
     # healthy miner.
     if [ -n "$MAX_TEMP_C" ] && [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t > m) }'; then
-        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        if ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+            warn "watchdog: failed to stop $SERVICE_NAME at ${t}°C — will retry while above max_temp_c=${MAX_TEMP_C}°C."
+            return 0
+        fi
         touch "$hold_f"
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0
