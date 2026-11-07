@@ -1143,8 +1143,6 @@ generate_xmrig_config() {
         --argjson donation "$DONATION" \
         --arg host "$HTTP_HOST" \
         '{
-            autosave: false,
-            watch: false,
             cpu: {
                 enabled: true,
                 "huge-pages": $huge_pages,
@@ -1178,7 +1176,7 @@ generate_xmrig_config() {
             },
             opencl: false,
             cuda: false
-        } + (if $log == "" then {} else {"log-file": $log} end)' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
+        } + (if $log == "" then {} else {"log-file": $log} end) + {autosave: false, watch: false}' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
 
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         _step=$(jq -s '.[0] * .[1]' "$_new" "$WORKER_ROOT/tune-overrides.json") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Applying $WORKER_ROOT/tune-overrides.json failed (fix or remove it)" || return 1
