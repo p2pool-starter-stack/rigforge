@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 #
-# Run the dependency-free suite under kcov to enforce the committed coverage floor.
-#
 # kcov is Linux + ptrace based, so this runs the suite inside a PINNED kcov Docker image (by digest,
 # matching how the e2e job pins its Ubuntu image). The suite needs jq, which the kcov image lacks, so
 # we mount a PINNED static jq from the upstream release (the same pin-by-sha256 approach used for the
@@ -48,7 +46,6 @@ if [ ! -x "$JQ_BIN" ]; then
 fi
 
 # --- Run the suite under kcov ------------------------------------------------
-# Instrument production shell files so test fixtures do not affect the floor.
 rm -rf "$OUT"
 mkdir -p "$OUT"
 echo "coverage: running tests/run.sh under kcov (this is slower than 'make test')..."

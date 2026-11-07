@@ -20,7 +20,6 @@ _config_apply_begin() {
 
 _config_apply_stamp() {
     local config_hash tune_hash stamp tmp
-    # shortcut: change-then-revert races need input snapshots if concurrent editing is supported.
     [ -f "$CONFIG_JSON" ] || return 0
     config_hash=$(_sha256 "$CONFIG_JSON" 2>/dev/null) || return 0
     tune_hash=$(_config_tune_hash 2>/dev/null) || return 0
