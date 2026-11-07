@@ -141,6 +141,22 @@ autotune() { printf 'bounded live trial\n' >"$D/live-trial"; }
 tune --now >/dev/null
 [ -f "$D/live-trial" ] || fail 'bounded quick tune did not use autotune'
 
+reown_case() {
+    rm -f "$D/reown-calls"
+    (
+        id() { printf '0\n'; }
+        chown() { printf 'chown %s\n' "$*" >>"$D/reown-calls"; }
+        touch() { printf 'touch %s\n' "$*" >>"$D/reown-calls"; }
+        OS_TYPE=Linux MINER_USER='' RIGFORGE_APPLIANCE=0 REAL_USER=operator SHARED_HOST="$1"
+        _reown_worker
+    )
+}
+reown_case true
+grep -qFx "touch $WORKER_ROOT/xmrig.log" "$D/reown-calls" || fail 'shared root miner log not created before re-own'
+grep -qFx "chown root:root $WORKER_ROOT/xmrig/build/config.json $WORKER_ROOT/xmrig.log" "$D/reown-calls" || fail 'shared root miner cannot write its log without DAC capabilities'
+reown_case false
+! grep -q 'root:root' "$D/reown-calls" || fail 'dedicated root miner ownership changed'
+
 printf 'MemTotal: 16777216 kB\n' >"$D/meminfo16"
 [ "$(SHARED_HOST=false MEMINFO="$D/meminfo16" compute_build_jobs 8)" = 8 ] || fail 'dedicated build parallelism changed'
 [ "$(SHARED_HOST=true SHARED_MEMORY_MAX_MB=3072 MEMINFO="$D/meminfo16" compute_build_jobs 8)" = 1 ] || fail 'shared build sized from host RAM'

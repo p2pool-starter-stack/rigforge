@@ -11,6 +11,12 @@ _shared_host_state() {
     done
 }
 
+_shared_host_diagnose() {
+    systemctl show xmrig -p ActiveState -p SubState -p Result -p ExecMainStatus -p User -p ControlGroup 2>&1 | sed 's/^/shared-host: /'
+    stat -c 'shared-host: log owner %U:%G mode %a size %s' "$WLOG" 2>&1 || true
+    journalctl -u xmrig -n 15 --no-pager -o cat 2>/dev/null | sed 's/^/shared-host: journal: /' || true
+}
+
 _shared_host_wait_share() {
     local waited=0
     while [ "$waited" -lt "${E2E_SHARED_SHARE_TIMEOUT:-600}" ] && ! grep -q 'accepted (' "$WLOG" 2>/dev/null; do
@@ -33,9 +39,11 @@ phase_shared_host() {
     [ "$(((total - ${huge:-0}) / 1024 - 1024))" -ge "$mem" ] || mem=3072
     "$RIGFORGE" stop >/dev/null 2>&1 || true
     if ! set_cfg ".shared_host = {cpu_quota_percent: 200, memory_max_mb: $mem, existing_host_tuning: \"preserve\"} | .threads //= 2 | .pools[0].url = \"$PITHEAD_URL\"" soft; then
+        [ "$marker_owned" = 0 ] || rm -rf "$worker/.rigforge-shared-host"
         bad "shared_host apply was refused on this rig (see set_cfg above)"
         return 0
     fi
+    [ "$marker_owned" = 0 ] || rm -rf "$worker/.rigforge-shared-host"
     : >"$WLOG" 2>/dev/null || true
     if "$RIGFORGE" start >/dev/null 2>&1; then ok "shared-host miner started through the budget guard"; else bad "shared-host miner did not start"; fi
     if [ "$(systemctl show xmrig -p Slice --value)" = rigforge.slice ]; then ok "miner unit is placed in rigforge.slice"; else bad "miner unit is outside rigforge.slice"; fi
@@ -55,11 +63,15 @@ phase_shared_host() {
         bad "generated XMRig config kept dedicated tuning"
     fi
     if "$RIGFORGE" status 2>&1 | grep -q 'effective CPU quota 200000/100000 us'; then ok "status reports the shared profile's effective limits"; else bad "status does not report the effective shared limits"; fi
-    if wait_for_job 120; then ok "shared-host miner received a stratum job"; else bad "no stratum job within 120s under shared_host"; fi
+    if wait_for_job 120; then ok "shared-host miner received a stratum job"; else
+        _shared_host_diagnose
+        bad "no stratum job within 120s under shared_host"
+    fi
     if _shared_host_wait_share; then
-        init=$(grep -oE 'dataset ready \([0-9]+ ms\)' "$WLOG" | tail -1)
+        init=$(grep -oE 'dataset ready \([0-9]+ ms\)' "$WLOG" | tail -1 || true)
         ok "share accepted under shared_host (${init:-dataset init time not logged})"
     else
+        _shared_host_diagnose
         bad "no accepted share within ${E2E_SHARED_SHARE_TIMEOUT:-600}s under shared_host"
     fi
     peak=$(cat "$cg/memory.peak" 2>/dev/null || echo unavailable)
@@ -68,8 +80,8 @@ phase_shared_host() {
     if [ "$during" = "$before" ]; then ok "unrelated host settings unchanged while shared"; else bad "host settings changed while shared: $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$during") | tr '\n' ' ')"; fi
     "$RIGFORGE" stop >/dev/null 2>&1 || true
     if cp "$SAVED_CFG" "$CFG" && "$RIGFORGE" apply >/dev/null 2>&1 && _restore_xmrig; then ok "dedicated configuration and run state restored"; else bad "dedicated restoration failed"; fi
-    [ "$marker_owned" = 0 ] || rm -rf "$worker/.rigforge-shared-host"
-    if [ -z "$(systemctl show rigforge.slice -p FragmentPath --value 2>/dev/null)" ] && [ "$(systemctl show xmrig -p Slice --value)" != rigforge.slice ]; then ok "owned slice removed after disabling the profile"; else bad "rigforge.slice survived disabling the profile"; fi
+    cg=$(systemctl show xmrig -p ControlGroup --value)
+    if [ "$(systemctl show rigforge.slice -p LoadState --value 2>/dev/null)" = not-found ] && [ "$(systemctl show xmrig -p Slice --value)" != rigforge.slice ] && [ "${cg#/rigforge.slice/}" = "$cg" ]; then ok "owned slice removed after disabling the profile"; else bad "rigforge.slice survived disabling the profile"; fi
     after=$(_shared_host_state)
     if [ "$after" = "$before" ]; then ok "unrelated host settings unchanged after restoration"; else bad "host settings changed after restoration: $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | tr '\n' ' ')"; fi
 }
