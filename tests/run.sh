@@ -754,6 +754,8 @@ assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/con
 assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
+if bash "$ROOT/tests/test-config-ownership.sh" "$SCRIPT"; then ok "config ownership regressions (#529)"; else bad "config ownership regressions (#529)" "regression failed"; fi
+if bash "$ROOT/tests/test-e2e-config-ownership.sh"; then ok "e2e config-ownership phase rows (#529)"; else bad "e2e config-ownership phase rows (#529)" "regression failed"; fi
 echo "== unit: DONATION validation (new) =="
 for d in 0 1 100; do
     c="$(mkconf "don$d" "{ \"DONATION\": $d, $POOL }")"
@@ -6651,7 +6653,7 @@ assert_contains "plan: GRUB skip arm (#797)" "$apdr_out" "skipping GRUB updates 
 assert_contains "plan: runtime-only msr arm (#797)" "$apdr_out" "modprobe msr at runtime only (appliance: no modules-load drop-in)"
 assert_contains "plan: runtime mounts, no fstab/limits writes (#797)" "$apdr_out" "appliance mode: mount hugetlbfs at runtime"
 assert_contains "plan: unit goes to /run with --runtime (#797)" "$apdr_out" "/run/systemd/system/xmrig.service"
-assert_contains "plan: enable --runtime wording (#797)" "$apdr_out" "enable --runtime --now"
+assert_contains "plan: runtime enable and conditional restart (#797/#529)" "$apdr_out" "enable --runtime; restart if binary/config changed, otherwise start (deferred if reboot required)"
 assert_contains "plan: grow-only preview still renders (#797/#328)" "$apdr_out" "grow the pool so 200 2MB HugePages are available"
 for mut in apt-get modprobe tee mount sysctl update-grub; do
     assert_absent "appliance dry-run never invokes $mut (#797/#146)" "$(cat "$APDR/calls.log" 2>/dev/null)" "[$mut]"

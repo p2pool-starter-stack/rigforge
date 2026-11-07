@@ -91,14 +91,16 @@ key for it. Every run (re-runs included) rebuilds the config from four sources:
 2. Detected hardware: the per-CPU `cpu`/`randomx` tuning (thread count, `asm`, MSR, NUMA,
    HugePages). RigForge uses XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
-3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave`,
+3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave: false`, `watch: false`,
    `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
 4. Tuned overrides *(if present)*: if you've run [`tune`](operations.md#tuning), its winning
    knobs in `tune-overrides.json` are merged on top as the final step, so tuning wins for just the keys
    it sets and your `config.json` is never edited.
 
-Because the config is rebuilt from these sources every time, editing the generated `config.json` by
-hand has no effect. Change your repo-root `config.json` (or `tune`) and re-run instead.
+RigForge owns the generated config: XMRig neither saves its auto-detected settings back into it nor
+hot-reloads hand edits. Edit your repo-root `config.json` (or use `tune`) and run `apply` to regenerate
+the file and restart the miner. A direct restart can load a hand edit, but the next regeneration
+overwrites it. On Linux, XMRig resolves the automatic thread profile again at each start.
 
 > Don't put a wallet address in the worker `user` when using Pithead. The stack handles payouts
 > centrally; the pool `user` is just a rig label (it defaults to the hostname so you can tell workers
@@ -207,10 +209,12 @@ regenerates the config and you restart the miner yourself; see
 [Operations › Running on macOS](operations.md#running-on-macos).)
 
 You can also re-run full setup (`sudo ./rigforge.sh`), but that re-provisions the whole worker
-(dependencies, build, kernel tuning, service). To avoid interrupting a running miner, a setup re-run on
-an already-built worker regenerates the config without restarting, so the new config only takes effect
-on the next restart. To apply an edit, use `apply`; it does the restart for you. Both are idempotent and
-skip the recompile when the pinned XMRig is already built.
+(dependencies, build, kernel tuning, service). On Linux, setup restarts the service when the binary
+was rebuilt or the generated config changed, including on an already-built appliance worker.
+An unchanged setup re-run ensures the service is started without restarting a running miner.
+If kernel tuning requires a reboot, setup only enables the service for the next boot.
+Use `apply` for config edits without re-provisioning. Both commands skip the recompile when the
+pinned XMRig is already built.
 
 `DONATION` defaults to zero when omitted. Set it to a nonzero percentage to support the XMRig
 developers. Upgrade an existing build once to install the compiled minimum of zero; the build marker
