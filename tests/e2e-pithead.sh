@@ -245,6 +245,19 @@ phase_worker_api() {
         bad "custom token: matching Bearer failed"
     fi
     set_cfg '.ACCESS_TOKEN = ""' # back to the open default before the next phase
+    local feed="" pool_before
+    pool_before=$(jq -c '.cpu."memory-pool"' "$GEN_CFG" 2>/dev/null)
+    set_cfg '.xmrig = {"cpu": {"memory-pool": false}} | .api = "enabled"'
+    jq -e '.cpu."memory-pool" == false' "$GEN_CFG" >/dev/null 2>&1 && ok "xmrig overlay merged and accepted by the real parser's dry-run validation" || bad "xmrig overlay did not reach the generated config"
+    for _ in $(seq 1 15); do
+        feed=$(api8081 http://127.0.0.1:8081/2/summary)
+        printf '%s' "$feed" | jq -e '.hashrate.total[0] > 0' >/dev/null 2>&1 && break
+        sleep 4
+    done
+    printf '%s' "$feed" | jq -e '.hashrate.total[0] > 0' >/dev/null 2>&1 && ok "worker mining after the overlay apply" || bad "worker not mining after the overlay apply"
+    printf '%s' "$feed" | jq -e '.rigforge.config.xmrig.cpu."memory-pool" == false' >/dev/null 2>&1 && ok "feed config carries the xmrig overlay" || bad "feed config lacks the xmrig overlay"
+    set_cfg 'del(.xmrig) | .api = "disabled"'
+    [ "$(jq -c '.cpu."memory-pool"' "$GEN_CFG" 2>/dev/null)" = "$pool_before" ] && ok "overlay removal restored the generated config" || bad "overlay removal left the generated config changed"
 }
 
 phase_api_impact() {
