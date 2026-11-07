@@ -314,6 +314,7 @@ bench() {
     case "$id" in *[![:alnum:]]*) error "Benchmark IDs contain only letters and numbers." ;; esac
     [ "${#id}" -le 128 ] || error "Benchmark ID is too long."
     parse_config
+    [ "${SHARED_HOST:-false}" != true ] || error "Offline benchmarks are unavailable in shared_host; use tune --now for a bounded live prefetch trial."
     bin="$WORKER_ROOT/xmrig/build/xmrig"
     cfg="$WORKER_ROOT/xmrig/build/config.json"
     [ -x "$bin" ] || error "No built worker at $bin. Run 'setup' first."

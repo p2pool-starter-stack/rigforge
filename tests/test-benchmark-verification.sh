@@ -182,5 +182,6 @@ for bad in 'bad-size' '-x'; do
 done
 check test "$(bashc 'source "$SCRIPT"; _xmrig_bench /bin/true 1M "" verify "bad id!"' 2>&1 | grep -c rigforge-bench-config-error)" = 1
 check test "$(bashc 'source "$SCRIPT"; _xmrig_bench /bin/true 1M "" nonsense' 2>&1 | grep -c rigforge-bench-config-error)" = 1
+check test "$(bashc 'source "$SCRIPT"; parse_config() { WORKER_ROOT="$RF_TEST_ROOT"; SHARED_HOST=true; }; bench' 2>&1 | grep -c 'unavailable in shared_host')" = 1
 printf 'benchmark verification: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

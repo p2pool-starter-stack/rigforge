@@ -331,6 +331,14 @@ wait "$sentinel_pid" 2>/dev/null || true
 grep -q '^start xmrig$' "$CALLS" || fail 'signal cleanup did not restore miner'
 printf 'PASS: signal cleanup stops only the owned process and restores state\n'
 
+make_case shared-host 1
+make_xmrig
+parse_config() { WORKER_ROOT="$CASE_DIR/worker" SHARED_HOST=true; }
+if (stress --minutes 1 >"$CASE_DIR/output" 2>&1); then fail 'stress ran on a shared host'; fi
+grep -q 'unavailable in shared_host' "$CASE_DIR/output" || fail 'shared-host refusal was not reported'
+if [ -s "$CALLS" ]; then fail 'shared-host stress touched services'; fi
+printf 'PASS: stress refuses shared hosts before touching services\n'
+
 make_case argument-errors 1
 for bad in '--bogus' '--minutes'; do
     if (stress "$bad" >/dev/null 2>&1); then fail "stress accepted $bad"; fi

@@ -82,6 +82,7 @@ stress() {
     minutes=$((10#$minutes))
 
     parse_config
+    [ "${SHARED_HOST:-false}" != true ] || error "stress is unavailable in shared_host: it stops the miner and loads every core."
     bin="$WORKER_ROOT/xmrig/build/xmrig"
     cfg="$WORKER_ROOT/xmrig/build/config.json"
     [ -x "$bin" ] || error "No built worker at $bin. Run 'setup' first."
