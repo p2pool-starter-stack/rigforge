@@ -113,7 +113,9 @@ def reject_replacement(base, receiver_pid):
         "#!/usr/bin/env bash\n"
         "case \"$1\" in\n"
         "restart) exit 1 ;;\n"
-        "stop) kill -TERM \"$RECEIVER_PID\" ;;\n"
+        "stop) [ -e \"$STOP_MARK\" ] || { : >\"$STOP_MARK\"; exit 1; } ;;\n"
+        "kill) kill -KILL \"$RECEIVER_PID\" ;;\n"
+        "show) echo loaded ;;\n"
         "esac\n"
     )
     for tool in bindir.iterdir():
@@ -132,7 +134,7 @@ API_ALLOW_FROM=local
 RIGFORGE_APPLIANCE=0
 install_control >/dev/null 2>&1
 '''
-    env = dict(os.environ, RECEIVER_PID=str(receiver_pid), PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    env = dict(os.environ, RECEIVER_PID=str(receiver_pid), STOP_MARK=str(base / "stop-rejected"), PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}")
     return subprocess.run(
         ["bash", "-c", script, "_", str(ROOT / "rigforge.sh"), str(units), str(ROOT)], env=env
     ).returncode

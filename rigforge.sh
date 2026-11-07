@@ -1444,7 +1444,7 @@ _sister_api_failed() { ! warn "The configured sister API could NOT be started; c
 _control_failed() { warn "The writable control receiver could NOT be reconciled; check journalctl -u rigforge-control.service, then re-run 'sudo $0 $1'."; }
 _stop_control_receiver() {
     sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
-    if [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" = not-found ] && [ "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" = inactive ]; then return 0; fi
+    case "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null):$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" in not-found:inactive) return 0 ;; :) [ -f "$SYSTEMD_DIR/rigforge-control.service" ] || return 0 ;; esac
     sudo systemctl kill --kill-who=all --signal=KILL rigforge-control.service 2>/dev/null || true
     sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
     ! warn "Could not stop the control receiver; revocation is NOT confirmed. Stop rigforge-control.service before retrying."
@@ -1481,7 +1481,7 @@ install_control() (
         sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null || return 1
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
     elif [ -f "$upath" ] || [ -f "$usvc" ]; then
-        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null && sudo rm -f "$usvc" "$upath" || return 1
+        { [ ! -f "$upath" ] || sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null; } && sudo rm -f "$usvc" "$upath" || return 1
     fi
     install_api_firewall || return 1
     sudo systemctl daemon-reload || return 1
@@ -4209,7 +4209,7 @@ apply() {
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || _wd_rc=1
         install_api || _api_rc=1
-        install_control || _control_rc=1
+        install_control >/dev/null || _control_rc=1
         install_api_firewall || true
         _autotune_apply_notice
     fi

@@ -62,10 +62,11 @@ done
 
 stop_helper_case() {
     local mode=$1 expected=$2 d="$T/stop-helper-$1" rc out
-    mkdir -p "$d"
+    mkdir -p "$d/units"
+    [ "$mode" != no-systemd-unit ] || : >"$d/units/rigforge-control.service"
     (
         source "$SCRIPT"
-        STOP_CALLS=0
+        STOP_CALLS=0 SYSTEMD_DIR="$d/units"
         sudo() { "$@"; }
         systemctl() {
             printf '%s\n' "$*" >>"$d/calls"
@@ -112,6 +113,8 @@ stop_helper_case() {
 stop_helper_case absent 0
 stop_helper_case active 0
 stop_helper_case stuck 1
+stop_helper_case no-systemd 0
+stop_helper_case no-systemd-unit 1
 
 recovery="$T/stop-recovery"
 mkdir -p "$recovery/bin" "$recovery/units"
@@ -194,6 +197,32 @@ EOF
 disabled_case absent-upgrade
 disabled_case fail
 
+stale="$T/stale-upgrade"
+mkdir -p "$stale/bin" "$stale/units"
+: >"$stale/units/rigforge-control-upgrade.service"
+cp "$recovery/bin/sudo" "$recovery/bin/envsubst" "$recovery/bin/python3" "$stale/bin/"
+cat >"$stale/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$CALL_LOG"
+if [ "$1" = disable ]; then
+    for unit in "$@"; do
+        case "$unit" in rigforge-*) [ -f "$UNIT_DIR/$unit" ] || exit 1 ;; esac
+    done
+fi
+exit 0
+EOF
+chmod +x "$stale/bin/systemctl"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux CONTROL_MODE=enabled CONTROL_UPGRADE=disabled
+    SYSTEMD_DIR="$stale/units" SCRIPT_DIR="$ROOT" REAL_USER=tester
+    CONTROL_BIND=local CONTROL_PORT=dynamic API_ALLOW_FROM=local RIGFORGE_APPLIANCE=0
+    CALL_LOG="$stale/calls" UNIT_DIR="$stale/units" PATH="$stale/bin:$PATH"
+    export CALL_LOG UNIT_DIR PATH
+    install_control >/dev/null 2>&1
+) || fail "a leftover upgrade service without its path unit failed the control reconcile"
+[ ! -e "$stale/units/rigforge-control-upgrade.service" ] || fail "the leftover upgrade service was not removed"
+
 caller_case() {
     local caller=$1 d="$T/caller-$1" rc
     mkdir -p "$d"
@@ -241,5 +270,6 @@ if command -v python3 >/dev/null 2>&1; then
     python3 "$ROOT/tests/control-revocation.py" "$ROOT" || exit $?
 else
     printf 'SKIP: python3 unavailable; live receiver write regression requires Python\n'
+    exit 0
 fi
 printf 'control revocation regression: PASS\n'
