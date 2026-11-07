@@ -38,6 +38,11 @@ phase_shared_host() {
     mem=4096
     [ "$(((total - ${huge:-0}) / 1024 - 1024))" -ge "$mem" ] || mem=3072
     "$RIGFORGE" stop >/dev/null 2>&1 || true
+    if [ -z "$(systemctl show rigforge.slice -p FragmentPath --value 2>/dev/null)" ] && [ "$(systemctl show rigforge.slice -p ActiveState --value 2>/dev/null)" = active ] &&
+        [ -z "$(cat /sys/fs/cgroup/rigforge.slice/cgroup.procs 2>/dev/null)" ] && [ -z "$(find /sys/fs/cgroup/rigforge.slice -mindepth 1 -type d 2>/dev/null)" ]; then
+        printf 'shared-host: stopping an empty rigforge.slice left without a unit file by an earlier run\n'
+        systemctl stop rigforge.slice
+    fi
     if ! set_cfg ".shared_host = {cpu_quota_percent: 200, memory_max_mb: $mem, existing_host_tuning: \"preserve\"} | .threads //= 2 | .pools[0].url = \"$PITHEAD_URL\"" soft; then
         [ "$marker_owned" = 0 ] || rm -rf "$worker/.rigforge-shared-host"
         bad "shared_host apply was refused on this rig (see set_cfg above)"
