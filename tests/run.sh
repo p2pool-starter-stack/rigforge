@@ -42,6 +42,8 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
+bash "$ROOT/tests/test-hugepages-ceiling.sh"
+assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
 
@@ -119,7 +121,7 @@ echo "${STUB_NPROC:-4}"
 EOF
     cat >"$bin/stat" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
+case "$*" in *"%u:%g:%a:%h"*) echo 0:0:600:1 ;; *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
 EOF
     cat >"$bin/hostname" <<'EOF'
 #!/usr/bin/env bash
@@ -203,11 +205,11 @@ EOF
 
 STUBS="$SANDBOX/stubs"
 make_stubs "$STUBS"
-RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing"
-mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING"
-export RIGFORGE_CONTROL_PROCESSING
-assert_rc "privileged consumers share a lock and refuse a planted processing symlink (#479)" "$(
-    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT"
+RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing" RIGFORGE_CONTROL_UPGRADE_STATE="$SANDBOX/upgrade-state"
+mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING" "$RIGFORGE_CONTROL_UPGRADE_STATE"
+export RIGFORGE_CONTROL_PROCESSING RIGFORGE_CONTROL_UPGRADE_STATE
+assert_rc "privileged consumers reject unsafe processing and throttle state (#479/#627)" "$(
+    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT" && bash "$ROOT/tests/test-upgrade-throttle-security.sh" "$SCRIPT" >/dev/null
     echo $?
 )" "0"
 assert_rc "appliance pool policy rejects edits and preserves tuning (#583)" "$(
@@ -2704,10 +2706,9 @@ assert_contains "max_temp_c 30 rejected (never restarts)" "$(parse_fails "$c")" 
 c="$(mkconf wd_thot "{ $POOL, \"max_temp_c\": \"hot\" }")"
 assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_temp_c must be"
 
-# #139: the watchdog() check itself. One check per run; restart only on the SECOND consecutive
-# unhealthy check (0 H/s and API-unreachable both count); thermal stop above max_temp_c with a
-# 5°C-hysteresis restart; unreadable temp or empty max_temp_c skips thermal entirely. systemctl
-# calls asserted via CALL_LOG; parse_config is shadowed so the test drives state directly.
+bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
+assert_rc "thermal watchdog command retries (#631)" "$?" 0
+
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
 run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]
@@ -8848,7 +8849,7 @@ assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "
 # The backup the rollback branch would need: a `null` here fails this as surely as a wrong path does.
 assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
-source "$ROOT/tests/test-control-upgrade.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
 
 # Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
 # its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain

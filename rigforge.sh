@@ -1520,14 +1520,11 @@ _grub_proposed() {
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
 
-    # Co-resident keep-existing guard (#305): when headroom is requested and the LIVE reservation already
-    # backs miner + headroom, leave GRUB untouched (MERGED := CURRENT) rather than shrinking it or
-    # switching page schemes — no reboot. The co-location contract (pithead#593): on a box whose ambient
-    # reservation already covers stack + miner, RigForge changes nothing; the MSR boost, which does need
-    # a reboot, stays a separate opt-in. Done here (not in tune_kernel) so `setup --dry-run` previews the
-    # same no-reboot outcome. Scoped to co-resident mode (headroom > 0) so a normal host's sizing, MSR
-    # enablement, and reboot behaviour are unchanged.
     if [ "${HUGEPAGES_RESERVE_EXTRA_MB:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "${HUGEPAGES_POOL_CEILING_MB:-0}" -gt 0 ] &&
+            [ "$(_cmdline_reserved_2mb "$CURRENT" 2M)" -gt "$((HUGEPAGES_POOL_CEILING_MB / 2))" ]; then
+            return 0
+        fi
         local _need _have
         _need=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
         _have=$(_cmdline_reserved_2mb "$CURRENT")
@@ -1537,13 +1534,8 @@ _grub_proposed() {
     fi
 }
 
-# Total HugePages a kernel cmdline reserves, in 2MB-equivalent pages (a 1G page = 512 × 2MB). Each
-# `hugepages=N` pairs with the preceding `hugepagesz=`, or `default_hugepagesz=` if none precedes it —
-# the kernel's own rule. Used by the #305 co-resident keep-existing guard to tell whether the LIVE
-# reservation already backs miner + headroom.
-_cmdline_reserved_2mb() { # <cmdline> -> reserved 2MB-equivalent pages
-    # One awk statement (not a multi-line string): kcov credits it when a test exercises it.
-    awk '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") t+=n*512; else t+=n } } print t+0 }' <<<"$1"
+_cmdline_reserved_2mb() {
+    awk -v size="${2:-}" '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") { if (size!="2M") t+=n*512 } else t+=n } } print t+0 }' <<<"$1"
 }
 
 # 2MB pages the running miner already holds (kB -> pages), 0 when stopped: pages it holds now are
@@ -4691,33 +4683,31 @@ control_apply() {
     return 0
 }
 
-_control_upgrade_throttle_ok() { # <state-dir>
-    local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
-    now=$(date +%s)
-    mkdir -p "$dir" 2>/dev/null || true
-    exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
-        warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
-        return 2
-    }
-    flock 9 2>/dev/null || {
-        warn "control-upgrade: couldn't lock the throttle state under $dir — refusing the upgrade (fail-closed)."
-        exec 9>&-
-        return 2
-    }
-    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
-    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+_control_upgrade_throttle_ok() (
+    local dir="$1" lock="$1/.upgrade-throttle.lock" stamp="$1/upgrade-last" now tmp min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
+    [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2
+    if [ -e "$lock" ] || [ -L "$lock" ]; then
+        [ ! -L "$lock" ] && [ -f "$lock" ] && [ "$(stat -c '%u:%g:%a:%h' "$lock" 2>/dev/null)" = "0:0:600:1" ] || return 2
+    fi
+    umask 077
+    exec 9>>"$lock" 2>/dev/null || return 2
+    flock -x 9 2>/dev/null || return 2
+    if [ -e "$stamp" ] || [ -L "$stamp" ]; then
+        [ ! -L "$stamp" ] && [ -f "$stamp" ] && [ "$(stat -c '%u:%g:%a:%h' "$stamp" 2>/dev/null)" = "0:0:600:1" ] || return 2
+        last=$(cat "$stamp" 2>/dev/null) || return 2
+    fi
+    case "$last" in '' | *[!0-9]*) return 2 ;; esac
+    now=$(date +%s) || return 2
     if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
-        exec 9>&-
         return 1
     fi
-    printf '%s\n' "$now" >"$stamp" 2>/dev/null || {
-        warn "control-upgrade: couldn't record the attempt under $dir — refusing the upgrade (fail-closed)."
-        exec 9>&-
+    tmp=$(mktemp "$dir/.upgrade-last.XXXXXX") || return 2
+    if ! printf '%s\n' "$now" >"$tmp" || ! mv -f "$tmp" "$stamp"; then
+        rm -f "$tmp"
         return 2
-    }
-    exec 9>&-
+    fi
     return 0
-}
+)
 
 # The fetch + reachability + checkout + rebuild half of control-upgrade, split out so the orchestration
 # is unit-testable with this stubbed (like control-apply's _control_do_apply). Returns 0 on a successful
@@ -4810,10 +4800,10 @@ control_upgrade() {
     fi
     # D6 throttle: bound how often a rig fetches/rebuilds. rc 2 = throttle state unavailable — a
     # fail-closed refusal (#321) that must read as a broken rig, not as "throttled — retry later".
-    local thr_rc=0
-    _control_upgrade_throttle_ok "$state" || thr_rc=$?
+    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
+    _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
-        _control_status "$status" failed "$cid" version "throttle state unavailable under $state — refused (fail-closed)" ""
+        _control_status "$status" failed "$cid" version "throttle state unavailable under $throttle — refused (fail-closed)" ""
         warn "control-upgrade: throttle state unavailable — refused."
         return 0
     elif [ "$thr_rc" -ne 0 ]; then
@@ -4848,15 +4838,6 @@ control_upgrade() {
     return 0
 }
 
-# Miner watchdog (#139): ONE health check per invocation — rigforge-watchdog.timer provides the
-# cadence. Two jobs systemd's Restart= can't do: restart a WEDGED miner (process alive, 0 H/s or
-# API dead — two consecutive strikes, so one restart-in-progress or dataset-init blip never
-# triggers it), and an opt-in thermal cutoff (stop above max_temp_c, start again 5°C below — the
-# hysteresis is fixed: big enough to outlast the post-restart heat-up on the rigs we run, small
-# enough not to strand the miner, and one less knob to typo). State lives in $WORKER_ROOT (which
-# _reown_worker already re-owns): a bare-integer strike counter and a thermal-hold marker file.
-# The health probe reuses _read_api_hashrate (ACCESS_TOKEN Bearer handled there, token never
-# logged) and _read_temp (THERMAL_ZONE/TUNE_TEMP_CMD overrides handled there).
 watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
@@ -4864,16 +4845,20 @@ watchdog() {
     parse_config
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
-    # Thermal hold first: WE stopped the miner, so the not-active check below must not short-circuit
-    # the recovery. Start again only once we're 5°C under the cutoff (or the cutoff was removed).
     if [ -f "$hold_f" ]; then
         if [ -z "$MAX_TEMP_C" ]; then
+            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
+                return 0
+            fi
             rm -f "$hold_f"
-            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
             log "watchdog: max_temp_c is no longer set — thermal hold lifted, miner started."
         elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
+            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
+                return 0
+            fi
             rm -f "$hold_f"
-            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
             log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, miner started."
         else
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
@@ -4888,7 +4873,10 @@ watchdog() {
     # Thermal cutoff (opt-in). An unreadable temp skips this — a missing sensor must not stop a
     # healthy miner.
     if [ -n "$MAX_TEMP_C" ] && [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t > m) }'; then
-        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        if ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+            warn "watchdog: failed to stop $SERVICE_NAME at ${t}°C — will retry while above max_temp_c=${MAX_TEMP_C}°C."
+            return 0
+        fi
         touch "$hold_f"
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0
