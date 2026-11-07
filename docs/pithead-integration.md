@@ -80,9 +80,9 @@ pithead#235):
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
   as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
-  `watchdog` (armed state, thermal-hold, `max_temp_c`), `config` (the effective **writable**
-  config — exactly the control-path allowlist, pool secrets masked to `{"__secret__": true}`; see
-  the prefill note in §3), and
+  `watchdog` (armed state, thermal-hold, `max_temp_c`), `config` (the effective config: the
+  control-path allowlist plus an optional `xmrig` object when that local overlay is non-empty, with
+  pool secrets masked to `{"__secret__": true}`; see the prefill note in §3), and
   `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a keyed digest of the
   writable config (a persistent 0600 secret in `.rigforge-revision-key`, created on first use and never
   served by the API), so a poller can detect a change made directly on the rig without being able to
@@ -297,10 +297,11 @@ request — this is what closed a real rig's first no-arg `/status` after enabli
 `config_meta.revision` on the read feed to confirm the effective config actually moved.
 
 **Prefill from a live read (`rigforge.config`).** The enriched feed exposes the rig's current
-writable config as `rigforge.config` on `:8081/1/summary` (= `/2/summary`) — exactly the keys
-`/apply` accepts (`pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`,
-`max_temp_c`), read the same way RigForge parses them (canonical strings, e.g. `perf` →
-`performance`). Worker Inspect can prefill its editor from this live read instead of its own
+config as `rigforge.config` on the sister API summary endpoints. It includes the keys `/apply`
+accepts (`pools`, `DONATION`, `autotune`, `watchdog`, `watchdog_interval_min`, `max_temp_c`), read the
+same way RigForge parses them (canonical strings, e.g. `perf` → `performance`), plus `xmrig` when
+the local overlay is non-empty. That `xmrig` value is read-only context: the control path still
+refuses writes to it. Worker Inspect can prefill its editor from this live read instead of its own
 last-applied record, and it's served even when the miner is down (it comes from `config.json`, not
 XMRig). Pool secrets are masked: `pools[].pass` and any `tls-fingerprint` are served as
 `{"__secret__": true}` when set and omitted when not — the value itself never leaves the rig. Send

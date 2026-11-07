@@ -54,7 +54,7 @@ not read by `parse_config` today, so it isn't in the table below.)
 | Key | Default | What it does |
 |---|---|---|
 | `pools` | *(required)* | XMRig's native pools array — the pool(s) to mine to. Each entry needs a `url` (`host:port`); every other field falls back to a Pithead default. A pool's `user` is the rig's dashboard label (defaults to the hostname). List multiple entries for failover. See [Pools](#pools-full-control). |
-| — | — | **Unknown keys warn and are ignored** (with a did-you-mean for near-misses) — a typo'd key, especially `ACCESS_TOKEN`, must never silently not apply. Keys starting with `_` are comments. |
+| — | — | **Unknown RigForge keys warn and are ignored** (with a did-you-mean for near-misses) — a typo'd key, especially `ACCESS_TOKEN`, must never silently not apply. Keys inside `xmrig` are passed to XMRig; an undocumented name warns but is not refused. Keys starting with `_` are comments. |
 | `api` | `"disabled"` | `"enabled"` serves the sister API: a second **read-only** port with XMRig's `/1/summary`+`/2/summary` passed through verbatim plus a namespaced `rigforge` object (tune state, RAPL watts, firmware/health probes, pinned versions), and `/health` + `/tune` endpoints. One tiny persistent stdlib server; a systemd timer refreshes its data every 15 s, so requests never touch the miner (see [operations › sister API](operations.md)). Gated by `ACCESS_TOKEN` or any named `ACCESS_TOKENS` entry; Linux-only. `control: "enabled"` implies this (control is unobservable without the read feed) — but `api` is not itself in `control`'s writable key set, so a Pithead stack can never turn it on remotely; it only ever comes on from local config. |
 | `api_port` | `8081` | Sister API port (8080 is rejected — that's XMRig's own API). |
 | `api_bind` | `"0.0.0.0"` | Sister API listen address. |
@@ -74,15 +74,16 @@ not read by `parse_config` today, so it isn't in the table below.)
 | `hugepages_reserve_extra_mb` | `0` | MB of HugePages to leave for the **rest of the box** when RigForge sizes its reservation — for co-locating a miner on a busy host (e.g. a Pithead stack, whose 2MB pages come from the same kernel pool). RigForge stays the sole writer of the reservation; this key just declares how much of it isn't the miner's. Added to both the boot reservation and the runtime pool. When the box's existing reservation already covers stack + miner, RigForge changes nothing and needs no reboot. |
 | `hugepages_pool_ceiling_mb` | `0` *(no ceiling)* | A **hard cap**, in MB, on the 2MB HugePages pool RigForge will reserve — the opposite direction from `hugepages_reserve_extra_mb`, which *adds* to the computed requirement rather than bounding it. Set it on a RAM-constrained co-resident box: the runtime `vm.nr_hugepages` write is never grown past the ceiling, and neither is the `hugepages=` RigForge merges into the GRUB cmdline, so the pool does not come back up over the ceiling after a reboot (the grow-only runtime write could never bring it down again). An odd MB value floors to the 2MB page below (`5121` → 5120 MB effective) — a cap rounds toward less memory, never more. The **1GB** dataset reservation is a separate pool this key does not bound, so a ceiling below a box's 1GB reservation still leaves it holding more hugepage memory than the ceiling names. |
 | `threads` | `""` *(auto)* | A **ceiling** on the RandomX thread count — `min(auto-detected, threads)`, never a raise. A co-located miner sets it (e.g. `nproc-2`) to leave the stack its cores. Both the generated `cpu.rx` and the HugePages sizing honour it, so the reservation matches the threads actually run. |
+| `xmrig` | `{}` | Optional XMRig config overlay for keys RigForge does not model. It must be an object and is deep-merged after tuned overrides but before the `threads` cap. The root keys `pools`, `http`, `donate-level`, `donate-over-proxy`, `opencl`, and `cuda` are protected and refused even when their value is `null`, `false`, or empty. See [XMRig's config reference](https://xmrig.com/docs/miner/config). |
 | `add_to_path` | `false` | When `true`, setup installs a `rigforge` command on your PATH (a symlink in `/usr/local/bin`) so you can run `sudo rigforge <cmd>` from any directory. Off by default. `uninstall` removes it. |
 
 ---
 
 ## How the generated XMRig config is built
 
-You don't write XMRig's config. RigForge generates it in-script and writes it into the worker root as
-the live `config.json` the service runs from. There's no template file to keep in sync and no config
-key for it. Every run (re-runs included) rebuilds the config from four sources:
+RigForge generates XMRig's config in-script and writes it into the worker root as the live
+`config.json` the service runs from. There's no template file to keep in sync. Every run (re-runs
+included) rebuilds the config from five sources:
 
 1. Your `config.json`: the `pools` array (with `user`/`pass`/`keepalive`/`tls` and failover
    defaults filled in), the `donate-level`, and the `http` API block (bound to the LAN, read-only,
@@ -94,11 +95,31 @@ key for it. Every run (re-runs included) rebuilds the config from four sources:
 3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave`,
    `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
 4. Tuned overrides *(if present)*: if you've run [`tune`](operations.md#tuning), its winning
-   knobs in `tune-overrides.json` are merged on top as the final step, so tuning wins for just the keys
-   it sets and your `config.json` is never edited.
+   knobs in `tune-overrides.json` are merged over the generated values.
+5. Your `xmrig` overlay *(if non-empty)*: its nested objects are deep-merged over the generated and
+   tuned values. The `threads` cap is then applied last, so it remains a hard ceiling.
+
+The effective order is **generated < tuned overrides < `xmrig` overlay < `threads` cap**. A knob set
+in `xmrig` is operator-owned: `tune` leaves it out of the trial grid and seeds, scheduled autotune
+does not change it, and `tune --history` identifies the excluded key. `doctor` reports the overlay's
+dotted key names so an operator can see what is pinned.
+
+The overlay is an escape hatch to XMRig's own parser, not a second strict XMRig schema. RigForge warns
+with the names of keys absent from XMRig's published config reference, but still lets XMRig decide
+whether they are valid. The protected root keys are the exception: `pools`, `http`, `donate-level`,
+`donate-over-proxy`, `opencl`, and `cuda` are refused because RigForge owns their safety and product
+semantics.
+
+`apply` and `apply --dry-run` require the built XMRig executable and validate a staged copy with
+XMRig's `--dry-run` parser before replacing the live config. A parser failure prints XMRig's message
+and leaves the live config and service untouched; preview mode also leaves them untouched. The
+validation copy disables background, log writers, and the CPU memory pool so preview does not write
+logs or reserve HugePages. At least one pool must be enabled: XMRig otherwise falls back to another
+config instead of validating the candidate.
 
 Because the config is rebuilt from these sources every time, editing the generated `config.json` by
-hand has no effect. Change your repo-root `config.json` (or `tune`) and re-run instead.
+hand has no effect. Change your repo-root `config.json` (including its `xmrig` object) or run `tune`,
+then re-run instead.
 
 > Don't put a wallet address in the worker `user` when using Pithead. The stack handles payouts
 > centrally; the pool `user` is just a rig label (it defaults to the hostname so you can tell workers

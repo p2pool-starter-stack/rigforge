@@ -65,6 +65,8 @@ _script_dir() {
 # Base for bundled assets and runtime state. RIGFORGE_HOME lets tests sandbox this real script so
 # black-box runs remain isolated while coverage still credits the production file (#68).
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
+# shellcheck source=util/xmrig-overlay.sh
+source "$(_script_dir)/util/xmrig-overlay.sh"
 # Operator for root-written files; timer units bake it into RIGFORGE_OPERATOR when SUDO_USER is absent.
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
@@ -723,6 +725,7 @@ parse_config() {
         [[ "$MINER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || error "miner_user '$MINER_USER' is not a valid system username (lowercase, digits, _ -; max 32 chars)."
     fi
 
+    _parse_xmrig_overlay
     _warn_unknown_config_keys
 }
 
@@ -733,7 +736,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads"
+    local known="xmrig pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -1033,11 +1036,7 @@ generate_xmrig_config() {
         CPU_MODEL=$(lscpu | grep -E '^Model name:' | cut -d':' -f2 | xargs)
     fi
     LOG_FILE_PATH=""
-    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
-        [ "${1:-}" = stage ] || sudo rm -f "$WORKER_ROOT/xmrig.log"
-    else
-        LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
-    fi
+    if [ "$RIGFORGE_APPLIANCE" != 1 ]; then LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"; fi
 
     # Default optimization profile.
     #
@@ -1184,13 +1183,17 @@ generate_xmrig_config() {
         log "Applied tuned overrides from tune-overrides.json."
     fi
 
-    if [ -n "${THREADS_CAP:-}" ]; then
-        _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
-    fi
+    _merge_xmrig_overlay "$_new" || _config_render_fail "$_new" "Merging the XMRig overlay failed" || return 1
+    _cap_xmrig_threads "$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
 
     _config_install "$_new" "${1:-}" || return 1
 
-    if [ "$OS_TYPE" == "Linux" ] && [ "${1:-}" != stage ]; then
+    [ "${1:-}" = config-only ] || [ "${1:-}" = stage ] || _xmrig_log_policy
+}
+
+_xmrig_log_policy() {
+    if [ "$RIGFORGE_APPLIANCE" = 1 ]; then sudo rm -f "$WORKER_ROOT/xmrig.log"; fi
+    if [ "$OS_TYPE" == "Linux" ]; then
         if [ "$RIGFORGE_APPLIANCE" = 1 ]; then
             log "Appliance mode: skipping the logrotate policy (image-owned logging)."
             return
@@ -2543,20 +2546,20 @@ _now_s() { date +%s.%N 2>/dev/null; }
 
 # --- Auto-tuning: config build & H/s measurement ---
 
-# A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
-    jq -cn --argjson p "$1" --argjson y "$2" --arg t "$3" --argjson g "$4" --argjson pr "$5" \
+    jq -cn --argjson p "$1" --argjson y "$2" --argjson t "$3" --argjson g "$4" --argjson pr "$5" \
         --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
         { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq, wrmsr: $wr },
           cpu: { yield: $y, priority: $pr, "huge-pages-jit": $hj,
-                 rx: (if $t == "-1" then -1 else ($t|tonumber) end) } }'
+                 rx: $t } }' | _xmrig_unpinned
 }
 
-# Materialize a full candidate config by merging the knob snippet over the base config.
 _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     local out="$1"
     shift
-    _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out"
+    _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out" || return 1
+    _merge_xmrig_overlay "$out" || return 1
+    _cap_xmrig_threads "$out"
 }
 
 # Run `xmrig --bench=<size>` headlessly and echo its full output. XMRig's `--bench` prints the result and
@@ -2755,13 +2758,11 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
 
     local sd temp
     sd=$(_stddev "${samples[@]}") # sample spread, for the variance-aware acceptance gate (#63)
-    # #81: watts is the median UNDER-LOAD reading collected during the window above (no longer a post-bench
-    # idle sample), so hs_per_watt below ranks candidates by real load efficiency.
     temp=$(_read_temp)
-    jq -cn --argjson p "$p" --argjson y "$y" --arg t "$t" --argjson g "$g" --argjson pr "$pr" \
+    jq -cn --argjson p "$p" --argjson y "$y" --argjson t "$t" --argjson g "$g" --argjson pr "$pr" \
         --argjson hj "$hj" --argjson cq "$cq" --argjson wr "$wr" --argjson med "$med" --arg samples "${samples[*]}" \
         --arg sd "${sd:-0}" --arg mf "${minfmhz:-}" --argjson thr "$throttled" --arg hpc "$hpcapped" --arg watts "${watts:-}" --arg temp "${temp:-}" '
-        { prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g, priority: $pr,
+        { prefetch_mode: $p, yield: $y, threads: $t, "1gb-pages": $g, priority: $pr,
           "huge-pages-jit": $hj, cache_qos: $cq, wrmsr: $wr,
           hashrate: $med, samples: ($samples|split(" ")|map(tonumber)), stddev: ($sd|tonumber),
           min_freq_mhz: (if $mf=="" then null else ($mf|tonumber) end), throttled: ($thr==1),
@@ -2783,6 +2784,10 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
 # Knob registry: the candidate values for each knob, and get/set of the current state (S_*). Encapsulates
 # the bash-3.2-friendly indirection so the hill-climb loop stays generic over knob names.
 _knob_values() {
+    if _xmrig_knob_pinned "$1"; then
+        _xmrig_knob_value "$1"
+        return
+    fi
     case "$1" in
     prefetch) echo "$TUNE_PREFETCH_MODES" ;;
     yield) echo "$TUNE_YIELDS" ;;
@@ -2918,21 +2923,16 @@ _hillclimb() {
     HILL_BEST="$best"
 }
 
-# Exhaustive grid search (#6; opt-in via TUNE_SEARCH=grid). Measures every combination of the knobs'
-# candidate values and keeps the best — slower than the hill-climb but immune to local optima and knob
-# interactions, worth it for this small discrete space. Inactive knobs have a single candidate, so they
-# contribute one iteration each. Sets the G_* winner globals directly (tune()'s locals, via dynamic
-# scope), so it must be called DIRECTLY, not in a $(...) subshell.
 _gridsearch() {
     local vp vy vt vg vpr vhj vcq vwr hr
-    for vp in $(_knob_values prefetch); do
-        for vy in $(_knob_values yield); do
-            for vt in $(_knob_values threads); do
-                for vg in $(_knob_values onegb); do
-                    for vpr in $(_knob_values priority); do
-                        for vhj in $(_knob_values hpjit); do
-                            for vcq in $(_knob_values cacheqos); do
-                                for vwr in $(_knob_values wrmsr); do
+    while IFS= read -r vp; do
+        while IFS= read -r vy; do
+            while IFS= read -r vt; do
+                while IFS= read -r vg; do
+                    while IFS= read -r vpr; do
+                        while IFS= read -r vhj; do
+                            while IFS= read -r vcq; do
+                                while IFS= read -r vwr; do
                                     hr=$(_measure "$vp" "$vy" "$vt" "$vg" "$vpr" "$vhj" "$vcq" "$vwr")
                                     log "    grid prefetch=$vp yield=$vy threads=$vt 1gb=$vg prio=$vpr hpjit=$vhj cacheqos=$vcq wrmsr=$vwr -> $hr H/s" >&2
                                     if [ "$G_best" = "-1" ] || _accept_better "$hr" "$vp|$vy|$vt|$vg|$vpr|$vhj|$vcq|$vwr" "$G_best" "$G_best_key"; then
@@ -2947,14 +2947,14 @@ _gridsearch() {
                                         G_cq="$vcq"
                                         G_wr="$vwr"
                                     fi
-                                done
-                            done
-                        done
-                    done
-                done
-            done
-        done
-    done
+                                done < <(_xmrig_knob_lines wrmsr)
+                            done < <(_xmrig_knob_lines cacheqos)
+                        done < <(_xmrig_knob_lines hpjit)
+                    done < <(_xmrig_knob_lines priority)
+                done < <(_xmrig_knob_lines onegb)
+            done < <(_xmrig_knob_lines threads)
+        done < <(_xmrig_knob_lines yield)
+    done < <(_xmrig_knob_lines prefetch)
 }
 
 # The base config's value for the two off-by-default knobs (huge-pages-jit, cache_qos), so a seed starts
@@ -3019,6 +3019,7 @@ _tune_history() { # <overrides_file> <log_file>
         n=$(jq -r '.results | length' "$logf" 2>/dev/null || echo 0)
     fi
     log "Tuning status for this rig"
+    log "XMRig overlay keys excluded from tuning: $(_xmrig_overlay_pins)"
     echo ""
     if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then
         echo "  Winning tune options (applied — $ovr):"
@@ -3221,6 +3222,7 @@ tune() {
     ACTIVE_KNOBS=""
     local k n
     for k in prefetch yield threads onegb priority hpjit cacheqos wrmsr; do
+        if _xmrig_knob_pinned "$k"; then continue; fi
         n=$(_knob_values "$k" | wc -w | tr -d ' ')
         [ "$n" -gt 1 ] && ACTIVE_KNOBS="$ACTIVE_KNOBS $k"
     done
@@ -3279,6 +3281,7 @@ tune() {
                 continue
                 ;;
             esac
+            _xmrig_pin_seed
             log "Seed '$seed': prefetch=$S_p yield=$S_y threads=$S_t 1gb=$S_g priority=$S_pr"
             _hillclimb # sets HILL_BEST and leaves S_* at this seed's winner (must NOT run in a subshell)
             seed_hr="$HILL_BEST"
@@ -3314,15 +3317,16 @@ tune() {
     case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
     case " $ACTIVE_KNOBS " in *" cacheqos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
     case " $ACTIVE_KNOBS " in *" wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
+    ovr=$(_xmrig_unpinned <<<"$ovr")
     printf '%s\n' "$ovr" >"$TUNE_TMP/ovr.json" && sudo cp "$TUNE_TMP/ovr.json" "$TUNE_OVERRIDES"
     _TUNE_LIVE_DIRTY=0 # #347: the winner — a completed decision — now owns the file; the abort-restore stands down
 
     # Assemble the full search log: the winner, the search parameters, and every measured candidate.
-    jq -s --argjson p "$G_p" --argjson y "$G_y" --arg t "$G_t" --argjson g "$G_g" --argjson pr "$G_pr" \
+    jq -s --argjson p "$G_p" --argjson y "$G_y" --argjson t "$G_t" --argjson g "$G_g" --argjson pr "$G_pr" \
         --argjson hj "$G_hj" --argjson cq "$G_cq" --argjson wr "$G_wr" --arg target "$TUNE_TARGET" \
         --argjson hr "$G_best" --arg mode "$TUNE_MODE" --arg search "$TUNE_SEARCH" --arg seeds "$TUNE_SEEDS" \
         --argjson iters "$TUNE_ITERS" --argjson delta "$TUNE_MIN_DELTA" '
-        { best: { scratchpad_prefetch_mode: $p, yield: $y, threads: ($t|tonumber), "1gb-pages": $g,
+        { best: { scratchpad_prefetch_mode: $p, yield: $y, threads: $t, "1gb-pages": $g,
                   priority: $pr, "huge-pages-jit": $hj, cache_qos: $cq, wrmsr: $wr, hashrate: $hr },
           mode: $mode, target: $target, search: $search, seeds: ($seeds|split(" ")), iterations: $iters, min_delta: $delta,
           results: . }' "$RESULTS_FILE" >"$TUNE_TMP/log.json" && sudo cp "$TUNE_TMP/log.json" "$logf"
@@ -3490,6 +3494,10 @@ autotune() {
     # (no unit env) falls through to the config value.
     local target_env="${AUTOTUNE_TARGET:-}"
     parse_config
+    if _xmrig_knob_pinned prefetch; then
+        log "autotune: randomx.scratchpad_prefetch_mode is pinned by the xmrig overlay; skipping."
+        return 0
+    fi
     local overrides="$WORKER_ROOT/tune-overrides.json"
     local n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}"
     local margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
@@ -4129,17 +4137,6 @@ _miner_deliberately_stopped() {
     [ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" = inactive ]
 }
 
-# The config-regen + restart core of `apply`, WITHOUT touching the autotune timer. Used directly by
-# tune/autotune — which call it in a loop and own the timer themselves — so they don't re-render the unit
-# on every prefetch trial.
-#
-# `preserve-run-state` (#396) is passed by `apply` and by nothing else. With it, a rig that is
-# deliberately stopped is left stopped: the regenerated config sits on disk and takes effect at the next
-# deliberate start (the operator's, or the watchdog's own tick once the temperature is back under the
-# cutoff). Without it the unconditional restart stands — and `tune`/`autotune`/`_restore_overrides` MUST
-# keep it: they call this in a loop and measure the running miner between trials, and tune's --bench leg
-# stops the service itself and relies on the re-apply to bring it back, so a blanket preserve would
-# strand a tune run instead of a held rig. Opt-in per call site, not a global.
 _apply_runtime() { # [preserve-run-state]
     parse_config
     local build="$WORKER_ROOT/xmrig/build"
@@ -4147,7 +4144,10 @@ _apply_runtime() { # [preserve-run-state]
     local held=no
     RIGFORGE_RESTART_FAILED=0
     [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
-    (cd "$build" && generate_xmrig_config) || return 1
+    _stage_xmrig_config || return 1
+    if [ "${1:-}" = preserve-run-state ] && [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
+        _refresh_xmrig_unit || return 1
+    fi
     if [ "$OS_TYPE" != "Linux" ]; then
         log "Config regenerated. Restart the miner to apply."
     elif [ "$held" = yes ]; then
@@ -4169,6 +4169,7 @@ _apply_runtime() { # [preserve-run-state]
 # apply --dry-run (#146): the three-line plan — symmetric with setup --dry-run.
 _apply_plan() {
     parse_config >/dev/null
+    _stage_xmrig_config preview || return 1
     echo "apply --dry-run — the plan:"
     echo " 1. regenerate $WORKER_ROOT/xmrig/build/config.json$([ -f "$WORKER_ROOT/tune-overrides.json" ] && echo ' (+ overlay tune-overrides.json)')"
     if [ "$OS_TYPE" = Linux ] && _miner_deliberately_stopped; then
@@ -4190,24 +4191,13 @@ apply() {
         case "$_arg" in
         --dry-run)
             _apply_plan
-            return 0
+            return $?
             ;;
         *) error "Unknown option for apply: '$_arg' (use --dry-run). Run '$0 help'." ;;
         esac
     done
-    if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
-        parse_config
-        _ensure_miner_user
-        NFT_PATH=$(command -v nft || echo "/usr/sbin/nft")
-        export NFT_PATH
-        export BUILD_DIR="$WORKER_ROOT/xmrig/build"
-        CPUPOWER_PATH=$(command -v cpupower || echo "/usr/bin/cpupower")
-        export CPUPOWER_PATH
-        _render_xmrig_unit
-        sudo systemctl daemon-reload 2>/dev/null || true
-    fi
+    _apply_runtime preserve-run-state || return 1
     local _wd_rc=0 _api_rc=0
-    _apply_runtime preserve-run-state
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || _wd_rc=1
@@ -5264,7 +5254,7 @@ _writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL
 # back to the stored value. A key that is unset — or holds anything but a non-empty string — stays
 # ABSENT, so "no marker" means "there is nothing here to keep", and the value itself never leaves.
 _api_config_json() {
-    _writable_config_canonical | jq -c 'def mask($k): if (.[$k] | type) == "string" and .[$k] != "" then .[$k] = {"__secret__": true} else del(.[$k]) end; .pools = [.pools[]? | if type == "object" then mask("pass") | mask("tls-fingerprint") else . end]'
+    _writable_config_canonical | jq -c --argjson overlay "$XMRIG_OVERLAY" '(if $overlay == {} then . else .xmrig = $overlay end) | def mask($k): if (.[$k] | type) == "string" and .[$k] != "" then .[$k] = {"__secret__": true} else del(.[$k]) end; .pools = [.pools[]? | if type == "object" then mask("pass") | mask("tls-fingerprint") else . end]'
 }
 
 # #254: config-change provenance marker. Stamped by every path that rewrites the writable config
@@ -5424,6 +5414,7 @@ doctor() {
         return 0
     fi
     log "Checking the worker (read-only)..."
+    log "XMRig overlay keys: $(_xmrig_overlay_pins "$(jq -c 'if (.xmrig | type) == "object" then .xmrig else {} end' "$CONFIG_JSON" 2>/dev/null || echo '{}')")"
     local issues=0
 
     case "$(jq -r 'if (.control | tostring) | test("^(enabled|true|on)$") then "enabled" else (.api // "disabled") end' "$CONFIG_JSON" 2>/dev/null || true)" in # #507: doctor has no parse_config, so it re-derives control's api implication here
