@@ -25,7 +25,7 @@ ALL_PHASES = [
 ]
 FUNCTION = re.compile(r"([a-z_][a-z0-9_]*)\(\) *[{(](.*)$")
 OK_CALL = re.compile(r"(?:^|[;&|(){]|\bthen|\belse|\bdo)\s*ok\s", re.M)
-SOURCE = re.compile(r"\bsource [^\n]*?/(e2e-[a-z-]+\.sh)\"")
+SOURCE = re.compile(r"(?:\bsource|(?:^|[;&|])\s*\.)\s[^\n]*?\b(e2e-[a-z-]+\.sh)\b", re.M)
 WORD = re.compile(r"[a-z_][a-z0-9_]*")
 
 
