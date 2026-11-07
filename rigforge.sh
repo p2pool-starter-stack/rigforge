@@ -141,7 +141,6 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 
 # shellcheck source=util/randomx.sh
 source "$(_script_dir)/util/randomx.sh"
-
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
 # Append a single line to a file only if that exact line is not already present (idempotent).
@@ -726,8 +725,7 @@ parse_config() {
         [[ "$MINER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || error "miner_user '$MINER_USER' is not a valid system username (lowercase, digits, _ -; max 32 chars)."
     fi
 
-    RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx accepts mode (auto/fast/light), init (-1 or a positive integer), and init-avx2 (-1/0/1) only."
-    RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
+    RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx accepts mode (auto/fast/light), init (-1 or a positive integer), and init-avx2 (-1/0/1) only."; RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
     _warn_unknown_config_keys
 }
 
@@ -1178,7 +1176,6 @@ generate_xmrig_config() {
     fi
 
     _apply_randomx_config "$_new"
-
     if [ -n "${THREADS_CAP:-}" ]; then
         _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
@@ -5501,7 +5498,6 @@ EOF
     fi
 
     _check_randomx_memory "$svc_up" || issues=$((issues + 1))
-
     # HugePages reserved? (the single biggest lever; needs a reboot after setup)
     local hp
     hp=$(awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null)
