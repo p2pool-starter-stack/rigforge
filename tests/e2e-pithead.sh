@@ -389,6 +389,12 @@ phase_network() {
     else
         bad "sister summary lacks valid metadata or its XMRig key superset differs"
     fi
+    if printf '%s' "$k2" | jq -e '.rigforge.config_meta.revision | test("^[0-9a-f]{16}$")' >/dev/null 2>&1 &&
+        [ "$(stat -c %a "$HERE/.rigforge-revision-key" 2>/dev/null)" = 600 ] && ! printf '%s' "$k2" | grep -qF "$(cat "$HERE/.rigforge-revision-key" 2>/dev/null)"; then
+        ok "feed revision is keyed: 16-hex, key file 0600 and never served (#629)"
+    else
+        bad "feed revision is not a keyed 16-hex digest, or the key is missing, readable or served (#629)"
+    fi
     set_cfg '.ACCESS_TOKEN = "tok-net1" | .pools[0].pass = "pass-net1"'
     sleep 3
     sweep=$(
