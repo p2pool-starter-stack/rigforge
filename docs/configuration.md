@@ -74,15 +74,16 @@ not read by `parse_config` today, so it isn't in the table below.)
 | `hugepages_reserve_extra_mb` | `0` | MB of HugePages to leave for the **rest of the box** when RigForge sizes its reservation — for co-locating a miner on a busy host (e.g. a Pithead stack, whose 2MB pages come from the same kernel pool). RigForge stays the sole writer of the reservation; this key just declares how much of it isn't the miner's. Added to both the boot reservation and the runtime pool. When the box's existing reservation already covers stack + miner, RigForge changes nothing and needs no reboot. |
 | `hugepages_pool_ceiling_mb` | `0` *(no ceiling)* | A **hard cap**, in MB, on the 2MB HugePages pool RigForge will reserve — the opposite direction from `hugepages_reserve_extra_mb`, which *adds* to the computed requirement rather than bounding it. Set it on a RAM-constrained co-resident box: the runtime `vm.nr_hugepages` write is never grown past the ceiling, and neither is the `hugepages=` RigForge merges into the GRUB cmdline, so the pool does not come back up over the ceiling after a reboot (the grow-only runtime write could never bring it down again). An odd MB value floors to the 2MB page below (`5121` → 5120 MB effective) — a cap rounds toward less memory, never more. The **1GB** dataset reservation is a separate pool this key does not bound, so a ceiling below a box's 1GB reservation still leaves it holding more hugepage memory than the ceiling names. |
 | `threads` | `""` *(auto)* | A **ceiling** on the RandomX thread count — `min(auto-detected, threads)`, never a raise. A co-located miner sets it (e.g. `nproc-2`) to leave the stack its cores. Both the generated `cpu.rx` and the HugePages sizing honour it, so the reservation matches the threads actually run. |
+| `xmrig` | `{"randomx":{"mode":"fast","init":-1,"init-avx2":-1}}` | Narrow XMRig override. `mode` accepts `"auto"`, `"fast"`, or `"light"`; `init` accepts `-1` (automatic) or an integer from 1 through 2147483647; `init-avx2` accepts `-1` (automatic), `0` (off), or `1` (on, when the CPU supports AVX2). A smaller `init`, such as `2`, reduces dataset-initialization contention on a co-located stack and after thermal resume. The `xmrig` and `randomx` values must be objects containing only the supported keys; omitted fields retain their defaults. Unknown keys, wrong types, and out-of-range values stop setup. This is not arbitrary XMRig pass-through. See [RandomX mode and initialization](#randomx-mode-and-initialization). |
 | `add_to_path` | `false` | When `true`, setup installs a `rigforge` command on your PATH (a symlink in `/usr/local/bin`) so you can run `sudo rigforge <cmd>` from any directory. Off by default. `uninstall` removes it. |
 
 ---
 
 ## How the generated XMRig config is built
 
-You don't write XMRig's config. RigForge generates it in-script and writes it into the worker root as
-the live `config.json` the service runs from. There's no template file to keep in sync and no config
-key for it. Every run (re-runs included) rebuilds the config from four sources:
+RigForge generates the live XMRig `config.json` in the worker root. There is no template file;
+supported operator settings belong in your repo-root `config.json`. Every run (re-runs included)
+rebuilds the config from five sources:
 
 1. Your `config.json`: the `pools` array (with `user`/`pass`/`keepalive`/`tls` and failover
    defaults filled in), the `donate-level`, and the `http` API block (bound to the LAN, read-only,
@@ -92,13 +93,38 @@ key for it. Every run (re-runs included) rebuilds the config from four sources:
    HugePages). RigForge uses XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
 3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave`,
-   `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
-4. Tuned overrides *(if present)*: if you've run [`tune`](operations.md#tuning), its winning
-   knobs in `tune-overrides.json` are merged on top as the final step, so tuning wins for just the keys
-   it sets and your `config.json` is never edited.
+   `randomx.mode: fast`, `randomx.init: -1`, `randomx.init-avx2: -1`, `opencl`/`cuda` off, and the
+   `http` port `8080`.
+4. Tuned overrides *(if present)*: if you've run [`tune`](operations.md#tuning), its winning knobs in
+   `tune-overrides.json` are merged next, so tuning changes only the keys it measured and never edits
+   your `config.json`.
+5. The three supported `xmrig.randomx` settings from your `config.json`, applied last so your explicit
+   mode and initialization choices win. In light mode RigForge still forces `1gb-pages: false`,
+   including over a tuned value, because light mode has no dataset to put in 1 GB pages. If this step
+   fails, for example because `tune-overrides.json` replaced `randomx` with a non-object, the render
+   stops with a warning and the previous generated `config.json` stays in place. A `tune` candidate
+   that cannot take these settings is skipped rather than benchmarked without them.
 
 Because the config is rebuilt from these sources every time, editing the generated `config.json` by
 hand has no effect. Change your repo-root `config.json` (or `tune`) and re-run instead.
+
+### RandomX mode and initialization
+
+`fast` remains the default and uses the full dataset for maximum hashrate. `light` uses one shared
+256 MiB cache and is intended for hosts that cannot spare the dataset memory; it is substantially
+slower. `auto` lets XMRig fall back to light if it cannot allocate the fast dataset, but RigForge still
+reserves HugePages for fast mode because allocation fallback does not make a safe smaller reservation.
+Choose `light` explicitly when the smaller reservation is required.
+
+Changing `xmrig.randomx.mode` and running `apply` immediately renders the new miner config. On Linux,
+re-run `setup` and reboot as well to resize the persistent HugePages reservation. Runtime reservation is
+grow-only, and the co-resident-host guard keeps an existing sufficient pool, so switching to light does
+not reclaim a larger live pool automatically.
+
+`doctor` reports the configured mode. With the service stopped, it also warns before a `fast` start
+when `MemAvailable` (or `MemFree` on older kernels) plus free HugePages is below the 2080 MiB dataset
+lower bound. This is an early dataset warning, not an estimate of whether the cache, per-thread
+scratchpads, or every NUMA replica will fit.
 
 > Don't put a wallet address in the worker `user` when using Pithead. The stack handles payouts
 > centrally; the pool `user` is just a rig label (it defaults to the hostname so you can tell workers

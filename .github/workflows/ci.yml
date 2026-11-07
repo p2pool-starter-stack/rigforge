@@ -186,8 +186,6 @@ jobs:
           persist-credentials: false # the fetch below is read-only on a public repo (zizmor: artipacked)
       - name: Fetch base branch for diff-cover
         run: git fetch --no-tags origin "$BASE_REF"
-      # Runs tests/run.sh under a digest-pinned kcov image, reports rigforge.sh + util/proposed-grub.sh
-      # coverage, and fails if the total drops below the committed floor (tests/coverage-floor.txt).
       - name: Measure coverage (kcov) + enforce the total floor
         run: make coverage
       # Patch coverage is the real lever: it requires NEW/CHANGED lines to be tested, which is what keeps

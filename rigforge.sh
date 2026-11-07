@@ -139,6 +139,9 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 # Report which step failed on an unexpected error (skip when sourced by the test suite).
 [ "$_RIGFORGE_SOURCED" = "0" ] && trap on_err ERR
 
+# shellcheck source=util/randomx.sh
+source "$(_script_dir)/util/randomx.sh"
+
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
 # Append a single line to a file only if that exact line is not already present (idempotent).
@@ -722,7 +725,9 @@ parse_config() {
         fi
         [[ "$MINER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || error "miner_user '$MINER_USER' is not a valid system username (lowercase, digits, _ -; max 32 chars)."
     fi
-
+    RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx accepts mode (auto/fast/light), init (-1 or a positive integer), and init-avx2 (-1/0/1) only."
+    RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
+    export RX_MODE
     _warn_unknown_config_keys
 }
 
@@ -733,7 +738,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads"
+    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads xmrig"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -1039,18 +1044,6 @@ generate_xmrig_config() {
         LOG_FILE_PATH="$WORKER_ROOT/xmrig.log"
     fi
 
-    # Default optimization profile.
-    #
-    # We deliberately lean on XMRig's own auto-detection rather than matching CPU model names: with
-    # asm=auto, rx=-1 (auto thread count, sized to L3) and wrmsr=true, XMRig picks the right assembly
-    # path, thread layout and per-family MSR preset from the detected topology — and stays correct for
-    # CPUs we'd never enumerate (new Zen/X3D SKUs, Intel hybrid P/E cores, etc.). See issue #44.
-    #
-    # On top of auto-detection we set defaults appropriate for a DEDICATED miner (issue #43):
-    #   - yield=false  : busy-wait for maximum hashrate (we own the whole box)
-    #   - priority=2   : win scheduling vs. background daemons (XMRig warns >2 can hang a desktop)
-    #   - numa=true    : XMRig default; a no-op on single-socket, essential on multi-socket/EPYC
-    #   - init-avx2=-1 : auto — already uses AVX2 for dataset init when the CPU supports it
     YIELD="false"
     PRIORITY="2"
     ASM="\"auto\""
@@ -1119,7 +1112,6 @@ generate_xmrig_config() {
     fi
 
     FULL_USER="$(hostname)"
-
     local _new _step
     _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
     jq -n --argjson pools "$POOLS_JSON" \
@@ -1184,6 +1176,7 @@ generate_xmrig_config() {
         log "Applied tuned overrides from tune-overrides.json."
     fi
 
+    _apply_randomx_config "$_new" || _config_render_fail "$_new" "Applying the xmrig.randomx settings failed" || return 1
     if [ -n "${THREADS_CAP:-}" ]; then
         _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
@@ -1656,6 +1649,7 @@ tune_kernel() {
         # Fallback when proposed-grub.sh is missing: 3072 × 2MB = 6 GB of huge pages — enough for the
         # ~2.3 GB RandomX dataset plus per-thread scratchpads on a large desktop/server, without over-
         # reserving on smaller hosts. proposed-grub.sh computes an exact, hardware-sized value instead.
+        [ "${RX_MODE:-}" != light ] || error "RandomX light mode requires util/proposed-grub.sh for safe HugePages sizing."
         warn "Utility script not found. Fallback to safe default (3072)."
         _ensure_hugepages 3072
     fi
@@ -1907,6 +1901,8 @@ _setup_plan() {
                     _reboot=" — a reboot WILL be required"
                 fi
             fi
+        elif [ "${RX_MODE:-}" = light ]; then
+            _pages="FAIL: RandomX light mode requires util/proposed-grub.sh"
         fi
         # Grow-only preview (#328): same availability check _ensure_hugepages runs, read-only.
         local _hpline="grow the pool so $_pages 2MB HugePages are available (grow-only runtime sysctl)"
@@ -2556,7 +2552,7 @@ _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <
 _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     local out="$1"
     shift
-    _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out"
+    _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out" && _apply_randomx_config "$out"
 }
 
 # Run `xmrig --bench=<size>` headlessly and echo its full output. XMRig's `--bench` prints the result and
@@ -2718,7 +2714,7 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
-        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr"
+        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr" || { warn "  tune: rendering the candidate config failed — skipping it." >&2 && printf 0 && return 0; }
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
             : >"$TUNE_TMP/freq"  # #62: _xmrig_bench writes the effective clock seen during this run
             : >"$TUNE_TMP/watts" # #81: ... and the average watts under load
@@ -2961,7 +2957,7 @@ _gridsearch() {
 # from what the generated config actually uses (both default false). Shared by the seeds.
 _seed_hj() { jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE"; }
 _seed_cq() { jq -r '.randomx.cache_qos // false' "$TUNE_BASE"; }
-_seed_g() { jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; } # base 1gb-pages value (default true)
+_seed_g() { if [ "${RX_MODE:-}" = light ]; then echo false; else jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; fi; }
 # wrmsr seed: the base config's value as a single token (true/false/number). An array (advanced custom
 # MSRs) isn't a sweepable scalar, so seed from the safe default 'true' and let the operator set TUNE_WRMSR.
 _seed_wr() { jq -r '(.randomx | if has("wrmsr") then .wrmsr else true end) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
@@ -3210,11 +3206,11 @@ tune() {
     # leave it at the base value and say so, rather than benchmarking a no-op.
     local nr=0
     [ -r "$HUGEPAGES_1G_NR" ] && nr=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
-    if [ "${nr:-0}" -gt 0 ] 2>/dev/null; then
+    if [ "${nr:-0}" -gt 0 ] 2>/dev/null && [ "${RX_MODE:-}" != light ]; then
         TUNE_ONEGB="${TUNE_ONEGB:-true false}"
     else
         TUNE_ONEGB="$(_seed_g)"
-        log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
+        [ "${RX_MODE:-}" = light ] || log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
     fi
 
     # Active knobs = those with more than one candidate value (the rest are fixed, not searched).
@@ -5499,6 +5495,7 @@ EOF
         fi
     fi
 
+    _check_randomx_memory "$svc_up" || issues=$((issues + 1))
     # HugePages reserved? (the single biggest lever; needs a reboot after setup)
     local hp
     hp=$(awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null)
@@ -5512,7 +5509,9 @@ EOF
     # 1GB HugePages (optional bonus)
     local g=0
     [ -f "$HUGEPAGES_1G_NR" ] && g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
-    if [ "${g:-0}" -gt 0 ] 2>/dev/null; then
+    if [ "${RX_MODE:-}" = light ]; then
+        _ck_info "1GB HugePages disabled in RandomX light mode"
+    elif [ "${g:-0}" -gt 0 ] 2>/dev/null; then
         _ck_ok "1GB HugePages reserved ($g)"
     else
         _ck_warn "1GB HugePages not reserved (optional; needs a pdpe1gb CPU + reboot)"
