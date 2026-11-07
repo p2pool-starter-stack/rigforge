@@ -1,28 +1,13 @@
 #!/usr/bin/env bash
 
 _read_randomx_config() {
-    jq -ce '
-        if has("xmrig") then
-            .xmrig | select(type == "object") |
-            select((keys - ["randomx"]) == []) |
-            if has("randomx") then .randomx else {} end
-        else {} end |
-        select(type == "object") |
-        select((keys - ["mode", "init", "init-avx2"]) == []) |
-        {mode: "fast", init: -1, "init-avx2": -1} + . |
-        select(.mode == "auto" or .mode == "fast" or .mode == "light") |
-        select(.init | type == "number" and floor == . and (. == -1 or (. >= 1 and . <= 2147483647))) |
-        select(."init-avx2" == -1 or ."init-avx2" == 0 or ."init-avx2" == 1)
-    ' "$CONFIG_JSON"
+    jq -ce 'if has("xmrig") then .xmrig | select(type == "object") | select((keys - ["randomx"]) == []) | if has("randomx") then .randomx else {} end else {} end | select(type == "object") | select((keys - ["mode", "init", "init-avx2"]) == []) | {mode: "fast", init: -1, "init-avx2": -1} + . | select(.mode == "auto" or .mode == "fast" or .mode == "light") | select(.init | type == "number" and floor == . and (. == -1 or (. >= 1 and . <= 2147483647))) | select(."init-avx2" == -1 or ."init-avx2" == 0 or ."init-avx2" == 1)' "$CONFIG_JSON"
 }
 
 _apply_randomx_config() {
     local settings="${RANDOMX_JSON:-}" rendered
     [ -n "$settings" ] || settings='{}'
-    rendered=$(jq --argjson settings "$settings" '
-        .randomx *= $settings |
-        if .randomx.mode == "light" then .randomx."1gb-pages" = false else . end
-    ' "$1") || return 1
+    rendered=$(jq --argjson settings "$settings" '.randomx *= $settings | if .randomx.mode == "light" then .randomx."1gb-pages" = false else . end' "$1") || return 1
     printf '%s\n' "$rendered" >"$1"
 }
 
@@ -39,18 +24,7 @@ _check_randomx_memory() {
     mode=$(jq -r '.mode' <<<"$settings")
     _ck_info "RandomX mode: $mode"
     [ "$mode" = fast ] && [ "${1:-n}" != y ] || return 0
-    available=$(awk '
-        /^MemAvailable:/ { available=$2; seen=1 }
-        /^MemFree:/ { free=$2; seen_free=1 }
-        /^HugePages_Free:/ { pages=$2 }
-        /^HugePages_Rsvd:/ { reserved=$2 }
-        /^Hugepagesize:/ { size=$2 }
-        END {
-            if (!seen && !seen_free) exit
-            if (pages < reserved) pages=reserved
-            printf "%.0f", (seen ? available : free) + (pages-reserved)*(size ? size : 2048)
-        }
-    ' "$MEMINFO" 2>/dev/null) || available=""
+    available=$(awk '/^MemAvailable:/ { available=$2; seen=1 } /^MemFree:/ { free=$2; seen_free=1 } /^HugePages_Free:/ { pages=$2 } /^HugePages_Rsvd:/ { reserved=$2 } /^Hugepagesize:/ { size=$2 } END { if (!seen && !seen_free) exit; if (pages < reserved) pages=reserved; printf "%.0f", (seen ? available : free) + (pages-reserved)*(size ? size : 2048) }' "$MEMINFO" 2>/dev/null) || available=""
     if [ -z "$available" ]; then
         _ck_info "Available memory unknown — cannot check the RandomX fast dataset"
         return 0

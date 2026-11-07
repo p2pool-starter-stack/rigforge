@@ -9532,7 +9532,7 @@ assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixt
 
 # ---------------------------------------------------------------------------
 echo ""
-bash "$ROOT/tests/test-randomx-mode.sh" && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
+(set --; source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
 if [ "$PYCACHE_PRE" = present ]; then
     echo "  SKIP: util/__pycache__ predates this run — it cannot be attributed to the suite"

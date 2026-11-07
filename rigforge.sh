@@ -141,6 +141,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 
 # shellcheck source=util/randomx.sh
 source "$(_script_dir)/util/randomx.sh"
+
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
 # Append a single line to a file only if that exact line is not already present (idempotent).
@@ -724,8 +725,8 @@ parse_config() {
         fi
         [[ "$MINER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || error "miner_user '$MINER_USER' is not a valid system username (lowercase, digits, _ -; max 32 chars)."
     fi
-
-    RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx accepts mode (auto/fast/light), init (-1 or a positive integer), and init-avx2 (-1/0/1) only."; RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
+    RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx accepts mode (auto/fast/light), init (-1 or a positive integer), and init-avx2 (-1/0/1) only."
+    RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
     _warn_unknown_config_keys
 }
 
@@ -1110,7 +1111,6 @@ generate_xmrig_config() {
     fi
 
     FULL_USER="$(hostname)"
-
     local _new _step
     _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
     jq -n --argjson pools "$POOLS_JSON" \
