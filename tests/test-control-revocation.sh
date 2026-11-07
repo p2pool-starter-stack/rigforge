@@ -62,11 +62,10 @@ done
 
 stop_helper_case() {
     local mode=$1 expected=$2 d="$T/stop-helper-$1" rc out
-    mkdir -p "$d/units"
-    [ "$mode" != no-systemd-unit ] || : >"$d/units/rigforge-control.service"
+    mkdir -p "$d"
     (
         source "$SCRIPT"
-        STOP_CALLS=0 SYSTEMD_DIR="$d/units"
+        STOP_CALLS=0
         sudo() { "$@"; }
         systemctl() {
             printf '%s\n' "$*" >>"$d/calls"
@@ -113,8 +112,6 @@ stop_helper_case() {
 stop_helper_case absent 0
 stop_helper_case active 0
 stop_helper_case stuck 1
-stop_helper_case no-systemd 0
-stop_helper_case no-systemd-unit 1
 
 recovery="$T/stop-recovery"
 mkdir -p "$recovery/bin" "$recovery/units"

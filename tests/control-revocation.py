@@ -165,6 +165,7 @@ def main():
             stop(pid)
             pid = 0
             assert stale is None
+            assert not list((state / "spool").glob("pending-*.json"))
             assert json.loads(config.read_text())["pools"][0]["user"] == "before-revoke"
             assert install_rc != 0
         finally:

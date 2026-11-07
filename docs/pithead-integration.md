@@ -244,6 +244,9 @@ The receiver signals readiness only after loading its credentials and binding it
 replacement fails, the receiver is stopped so a revoked bearer cannot keep submitting changes.
 Fix the reported service error and re-run apply to restore control access.
 If stopping also fails, revocation is reported as unconfirmed; stop the service before retrying.
+Revocation takes effect at the control step of that run: a change the receiver accepted earlier is
+still applied, and a run that aborts before the control step (an invalid `config.json`, for example)
+leaves the old receiver serving its old tokens until a later run succeeds.
 
 Likewise, don't bind the API to localhost only and don't change the port without matching it on the stack
 side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host than the one it
