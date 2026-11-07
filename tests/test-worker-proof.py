@@ -23,23 +23,24 @@ ALL_PHASES = [
     "control",
     "access-tokens",
 ]
-HARNESS = HERE / "e2e-pithead.sh"
 FUNCTION = re.compile(r"([a-z_][a-z0-9_]*)\(\) *[{(](.*)$")
-OK_CALL = re.compile(r"(?<![\w-])ok \"")
+OK_CALL = re.compile(r"(?:^|[;&|(){]|\bthen|\belse|\bdo)\s*ok\s", re.M)
+SOURCE = re.compile(r"\bsource [^\n]*?/(e2e-[a-z-]+\.sh)\"")
 WORD = re.compile(r"[a-z_][a-z0-9_]*")
 
 
-def harness_functions():
-    text = HARNESS.read_text(encoding="utf-8")
-    sources = [HARNESS] + [HERE / name for name in re.findall(r"/(e2e-[a-z-]+\.sh)\"", text)]
+def harness_functions(directory=HERE):
+    sources = ["e2e-pithead.sh"]
     functions = {}
-    for path in sources:
+    for source in sources:
+        text = (directory / source).read_text(encoding="utf-8")
+        sources.extend(name for name in SOURCE.findall(text) if name not in sources)
         name = None
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in text.splitlines():
             match = FUNCTION.match(line)
             if name is None and match:
                 name, rest = match.groups()
-                if rest.rstrip().endswith(("}", ")")):
+                if re.sub(r"\s+#.*$", "", rest).endswith(("}", ")")):
                     functions[name], name = rest, None
                 else:
                     functions[name] = ""
@@ -56,11 +57,15 @@ def harness_passes(functions, name, seen=()):
     return len(OK_CALL.findall(body)) + sum(harness_passes(functions, call, seen + (name,)) for call in called)
 
 
-HARNESS_FUNCTIONS = harness_functions()
-PASS_COUNTS = {
-    group: harness_passes(HARNESS_FUNCTIONS, "phase_" + group.replace("-", "_"))
-    for group in ALL_PHASES + ["control-replay-thermal", "control-replay-pools"]
-}
+def harness_counts(directory=HERE):
+    functions = harness_functions(directory)
+    return {
+        group: harness_passes(functions, "phase_" + group.replace("-", "_"))
+        for group in ALL_PHASES + ["control-replay-thermal", "control-replay-pools"]
+    }
+
+
+PASS_COUNTS = harness_counts()
 
 
 def context(group="network-sequence", row="primary", platform="linux-x86_64", skips=None):
@@ -255,11 +260,29 @@ class WorkerProofTest(unittest.TestCase):
         self.assert_failed_evidence(self.invoke("receipt", paths[0], paths[1], "pass", 0))
 
     def test_pass_counts_follow_harness_phase_bodies(self):
-        self.assertEqual(PASS_COUNTS["network"], 9)
         for group in PASS_COUNTS:
             result, receipt = self.make_receipt(context(group))
             self.assertEqual(result.returncode, 0, group)
             self.assertEqual(receipt["phases"][0]["passed"], PASS_COUNTS[group])
+
+    def test_added_harness_assertion_changes_the_derived_count(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        copy_dir = Path(directory.name)
+        for path in HERE.glob("e2e-*.sh"):
+            (copy_dir / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        for name, anchor in (("e2e-pithead.sh", "phase_network() {\n"), ("e2e-refresh-window.sh", "refresh_profile_finish() {\n")):
+            text = (copy_dir / name).read_text(encoding="utf-8")
+            self.assertIn(anchor, text)
+            (copy_dir / name).write_text(text.replace(anchor, anchor + "    true && ok 'added'\n", 1), encoding="utf-8")
+        counts = harness_counts(copy_dir)
+        expected = dict(PASS_COUNTS, network=PASS_COUNTS["network"] + 1, control=PASS_COUNTS["control"] + 1)
+        expected["control-replay-thermal"] += 1
+        expected["control-replay-pools"] += 1
+        self.assertEqual(counts, expected)
+        rows = [{"event": "phase", "id": "network"}] + [{"event": "pass"}] * counts["network"]
+        result, _ = self.make_receipt(context("network"), rows)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_receipt_rejects_fewer_and_extra_passes(self):
         ctx = context("connect")
