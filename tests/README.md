@@ -57,9 +57,6 @@ CI median/p90, failures and occupied hours; missing evidence leaves rollout acce
 The opt-in `shared-host` phase of `e2e-pithead.sh` is not part of `all` and runs as a `rigforge`/`tier4-e2e`
 bench-ci job; [docs/shared-host.md](../docs/shared-host.md) describes what it checks and restores.
 
-The opt-in `shared-host` phase of `e2e-pithead.sh` is not part of `all` and runs as a `rigforge`/`tier4-e2e`
-bench-ci job; [docs/shared-host.md](../docs/shared-host.md) describes what it checks and restores.
-
 `tests/test-sister-reconcile.sh`, registered in `tests/run.sh`, checks startup failures, bounded
 listener probes (including IPv6 and failed transports), and apply's failure result while retaining
 later reconciles. The hosted Ubuntu 24.04 `Stock home setup` jobs run historical and current revisions on separate

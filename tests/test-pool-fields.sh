@@ -126,9 +126,16 @@ summary_output() {
             systemctl() { [ "${1:-}" = is-active ]; }
             lscpu() { printf 'Model name: fixture cpu\n'; }
             _check_donation() { return 0; }
-            doctor || true
+            if [ "$entrypoint" = doctor ]; then
+                doctor || true
+            else
+                doctor_json 2>/dev/null || true
+            fi
         fi
     ) 2>&1
+}
+row_count() {
+    printf '%s' "$1" | jq '[.checks[] | select(.id == "pool-algorithm")] | length' 2>/dev/null || echo invalid
 }
 
 write_config "$D/doctor.json" "$LEGACY"
@@ -139,6 +146,12 @@ for entrypoint in status doctor; do
     out=$(summary_output rx/0 "$entrypoint")
     absent "$entrypoint omits the default algorithm" "$out" "Algorithm:"
 done
+eq "doctor --json records a row for a live non-default algorithm" \
+    "$(row_count "$(summary_output rx/wow doctor-json)")" "1"
+has "doctor --json row message names the live algorithm" \
+    "$(summary_output rx/wow doctor-json)" '"message": "Algorithm: rx/wow"'
+eq "doctor --json records no row for the default algorithm" \
+    "$(row_count "$(summary_output rx/0 doctor-json)")" "0"
 jq 'del(.algo)' "$FEED" >"$D/summary.json"
 out=$( (
     source "$SCRIPT"

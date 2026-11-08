@@ -379,8 +379,7 @@ assert_eq "second-pool socks5 stays on the second pool (#400)" "$(PJ "$c" | jq -
 # A pool may carry BOTH a pin and a proxy — the two re-attach passes must not clobber each other.
 c="$(mkconf p_s5fp "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"socks5\":\"127.0.0.1:9050\"}] }")"
 assert_eq "socks5 and tls-fingerprint coexist (#400)" "$(PJ "$c" | jq -c '[(.[0]."tls-fingerprint" != null), (.[0].socks5 == "127.0.0.1:9050")]')" "[true,true]"
-bash "$ROOT/tests/test-pool-fields.sh" "$SCRIPT" "$ROOT/tests/contract/v1/feed.json"
-assert_rc "XMRig optional pool fields round-trip and validate (#527)" "$?" 0
+bash "$ROOT/tests/test-pool-fields.sh" "$SCRIPT" "$ROOT/tests/contract/v1/feed.json" && ok "XMRig optional pool fields round-trip and validate (#527)" || bad "XMRig optional pool fields round-trip and validate (#527)" "suite failed"
 # #400 validation: the socks5 address gets the SAME host:port rules as the pool url. Each of these
 # is rejected for the pool url already; assert the proxy is judged by the same standard.
 c="$(mkconf p_s5noport "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1\"}] }")"
@@ -499,6 +498,7 @@ assert_rc "no pools rejected" "$?" "1"
 c="$(mkconf p_emptypools "{ \"pools\": [] }")"
 parse_rc "$c" "$ROOT"
 assert_rc "empty pools array rejected" "$?" "1"
+
 # Every config field is validated — bad input fails fast with a clear message rather than producing a
 # config XMRig would choke on.
 echo "== unit: config field sanitization =="

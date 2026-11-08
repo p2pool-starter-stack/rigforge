@@ -3962,11 +3962,11 @@ mac_disable() {
     fi
 }
 
-_print_pool_algorithm() {
-    jq -r '.algo | select(type == "string" and . != "" and . != "rx/0") | "  Algorithm: \(.)"' 2>/dev/null || true
+_pool_algorithm() {
+    jq -r '.algo | select(type == "string" and . != "" and . != "rx/0")' 2>/dev/null || true
 }
 _status_api_summary() {
-    local body hs pool up acc rej hp
+    local body hs pool up acc rej hp pa
     body=$(_read_api_summary)
     if [ -z "$body" ]; then
         echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
@@ -3980,7 +3980,8 @@ _status_api_summary() {
     [ -n "${hs:-}" ] || return 0 # half-up API / unparseable body: stay quiet, platform block follows
     printf '  %-10s %s H/s\n' "Hashrate:" "$hs"
     printf '  %-10s %s\n' "Pool:" "$pool"
-    printf '%s' "$body" | _print_pool_algorithm
+    pa=$(printf '%s' "$body" | _pool_algorithm)
+    [ -n "$pa" ] && printf '  Algorithm: %s\n' "$pa"
     printf '  %-10s %s\n' "Uptime:" "$(_render_duration "$up")"
     printf '  %-10s %s accepted / %s rejected\n' "Shares:" "$acc" "$rej"
     [ -n "$hp" ] && printf '  %-10s %s\n' "HugePages:" "$hp"
@@ -5417,7 +5418,6 @@ doctor() {
     fi
     log "Checking the worker (read-only)..."
     _config_apply_check
-
     case "$(jq -r 'if (.control | tostring) | test("^(enabled|true|on)$") then "enabled" else (.api // "disabled") end' "$CONFIG_JSON" 2>/dev/null || true)" in # #507: doctor has no parse_config, so it re-derives control's api implication here
     enabled | true | on)
         local refresh_state
@@ -5439,7 +5439,7 @@ doctor() {
     fi
 
     if [ -f "$CONFIG_JSON" ]; then
-        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool
+        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool pa
         pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
         # Advisory only: a listening TCP socket does not prove SOCKS/Tor or mining works.
         while IFS= read -r proxy; do
@@ -5454,7 +5454,8 @@ doctor() {
             _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed" socks-proxy
         done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
-            ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _read_api_summary | _print_pool_algorithm
+            pa=$(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _read_api_summary | _pool_algorithm)
+            [ -n "$pa" ] && _ck_info "Algorithm: $pa" pool-algorithm
             if ! ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _check_donation; then
                 issues=$((issues + 1))
             fi
