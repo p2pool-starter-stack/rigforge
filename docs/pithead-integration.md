@@ -105,6 +105,9 @@ pithead#235):
 - When XMRig's own API is unreachable the response is still `200` with
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
   matters.
+- Solo daemon connections carry `connection.mode: "daemon"`, inferred from the active configured
+  pool when absent from XMRig's summary. Missing Stratum shares do not indicate a node outage.
+  RigForge adds no mode field for Stratum connections.
 
 Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
 show `rigforge.stamp` as the baked release provenance instead.
