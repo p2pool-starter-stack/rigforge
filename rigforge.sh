@@ -65,6 +65,8 @@ _script_dir() {
 # Base for bundled assets and runtime state. RIGFORGE_HOME lets tests sandbox this real script so
 # black-box runs remain isolated while coverage still credits the production file (#68).
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
+# shellcheck source=util/daemon-pools.sh
+source "$(_script_dir)/util/daemon-pools.sh"
 # Operator for root-written files; timer units bake it into RIGFORGE_OPERATOR when SUDO_USER is absent.
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
@@ -460,18 +462,13 @@ parse_config() {
     # boolean false matches `== false`; non-boolean junk flows through `//` untouched to validation.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # Validate every pool field — fail fast with a clear message rather than writing a config XMRig
-    # would choke on. url must be host:port: a valid hostname / IPv4 / bracketed-IPv6 host and a port
-    # in 1-65535; user/pass reject whitespace and shell/control characters; keepalive/tls/enabled
-    # must be booleans.
-    # Iterate one compact JSON object per pool (robust even when a field like user is empty), and read
-    # each field back with jq.
+    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON") || error "Could not parse daemon pool fields."
     while IFS= read -r _pool; do
         _u=$(jq -r '.url' <<<"$_pool")
         _user=$(jq -r '.user' <<<"$_pool")
         _pass=$(jq -r '.pass' <<<"$_pool")
         [ -n "$_u" ] || error "A pool entry has no url — set 'pools[].url' (host:port) in $CONFIG_JSON."
-        _validate_host_port "$_u" "Pool url" 3333
+        _validate_pool_url "$_pool" 3333 "$_u"
         # SOCKS5 proxy (#400), per pool, emitted only when set. XMRig dials the pool through it and
         # sends the HOSTNAME in the CONNECT request (Client::Socks5::connect uses ATYP 0x03 for
         # anything that is not an IP literal), so the proxy resolves the name — which is what lets a
@@ -739,7 +736,7 @@ parse_config() {
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
     local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host"
-    local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5"
+    local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
         case "$k" in _*) continue ;; esac
@@ -4238,25 +4235,20 @@ apply() {
     [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ] && [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ]
 }
 
-# #343: apply's honesty check. "Applied config and restarted" used to be the last word even when the
-# rig then sat at 0 H/s forever (an unresolvable pools[0].url just loops on DNS errors, silently) —
-# so after the restart + reconcile, ask the miner itself: poll its local API briefly for a live pool
-# connection and WARN when none appears. Warn, never refuse: the pool may be legitimately down at
-# apply time and the config is already applied, so the exit code stays 0 (doctor is the judgmental
-# verb). Only apply() calls this — tune/autotune restart via _apply_runtime and verify liveness
-# their own way (_wait_miner_live). Tries/interval overridable for the suite.
 _apply_pool_check() {
     [ "$OS_TYPE" = Linux ] || return 0                                  # no restart happened (macOS apply only regenerates)
     systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0 # stopped service: nothing to verify
-    local tries="${APPLY_POOL_TRIES:-5}" iv="${APPLY_POOL_IVL:-3}" i st="" pool="" n=""
+    local tries="${APPLY_POOL_TRIES:-5}" iv="${APPLY_POOL_IVL:-3}" i st="" pool="" n="" detail=""
     for i in $(seq 1 "$tries"); do
-        IFS="$(printf '\t')" read -r st pool n _ <<EOF
+        IFS="$(printf '\t')" read -r st pool n detail <<EOF
 $(_pool_conn_status)
 EOF
-        [ "$st" = connected ] && break
+        case "$st" in connected | daemon | daemon-down) break ;; esac
         [ "$i" -lt "$tries" ] && sleep "$iv"
     done
     case "$st" in
+    daemon) log "Node RPC reachable: height $n (${detail:-unknown})." ;;
+    daemon-down) warn "Node get_info is unavailable, invalid or timed out — check the configured daemon and its RPC access." ;;
     connected) log "Miner reports a live pool connection to ${pool:-?}." ;;
     disconnected) warn "Miner restarted, but reports NO live pool connection (pool: ${pool:-?}, ${n:-0} failed attempt(s)) — check pools[0].url in config.json, or the pool may be down. Watch: $0 logs" ;;
     *) warn "Couldn't reach the worker API (127.0.0.1:8080) to confirm a pool connection — check '$0 status' in a minute." ;;
@@ -5321,8 +5313,8 @@ api_refresh() {
     printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
     hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
     rf=$(_api_rigforge_block "$hr")
-    # Preserve every XMRig field and add one namespaced key; health still serves if XMRig is down.
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
+    if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
     printf '%s' "$body" >"$dir/summary.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json"
     printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
     printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
@@ -5367,18 +5359,13 @@ _api_refresh_status() {
     printf 'sister feed refresh scheduled (next: %s; last: %s; payload age: %ss)' "$next" "${last:-never}" "$age"
 }
 # --- Doctor: one-stop health check ---
-# Pool-connection probe (#343), shared by doctor and apply.
-# The miner's own pool verdict from local /2/summary (API_CMD hook + _read_api_summary auth). One TSV line:
-#   connected <pool> <conn_uptime_s> <accepted>   — a stratum connection is live
-#   disconnected <pool> <failures>                — miner answers, but no live connection
-#   api-down                                      — no parseable summary (API unreachable)
-# connection.uptime is XMRig's seconds-since-connect: positive exactly while a pool connection is
-# live, 0 while it retries (DNS failure, refused, pool down) — the signal #343 found missing. We
-# read the miner's view rather than dialing the pool ourselves: a second dial from this script can
-# disagree with the miner's (proxied, TLS) one, and the miner is the party that has to be connected.
 _pool_conn_status() {
-    local body pool cup fails acc
+    local body pool cup fails acc daemon_pool
     body=$(_read_api_summary)
+    if daemon_pool=$(_active_daemon_pool "${body:-null}"); then
+        _daemon_node_status "$daemon_pool"
+        return 0
+    fi
     if ! printf '%s' "$body" | jq -e '.connection' >/dev/null 2>&1; then
         echo api-down
         return 0
@@ -5457,9 +5444,8 @@ doctor() {
         issues=$((issues + 1))
     fi
 
-    # Use the live miner verdict when running; a stopped miner can only support a TCP probe.
     if [ -f "$CONFIG_JSON" ]; then
-        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy
+        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool
         pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
         # Advisory only: a listening TCP socket does not prove SOCKS/Tor or mining works.
         while IFS= read -r proxy; do
@@ -5481,6 +5467,9 @@ doctor() {
 $(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _pool_conn_status)
 EOF
             case "$pc_st" in
+            daemon | daemon-down)
+                _doctor_daemon_status "$(printf '%s\t%s\t%s\t%s' "$pc_st" "$pc_pool" "$pc_n1" "$pc_n2")" || issues=$((issues + 1))
+                ;;
             connected)
                 _ck_ok "pool connection live: $pc_pool (up $(_render_duration "${pc_n1:-0}"), ${pc_n2:-0} share(s) accepted)" pool-connection
                 ;;
@@ -5493,6 +5482,8 @@ EOF
                 _ck_info "worker API not reachable at 127.0.0.1:8080 — can't verify the pool connection (the miner may still be starting; re-run doctor shortly)" pool-connection
                 ;;
             esac
+        elif daemon_pool=$(_active_daemon_pool); then
+            _doctor_daemon_status "$(_daemon_node_status "$daemon_pool")" || issues=$((issues + 1))
         elif [ -n "$(jq -r '.pools[0].socks5 // empty' "$CONFIG_JSON" 2>/dev/null)" ]; then
             _ck_info "miner stopped — can't verify the pool connection through SOCKS until it starts" pool-connection
         elif [ -n "$pool0" ]; then
