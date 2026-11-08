@@ -12,7 +12,7 @@ individual topics once you're up and running.
 |---|---|
 | [Getting Started](getting-started.md) | Prerequisites, installation, first-run setup, the Linux reboot, and how to verify the worker is mining. |
 | [Hardware Requirements](hardware.md) | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles RigForge applies. |
-| [Benchmarks](benchmarks.md) | Measured stock-vs-tuned hashrate and efficiency (H/s per watt) on real hardware, mining live, with the method and caveats. |
+| [Benchmarks](benchmarks.md) | Historical stock-vs-tuned observations, CPU-package (RAPL) power only, not wall power, and the candidate comparison protocol. |
 | [Configuration](configuration.md) | Every `config.json` key and default, minimal vs. advanced setups, and how the XMRig config is generated. |
 | [Operations & Maintenance](operations.md) | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | [How It Works](how-it-works.md) | What the script actually does: dependencies, compile-from-source, HugePages, MSR, NUMA, the governor, and the systemd service. |

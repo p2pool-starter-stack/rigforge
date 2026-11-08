@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 #
-# Coverage runner (#68): measure line coverage of rigforge.sh + util/proposed-grub.sh by running the
-# dependency-free suite (tests/run.sh) under kcov, and enforce a committed total floor (a ratchet).
-#
 # kcov is Linux + ptrace based, so this runs the suite inside a PINNED kcov Docker image (by digest,
 # matching how the e2e job pins its Ubuntu image). The suite needs jq, which the kcov image lacks, so
 # we mount a PINNED static jq from the upstream release (the same pin-by-sha256 approach used for the
@@ -95,13 +92,11 @@ git ls-files -z --cached --others --exclude-standard |
     done | LC_ALL=C sort >"$OUT/source-files.sha256"
 
 # --- Run the suite under kcov ------------------------------------------------
-# The repo is mounted at /src; include only the two git files by absolute path, which excludes any
-# per-test sandbox copies and keeps the number stable. ptrace needs the seccomp/cap relaxations.
 echo "coverage: running tests/run.sh under kcov (this is slower than 'make test')..."
 docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --cap-add SYS_PTRACE \
     -v "$ROOT:/src" -v "$JQ_BIN:/usr/local/bin/jq:ro" -w /src \
     --entrypoint kcov "$KCOV_IMAGE" \
-    --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh \
+    --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh,/src/util/config-apply-state.sh \
     --clean /src/coverage ./tests/run.sh
 
 # kcov writes root-owned files onto the bind mount; hand them back to the caller so later steps and
@@ -137,7 +132,7 @@ PCT="$("$JQ_BIN" -r '.percent_covered' "$COV_JSON")"
 FLOOR="$(tr -d '[:space:]' <"$FLOOR_FILE" 2>/dev/null || echo 0)"
 
 echo ""
-echo "  rigforge.sh + util/proposed-grub.sh coverage"
+echo "  rigforge.sh + shell helpers coverage"
 "$JQ_BIN" -r '.files[] | "    \(.covered_lines)/\(.total_lines)\t\(.percent_covered)%\t\(.file)"' "$COV_JSON"
 echo "  ------------------------------------------------------------"
 printf '  TOTAL: %s%%   (floor: %s%%)\n\n' "$PCT" "$FLOOR"

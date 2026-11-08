@@ -48,7 +48,7 @@ if [ "${1:-}" = --case ]; then
         phase connect
         state=connected
         printf mutated >"$CFG"
-        passes 3
+        passes 8
     }
     phase_worker_api() {
         [ "$state" = connected ]
@@ -81,7 +81,7 @@ if [ "${1:-}" = --case ]; then
         [ "$fault" != missing ] || return 0
         phase network
         printf reached >"$CASE_DIR/network"
-        passes 9
+        passes 10
     }
     phase_stratum_auth() {
         phase stratum-auth

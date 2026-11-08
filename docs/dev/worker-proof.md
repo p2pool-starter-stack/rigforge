@@ -14,10 +14,10 @@ they cannot substitute for either complete group.
 
 | Phase row | Retained successful assertions | Dependency and restoration |
 | --- | --- | --- |
-| `connect` (3) | Stratum job, accepted share, generated worker label | Sets the pool and restarts the physical worker. |
+| `connect` (8) | Stratum job, accepted share, doctor JSON report (one schema-valid report, reported exit matches status, summary matches rows, live service check, live pool-connection check), generated worker label | Sets the pool and restarts the physical worker. |
 | `worker-api` (5) | Open read, bind policy, restricted write refusal, unauthenticated refusal, matching bearer read | Uses the connected worker; restores the open token posture. |
 | `api-impact` (3) | Sister API available, loaded hashrate within baseline tolerance, responsiveness under mining load | Uses live hashing; starts/stops recorded load processes and disables the sister API. |
-| `network` (9) | Pool-only peers, control-implied listener, enabled API listener, miner-only listener policy, complete summary superset and metadata, keyed feed revision with a private key file, token leak sweep, pool-password leak sweep, disabled listener closed | Consumes the preceding mutations; restores disabled API/control and the open token posture. |
+| `network` (10) | Pool-only peers, control-implied listener, enabled API listener, API allowlist rejects a second source while mining, miner-only listener policy, complete summary superset and metadata, keyed feed revision with a private key file, token leak sweep, pool-password leak sweep, disabled listener closed | Consumes the preceding mutations; restores disabled API/control and the open token posture. |
 | `stratum-auth` (4) | Right credential mines, wrong credential rejected, no jobs with wrong credential, recovery with right credential | Fault and recovery stay together; original config is restored by outer cleanup. |
 | `dashboard` (2) | Worker initially online, stopped worker becomes offline | Requires initial presence; stops then restarts the same worker. |
 | `dev-fee` (1) | Legacy minimum migration, zero donation, runtime reductions without rebuilding, original artifacts restored | The existing compound assertion includes real build/runtime and artifact restoration. |
@@ -25,7 +25,7 @@ they cannot substitute for either complete group.
 | `access-tokens` (7) | Named token refused by miner, raw and derived reads accepted by sister API, apply accepted and applied, both revocation checks | Mutation and revocation stay together; outer cleanup restores tokens and donation. |
 
 Each replay group (`control-replay-thermal`, `control-replay-pools`) retains its
-runner-owned fixture/reservation, nested connect assertions (3), scalar apply
+runner-owned fixture/reservation, nested connect assertions (8), scalar apply
 sequence, pools mutation, optional thermal mutation, publication window and final
 assertion (1). Nested connect belongs to that replay row, not a separate group.
 Neither replay is added to or removed from `all`.
