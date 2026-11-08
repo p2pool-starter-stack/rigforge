@@ -107,11 +107,14 @@ _stage_xmrig_config() (
         warn "No built XMRig executable; run setup before apply validation."
         return 1
     }
+    if [ "${1:-}" != preview ]; then
+        _config_apply_begin
+    fi
     umask 077
     stage=$(mktemp -d) || return 1
     trap 'rm -rf "$stage"' EXIT
     cd "$stage" || return 1
-    generate_xmrig_config config-only || return 1
+    generate_xmrig_config stage || return 1
     _validate_xmrig_config "$build/xmrig" "$stage/config.json" "$stage/validation.json" || return 1
     if [ "${1:-}" != preview ]; then
         local pending
@@ -123,6 +126,7 @@ _stage_xmrig_config() (
             fi
         fi
         if cat config.json >"$pending" && mv "$pending" "$build/config.json"; then
+            _config_apply_stamp "${CONFIG_INPUT_HASH:-}"
             _xmrig_log_policy
         else
             rm -f "$pending"
