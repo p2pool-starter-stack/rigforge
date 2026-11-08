@@ -85,13 +85,13 @@ _doctor_daemon_status() {
     IFS=$'\t' read -r state url height sync <<<"$1"
     if [ "$state" = daemon ]; then
         if [ "$sync" = synced ]; then
-            _ck_ok "node connection live: height $height ($sync)"
+            _ck_ok "node connection live: height $height ($sync)" pool-connection
         else
-            _ck_warn "node is syncing: height $height ($sync)"
+            _ck_warn "node is syncing: height $height ($sync)" pool-connection
             return 1
         fi
     else
-        _ck_warn "node get_info is unavailable, invalid or timed out — check the configured daemon and its RPC access"
+        _ck_warn "node get_info is unavailable, invalid or timed out — check the configured daemon and its RPC access" pool-connection
         return 1
     fi
 }

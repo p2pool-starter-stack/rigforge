@@ -129,7 +129,7 @@ assert_human_matches_json() {
 }
 
 run_connected() {
-    local rc=0
+    local name="${1:-connected}" pool_status="${2:-connected	synthetic-pool	4	2}" rc=0
     (
         PATH="$BIN:$PATH"
         source "$SCRIPT"
@@ -151,11 +151,11 @@ run_connected() {
         _api_refresh_status() { printf 'refresh current\n'; }
         _read_api_summary() { printf '{"donate_level":0}\n'; }
         _msr_log_status() { printf 'none\t'; }
-        _pool_conn_status() { printf 'connected\tsynthetic-pool\t4\t2\n'; }
+        _pool_conn_status() { printf '%s\n' "$pool_status"; }
         _bearer_curl() { printf '200\n'; }
         _worker_root_from_config() { printf '%s\n' "$PROBES/missing-worker"; }
         doctor_json
-    ) >"$TMP/connected.json" 2>"$TMP/connected.err" || rc=$?
+    ) >"$TMP/$name.json" 2>"$TMP/$name.err" || rc=$?
     printf '%s' "$rc"
 }
 
@@ -234,6 +234,14 @@ rc="$(run_connected)"
 assert_eq "mocked connected doctor exits zero without network access" "$rc" 0
 assert_jq "$TMP/connected.json" '.exit == 0 and ([.checks[] | select(.id == "api-refresh" and .status == "ok")] | length == 1) and ([.checks[] | select(.id == "donation" and .status == "ok")] | length == 1) and ([.checks[] | select(.id == "pool-connection" and .status == "ok")] | length == 1) and ([.checks[] | select(.id == "control" and .status == "ok")] | length == 1)' "mocked API, donation, pool, and control probes keep explicit IDs"
 assert_human_matches_json "$TMP/connected.json" "$TMP/connected.err" "mocked connected JSON and human reports contain the same checks"
+
+rc="$(run_connected daemon-synced "$(printf 'daemon\tdaemon+http://node:18081\t123\tsynced')")"
+assert_eq "synced daemon-pool doctor exits zero" "$rc" 0
+assert_jq "$TMP/daemon-synced.json" '.exit == 0 and all(.checks[]; .id != "") and ([.checks[] | select(.id == "pool-connection" and .status == "ok")] | length == 1)' "synced daemon-pool node health keeps the pool-connection ID"
+rc="$(run_connected daemon-syncing "$(printf 'daemon\tdaemon+http://node:18081\t123\tsyncing')")"
+assert_jq "$TMP/daemon-syncing.json" '.exit == 1 and all(.checks[]; .id != "") and ([.checks[] | select(.id == "pool-connection" and .status == "warn")] | length == 1)' "syncing daemon-pool node health keeps the pool-connection ID"
+rc="$(run_connected daemon-down daemon-down)"
+assert_jq "$TMP/daemon-down.json" '.exit == 1 and all(.checks[]; .id != "") and ([.checks[] | select(.id == "pool-connection" and .status == "warn")] | length == 1)' "unavailable daemon-pool node keeps the pool-connection ID"
 
 unsupported_rc=0
 PATH="$BIN:$PATH" STUB_OS=Unsupported RIGFORGE_HOME="$TMP/no-config" bash "$SCRIPT" doctor --json >"$TMP/unsupported.json" 2>"$TMP/unsupported.err" || unsupported_rc=$?
