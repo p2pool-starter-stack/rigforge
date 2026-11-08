@@ -122,6 +122,20 @@ Because the config is rebuilt from these sources every time, editing the generat
 hand has no effect. Change your repo-root `config.json` (including its `xmrig` object) or run `tune`,
 then re-run instead.
 
+Each generation records SHA-256 fingerprints of the source `config.json` and the presence and
+contents of `tune-overrides.json`, plus a UTC timestamp, in `xmrig/build/.rigforge-apply.json` under
+the worker root. `doctor` and `status` compare those fingerprints with the current sources: a match
+is OK, a change warns with `sudo ./rigforge.sh apply`, and a missing or unreadable stamp is
+informational. Older installs gain a stamp on their next generation. Restarting the service alone
+does not regenerate its config or refresh this stamp; XMRig autosaves do not affect the comparison.
+
+This is a conservative source-file check: whitespace edits and changes to settings outside XMRig
+(including restart-free watchdog updates) also warn. It does not prove which config a running
+process loaded. An unreadable or invalid tune overlay, or source fingerprints that differ between
+parsing and generation, cannot establish a new stamp. Avoid editing sources during generation:
+changes that revert before the final fingerprint check are not detected. The API's writable-config
+revision and provenance remain separate.
+
 > Don't put a wallet address in the worker `user` when using Pithead. The stack handles payouts
 > centrally; the pool `user` is just a rig label (it defaults to the hostname so you can tell workers
 > apart on the dashboard).
@@ -130,8 +144,8 @@ then re-run instead.
 
 ## Pools (full control)
 
-The pool target is XMRig's native `pools` array, passed straight through to XMRig, so you can use any
-field XMRig supports. Only `url` is required; every other field has a default, so you specify only what
+The pool target uses XMRig's native `pools` array with the supported fields below.
+Only `url` is required; every other field has a default, so you specify only what
 you care about:
 
 | Field | Default if blank/omitted |
@@ -144,6 +158,10 @@ you care about:
 | `tls-fingerprint` | `null` (no pin) — the pool cert's SHA-256 as 64 hex chars. XMRig does no CA validation on stratum TLS, so the pin is the only server authentication; without it, TLS encrypts but doesn't authenticate. Requires `"tls": true`. See [Pithead Integration › Stratum over TLS](pithead-integration.md#stratum-over-tls-optional). |
 | `socks5` | `null` (direct connection) — dial this pool through a SOCKS5 proxy at `host:port`, e.g. `"127.0.0.1:9050"` for a local Tor client. Same address rules as `url`. XMRig sends the pool's **hostname** to the proxy rather than resolving it first, so a v3 `.onion` stratum works with no extra setting. RigForge points the miner at a proxy; running one is yours to arrange. |
 | `enabled` | `true` |
+| `daemon` | Omitted for Stratum; a strict boolean. Set `true` for solo mining. A `daemon+` URL implies `true`; explicit `false` with that scheme is refused. |
+| `daemon-poll-interval` | Omitted; XMRig defaults to 1000 milliseconds. A positive JSON integer no greater than 9007199254740991, only valid for a daemon pool. |
+| `daemon-job-timeout` | Omitted; XMRig defaults to 15000 milliseconds. A positive JSON integer no greater than 9007199254740991, only valid for a daemon pool. |
+| `daemon-zmq-port` | Omitted; optionally use the node's ZMQ notifications. An integer in 1–65535, only valid for a daemon pool. |
 
 Two common setups follow; pick the one that matches where you're mining.
 
@@ -194,6 +212,47 @@ in the pool's endpoint and your wallet:
 Save that as `config.json`, then `sudo ./rigforge.sh apply` (a fresh `setup` picks it up too).
 
 The pool host must be an IP or DNS-resolvable hostname; allow its Stratum port through any firewall.
+
+### Solo mining to your own node
+
+Use a Monero-compatible node that you operate. RigForge does not install, run or supervise the
+node. Put this pool object in `pools`, replacing `<NODE_AUTHORITY>` with its host and RPC port
+and `<PAYOUT_USER>` with your payout identity:
+
+```json
+{
+    "url": "daemon+http://<NODE_AUTHORITY>",
+    "user": "<PAYOUT_USER>",
+    "daemon": true,
+    "daemon-poll-interval": 1000,
+    "daemon-job-timeout": 15000
+}
+```
+
+`daemon+https://` is also accepted, as is a bare host and port with `"daemon": true` (and
+`"tls": true` for HTTPS). Host validation follows the existing hostname, IPv4 and bracketed IPv6
+rules. Credentials, paths, queries and fragments in the URL are refused. A scheme implies
+`daemon: true` because the pinned XMRig build requires the flag to choose daemon mode.
+Remove the timing keys to keep XMRig's defaults. The payout identity must be valid for your node;
+RigForge's default machine label is intended for Stratum workers.
+Integral decimal and exponent values are written in integer notation for XMRig. Timer values
+are limited to 9007199254740991 milliseconds so they stay exact across supported platforms.
+
+The pinned miner ignores `socks5` and `tls-fingerprint` for daemon pools, so RigForge refuses
+those combinations. Its daemon HTTPS transport encrypts traffic without authenticating the peer;
+use a trusted network or an authenticated tunnel. Doctor's HTTPS RPC check uses curl's normal CA
+verification, so a certificate curl does not trust produces a warning even if the miner connects.
+
+Doctor checks `get_info` with a bounded timeout and reports the node's height and sync state in
+the `pool-connection` check.
+An unreachable, slow or invalid RPC response produces a warning. Apply checks the same node RPC.
+RPC reachability describes the node; it does not prove that the miner is hashing or earning a
+reward. The sister feed labels daemon connections with `connection.mode: "daemon"`; RigForge
+adds no mode field for Stratum connections. Existing miner statistics are preserved.
+
+`self-select`, `submit-to-origin` and `spend-secret-key` remain unsupported: they warn and are
+dropped. Do not put a spend key into the configuration. These modes need a separate trust and
+secret-handling review.
 
 ### Backup pools (failover)
 

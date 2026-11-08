@@ -72,7 +72,15 @@ Not every verb needs root — the design, in four lines:
 | `help` (`-h`, `--help`) | Show usage. |
 
 `setup` is the default, so `sudo ./rigforge.sh` with no argument provisions (or re-provisions) the
-worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
+worker.
+
+Both `doctor` and `status` also report whether the source config and tune overlay match
+the last recorded generation. Changed sources produce an advisory warning with the `apply`
+command; a missing stamp on an older install is informational. These rows do not change either
+command's exit status. See [generated config provenance](configuration.md#how-the-generated-xmrig-config-is-built).
+The staged build that `setup` and `upgrade` compile first never records or clears this stamp.
+
+The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
 and macOS: systemd on Linux, a launchd login agent on macOS (`enable`/`disable`). `doctor`,
 `tune --live`, and `autotune` are Linux-only. See [Running on macOS](#running-on-macos).
 
@@ -90,6 +98,32 @@ by Secure Boot. See [Troubleshooting](#troubleshooting).
 > On a fresh install `setup` enables the service but doesn't start it until you reboot (HugePages aren't
 > reserved before then), so a `doctor` run between `setup` and the reboot will report "service is not
 > active". That's expected; it starts automatically after you reboot.
+
+### Machine-readable health report
+
+Use `doctor --json` when another program needs the health result:
+
+```bash
+sudo ./rigforge.sh doctor --json
+```
+
+It writes one JSON object to standard output and keeps the human report on standard error. The object
+has this contract:
+
+- `version` is the RigForge version and `exit` is the command's exit status.
+- `summary` contains integer `ok`, `warn`, `fail`, and `info` counts.
+- `checks` is an array of `{id, status, message}` objects. `status` is one of the four summary keys.
+
+Treat `exit` as the health authority instead of deriving success from row statuses. A critical finding
+still has status `warn`; it also makes `exit` non-zero. The `fail` count is reserved and is currently
+zero. On a non-Linux host, the Linux-only check is skipped, `checks` is empty, and both the process and
+reported exit remain zero.
+
+Check IDs are stable for automation, but row availability depends on the worker's configuration and
+available probes. An ID may repeat: `socks-proxy`, for example, can produce one row for each configured
+proxy. Messages are operator-facing text and are not a stable interface. Consumers should therefore
+select rows by `id` and `status`, allow repeats, and use the summary and `exit` fields for the overall
+result.
 
 ### Tuning
 

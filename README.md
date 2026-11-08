@@ -56,7 +56,8 @@ you like to your stack's single endpoint.
 - An opt-in `watchdog` restarts a wedged miner (alive but hashing 0 H/s), and with `max_temp_c` set
   it stops the miner above that temperature and resumes once it cools.
 - `doctor` health-checks HugePages, the MSR mod, the governor, the service, and the pool
-  connection (the miner's own view of it); `status` shows live hashrate, pool, uptime, and shares.
+  connection (the miner's own view of it); `doctor --json` emits the same checks for automation,
+  while `status` shows live hashrate, pool, uptime, and shares.
 - `bios` is a guided, resumable walkthrough of the BIOS/UEFI changes RigForge can't make itself
   (XMP/EXPO, SMT, PBO/Eco Mode), and re-verifies what took after the reboot.
 - `backup` and `restore` snapshot your config and tuning; `support-bundle` collects a redacted

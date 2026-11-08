@@ -43,9 +43,10 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 bash "$ROOT/tests/test-xmrig-overlay.sh" "$SCRIPT" || FAIL=$((FAIL + 1))
+bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
+assert_rc "config apply state detects source drift (#445)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
-
 # Snapshot this before the suite for the final tree-hygiene check.
 PYCACHE_PRE=absent
 [ -e "$ROOT/util/__pycache__" ] && PYCACHE_PRE=present
@@ -9528,7 +9529,7 @@ fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
 assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
 assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
-
+source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
