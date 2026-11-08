@@ -9531,7 +9531,7 @@ fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
 assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
 assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
-
+source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
