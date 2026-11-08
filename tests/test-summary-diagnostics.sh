@@ -72,6 +72,7 @@ assert_contains "summary diagnostics: original failing row retained" "$(cat "$SA
         echo x >>"$SANDBOX/settle-polls"
         if [ "$(wc -l <"$SANDBOX/settle-polls")" -lt 4 ]; then printf '{"generated_at":"2026-01-01T00:00:00Z","rigforge":{"xmrig_api":"unreachable"}}'; else printf '{"hashrate":{},"generated_at":"2026-01-01T00:00:00Z","rigforge":{}}'; fi
     }
+    phase_api_allowlist() { :; }
     ok() { printf 'OK:%s\n' "$1"; }
     bad() { printf 'FAIL:%s\n' "$1"; }
     phase_network
