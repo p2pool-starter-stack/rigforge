@@ -7,8 +7,36 @@ compiles XMRig and mines. Each layer covers what the one below it has to stub.
 contract credential regression, plus access-token readiness, release clone-pin and offline tool-pin
 watcher regressions. The Bash suite exits nonzero if it aborts before its final
 `rigforge tests: ... passed, ... failed` summary, even when the shell would otherwise return zero.
+Worker proof schema/join and dispatcher regressions also run in `make test-suite`;
+see [ordered worker proof receipts](../docs/dev/worker-proof.md) for the retained
+phase inventory, binding contract and rollout requirements.
 The kcov container measures the Bash suite only; the credential regression always runs in the
 GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
+
+The offline `test-coverage-cache.sh` regression also runs in `make test-suite`.
+Coverage caches only the pinned jq download, keyed by release, Linux architecture and SHA256.
+Every invocation copies it into private disposable storage and verifies the checksum before use;
+the container mounts that verified copy read-only. A corrupt entry fails before coverage runs;
+remove the invalid entry from `.coverage-cache` and retry. Downloads publish atomically only after
+verification, and cache hits need no writable cache. Old reports are cleared even when setup fails.
+Each run records the real checkout commit in `coverage/source-commit.txt` and input identities in
+`coverage/source-files.sha256` before executing the suite. Each sorted row records type, SHA256 and
+a shell-escaped relative name; regular files distinguish executable status, symlinks hash the link
+target plus its terminating newline without following it, and missing tracked files record `absent`.
+Tracked and non-ignored untracked inputs are included; generated coverage, download caches and
+other ignored files are excluded. These identify local edits as well as the commit, not a
+successful test result. Coverage therefore requires a Git checkout.
+The jq setup log records hit/miss, total setup seconds and checksum verification seconds; these
+are whole-second observations, so zero means less than one clock interval, not free work.
+
+No shared hosted cache is enabled. Profile setup misses before adding archive, wheel or image-layer
+reuse; untrusted pull requests must never publish trusted cache entries. Preserve fresh writable
+fixtures, exact candidate revisions and every existing per-PR assertion when comparing cold/warm
+runs. Stock-home installs, real package acquisition, historical negative controls, compilation,
+donation/release builds and hardware cold starts remain fresh at their current gates. Never reuse a
+miner, populated build tree, report or previous PASS as proof for another candidate. Before rollout,
+compare complete assertion/input/platform manifests and collect a week of setup/verification time,
+CI median/p90, failures and occupied hours; missing evidence leaves rollout acceptance open.
 
 > The split exists so CI proves everything it can on a GitHub runner, while the things a runner
 > physically can't do (compile XMRig, reserve HugePages, write MSRs, set the governor, hash) are
@@ -21,10 +49,13 @@ GitHub Test suite job, including argument inspection, password rotation and EXIT
 | **Unit + black-box suite** | [`run.sh`](run.sh) + [`test-contract-credentials.sh`](test-contract-credentials.sh) | Any host (macOS/Linux), no Docker; credential regression needs Python 3. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `make test-suite` |
 | **Linux container e2e** | [`e2e/linux.sh`](e2e/linux.sh) → [`e2e/in-container.sh`](e2e/in-container.sh) | Disposable Ubuntu container, **needs Docker**. **In CI.** | The genuine Linux deploy path against a real (throwaway) `/etc` with real GNU tools (`sed -i`, `tee`, `envsubst`) + idempotency on re-run. Only the heavy/privileged bits (compile, package install, `systemctl`/`mount`) are stubbed. A second pass re-runs the container with `RIGFORGE_APPLIANCE=1` (#348) and proves the appliance contracts on that real `/etc`: units land in `/run/systemd/system`, no package installs, no fstab/limits.conf/logrotate writes, every enable carries `--runtime`. | `make test-e2e` |
 | **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is deprecated, #493). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
-| **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh`, `util/proposed-grub.sh`, and `util/randomx.sh` by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
+| **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` and its shell helpers by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
 | **Release smoke (quick)** | [`smoke.sh`](smoke.sh) | Real Linux rig, **manual**. Not in CI. | The compiled binary actually starts and hashes (`xmrig --bench`, fully offline). Fast pre-tag confidence that the worker we ship runs. | `make smoke` |
 | **Release e2e (full)** | [`e2e-real.sh`](e2e-real.sh) | Real Linux rig, **manual, root**. Not in CI. | The real thing end to end: build + tune + kernel tuning + service + a real hash, the writable control path (#236) against real systemd (`control` phase), the remote-upgrade chain with real git as the root oneshot (`upgrade` phase, #322), then a clean uninstall. **The release gate.** | `make e2e-real` (see [`RELEASING.md`](../RELEASING.md)) |
-| **Release e2e (worker↔stack)** | [`e2e-pithead.sh`](e2e-pithead.sh) ([`control` phase](e2e-pithead-control.sh), [`access-tokens` phase](e2e-pithead-tokens.sh)) | Real rig + a **live Pithead stack**, **manual, root**. Not in CI (`connect`/`control`/`access-tokens` also run as a `rigforge`/`tier4-e2e` bench-ci job). | The integration contract: the `network` phase records fixed boolean summary diagnostics (`network-summary`) before enforcing metadata and the XMRig key superset, without logging response bodies or key names; `network-sequence` reproduces the nightly `connect` → `worker-api` → `api-impact` → `network` prefix in one process/snapshot and stops there (separate phase submissions restore between phases); mining round-trip against the stack, the `:8080` API posture (open/token/`restricted`), the writable control path's DONATION apply round trip (#344/#509), a named `ACCESS_TOKENS` entry authenticating `:8081`/`:8082` while staying refused on `:8080` and after revocation (#516); setup/revocation wait up to 30 s per listener for a bearer-free GET to return HTTP 401, recording elapsed time or sanitized curl/HTTP/unit diagnostics (#573), then separately require the revoked bearer to receive HTTP 401, stratum auth accept/reject + rotation against only `PITHEAD_URL` (a temporary plain-Stratum pool preserves the primary `user`, replaces endpoint-specific settings and removes all fallbacks; URL/password enter jq through stdin with constant programs; EXIT restores the original config bytes and runtime even on failure; explicit `stratum-auth` fails with a sanitized `missing` diagnostic when `E2E_STRATUM_PASS` is absent; `all` retains its optional skip), dashboard visibility/drop-off, a missing-minimum-marker upgrade that compiles the candidate miner, verifies fresh compiler/linker output, its zero compiled minimum and reported donation, then proves reductions 1 → 0 and 5 → 2 preserve that new binary; the phase restores the original build, markers, configs and service state even on failure, and the sister-API **hashrate-impact guard** (#99 must not shave H/s under polling load). | `PITHEAD_URL=host:3333 sudo -E make e2e-pithead` (see [`RELEASING.md`](../RELEASING.md)) |
+| **Release e2e (worker↔stack)** | [`e2e-pithead.sh`](e2e-pithead.sh) ([`control` phase](e2e-pithead-control.sh), [`access-tokens` phase](e2e-pithead-tokens.sh)) | Real rig + a **live Pithead stack**, **manual, root**. Not in CI (`connect`/`control`/`access-tokens` also run as a `rigforge`/`tier4-e2e` bench-ci job). | The integration contract: the `network` phase first waits up to 30 s (wall clock, logged as `summary-settle`) for the sister API's cached snapshot (refreshed every 15 s) to leave its `xmrig_api: unreachable` fallback after the restarts its config changes cause (#563), then records fixed boolean summary diagnostics (`network-summary`) before enforcing metadata and the XMRig key superset, without logging response bodies or key names; `network-sequence` reproduces the nightly `connect` → `worker-api` → `api-impact` → `network` prefix in one process/snapshot and stops there (separate phase submissions restore between phases); mining round-trip against the stack, the `:8080` API posture (open/token/`restricted`), the writable control path's DONATION apply round trip (#344/#509), a named `ACCESS_TOKENS` entry authenticating `:8081`/`:8082` while staying refused on `:8080` and after revocation (#516); setup/revocation wait up to 30 s per listener for a bearer-free GET to return HTTP 401, recording elapsed time or sanitized curl/HTTP/unit diagnostics (#573), then separately require the revoked bearer to receive HTTP 401, stratum auth accept/reject + rotation against only `PITHEAD_URL` (a temporary plain-Stratum pool preserves the primary `user`, replaces endpoint-specific settings and removes all fallbacks; URL/password enter jq through stdin with constant programs; EXIT restores the original config bytes and runtime even on failure; explicit `stratum-auth` fails with a sanitized `missing` diagnostic when `E2E_STRATUM_PASS` is absent; `all` retains its optional skip), dashboard visibility/drop-off, a missing-minimum-marker upgrade that compiles the candidate miner, verifies fresh compiler/linker output, its zero compiled minimum and reported donation, then proves reductions 1 → 0 and 5 → 2 preserve that new binary; the phase restores the original build, markers, configs and service state even on failure, and the sister-API **hashrate-impact guard** (#99 must not shave H/s under polling load). | `PITHEAD_URL=host:3333 sudo -E make e2e-pithead` (see [`RELEASING.md`](../RELEASING.md)) |
+
+The opt-in `shared-host` phase of `e2e-pithead.sh` is not part of `all` and runs as a `rigforge`/`tier4-e2e`
+bench-ci job; [docs/shared-host.md](../docs/shared-host.md) describes what it checks and restores.
 
 `tests/test-randomx-mode.sh`, registered in `tests/run.sh`, covers the RandomX overlay, light-mode
 reservation sizing, tuning candidates, setup preview, and doctor memory warnings with isolated fixtures.
@@ -120,6 +151,69 @@ installed by this diagnostic.
 
 Both stop at a failed mutation prerequisite and make restoration failure fail the process; recovery
 snapshots remain on disk when cleanup cannot prove the original config bytes and runtime were restored.
+
+### Documentation replay on a disposable VM
+
+`make e2e-docs-replay` is the VM job entry point for the documented installation and
+uninstall lifecycle. Run it on a Linux KVM controller with Python 3 and `virsh` access to
+the local system libvirt instance. The job requires these environment variables:
+
+| Variable | Required value |
+|---|---|
+| `E2E_DOCS_DISPOSABLE` | `1`, acknowledging that setup, uninstall and two reboots will mutate the guest. |
+| `E2E_DOCS_VM_UUID` | UUID of a running, transient, disposable Ubuntu cloud VM with AVX2 exposed. Persistent domains are refused. |
+| `E2E_DOCS_CONFIG` | Path to the prepared configuration for this run, kept outside the checkout. |
+
+The VM owner supplies and disposes the guest and a throwaway plain-Stratum endpoint
+that issues RandomX jobs and accepts low-difficulty shares. Provision only the test
+transport and observation tools beforehand: QEMU guest agent with guest execution
+enabled, Git, sudo, jq, curl, nftables and iproute2. The guest needs systemd, a stock
+Ubuntu GRUB installation and enough memory for RandomX; it must have no prior
+RigForge installation or reserved HugePages. No live rig is a valid fixture.
+The prepared config must contain one pool, donation zero and a nonempty
+`api_allow_from`. Use `docs-replay` as the pool user and an empty password or `x`;
+do not supply a wallet, production endpoint or credential. Leave `ACCESS_TOKEN`
+and control disabled and use the default worker location. Only `pools`, `DONATION`,
+`api_allow_from`, `HOME_DIR` and optional `threads` are accepted; pool objects accept
+only `url`, `user` and `pass`. The guest must be able
+to download the documented release and its build dependencies.
+
+The driver extracts the marked Bash blocks from the README and walkthrough,
+checks their quick-start commands agree, and executes them unchanged through the
+guest agent. It inserts the prepared config before the documented dry run and
+setup. This deliberately tests the release pinned by the documentation; it does
+not silently replace that release with the candidate branch. Marker and command
+agreement lint runs in `tests/run.sh` without Python. The host-driver regression
+and guest-check negative controls run under `make test-suite`.
+
+The job snapshots the system changes before dry run, checks autostart after a new
+boot ID, donation zero, the configured pool as the only miner peer, increasing
+accepted shares with no rejects, and a refused base-API write. After uninstall and
+a second new boot ID it checks units, processes, listeners, pool sockets, the nft
+table, 2 MiB HugePages and GRUB restoration. A stopped or unreachable guest after
+reboot is a platform failure (exit 2), never an autostart failure. Other failed
+assertions exit 1. The controller emits only fixed progress messages; raw guest
+output stays out of public evidence. Always discard the fixture after success,
+failure or timeout; the driver never deletes a caller-owned VM.
+
+The existing worker-to-stack `network` phase also makes a bounded request from a
+temporary network namespace, bracketed by successful requests from the allowed
+source. It requires the API drop counter to increase and the miner to keep hashing,
+then removes its namespace and veth. The production rule now includes that counter.
+Local negative controls cover an admitted namespace and an uninstall that leaves
+the nft table. The real AVX2 reboot/mining job and reserved-worker network phase
+remain required evidence beyond the hardware-free tests and container checks.
+
+The namespace probe also has an isolated Linux kernel test, using a small HTTP
+server and a fixed test hashrate instead of a miner. It proves filtering and
+cleanup, including the admitted-source and unchanged-counter negative controls. The
+`e2e` CI job runs it with:
+
+```bash
+docker run --rm --privileged -v "$PWD:/src:ro" \
+  alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
+  sh -c 'apk add --no-cache bash iproute2 nftables curl jq python3 >/dev/null && bash /src/tests/test-api-allowlist-linux.sh'
+```
 
 ### The shared rig (miner-0)
 

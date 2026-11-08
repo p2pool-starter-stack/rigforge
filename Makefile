@@ -1,5 +1,5 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead lint lint-topology lint-file-budget fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci
 
 SHELL_FILES = $(shell git ls-files '*.sh')
 
@@ -16,15 +16,26 @@ test: lint test-suite ## Lint + the dependency-free suite (runs on macOS or Linu
 
 test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simulated
 	bash tests/run.sh
+	bash tests/test-doctor-json.sh
 	bash tests/test-contract-credentials.sh
 	bash tests/test-access-token-readiness.sh
 	bash tests/test-docs-clone-pin.sh
 	bash tests/test-staged-rebuild.sh
 	bash tests/test-tool-pin-watch.sh
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/test-docs-replay.py
+	bash tests/test-api-allowlist-probe.sh
+	bash tests/test-e2e-docs-guest.sh
+	python3 tests/test-control-readiness.py
+	python3 tests/test-worker-proof.py
+	bash tests/test-worker-proof.sh
+	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
+
+e2e-docs-replay: ## Replay documented setup and two reboots in an explicitly supplied disposable KVM guest
+	python3 tests/docs_replay.py
 
 test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) — BSD sed, launchd, nohup (macOS only, deprecated, not run in CI)
 	bash tests/e2e/macos.sh

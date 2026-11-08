@@ -49,9 +49,10 @@ On a fresh rig you don't need to edit anything: the interactive first run (`setu
 `config.json` yet) prompts for the stratum password and writes it for you — press Enter to skip it
 if your stack doesn't use one.
 
-- It's the same secret on every rig. The operator finds it on the stack side: it's printed after
-  `pithead apply`/`setup`, stored in the stack's `.env` as `PROXY_STRATUM_PASSWORD`, and shown by
-  `pithead status`.
+- It's the same secret on every rig. The operator finds it on the stack side: the dashboard's
+  **Connect a miner** block reveals it, the one-time setup hand-off shows it, and the stack's `.env`
+  stores it as `PROXY_STRATUM_PASSWORD`. `pithead setup`, `up`, `apply` and `status` say whether
+  authentication is on but never print the password.
 - The password travels cleartext over your LAN's plain Stratum, so this is access control (who may mine),
   not encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind` / a firewall do the
   rest) — or add [stratum over TLS](#stratum-over-tls-optional) below for confidentiality.
@@ -61,7 +62,7 @@ if your stack doesn't use one.
 #### Rotating the password
 
 1. On the stack: change or regenerate `p2pool.stratum_password`, run `pithead apply`, and read the
-   new secret from `pithead status`.
+   new secret from the dashboard's **Connect a miner** block.
 2. On each rig: set `pools[].pass` in `config.json` to the new secret and run `sudo ./rigforge.sh apply`.
 3. Until step 2 lands on a rig, it logs `Permission denied` and drops off the dashboard — that's the
    expected signal that it still has the old secret, not a fault (see
@@ -76,7 +77,10 @@ pithead#235):
 - `GET /1/summary` and `GET /2/summary` — XMRig's own body passed through **verbatim** (a strict
   superset: everything the `:8080` probe returns is here unchanged), a top-level UTC
   `generated_at` timestamp for freshness checks, plus one namespaced
-  `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance), `tune` (applied
+  `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance),
+  `appliance` (boolean, true when the running setup uses appliance mode, re-read from the persisted
+  setup marker unless `RIGFORGE_APPLIANCE` overrides it), `stamp` (the `RIGFORGE_REF` contents beside
+  the running script, `ref=<sha> version=<x.y.z>`; `null` when absent, unreadable or empty), `tune` (applied
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
   as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
@@ -102,6 +106,12 @@ pithead#235):
 - When XMRig's own API is unreachable the response is still `200` with
   `"rigforge": {..., "xmrig_api": "unreachable"}` — a down miner is exactly when the health data
   matters.
+- Solo daemon connections carry `connection.mode: "daemon"`, inferred from the active configured
+  pool when absent from XMRig's summary. Missing Stratum shares do not indicate a node outage.
+  RigForge adds no mode field for Stratum connections.
+
+Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
+show `rigforge.stamp` as the baked release provenance instead.
 
 When a token is set, `:8081` accepts either the exact bearer for existing clients or the
 lowercase hex HMAC-SHA256 derived with that token as the key and `rigforge:api-read:v1` as the
@@ -238,6 +248,15 @@ Two consequences worth knowing before you rely on it:
 Tokens are read once when the services start, so adding or revoking an entry takes effect on the next
 `sudo rigforge.sh apply`. `sudo rigforge.sh doctor` reports how many tokens are configured and which
 one XMRig carries.
+
+Setup, upgrade, and apply report control reconciliation failures after reconciling the firewall.
+The receiver signals readiness only after loading its credentials and binding its listener. If
+replacement fails, the receiver is stopped so a revoked bearer cannot keep submitting changes.
+Fix the reported service error and re-run apply to restore control access.
+If stopping also fails, revocation is reported as unconfirmed; stop the service before retrying.
+Revocation takes effect at the control step of that run: a change the receiver accepted earlier is
+still applied, and a run that aborts before the control step (an invalid `config.json`, for example)
+leaves the old receiver serving its old tokens until a later run succeeds.
 
 Likewise, don't bind the API to localhost only and don't change the port without matching it on the stack
 side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host than the one it

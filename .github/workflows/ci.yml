@@ -168,6 +168,11 @@ jobs:
       # /run/systemd/system, no package installs, no fstab/limits/logrotate writes, --runtime enables.
       - name: Run end-to-end suite
         run: make test-e2e
+      - name: Run API allowlist kernel test
+        run: >-
+          docker run --rm --privileged -v "$PWD:/src:ro"
+          alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+          sh -c 'apk add --no-cache bash iproute2 nftables curl jq python3 >/dev/null && bash /src/tests/test-api-allowlist-linux.sh'
 
   coverage:
     name: Coverage (kcov + diff-cover)

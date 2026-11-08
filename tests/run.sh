@@ -42,9 +42,12 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
+bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
+assert_rc "config apply state detects source drift (#445)" "$?" 0
+bash "$ROOT/tests/test-hugepages-ceiling.sh"
+assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
-
 # Snapshot this before the suite for the final tree-hygiene check.
 PYCACHE_PRE=absent
 [ -e "$ROOT/util/__pycache__" ] && PYCACHE_PRE=present
@@ -119,7 +122,7 @@ echo "${STUB_NPROC:-4}"
 EOF
     cat >"$bin/stat" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
+case "$*" in *"%u:%g:%a:%h"*) echo 0:0:600:1 ;; *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
 EOF
     cat >"$bin/hostname" <<'EOF'
 #!/usr/bin/env bash
@@ -203,11 +206,11 @@ EOF
 
 STUBS="$SANDBOX/stubs"
 make_stubs "$STUBS"
-RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing"
-mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING"
-export RIGFORGE_CONTROL_PROCESSING
-assert_rc "privileged consumers share a lock and refuse a planted processing symlink (#479)" "$(
-    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT"
+RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing" RIGFORGE_CONTROL_UPGRADE_STATE="$SANDBOX/upgrade-state"
+mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING" "$RIGFORGE_CONTROL_UPGRADE_STATE"
+export RIGFORGE_CONTROL_PROCESSING RIGFORGE_CONTROL_UPGRADE_STATE
+assert_rc "privileged consumers reject unsafe processing and throttle state (#479/#627)" "$(
+    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT" && bash "$ROOT/tests/test-upgrade-throttle-security.sh" "$SCRIPT" >/dev/null
     echo $?
 )" "0"
 assert_rc "appliance pool policy rejects edits and preserves tuning (#583)" "$(
@@ -752,6 +755,9 @@ ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
 )
 assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
 assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
+for _sh in "shared-host profile $PATH" "shared-host-lifecycle lifecycle $STUBS:$PATH"; do
+    if read -r _f _l _p <<<"$_sh" && _o="$(PATH="$_p" bash "$ROOT/tests/test-$_f.sh" "$SCRIPT" 2>&1)"; then ok "shared-host $_l regressions (#577)"; else bad "shared-host $_l regressions (#577)" "$(printf '%s' "$_o" | tail -5)"; fi
+done
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
@@ -2704,10 +2710,9 @@ assert_contains "max_temp_c 30 rejected (never restarts)" "$(parse_fails "$c")" 
 c="$(mkconf wd_thot "{ $POOL, \"max_temp_c\": \"hot\" }")"
 assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_temp_c must be"
 
-# #139: the watchdog() check itself. One check per run; restart only on the SECOND consecutive
-# unhealthy check (0 H/s and API-unreachable both count); thermal stop above max_temp_c with a
-# 5°C-hysteresis restart; unreadable temp or empty max_temp_c skips thermal entirely. systemctl
-# calls asserted via CALL_LOG; parse_config is shadowed so the test drives state directly.
+bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
+assert_rc "thermal watchdog command retries (#631)" "$?" 0
+
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
 run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]
@@ -3267,7 +3272,7 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
 # sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
@@ -5063,6 +5068,8 @@ assert_contains "doctor: rdmsr verifies the registers (#66)" "$out" "verified vi
 # Readable but wrong values (a silently-dropped write) -> mismatch WARN.
 out="$(run_doctor_msr "$DOC/rdmsr_bad")"
 assert_contains "doctor: rdmsr mismatch WARN (#66)" "$out" "don't match the ryzen_19h_zen4 preset"
+out="$(LOCKDOWN_FILE="$DOC/lockdown_integrity" run_doctor_msr "$DOC/rdmsr_bad")"
+assert_contains "doctor: rdmsr mismatch attributed to lockdown (#333)" "$out" "kernel lockdown ('integrity') dropped the write"
 # Non-root: the read-back is SKIPPED with an advisory — NOT a false mismatch (regression guard for the gate).
 out="$(run_doctor_msr "$DOC/rdmsr_ok" user)"
 assert_contains "doctor: non-root asks for sudo to verify MSRs (#66)" "$out" "run 'doctor' as root"
@@ -7180,7 +7187,7 @@ assert_contains "firewall: loopback always accepted (#142)" "$nft_body" 'iifname
 assert_contains "firewall: the configured source is accepted (#142)" "$nft_body" "ip saddr 192.168.1.10 accept"
 assert_contains "firewall: :8080 guarded, others dropped (#142)" "$nft_body" "tcp dport { 8080 }"
 assert_contains "firewall: applied via nft -f (#142)" "$(cat "$FW/calls.log")" "[nft] -f"
-# API enabled -> :8081 joins the guarded set.
+assert_contains "firewall: blocked requests have a measurable counter (#586)" "$nft_body" "counter drop"
 run_fw "192.168.1.0/24" enabled >/dev/null
 assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/api-firewall.nft")" "8080, 8081"
 # Cleared -> table destroyed, file removed.
@@ -7892,7 +7899,7 @@ rfblk="$(
     printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"PWNEEDLE415"}] }' >"$rfd/config.json"
     (
         source "$SCRIPT"
-        CONFIG_JSON="$rfd/config.json"
+        CONFIG_JSON="$rfd/config.json" RIGFORGE_APPLIANCE=0
         SCRIPT_DIR="$rfd"
         CONFIG_META_FILE="$rfd/meta.json"
         set +e
@@ -7908,6 +7915,8 @@ assert_eq "feed: served config still masks pass + config_meta has a revision (co
 # emits is `__secret__`, so a needle of "secret" would match the MASK and report a leak that is not
 # one — the assertion has to be able to tell the two apart to mean anything.
 assert_absent "feed: no pool password anywhere in the served block (contract)" "$rfblk" "PWNEEDLE415"
+assert_eq "feed: DIY appliance is a boolean false (#452)" "$(printf '%s' "$rfblk" | jq -c '.appliance')" "false"
+assert_eq "feed: missing stamp is null (#452)" "$(printf '%s' "$rfblk" | jq -r 'has("stamp") and .stamp == null')" "true"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
@@ -8848,7 +8857,7 @@ assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "
 # The backup the rollback branch would need: a `null` here fails this as surely as a wrong path does.
 assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
-source "$ROOT/tests/test-control-upgrade.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
 
 # Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
 # its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
@@ -8871,6 +8880,7 @@ bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
 assert_eq "control writable-keys match across rigforge.sh + control-server.py (#236)" "$bash_ckeys" "$py_ckeys"
 echo "== black-box: the control server (#236) =="
+bash "$ROOT/tests/test-control-revocation.sh" && ok "receiver revocation fails closed (#626)" || bad "receiver revocation fails closed (#626)" "regression failed"
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the control-server wire suite runs in the other CI jobs"
 else
@@ -9499,13 +9509,14 @@ fi
 FEEDFX="$(mktemp -d "$SANDBOX/feedfx.XXXXXX")"
 mkdir -p "$FEEDFX/home" "$FEEDFX/data" "$FEEDFX/control"
 printf 'v0.0.0-fixture\n' >"$FEEDFX/VERSION"
+printf 'ref=0000000000000000000000000000000000000000 version=0.0.0-fixture\n' >"$FEEDFX/RIGFORGE_REF"
 printf 'fixture-revision-key' >"$FEEDFX/revkey"
 printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333", "pass": "secret"}], "watchdog": "enabled", "max_temp_c": 85 }\n' "$FEEDFX" >"$FEEDFX/config.json"
 printf '%s' '{"status":"rolled_back","change_id":"7777777777777777","source":"control","applied_at":"2026-01-01T00:00:00Z","changed_keys":["watchdog","DONATION"],"reason":"miner did not return to a live hashrate; rolled back and live","backup":"/b","warnings":["thermal protection changed: watchdog"]}' >"$FEEDFX/control/status.json"
 printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}' >"$FEEDFX/xmrig-body.json"
 (
     source "$SCRIPT"
-    OS_TYPE=Linux
+    OS_TYPE=Linux RIGFORGE_APPLIANCE=1
     SCRIPT_DIR="$FEEDFX"
     CONFIG_JSON="$FEEDFX/config.json"
     CONFIG_META_FILE="$FEEDFX/meta.json"
@@ -9513,15 +9524,6 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     RIGFORGE_API_DATA="$FEEDFX/data"
     RIGFORGE_CONTROL_STATE="$FEEDFX/control"
     API_CMD="cat '$FEEDFX/xmrig-body.json'"
-    # _health_json shells out to the REAL `systemctl is-active` for service_active — API_CMD only
-    # replaces the worker-API curl, not that. On any Linux box genuinely running the xmrig unit (i.e.
-    # every fleet rig) the untouched default SERVICE_NAME=xmrig would read "active" there and byte-
-    # diff this fixture on rigs while passing everywhere else. Point it at a unit name no rig will
-    # ever have instead of putting $STUBS on PATH: the generic systemctl stub there always exits 0
-    # (fine for the tests that use it, which never assert exact service_active/autotune values), which
-    # would make this read "active" unconditionally instead of fixing anything. Pins service_active:
-    # false and, since both are gated on it, clock_pct_of_boost/throttling: null too — see
-    # contract/v1/README.md.
     SERVICE_NAME="rigforge-contract-fixture-nonexistent"
     set +e
     api_refresh 2>/dev/null
@@ -9529,7 +9531,9 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
 live_feed="$(jq -S '.generated_at = "NORMALIZED" | .rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"
 fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
-
+assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
+assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
+source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
 (
@@ -9545,8 +9549,8 @@ else
     assert_eq "no util/__pycache__ left in the tracked tree (#418)" "$pycache_post" "absent"
 fi
 
-# ---------------------------------------------------------------------------
-echo ""
+bash "$ROOT/tests/docs-replay-commands.sh"
+assert_rc "docs replay markers (#586)" "$?" 0
 SUITE_COMPLETE=1
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then
