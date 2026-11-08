@@ -49,9 +49,10 @@ On a fresh rig you don't need to edit anything: the interactive first run (`setu
 `config.json` yet) prompts for the stratum password and writes it for you — press Enter to skip it
 if your stack doesn't use one.
 
-- It's the same secret on every rig. The operator finds it on the stack side: it's printed after
-  `pithead apply`/`setup`, stored in the stack's `.env` as `PROXY_STRATUM_PASSWORD`, and shown by
-  `pithead status`.
+- It's the same secret on every rig. The operator finds it on the stack side: the dashboard's
+  **Connect a miner** block reveals it, the one-time setup hand-off shows it, and the stack's `.env`
+  stores it as `PROXY_STRATUM_PASSWORD`. `pithead setup`, `up`, `apply` and `status` say whether
+  authentication is on but never print the password.
 - The password travels cleartext over your LAN's plain Stratum, so this is access control (who may mine),
   not encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind` / a firewall do the
   rest) — or add [stratum over TLS](#stratum-over-tls-optional) below for confidentiality.
@@ -61,7 +62,7 @@ if your stack doesn't use one.
 #### Rotating the password
 
 1. On the stack: change or regenerate `p2pool.stratum_password`, run `pithead apply`, and read the
-   new secret from `pithead status`.
+   new secret from the dashboard's **Connect a miner** block.
 2. On each rig: set `pools[].pass` in `config.json` to the new secret and run `sudo ./rigforge.sh apply`.
 3. Until step 2 lands on a rig, it logs `Permission denied` and drops off the dashboard — that's the
    expected signal that it still has the old secret, not a fault (see
@@ -247,6 +248,15 @@ Two consequences worth knowing before you rely on it:
 Tokens are read once when the services start, so adding or revoking an entry takes effect on the next
 `sudo rigforge.sh apply`. `sudo rigforge.sh doctor` reports how many tokens are configured and which
 one XMRig carries.
+
+Setup, upgrade, and apply report control reconciliation failures after reconciling the firewall.
+The receiver signals readiness only after loading its credentials and binding its listener. If
+replacement fails, the receiver is stopped so a revoked bearer cannot keep submitting changes.
+Fix the reported service error and re-run apply to restore control access.
+If stopping also fails, revocation is reported as unconfirmed; stop the service before retrying.
+Revocation takes effect at the control step of that run: a change the receiver accepted earlier is
+still applied, and a run that aborts before the control step (an invalid `config.json`, for example)
+leaves the old receiver serving its old tokens until a later run succeeds.
 
 Likewise, don't bind the API to localhost only and don't change the port without matching it on the stack
 side (`workers.api_port`): a non-`8080` port, or a worker reachable at a different host than the one it

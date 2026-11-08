@@ -30,7 +30,7 @@ assert_eq "summary diagnostics: multiple records refused" "$(summary_diag_case '
     HERE="$ROOT" PITHEAD_URL=pool.invalid:3333
     phase() { :; }
     set_cfg() { :; }
-    sleep() { :; }
+    sleep() { SECONDS=$((SECONDS + 2)); }
     ss() {
         case "$1" in
         -Htnp) printf 'ESTAB 0 0 local pool.invalid:3333 xmrig\n' ;;
@@ -53,6 +53,30 @@ rc=$?
 assert_rc "summary diagnostics: wire failure remains fatal" "$rc" 1
 assert_contains "summary diagnostics: phase emits observations before failure" "$(cat "$SANDBOX/summary-diag-phase")" 'network-summary:'
 assert_contains "summary diagnostics: original failing row retained" "$(cat "$SANDBOX/summary-diag-phase")" 'FAIL:sister summary lacks valid metadata or its XMRig key superset differs'
+(
+    eval "$(sed -n '/^phase_network()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+    HERE="$ROOT" PITHEAD_URL=pool.invalid:3333
+    phase() { :; }
+    set_cfg() { :; }
+    sleep() { SECONDS=$((SECONDS + 2)); }
+    ss() {
+        case "$1" in
+        -Htnp) printf 'ESTAB 0 0 local pool.invalid:3333 xmrig\n' ;;
+        -Htln) printf 'LISTEN 0 0 *:8081 peer\n' ;;
+        -Htlnp) printf 'LISTEN 0 0 *:8080 peer xmrig\n' ;;
+        esac
+    }
+    : >"$SANDBOX/settle-polls"
+    api8080() { printf '{"hashrate":{}}'; }
+    api8081() {
+        echo x >>"$SANDBOX/settle-polls"
+        if [ "$(wc -l <"$SANDBOX/settle-polls")" -lt 4 ]; then printf '{"generated_at":"2026-01-01T00:00:00Z","rigforge":{"xmrig_api":"unreachable"}}'; else printf '{"hashrate":{},"generated_at":"2026-01-01T00:00:00Z","rigforge":{}}'; fi
+    }
+    ok() { printf 'OK:%s\n' "$1"; }
+    bad() { printf 'FAIL:%s\n' "$1"; }
+    phase_network
+) >"$SANDBOX/summary-settle-phase" 2>&1
+assert_contains "summary settle: stale unreachable snapshot waited out" "$(cat "$SANDBOX/summary-settle-phase")" 'OK:wire superset'
 # No inter-phase cleanup: the same shell state must reach the network check.
 summary_sequence_case() {
     (

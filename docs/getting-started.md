@@ -6,7 +6,7 @@ whole process, and most of it is automated.
 > **TL;DR**
 >
 > ```bash
-> git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
+> git clone --branch v1.18.1 https://github.com/p2pool-starter-stack/rigforge.git
 > cd rigforge
 > chmod +x rigforge.sh
 > sudo ./rigforge.sh
@@ -41,7 +41,7 @@ You don't need to install build dependencies yourself. RigForge installs the too
 <!-- docs-replay:clone:begin -->
 
 ```bash
-git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
+git clone --branch v1.18.1 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 ```
