@@ -9536,10 +9536,7 @@ assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$F
 source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
-(
-    set --
-    source "$ROOT/tests/test-randomx-mode.sh"
-) && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
+(set -- && source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
 if [ "$PYCACHE_PRE" = present ]; then
     echo "  SKIP: util/__pycache__ predates this run — it cannot be attributed to the suite"
