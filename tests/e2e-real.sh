@@ -50,7 +50,8 @@ CTL_CONTROL_ACTIVE=0 CTL_CONTROL_ENABLED=0
 # E2E_UPGRADE_TARGET override, which stays deliberately PERMANENT). Same script-global reasoning as
 # above — _upgrade_cleanup must see it from a late trap fire too.
 UPG_ORIG_REF="" UPG_RESTORE_BUILD=0
-UPG_STAMP="/var/lib/rigforge-control/upgrade-last"
+UPG_STAMP="/var/lib/rigforge-control-upgrade/upgrade-last"
+UPG_LEGACY_STAMP="/var/lib/rigforge-control/upgrade-last" UPG_LEGACY_LOCK="/var/lib/rigforge-control/.upgrade-throttle.lock"
 # #349: script-global watchdog state remains visible to a late EXIT trap.
 WD_SAVED_CFG="" WD_CLEANUP_DONE=0 WD_WORKER_ROOT="" WD_WAS_ACTIVE=0
 E2E_EXIT_RC=0
@@ -903,11 +904,14 @@ _upg_post_and_poll() { # <token> <port> <vX.Y.Z> <timeout-s> -> terminal status 
 
 # The upgrade-phase leftovers on top of _control_cleanup (which restores the snapshot, forces both
 # control flags off, re-applies, and checks the miner comes back). Idempotent like its parts.
+_upgrade_clear_throttles() {
+    rm -f "$UPG_STAMP" "$UPG_LEGACY_STAMP" "$UPG_LEGACY_LOCK" 2>/dev/null || return 1
+    [ ! -e "$UPG_STAMP" ] && [ ! -L "$UPG_STAMP" ] && [ ! -e "$UPG_LEGACY_STAMP" ] && [ ! -L "$UPG_LEGACY_STAMP" ] && [ ! -e "$UPG_LEGACY_LOCK" ] && [ ! -L "$UPG_LEGACY_LOCK" ]
+}
 _upgrade_cleanup() {
     local cleanup_ok=1
     _hgit tag -d v99.99.99 >/dev/null 2>&1 || ! _hgit show-ref --verify --quiet refs/tags/v99.99.99 || cleanup_ok=0
-    rm -f "$UPG_STAMP" 2>/dev/null
-    [ ! -e "$UPG_STAMP" ] || cleanup_ok=0
+    _upgrade_clear_throttles || cleanup_ok=0
     # #350: the auto-derived forward leg rewinds the checkout to a real previous tag to prove the
     # forward step for real, then must land back on the exact ref this phase started from — on ANY
     # exit, success or a hard abort mid-leg. A release gate must never leave the rig pinned to an
@@ -1049,8 +1053,12 @@ upgrade() {
             UPG_RESTORE_BUILD=1 # Returning to this ref alone does not restore its build artifacts.
             if _hgit checkout --quiet --force "$prev_tag" 2>/dev/null && "$RIGFORGE" upgrade >/tmp/e2e-upgrade-rewind.log 2>&1; then
                 ok "rewound the checkout to $prev_tag (a real prior release, to prove the forward leg from)"
-                rm -f "$stamp" 2>/dev/null || true # the rollback leg stamped; this is a fresh attempt
-                st=$(_upg_post_and_poll "$tok" "$control_port" "$cur_tag" 600)
+                if _upgrade_clear_throttles; then # the old upgrader uses receiver throttle state
+                    st=$(_upg_post_and_poll "$tok" "$control_port" "$cur_tag" 600)
+                else
+                    bad "could not clear throttle state before running the old upgrader"
+                    continue_or_cleanup _upgrade_cleanup upgrade
+                fi
                 [ "$st" = applied ] &&
                     ok "forward upgrade $prev_tag -> $cur_tag reached 'applied' (real fetch + build + health gate)" ||
                     bad "forward leg ended '$st' (expected applied, $prev_tag -> $cur_tag)"

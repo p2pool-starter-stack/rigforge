@@ -56,7 +56,8 @@ you like to your stack's single endpoint.
 - An opt-in `watchdog` restarts a wedged miner (alive but hashing 0 H/s), and with `max_temp_c` set
   it stops the miner above that temperature and resumes once it cools.
 - `doctor` health-checks HugePages, the MSR mod, the governor, the service, and the pool
-  connection (the miner's own view of it); `status` shows live hashrate, pool, uptime, and shares.
+  connection (the miner's own view of it); `doctor --json` emits the same checks for automation,
+  while `status` shows live hashrate, pool, uptime, and shares.
 - `bios` is a guided, resumable walkthrough of the BIOS/UEFI changes RigForge can't make itself
   (XMP/EXPO, SMT, PBO/Eco Mode), and re-verifies what took after the reboot.
 - `backup` and `restore` snapshot your config and tuning; `support-bundle` collects a redacted
@@ -92,7 +93,7 @@ On the machine you want to turn into a miner:
 <!-- docs-replay:quick-start:begin -->
 
 ```bash
-git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
+git clone --branch v1.18.1 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 sudo ./rigforge.sh
@@ -219,7 +220,7 @@ heavy XMRig compile and the package install are stubbed. It skips cleanly if Doc
 No XMRig binary is compiled by the tests; the heavy native build is stubbed. The suite asserts the
 *orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
 
-**`make coverage`** measures line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running the
+**`make coverage`** measures line coverage of `rigforge.sh` and its shell helpers by running the
 suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned container, since kcov is
 Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`,
 so both the sourced functions and the command-dispatch paths are credited. CI enforces two gates: a

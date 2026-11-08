@@ -72,7 +72,15 @@ Not every verb needs root — the design, in four lines:
 | `help` (`-h`, `--help`) | Show usage. |
 
 `setup` is the default, so `sudo ./rigforge.sh` with no argument provisions (or re-provisions) the
-worker. The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
+worker.
+
+Both `doctor` and `status` also report whether the source config and tune overlay match
+the last recorded generation. Changed sources produce an advisory warning with the `apply`
+command; a missing stamp on an older install is informational. These rows do not change either
+command's exit status. See [generated config provenance](configuration.md#how-the-generated-xmrig-config-is-built).
+The staged build that `setup` and `upgrade` compile first never records or clears this stamp.
+
+The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) work on Linux
 and macOS: systemd on Linux, a launchd login agent on macOS (`enable`/`disable`). `doctor`,
 `tune --live`, and `autotune` are Linux-only. See [Running on macOS](#running-on-macos).
 
@@ -90,6 +98,32 @@ by Secure Boot. See [Troubleshooting](#troubleshooting).
 > On a fresh install `setup` enables the service but doesn't start it until you reboot (HugePages aren't
 > reserved before then), so a `doctor` run between `setup` and the reboot will report "service is not
 > active". That's expected; it starts automatically after you reboot.
+
+### Machine-readable health report
+
+Use `doctor --json` when another program needs the health result:
+
+```bash
+sudo ./rigforge.sh doctor --json
+```
+
+It writes one JSON object to standard output and keeps the human report on standard error. The object
+has this contract:
+
+- `version` is the RigForge version and `exit` is the command's exit status.
+- `summary` contains integer `ok`, `warn`, `fail`, and `info` counts.
+- `checks` is an array of `{id, status, message}` objects. `status` is one of the four summary keys.
+
+Treat `exit` as the health authority instead of deriving success from row statuses. A critical finding
+still has status `warn`; it also makes `exit` non-zero. The `fail` count is reserved and is currently
+zero. On a non-Linux host, the Linux-only check is skipped, `checks` is empty, and both the process and
+reported exit remain zero.
+
+Check IDs are stable for automation, but row availability depends on the worker's configuration and
+available probes. An ID may repeat: `socks-proxy`, for example, can produce one row for each configured
+proxy. Messages are operator-facing text and are not a stable interface. Consumers should therefore
+select rows by `id` and `status`, allow repeats, and use the summary and `exit` fields for the overall
+result.
 
 ### Tuning
 
@@ -254,7 +288,7 @@ Each timer tick runs one check (`journalctl -u rigforge-watchdog.service` shows 
   consecutive strikes (~2 ticks, unambiguous) restart the miner; a single blip — a
   restart-in-progress, the dataset re-initializing — never does. Any healthy check resets the count.
 - **Thermal cutoff (only with `max_temp_c` set).** Above the cutoff the miner is stopped and a hold
-  marker written; later checks start it again exactly once the temperature drops below
+  marker written after the stop succeeds; later checks start it again once the temperature drops below
   `max_temp_c - 5` (the 5 °C hysteresis is fixed — enough to outlast the post-restart heat-up
   without stranding the miner). An unreadable sensor skips the thermal check entirely: a missing
   sensor must not stop a healthy miner. A local `apply`, or a config change arriving over the control
@@ -265,6 +299,9 @@ watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
   design (a loaded EPYC sits near 90 °C Tctl in perfectly normal operation), so a damage-avoidance
   cutoff belongs well above the everyday reading, not near it. Editing `max_temp_c` takes effect on
   the next tick — the watchdog re-reads `config.json` every run, no `apply` needed.
+  A failed stop is logged and retried on later ticks while the miner remains active and above the
+  cutoff. A failed recovery start is logged and retains the hold for later retries, including when
+  `max_temp_c` is removed; only a successful start clears the hold.
 - A miner that's **not running** is left alone — dead-process recovery is systemd's job.
 
 Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed
@@ -718,6 +755,12 @@ oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent 
 ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt rebuilds the rollback ref
 in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
 unbounded by it: the D6 throttle is what bounds how often this path fetches and builds at all.
+
+The root upgrade unit keeps its throttle lock and timestamp in
+`/var/lib/rigforge-control-upgrade`, owned by root with mode `0700`, separate from the
+receiver's writable state. Unsafe ownership, permissions, links, file types, or timestamp contents
+fail the upgrade before any fetch or build. Existing throttle files in the receiver's state are
+left untouched and never migrated, so the first upgrade after this change starts a fresh cooldown.
 
 `"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
 The design and the decisions behind it are recorded in
