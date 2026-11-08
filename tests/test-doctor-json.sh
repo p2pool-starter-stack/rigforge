@@ -129,12 +129,12 @@ assert_human_matches_json() {
 }
 
 run_connected() {
-    local name="${1:-connected}" pool_status="${2:-connected	synthetic-pool	4	2}" rc=0
+    local name="${1:-connected}" pool_status="${2:-connected	synthetic-pool	4	2}" config="${3:-$TMP/state/config.json}" rc=0
     (
         PATH="$BIN:$PATH"
         source "$SCRIPT"
         OS_TYPE=Linux
-        CONFIG_JSON="$TMP/state/config.json"
+        CONFIG_JSON="$config"
         MEMINFO="$PROBES/mem-ok"
         CPUINFO="$PROBES/cpuinfo"
         MSR_MODULE_DIR="$PROBES/msr"
@@ -147,7 +147,8 @@ run_connected() {
         DMI_DIR="$PROBES/missing-dmi"
         SMT_CONTROL="$PROBES/missing-smt"
         NODE_SYSFS="$PROBES/missing-nodes"
-        systemctl() { return 0; }
+        systemctl() { [ "${STUB_SERVICE_ACTIVE:-yes}" = yes ]; }
+        curl() { printf '%s' "${STUB_CURL_BODY:-}"; }
         _api_refresh_status() { printf 'refresh current\n'; }
         _read_api_summary() { printf '{"donate_level":0}\n'; }
         _msr_log_status() { printf 'none\t'; }
@@ -242,6 +243,9 @@ rc="$(run_connected daemon-syncing "$(printf 'daemon\tdaemon+http://node:18081\t
 assert_jq "$TMP/daemon-syncing.json" '.exit == 1 and all(.checks[]; .id != "") and ([.checks[] | select(.id == "pool-connection" and .status == "warn")] | length == 1)' "syncing daemon-pool node health keeps the pool-connection ID"
 rc="$(run_connected daemon-down daemon-down)"
 assert_jq "$TMP/daemon-down.json" '.exit == 1 and all(.checks[]; .id != "") and ([.checks[] | select(.id == "pool-connection" and .status == "warn")] | length == 1)' "unavailable daemon-pool node keeps the pool-connection ID"
+printf '{"api":"enabled","DONATION":0,"pools":[{"url":"daemon+http://node.invalid:18081","user":"4synthetic"}]}' >"$TMP/state/daemon-config.json"
+rc="$(STUB_SERVICE_ACTIVE=no STUB_CURL_BODY='{"jsonrpc":"2.0","id":"rigforge","result":{"status":"OK","height":321,"synchronized":true}}' run_connected daemon-stopped "" "$TMP/state/daemon-config.json")"
+assert_jq "$TMP/daemon-stopped.json" 'all(.checks[]; .id != "") and ([.checks[] | select(.id == "pool-connection" and .status == "ok" and (.message | contains("height 321")))] | length == 1)' "stopped daemon-pool doctor reads get_info under the pool-connection ID"
 
 unsupported_rc=0
 PATH="$BIN:$PATH" STUB_OS=Unsupported RIGFORGE_HOME="$TMP/no-config" bash "$SCRIPT" doctor --json >"$TMP/unsupported.json" 2>"$TMP/unsupported.err" || unsupported_rc=$?
