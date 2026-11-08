@@ -308,7 +308,7 @@ ensure_config_exists() {
 
             # Optional stratum password; validate before creating the config.
             IN_PASS=""
-            read -r -p "Stratum password, if your stack requires one (shown by 'pithead status'; Enter for none): " IN_PASS || true
+            read -r -p "Stratum password, if your stack requires one (Pithead dashboard: Connect a miner; Enter for none): " IN_PASS || true
             if [ -n "$IN_PASS" ] && ! [[ "$IN_PASS" =~ ^[[:graph:]]+$ ]]; then
                 error "Stratum password must have no spaces or control characters."
             fi
