@@ -101,6 +101,20 @@ key for it. Every run (re-runs included) rebuilds the config from four sources:
 Because the config is rebuilt from these sources every time, editing the generated `config.json` by
 hand has no effect. Change your repo-root `config.json` (or `tune`) and re-run instead.
 
+Each generation records SHA-256 fingerprints of the source `config.json` and the presence and
+contents of `tune-overrides.json`, plus a UTC timestamp, in `xmrig/build/.rigforge-apply.json` under
+the worker root. `doctor` and `status` compare those fingerprints with the current sources: a match
+is OK, a change warns with `sudo ./rigforge.sh apply`, and a missing or unreadable stamp is
+informational. Older installs gain a stamp on their next generation. Restarting the service alone
+does not regenerate its config or refresh this stamp; XMRig autosaves do not affect the comparison.
+
+This is a conservative source-file check: whitespace edits and changes to settings outside XMRig
+(including restart-free watchdog updates) also warn. It does not prove which config a running
+process loaded. An unreadable or invalid tune overlay, or source fingerprints that differ between
+parsing and generation, cannot establish a new stamp. Avoid editing sources during generation:
+changes that revert before the final fingerprint check are not detected. The API's writable-config
+revision and provenance remain separate.
+
 > Don't put a wallet address in the worker `user` when using Pithead. The stack handles payouts
 > centrally; the pool `user` is just a rig label (it defaults to the hostname so you can tell workers
 > apart on the dashboard).
