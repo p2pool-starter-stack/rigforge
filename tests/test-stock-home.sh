@@ -22,7 +22,7 @@ run_cli() {
 }
 report_failure() {
     printf 'stock-home failure: stage=%s line=%s setup_rc=%s apply_rc=%s http_code=%s\n' "$stage" "$1" "$setup_rc" "$apply_rc" "$http_code" >&2
-    for diagnostic_log in setup.log apply.log failed-apply.log recovered-apply.log journal.log cleanup.log; do
+    for diagnostic_log in setup.log apply.log failed-apply.log recovered-apply.log control-enable.log control-disable.log journal.log cleanup.log; do
         for marker in 'Permission denied' 'command not found' 'rigforge aborted' 'Failed to' 'does not exist' 'Could not resolve' 'Unable to locate package' 'CMake Error' 'fatal:'; do
             if grep -Fq "$marker" "$TEST_DIR/$diagnostic_log" 2>/dev/null; then printf '%s diagnostic: %s\n' "$diagnostic_log" "$marker" >&2; fi
         done
@@ -110,3 +110,22 @@ run_cli apply >"$TEST_DIR/recovered-apply.log" 2>&1
 systemctl is-active --quiet rigforge-api.service
 [ "$(stat -c %a "$home_dir")" = 750 ]
 printf 'stock-home apply GREEN: failed reconcile rejected, service recovered, HOME remains 0750\n'
+stage=control-enable
+command -v nft >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables >/dev/null
+jq '.control = "enabled" | .api_allow_from = "127.0.0.1/32"' "$checkout/config.json" >"$TEST_DIR/config.json"
+cat "$TEST_DIR/config.json" >"$checkout/config.json"
+run_cli apply >"$TEST_DIR/control-enable.log" 2>&1
+systemctl is-active --quiet rigforge-control.service
+[ "$(systemctl show -p Type --value rigforge-control.service)" = notify ]
+[ -f /etc/systemd/system/rigforge-control-apply.path ]
+[ ! -e /etc/systemd/system/rigforge-control-upgrade.path ]
+code=$(printf '%s\n' 'header = "Authorization: Bearer fixture-only-token"' | curl -q --noproxy '*' --config - -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8082/status)
+[ "$code" = 200 ] || [ "$code" = 503 ]
+stage=control-disable
+jq '.control = "disabled"' "$checkout/config.json" >"$TEST_DIR/config.json"
+cat "$TEST_DIR/config.json" >"$checkout/config.json"
+run_cli apply >"$TEST_DIR/control-disable.log" 2>&1
+[ "$(systemctl is-active rigforge-control.service || true)" != active ]
+[ ! -e /etc/systemd/system/rigforge-control.service ]
+[ ! -e /etc/systemd/system/rigforge-control-apply.path ]
+printf 'stock-home control GREEN: real systemd started the notify receiver, then tore control down with remote upgrade off\n'

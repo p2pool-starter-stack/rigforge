@@ -21,6 +21,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-docs-clone-pin.sh
 	bash tests/test-staged-rebuild.sh
 	bash tests/test-tool-pin-watch.sh
+	python3 tests/test-control-readiness.py
 	python3 tests/test-worker-proof.py
 	bash tests/test-worker-proof.sh
 	bash tests/test-coverage-cache.sh
