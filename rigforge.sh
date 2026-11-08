@@ -315,7 +315,7 @@ ensure_config_exists() {
 
             # Optional stratum password; validate before creating the config.
             IN_PASS=""
-            read -r -p "Stratum password, if your stack requires one (shown by 'pithead status'; Enter for none): " IN_PASS || true
+            read -r -p "Stratum password, if your stack requires one (Pithead dashboard: Connect a miner; Enter for none): " IN_PASS || true
             if [ -n "$IN_PASS" ] && ! [[ "$IN_PASS" =~ ^[[:graph:]]+$ ]]; then
                 error "Stratum password must have no spaces or control characters."
             fi
@@ -1424,54 +1424,57 @@ install_api() {
     _wait_sister_api
 }
 _sister_api_failed() { ! warn "The configured sister API could NOT be started; check journalctl -u rigforge-api.service, then re-run 'sudo $0 $1'."; }
-install_control() {
+_control_failed() { warn "The writable control receiver could NOT be reconciled; check journalctl -u rigforge-control.service, then re-run 'sudo $0 $1'."; }
+_stop_control_receiver() {
+    sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
+    if [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" = not-found ] && [ "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" = inactive ]; then return 0; fi
+    sudo systemctl kill --kill-who=all --signal=KILL rigforge-control.service 2>/dev/null || true
+    sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
+    ! warn "Could not stop the control receiver; revocation is NOT confirmed. Stop rigforge-control.service before retrying."
+}
+install_control() (
     [ "$OS_TYPE" == "Linux" ] || return 0
+    trap 'rc=$?; if [ "$rc" -ne 0 ]; then _stop_control_receiver || true; fi; exit "$rc"' EXIT
     local svc="$SYSTEMD_DIR/rigforge-control.service" asvc="$SYSTEMD_DIR/rigforge-control-apply.service" apath="$SYSTEMD_DIR/rigforge-control-apply.path"
     local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service" upath="$SYSTEMD_DIR/rigforge-control-upgrade.path"
+    _stop_control_receiver || return 1
     if [ "${CONTROL_MODE:-disabled}" = "disabled" ]; then
-        if [ -f "$svc" ] || [ -f "$apath" ] || [ -f "$upath" ]; then
-            # #308: tear down the remote-upgrade units alongside the control path — they never outlive it.
-            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path 2>/dev/null || true
-            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath"
-            sudo systemctl daemon-reload 2>/dev/null || true
-            # Under load systemctl can transiently drop the stop half of `disable --now` (real
-            # miner-0 gate, 2026-07-19: unit files removed, receiver left running orphaned — a live
-            # write surface with control "disabled"). One explicit re-stop closes it; no-op when
-            # the stop already landed.
-            sudo systemctl stop rigforge-control.service 2>/dev/null || true
+        local u units=()
+        for u in rigforge-control.service rigforge-control-apply.path rigforge-control-upgrade.path; do [ ! -f "$SYSTEMD_DIR/$u" ] || units+=("$u"); done
+        if [ "${#units[@]}" -gt 0 ]; then
+            sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now "${units[@]}" 2>/dev/null || return 1
+            sudo rm -f "$svc" "$asvc" "$apath" "$usvc" "$upath" && sudo systemctl daemon-reload 2>/dev/null || return 1
             log "Writable control path disabled."
         fi
         return 0
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
-    sudo systemctl stop rigforge-control.service 2>/dev/null || true
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
     CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" \
         envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH' \
-        <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null
+        <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-        <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null
-    sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null
+        <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null || return 1
+    sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null || return 1
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
         RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
             envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-            <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null
-        sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null
+            <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null || return 1
+        sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null || return 1
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
     elif [ -f "$upath" ] || [ -f "$usvc" ]; then
-        sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || true
-        sudo rm -f "$usvc" "$upath"
+        { [ ! -f "$upath" ] || sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null; } && sudo rm -f "$usvc" "$upath" || return 1
     fi
-    install_api_firewall
-    sudo systemctl daemon-reload
-    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-apply.path 2>/dev/null || true
+    install_api_firewall || return 1
+    sudo systemctl daemon-reload || return 1
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-apply.path 2>/dev/null || return 1
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
-        sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || true
+        sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null || return 1
     fi
-    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-control.service 2>/dev/null || true
-    sudo systemctl restart rigforge-control.service 2>/dev/null || true
-}
+    sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-control.service 2>/dev/null || return 1
+    sudo systemctl restart rigforge-control.service || return 1
+)
 
 # #65 (read-only): the thread count the HugePages reservation is sized for — the tuned cpu.rx if
 # `tune` pinned one (so setup + tune stay consistent), or an explicit RIGFORGE_THREADS override (the
@@ -1507,14 +1510,11 @@ _grub_proposed() {
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
 
-    # Co-resident keep-existing guard (#305): when headroom is requested and the LIVE reservation already
-    # backs miner + headroom, leave GRUB untouched (MERGED := CURRENT) rather than shrinking it or
-    # switching page schemes — no reboot. The co-location contract (pithead#593): on a box whose ambient
-    # reservation already covers stack + miner, RigForge changes nothing; the MSR boost, which does need
-    # a reboot, stays a separate opt-in. Done here (not in tune_kernel) so `setup --dry-run` previews the
-    # same no-reboot outcome. Scoped to co-resident mode (headroom > 0) so a normal host's sizing, MSR
-    # enablement, and reboot behaviour are unchanged.
     if [ "${HUGEPAGES_RESERVE_EXTRA_MB:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "${HUGEPAGES_POOL_CEILING_MB:-0}" -gt 0 ] &&
+            [ "$(_cmdline_reserved_2mb "$CURRENT" 2M)" -gt "$((HUGEPAGES_POOL_CEILING_MB / 2))" ]; then
+            return 0
+        fi
         local _need _have
         _need=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
         _have=$(_cmdline_reserved_2mb "$CURRENT")
@@ -1524,13 +1524,8 @@ _grub_proposed() {
     fi
 }
 
-# Total HugePages a kernel cmdline reserves, in 2MB-equivalent pages (a 1G page = 512 × 2MB). Each
-# `hugepages=N` pairs with the preceding `hugepagesz=`, or `default_hugepagesz=` if none precedes it —
-# the kernel's own rule. Used by the #305 co-resident keep-existing guard to tell whether the LIVE
-# reservation already backs miner + headroom.
-_cmdline_reserved_2mb() { # <cmdline> -> reserved 2MB-equivalent pages
-    # One awk statement (not a multi-line string): kcov credits it when a test exercises it.
-    awk '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") t+=n*512; else t+=n } } print t+0 }' <<<"$1"
+_cmdline_reserved_2mb() {
+    awk -v size="${2:-}" '{ cur=""; def=""; t=0; for (i=1;i<=NF;i++) { if ($i ~ /^hugepagesz=/) { split($i,a,"="); cur=a[2] } else if ($i ~ /^default_hugepagesz=/) { split($i,a,"="); def=a[2] } else if ($i ~ /^hugepages=/) { split($i,a,"="); n=a[2]+0; s=(cur!=""?cur:def); if (s=="1G"||s=="1073741824"||s=="1048576K") { if (size!="2M") t+=n*512 } else t+=n } } print t+0 }' <<<"$1"
 }
 
 # 2MB pages the running miner already holds (kB -> pages), 0 when stopped: pages it holds now are
@@ -1970,7 +1965,7 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0
+    local _arg _api_rc=0 _control_rc=0
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
@@ -2011,7 +2006,7 @@ main() {
     CURRENT_STEP="configuring the sister API"
     install_api || _api_rc=1
     CURRENT_STEP="configuring the control path"
-    install_control
+    install_control || _control_rc=1
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
     CURRENT_STEP="linking the rigforge command"
@@ -2020,7 +2015,9 @@ main() {
     _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
     CURRENT_STEP="finishing up"
     finish_deployment
-    [ "$_api_rc" -eq 0 ] || _sister_api_failed setup
+    [ "$_control_rc" -eq 0 ] || _control_failed setup
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed setup || true
+    [ "$_api_rc:$_control_rc" = 0:0 ]
 }
 
 # --- Lifecycle: upgrade & uninstall ---
@@ -2129,7 +2126,7 @@ _upgrade_check() {
 # what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
 # (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
-    local arg _api_rc=0
+    local arg _api_rc=0 _control_rc=0
     for arg in "$@"; do
         case "$arg" in
         --check)
@@ -2157,7 +2154,7 @@ upgrade() {
     install_autotune
     install_watchdog
     install_api || _api_rc=1
-    install_control
+    install_control || _control_rc=1
     install_api_firewall
     if [ "$XMRIG_REBUILD" = true ]; then
         log "Upgraded to XMRig $XMRIG_VERSION."
@@ -2168,7 +2165,9 @@ upgrade() {
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
     _reown_worker
-    [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade
+    [ "$_control_rc" -eq 0 ] || _control_failed upgrade
+    [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
+    [ "$_api_rc:$_control_rc" = 0:0 ]
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -4181,12 +4180,6 @@ _apply_runtime() { # [preserve-run-state]
     _reown_worker
 }
 
-# apply (#11): re-read config.json and regenerate the live XMRig config, then restart — WITHOUT
-# recompiling. The fast path after editing config.json. As the config-change path it also RECONCILES the
-# periodic-autotune timer with config (#95) — so changing the `autotune` target and running `apply`
-# actually takes effect (not just shows the new value) — then reports the target. install_autotune is the
-# autotune analog of restarting the service; its own log is suppressed in favour of the single status line.
-# apply --dry-run (#146): the three-line plan — symmetric with setup --dry-run.
 _apply_plan() {
     parse_config >/dev/null
     _stage_xmrig_config preview || return 1
@@ -4221,13 +4214,13 @@ apply() {
         _shared_host_prepare
     fi
     _apply_runtime preserve-run-state || return 1
-    local _wd_rc=0 _api_rc=0
+    local _wd_rc=0 _api_rc=0 _control_rc=0
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     if [ "$OS_TYPE" = Linux ]; then
         install_autotune >/dev/null 2>&1 || true
         install_watchdog >/dev/null 2>&1 || _wd_rc=1
         install_api || _api_rc=1
-        install_control >/dev/null 2>&1 || true
+        install_control >/dev/null || _control_rc=1
         install_api_firewall || true
         _autotune_apply_notice
     fi
@@ -4241,8 +4234,12 @@ apply() {
         RIGFORGE_APPLY_FAIL_REASON="could not start the sister API"
         warn "The configured sister API could NOT be reconciled; check journalctl -u rigforge-api.service, then re-run 'sudo $0 apply'."
     fi
+    if [ "$_control_rc" -ne 0 ]; then
+        RIGFORGE_APPLY_FAIL_REASON="could not reconcile the control receiver"
+        _control_failed apply
+    fi
     [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ] || : "${RIGFORGE_APPLY_FAIL_REASON:=could not restart the miner}"
-    [ "$_wd_rc" -eq 0 ] && [ "$_api_rc" -eq 0 ] && [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ]
+    [ "$_wd_rc:$_api_rc:$_control_rc" = 0:0:0 ] && [ "${RIGFORGE_RESTART_FAILED:-0}" -eq 0 ]
 }
 
 _apply_pool_check() {
@@ -4701,33 +4698,31 @@ control_apply() {
     return 0
 }
 
-_control_upgrade_throttle_ok() { # <state-dir>
-    local dir="$1" stamp="$1/upgrade-last" now min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
-    now=$(date +%s)
-    mkdir -p "$dir" 2>/dev/null || true
-    exec 9>"$dir/.upgrade-throttle.lock" 2>/dev/null || {
-        warn "control-upgrade: couldn't take the throttle lock under $dir — refusing the upgrade (fail-closed; check the state dir)."
-        return 2
-    }
-    flock 9 2>/dev/null || {
-        warn "control-upgrade: couldn't lock the throttle state under $dir — refusing the upgrade (fail-closed)."
-        exec 9>&-
-        return 2
-    }
-    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
-    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+_control_upgrade_throttle_ok() (
+    local dir="$1" lock="$1/.upgrade-throttle.lock" stamp="$1/upgrade-last" now tmp min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
+    [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2
+    if [ -e "$lock" ] || [ -L "$lock" ]; then
+        [ ! -L "$lock" ] && [ -f "$lock" ] && [ "$(stat -c '%u:%g:%a:%h' "$lock" 2>/dev/null)" = "0:0:600:1" ] || return 2
+    fi
+    umask 077
+    exec 9>>"$lock" 2>/dev/null || return 2
+    flock -x 9 2>/dev/null || return 2
+    if [ -e "$stamp" ] || [ -L "$stamp" ]; then
+        [ ! -L "$stamp" ] && [ -f "$stamp" ] && [ "$(stat -c '%u:%g:%a:%h' "$stamp" 2>/dev/null)" = "0:0:600:1" ] || return 2
+        last=$(cat "$stamp" 2>/dev/null) || return 2
+    fi
+    case "$last" in '' | *[!0-9]*) return 2 ;; esac
+    now=$(date +%s) || return 2
     if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
-        exec 9>&-
         return 1
     fi
-    printf '%s\n' "$now" >"$stamp" 2>/dev/null || {
-        warn "control-upgrade: couldn't record the attempt under $dir — refusing the upgrade (fail-closed)."
-        exec 9>&-
+    tmp=$(mktemp "$dir/.upgrade-last.XXXXXX") || return 2
+    if ! printf '%s\n' "$now" >"$tmp" || ! mv -f "$tmp" "$stamp"; then
+        rm -f "$tmp"
         return 2
-    }
-    exec 9>&-
+    fi
     return 0
-}
+)
 
 # The fetch + reachability + checkout + rebuild half of control-upgrade, split out so the orchestration
 # is unit-testable with this stubbed (like control-apply's _control_do_apply). Returns 0 on a successful
@@ -4820,10 +4815,10 @@ control_upgrade() {
     fi
     # D6 throttle: bound how often a rig fetches/rebuilds. rc 2 = throttle state unavailable — a
     # fail-closed refusal (#321) that must read as a broken rig, not as "throttled — retry later".
-    local thr_rc=0
-    _control_upgrade_throttle_ok "$state" || thr_rc=$?
+    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
+    _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
-        _control_status "$status" failed "$cid" version "throttle state unavailable under $state — refused (fail-closed)" ""
+        _control_status "$status" failed "$cid" version "throttle state unavailable under $throttle — refused (fail-closed)" ""
         warn "control-upgrade: throttle state unavailable — refused."
         return 0
     elif [ "$thr_rc" -ne 0 ]; then
@@ -4858,15 +4853,6 @@ control_upgrade() {
     return 0
 }
 
-# Miner watchdog (#139): ONE health check per invocation — rigforge-watchdog.timer provides the
-# cadence. Two jobs systemd's Restart= can't do: restart a WEDGED miner (process alive, 0 H/s or
-# API dead — two consecutive strikes, so one restart-in-progress or dataset-init blip never
-# triggers it), and an opt-in thermal cutoff (stop above max_temp_c, start again 5°C below — the
-# hysteresis is fixed: big enough to outlast the post-restart heat-up on the rigs we run, small
-# enough not to strand the miner, and one less knob to typo). State lives in $WORKER_ROOT (which
-# _reown_worker already re-owns): a bare-integer strike counter and a thermal-hold marker file.
-# The health probe reuses _read_api_hashrate (ACCESS_TOKEN Bearer handled there, token never
-# logged) and _read_temp (THERMAL_ZONE/TUNE_TEMP_CMD overrides handled there).
 watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
@@ -4875,16 +4861,20 @@ watchdog() {
     _shared_host_start_guard
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
-    # Thermal hold first: WE stopped the miner, so the not-active check below must not short-circuit
-    # the recovery. Start again only once we're 5°C under the cutoff (or the cutoff was removed).
     if [ -f "$hold_f" ]; then
         if [ -z "$MAX_TEMP_C" ]; then
+            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
+                return 0
+            fi
             rm -f "$hold_f"
-            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
             log "watchdog: max_temp_c is no longer set — thermal hold lifted, miner started."
         elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
+            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
+                return 0
+            fi
             rm -f "$hold_f"
-            sudo systemctl start "$SERVICE_NAME" 2>/dev/null || true
             log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, miner started."
         else
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
@@ -4899,7 +4889,10 @@ watchdog() {
     # Thermal cutoff (opt-in). An unreadable temp skips this — a missing sensor must not stop a
     # healthy miner.
     if [ -n "$MAX_TEMP_C" ] && [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t > m) }'; then
-        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        if ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+            warn "watchdog: failed to stop $SERVICE_NAME at ${t}°C — will retry while above max_temp_c=${MAX_TEMP_C}°C."
+            return 0
+        fi
         touch "$hold_f"
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0

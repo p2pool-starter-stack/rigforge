@@ -30,26 +30,70 @@ FLOOR_FILE="$ROOT/tests/coverage-floor.txt"
 OUT="$ROOT/coverage"
 CACHE="$ROOT/.coverage-cache"
 
+rm -rf "$OUT"
+mkdir -p "$OUT"
+
 command -v docker >/dev/null 2>&1 || {
     echo "coverage: docker is required (kcov is Linux/ptrace based, so the suite runs in a container)." >&2
     exit 2
 }
 
 # --- Fetch + verify the pinned static jq -------------------------------------
-mkdir -p "$CACHE"
-JQ_BIN="$CACHE/jq-linux-amd64"
-if [ ! -x "$JQ_BIN" ]; then
+SETUP_START=$SECONDS
+WORK="$(mktemp -d)"
+CACHE_TMP=""
+trap 'rm -rf "$WORK"; [ -z "$CACHE_TMP" ] || rm -f "$CACHE_TMP"' EXIT
+JQ_BIN="$WORK/jq"
+JQ_RELEASE="${JQ_URL%/*}"
+JQ_CACHE="$CACHE/${JQ_RELEASE##*/}-linux-amd64-${JQ_SHA256}"
+CACHE_STATE=miss
+if [ -e "$JQ_CACHE" ] || [ -L "$JQ_CACHE" ]; then
+    if [ ! -f "$JQ_CACHE" ] || [ -L "$JQ_CACHE" ]; then
+        echo "coverage: refusing a non-regular jq cache entry." >&2
+        exit 1
+    fi
+    CACHE_STATE=hit
+    cp "$JQ_CACHE" "$JQ_BIN"
+else
     echo "coverage: fetching pinned static jq..."
     curl -fsSL "$JQ_URL" -o "$JQ_BIN"
-    echo "${JQ_SHA256}  ${JQ_BIN}" | sha256sum -c -
-    chmod +x "$JQ_BIN"
 fi
+VERIFY_START=$SECONDS
+if ! echo "${JQ_SHA256}  ${JQ_BIN}" | sha256sum -c - >/dev/null; then
+    echo "coverage: jq checksum mismatch; remove the invalid cache entry and retry." >&2
+    exit 1
+fi
+VERIFY_SECONDS=$((SECONDS - VERIFY_START))
+chmod 555 "$JQ_BIN"
+if [ "$CACHE_STATE" = miss ]; then
+    mkdir -p "$CACHE"
+    CACHE_TMP="$(mktemp "$CACHE/.jq.XXXXXX")"
+    cp "$JQ_BIN" "$CACHE_TMP"
+    chmod 444 "$CACHE_TMP"
+    mv -f "$CACHE_TMP" "$JQ_CACHE"
+    CACHE_TMP=""
+fi
+echo "coverage: jq cache=$CACHE_STATE setup_seconds=$((SECONDS - SETUP_START)) verification_seconds=$VERIFY_SECONDS"
+
+git rev-parse --verify HEAD >"$OUT/source-commit.txt"
+git ls-files -z --cached --others --exclude-standard |
+    while IFS= read -r -d '' input; do
+        input_type=absent
+        input_digest=-
+        if [ -L "$input" ]; then
+            input_type=symlink
+            input_digest=$(readlink "./$input" | sha256sum)
+        elif [ -f "$input" ]; then
+            input_type="file"
+            [ ! -x "$input" ] || input_type=executable
+            input_digest=$(sha256sum <"$input")
+        fi
+        LC_ALL=C printf '%s %s %q\n' "$input_type" "${input_digest%% *}" "$input"
+    done | LC_ALL=C sort >"$OUT/source-files.sha256"
 
 # --- Run the suite under kcov ------------------------------------------------
-rm -rf "$OUT"
-mkdir -p "$OUT"
 echo "coverage: running tests/run.sh under kcov (this is slower than 'make test')..."
-docker run --rm --security-opt seccomp=unconfined --cap-add SYS_PTRACE \
+docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --cap-add SYS_PTRACE \
     -v "$ROOT:/src" -v "$JQ_BIN:/usr/local/bin/jq:ro" -w /src \
     --entrypoint kcov "$KCOV_IMAGE" \
     --include-pattern=/src/rigforge.sh,/src/util/ \

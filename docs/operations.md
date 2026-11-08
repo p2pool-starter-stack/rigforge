@@ -288,7 +288,7 @@ Each timer tick runs one check (`journalctl -u rigforge-watchdog.service` shows 
   consecutive strikes (~2 ticks, unambiguous) restart the miner; a single blip — a
   restart-in-progress, the dataset re-initializing — never does. Any healthy check resets the count.
 - **Thermal cutoff (only with `max_temp_c` set).** Above the cutoff the miner is stopped and a hold
-  marker written; later checks start it again exactly once the temperature drops below
+  marker written after the stop succeeds; later checks start it again once the temperature drops below
   `max_temp_c - 5` (the 5 °C hysteresis is fixed — enough to outlast the post-restart heat-up
   without stranding the miner). An unreadable sensor skips the thermal check entirely: a missing
   sensor must not stop a healthy miner. A local `apply`, or a config change arriving over the control
@@ -299,6 +299,9 @@ watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
   design (a loaded EPYC sits near 90 °C Tctl in perfectly normal operation), so a damage-avoidance
   cutoff belongs well above the everyday reading, not near it. Editing `max_temp_c` takes effect on
   the next tick — the watchdog re-reads `config.json` every run, no `apply` needed.
+  A failed stop is logged and retried on later ticks while the miner remains active and above the
+  cutoff. A failed recovery start is logged and retains the hold for later retries, including when
+  `max_temp_c` is removed; only a successful start clears the hold.
 - A miner that's **not running** is left alone — dead-process recovery is systemd's job.
 
 Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed
@@ -752,6 +755,12 @@ oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent 
 ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt rebuilds the rollback ref
 in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
 unbounded by it: the D6 throttle is what bounds how often this path fetches and builds at all.
+
+The root upgrade unit keeps its throttle lock and timestamp in
+`/var/lib/rigforge-control-upgrade`, owned by root with mode `0700`, separate from the
+receiver's writable state. Unsafe ownership, permissions, links, file types, or timestamp contents
+fail the upgrade before any fetch or build. Existing throttle files in the receiver's state are
+left untouched and never migrated, so the first upgrade after this change starts a fresh cooldown.
 
 `"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
 The design and the decisions behind it are recorded in
