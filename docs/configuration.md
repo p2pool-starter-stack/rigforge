@@ -222,7 +222,8 @@ those combinations. Its daemon HTTPS transport encrypts traffic without authenti
 use a trusted network or an authenticated tunnel. Doctor's HTTPS RPC check uses curl's normal CA
 verification, so a certificate curl does not trust produces a warning even if the miner connects.
 
-Doctor checks `get_info` with a bounded timeout and reports the node's height and sync state.
+Doctor checks `get_info` with a bounded timeout and reports the node's height and sync state in
+the `pool-connection` check.
 An unreachable, slow or invalid RPC response produces a warning. Apply checks the same node RPC.
 RPC reachability describes the node; it does not prove that the miner is hashing or earning a
 reward. The sister feed labels daemon connections with `connection.mode: "daemon"`; RigForge

@@ -15,7 +15,7 @@ CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh"
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-doctor-json.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
@@ -195,6 +195,7 @@ phase_connect() {
     else
         _connect_bad "no accepted share within ${share_to}s"
     fi
+    e2e_doctor_json
     # Discovery contract: the dashboard identifies workers by the stratum `user` label.
     local user
     user=$(jq -r '.pools[0].user' "$GEN_CFG" 2>/dev/null || true)
