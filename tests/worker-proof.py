@@ -35,7 +35,7 @@ GROUPS = set(ALL_PHASES) | {
 }
 PASS_COUNTS = {
     "connect": 8,
-    "worker-api": 5,
+    "worker-api": 10,
     "api-impact": 3,
     "network": 10,
     "stratum-auth": 4,
