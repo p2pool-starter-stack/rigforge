@@ -51,8 +51,8 @@ if your stack doesn't use one.
 
 - It's the same secret on every rig. The operator finds it on the stack side: the dashboard's
   **Connect a miner** block reveals it, the one-time setup hand-off shows it, and the stack's `.env`
-  stores it as `PROXY_STRATUM_PASSWORD`. `pithead apply`, `setup` and `status` report only whether
-  authentication is on, never the password.
+  stores it as `PROXY_STRATUM_PASSWORD`. `pithead setup`, `up`, `apply` and `status` say whether
+  authentication is on but never print the password.
 - The password travels cleartext over your LAN's plain Stratum, so this is access control (who may mine),
   not encryption. Keep `:3333` on a trusted LAN (the stack's `p2pool.stratum_bind` / a firewall do the
   rest) — or add [stratum over TLS](#stratum-over-tls-optional) below for confidentiality.
