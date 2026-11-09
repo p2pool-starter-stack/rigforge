@@ -12,6 +12,13 @@ h653_wait_for() { # <file>: up to ~5s for a background child's marker
     done
     [ -e "$1" ]
 }
+h653_alive() {
+    kill -0 "$1" 2>/dev/null || return 1
+    local st
+    st="$(sed -n 's/^[0-9]* (.*) \(.\).*/\1/p' "/proc/$1/stat" 2>/dev/null || true)"
+    [ -n "$st" ] || st="$(ps -o stat= -p "$1" 2>/dev/null | cut -c1)"
+    [ "$st" != Z ]
+}
 h653_assert_file_eq() { assert_eq "$1" "$(cat "$2" 2>/dev/null)" "$3"; }
 h653_assert_ge() { assert_eq "$1" "$([ "$2" -ge "$3" ] 2>/dev/null && echo yes)" yes; }
 
@@ -21,13 +28,13 @@ h653_assert_ge() { assert_eq "$1" "$([ "$2" -ge "$3" ] 2>/dev/null && echo yes)"
     hammer_start sh -c "printf '%s' \$\$ >'$H653/green.child'; if [ -e /dev/fd/9 ]; then echo open >'$H653/green.fd9'; else echo closed >'$H653/green.fd9'; fi; exec sleep 60"
     if h653_wait_for "$H653/green.child"; then
         green_child="$(cat "$H653/green.child")"
-        kill -0 "$green_child" 2>/dev/null && printf alive >"$H653/green.pre"
+        h653_alive "$green_child" && printf alive >"$H653/green.pre"
         hammer_stop
         printf '%s' "$?" >"$H653/green.stop-rc"
         printf '%s' "$HAMMER_PIDS" >"$H653/green.left"
         gone=0
         for _ in $(seq 30); do
-            kill -0 "$green_child" 2>/dev/null || {
+            h653_alive "$green_child" || {
                 gone=1
                 break
             }
