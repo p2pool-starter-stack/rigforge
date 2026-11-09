@@ -4,7 +4,7 @@ source "$ROOT/tests/e2e-hammer.sh"
 H653="$(mktemp -d "$SANDBOX/hammer653.XXXXXX")"
 : >"$H653/lock"
 
-h653_wait_for() { # <file>: up to ~5s for a background child's marker
+h653_wait_for() {
     local i=0
     while [ ! -e "$1" ] && [ "$i" -lt 50 ]; do
         sleep 0.1

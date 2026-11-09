@@ -289,18 +289,13 @@ phase_api_impact() {
     }
     local base loaded tol="${E2E_API_IMPACT_TOLERANCE_PCT:-3}"
     base=$(sample_mean 6 5)
-    # Worst-case polling, measured HONESTLY: a real dashboard polls from the STACK HOST, so the
-    # load generator must not itself churn processes on the rig — per-iteration jq/curl spawns
-    # pollute the same L3 the assertion measures (the v1.3 gate spent three iterations discovering
-    # that). One token read, then ONE long-lived curl per client issuing sequential requests via a
-    # URL range: zero client-side spawns between requests, full pressure on the server path.
     local htok hauth=()
     htok=$(jq -r '.ACCESS_TOKEN // empty' "$CFG" 2>/dev/null || true)
     [ -n "$htok" ] && hauth=(-H "Authorization: Bearer $htok")
     for _ in 1 2 3 4; do
         hammer_start curl -fsS --max-time 300 "${hauth[@]}" "http://127.0.0.1:8081/2/summary?[1-10000]"
     done
-    sleep 5 # let the load establish before sampling
+    sleep 5
     loaded=$(sample_mean 6 5)
     hammer_stop
     if [ -z "$base" ] || [ -z "$loaded" ]; then
