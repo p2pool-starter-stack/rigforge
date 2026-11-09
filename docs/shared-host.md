@@ -113,20 +113,23 @@ the profile's ordinary-page rules (no HugePages) are unchanged.
 The kernel must provide pressure-stall information (`/proc/pressure/memory`); without it `apply`
 refuses the profile. At run time a missing or malformed metric stops the miner at once and
 `status` reports `metrics unavailable`; the controller resumes it by the normal rule after the
-metrics return. If the controller itself exits, `ExecStopPost` stops the miner and systemd restarts
+metrics return. If the controller itself exits for any reason, including a config edit that disabled the
+policy before `apply`, `ExecStopPost` stops the miner and records the hold, and systemd restarts
 the controller after ten seconds, and the miner unit is bound to the controller
 (`BindsTo`, ordered after it), so a miner never runs without a live controller. Restarting the
-controller therefore stops mining until the resume rule is met. An invalid `opportunistic` value is
+controller therefore stops mining until the resume rule, including the quiet interval, is met. The
+enabled miner unit still starts at boot before the first sample; the controller yields within
+`enter_samples` intervals if the host has no capacity, so the boot start is not budget-gated. An invalid `opportunistic` value is
 rejected by `apply`.
 
 Independent reasons never override each other. The policy holds a stop it made with an ownership
-marker (`opportunistic.owned` in the worker directory, kept across controller restart and reboot)
+marker (`owned` in the root-owned `/var/lib/rigforge-opportunistic`, kept across controller restart and reboot, next to the controller's state and lock)
 and resumes only a miner it stopped:
 
 | Reason | Who owns it | Policy behavior |
 |---|---|---|
 | Resource pressure | the controller | Stops and resumes as above. |
-| Manual stop | the operator (`rigforge stop`, or a `systemctl stop` the policy did not make) | Never resumed; `rigforge stop`, `start`, `restart` and an `apply` that restarts the miner clear any policy hold first, serialized with the controller. |
+| Manual stop | the operator (`rigforge stop` records a `manual` marker; a `systemctl stop` the policy did not make is treated the same) | Never resumed, even if a thermal hold releases meanwhile; `rigforge stop`, `start`, `restart` and an `apply` that restarts the miner clear any policy hold first, serialized with the controller. |
 | Thermal hold | the watchdog | Never started while the hold file exists; when the watchdog releases it the start decision passes to the policy rather than starting under load. |
 | Maintenance | RigForge builds and helpers inside `rigforge.slice` | No resume while one is running. |
 | Service failure | systemd (`Restart=no`) | Reported as `miner service failed` and never restarted by the policy. |

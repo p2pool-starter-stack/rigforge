@@ -70,8 +70,8 @@ CONFIG_JSON="$D/config.json"
 MEMINFO="$D/meminfo"
 REAL_USER=tester
 SERVICE_NAME=xmrig
-export RIGFORGE_PSI_DIR="$D/psi" RIGFORGE_CGROUP_ROOT="$D/cg" RIGFORGE_PROC_UPTIME="$D/uptime" RIGFORGE_PROC_STAT="$D/stat"
-mkdir -p "$WORKER_ROOT" "$SYSTEMD_DIR" "$D/psi" "$D/cg/rigforge.slice/xmrig.service"
+export RIGFORGE_OPP_DIR="$D/opp" RIGFORGE_PSI_DIR="$D/psi" RIGFORGE_CGROUP_ROOT="$D/cg" RIGFORGE_PROC_UPTIME="$D/uptime" RIGFORGE_PROC_STAT="$D/stat"
+mkdir -p "$WORKER_ROOT" "$SYSTEMD_DIR" "$D/opp" "$D/psi" "$D/cg/rigforge.slice/xmrig.service"
 printf '{"shared_host":{"cpu_quota_percent":100,"memory_max_mb":4096,"opportunistic":true}}\n' >"$CONFIG_JSON"
 SHARED_CPU_QUOTA=100 SHARED_MEMORY_MAX_MB=4096
 OPP=true OPP_INTERVAL=60 OPP_CPU_ENTER=60 OPP_CPU_EXIT=30 OPP_MEM_ENTER=10 OPP_MEM_EXIT=2 OPP_ENTER_N=3 OPP_EXIT_N=3 OPP_QUIET_S=180 OPP_MIN_AVAIL_MB=1024
@@ -80,7 +80,7 @@ _opp_paths
 STEP=60
 T=1000 UP=1000 BUSY=0 IDLE=0 SU=0 HM=0 SM=0
 reset() {
-    rm -f "$D/calls" "$D/start-fails" "$OPP_STATE" "$OPP_OWNED" "$OPP_THERMAL"
+    rm -f "$D/calls" "$D/start-fails" "$OPP_STATE" "$OPP_OWNED" "$OPP_MANUAL" "$OPP_THERMAL"
     : >"$D/calls"
     echo active >"$D/active"
     T=1000 UP=1000 BUSY=0 IDLE=0 SU=0 HM=0 SM=0
@@ -272,8 +272,40 @@ eq 'controller exit with a stopped miner changes nothing' "$(calls stop)" 1
 reset
 printf '{"shared_host":{"cpu_quota_percent":100,"memory_max_mb":4096}}\n' >"$CONFIG_JSON"
 _opp_halt
-eq 'halt is a no-op once the policy is disabled' "$(calls stop)" 0
+eq 'a controller left running by a disabled config still stops the miner' "$(calls stop)" 1
 printf '{"shared_host":{"cpu_quota_percent":100,"memory_max_mb":4096,"opportunistic":true}}\n' >"$CONFIG_JSON"
+
+reset
+ticks 2 0 0 0 0 8000
+_opp_halt
+ticks 3 0 0 0 0 8000
+eq 'a controller restart waits out the quiet interval' "$(calls start)" 0
+ticks 2 0 0 0 0 8000
+eq 'a controller restart resumes after the quiet interval' "$(calls start)" 1
+
+reset
+ticks 2 0 0 0 0 8000
+rm -rf "$D/cg/rigforge.slice"
+_opp_tick
+eq 'missing slice accounting holds an active miner' "$(calls stop)" 1
+eq 'missing slice accounting is reported' "$(phase)" unavailable
+mkdir -p "$D/cg/rigforge.slice/xmrig.service"
+
+reset
+echo active >"$D/active"
+_opp_thermal_stop "$OPP_THERMAL"
+eq 'thermal stop stops the miner' "$(calls stop)" 1
+[ -e "$OPP_THERMAL" ] || fail 'thermal stop did not record the hold'
+_opp_manual systemctl stop xmrig
+[ -e "$OPP_MANUAL" ] || fail 'manual stop was not recorded'
+rm "$OPP_THERMAL"
+_opp_handoff
+[ ! -e "$OPP_OWNED" ] || fail 'thermal release overrode a manual stop'
+ticks 12 0 0 0 0 8000
+eq 'a manual stop during a thermal hold is never resumed' "$(calls start)" 0
+eq 'the manual stop is reported' "$(phase)" manual
+_opp_manual systemctl start xmrig
+[ ! -e "$OPP_MANUAL" ] || fail 'manual start kept the manual stop'
 
 reset
 _opp_gate

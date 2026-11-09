@@ -20,8 +20,8 @@ _opp_parse() {
 _opp_paths() {
     local root="${WORKER_ROOT:-}"
     [ -n "$root" ] || root=$(_worker_root_from_config)
-    [ -n "$root" ] || return 1
-    OPP_STATE="$root/opportunistic.state" OPP_OWNED="$root/opportunistic.owned" OPP_LOCK="$root/opportunistic.lock" OPP_THERMAL="$root/watchdog.thermal-hold"
+    OPP_DIR="${RIGFORGE_OPP_DIR:-/var/lib/rigforge-opportunistic}"
+    OPP_STATE="$OPP_DIR/state" OPP_OWNED="$OPP_DIR/owned" OPP_MANUAL="$OPP_DIR/manual" OPP_LOCK="$OPP_DIR/lock" OPP_THERMAL="${root:+$root/watchdog.thermal-hold}"
 }
 
 _opp_enabled_in_config() {
@@ -29,8 +29,8 @@ _opp_enabled_in_config() {
 }
 
 _opp_manual() {
-    if _opp_enabled_in_config && _opp_paths; then
-        sudo flock -x "$OPP_LOCK" sh -c 'rm -f "$1"; shift; exec "$@"' sh "$OPP_OWNED" "$@"
+    if _opp_enabled_in_config && _opp_paths && [ -d "$OPP_DIR" ]; then
+        sudo flock -x "$OPP_LOCK" sh -c 'rm -f "$1"; if [ "$4" = stop ]; then touch "$2"; else rm -f "$2"; fi; shift 2; exec "$@"' sh "$OPP_OWNED" "$OPP_MANUAL" "$@"
     else
         sudo "$@"
     fi
@@ -60,7 +60,7 @@ _opp_field() {
 
 _opp_sample() {
     local psi="${RIGFORGE_PSI_DIR:-/proc/pressure}" cg="${RIGFORGE_CGROUP_ROOT:-/sys/fs/cgroup}/rigforge.slice" f cs v
-    SMP_SU=0 SMP_SM=0
+    SMP_SU=0 SMP_SM=0 SMP_SLICE=no
     read -r -a f <"${RIGFORGE_PROC_UPTIME:-/proc/uptime}" || return 1
     cs=${f[0]:-}
     [[ "$cs" =~ ^[0-9]+\.[0-9]+$ ]] || return 1
@@ -74,6 +74,7 @@ _opp_sample() {
     _opp_field "$psi/memory" some 4 || return 1
     SMP_HM=$OPP_VALUE
     if [ -d "$cg" ]; then
+        SMP_SLICE=yes
         _opp_field "$cg/cpu.stat" usage_usec 1 || return 1
         SMP_SU=$OPP_VALUE
         _opp_field "$cg/memory.pressure" some 4 || return 1
@@ -159,13 +160,16 @@ _opp_maintenance() {
 
 _opp_tick() {
     _opp_clock
-    _opp_paths || error "Cannot locate the worker directory."
+    _opp_paths
     _opp_load
     local st active=no owned=no up tj ij su hm sm av dj dt busy fg=0 mem=0 window=no why=""
     st=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)
     case "$st" in active | activating | reloading) active=yes ;; deactivating) return 0 ;; esac
     [ -e "$OPP_OWNED" ] && owned=yes
-    if ! _opp_sample; then
+    if [ "$owned" = yes ] && [ "$active" = no ]; then
+        case "$S_PHASE" in waiting | unavailable | thermal | maintenance) ;; *) S_YIELD=$NOW ;; esac
+    fi
+    if ! _opp_sample || { [ "$active" = yes ] && [ "$SMP_SLICE" = no ]; }; then
         if [ "$active" = yes ]; then
             _opp_yield || return 0
             _opp_record unavailable "required pressure metrics are missing or malformed; mining held"
@@ -198,7 +202,7 @@ _opp_tick() {
     fi
     S_CPU=$fg S_MEM=$mem
     if [ "$active" = yes ]; then
-        rm -f "$OPP_OWNED"
+        rm -f "$OPP_OWNED" "$OPP_MANUAL"
         if [ "$fg" -ge "$OPP_CPU_ENTER" ]; then why="other workloads use $fg% of host CPU (yield at $OPP_CPU_ENTER%)"; fi
         if [ -z "$why" ] && [ "$mem" -ge "$OPP_MEM_ENTER" ]; then why="memory stalls at $mem% (yield at $OPP_MEM_ENTER%)"; fi
         if [ -z "$why" ] && [ "$av" -lt "$OPP_MIN_AVAIL_MB" ]; then why="available memory $av MiB is below $OPP_MIN_AVAIL_MB MiB"; fi
@@ -251,7 +255,7 @@ _opp_stopped() {
 }
 
 _opp_locked_tick() {
-    _opp_paths || error "Cannot locate the worker directory."
+    _opp_paths
     (
         flock -x -w 5 9 || exit 0
         _opp_tick
@@ -262,6 +266,8 @@ _opp_run() {
     [ "$OS_TYPE" = Linux ] || error "opportunistic runs on Linux only."
     parse_config
     [ "$OPP" = true ] || error "shared_host.opportunistic is not enabled."
+    _opp_paths
+    sudo install -d -m 0755 "$OPP_DIR"
     local sig now_sig
     sig=$(cksum <"$CONFIG_JSON")
     while :; do
@@ -277,17 +283,26 @@ _opp_run() {
 }
 
 _opp_halt() {
-    _opp_enabled_in_config && _opp_paths || return 0
+    _opp_paths
     systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0
+    sudo mkdir -p "$OPP_DIR"
     sudo flock -x "$OPP_LOCK" sh -c 'touch "$1" && exec systemctl stop "$2"' sh "$OPP_OWNED" "$SERVICE_NAME" || warn "opportunistic: could not stop $SERVICE_NAME after the controller exited."
 }
 
 _opp_handoff() {
     if [ "${OPP:-false}" = true ] && _opp_paths; then
-        sudo flock -x "$OPP_LOCK" touch "$OPP_OWNED"
+        [ -e "$OPP_MANUAL" ] || sudo flock -x "$OPP_LOCK" touch "$OPP_OWNED"
         log "opportunistic: the resource policy starts the miner when host capacity allows."
     else
         sudo systemctl start "$SERVICE_NAME" 2>/dev/null
+    fi
+}
+
+_opp_thermal_stop() {
+    if [ "${OPP:-false}" = true ] && _opp_paths && [ -d "$OPP_DIR" ]; then
+        sudo flock -x "$OPP_LOCK" sh -c 'systemctl stop "$2" 2>/dev/null && touch "$1"' sh "$1" "$SERVICE_NAME"
+    else
+        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null && touch "$1"
     fi
 }
 
@@ -297,6 +312,8 @@ _opp_install_unit() {
         SCRIPT_DIR="$SCRIPT_DIR" RIGFORGE_OPERATOR="$REAL_USER" envsubst '$SCRIPT_DIR $RIGFORGE_OPERATOR' \
             <"$SCRIPT_DIR/systemd/rigforge-opportunistic.service.template" | sudo tee "$unit" >/dev/null
         sudo systemctl daemon-reload || error "Could not reload systemd; miner activation refused."
+        _opp_paths
+        sudo install -d -m 0755 "$OPP_DIR" || error "Could not create $OPP_DIR; miner activation refused."
         sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-opportunistic.service ||
             error "Could not start the opportunistic controller; miner activation refused."
     elif [ -f "$unit" ]; then
@@ -304,7 +321,9 @@ _opp_install_unit() {
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-opportunistic.service 2>/dev/null || true
         sudo rm -f "$unit"
         sudo systemctl daemon-reload 2>/dev/null || true
-        if _opp_paths; then sudo rm -f "$OPP_OWNED" "$OPP_STATE" "$OPP_LOCK"; fi
+        _opp_paths
+        sudo rm -f "$OPP_OWNED" "$OPP_MANUAL" "$OPP_STATE" "$OPP_LOCK"
+        sudo rmdir "$OPP_DIR" 2>/dev/null || true
         log "Opportunistic mining disabled; start a stopped miner with: sudo $0 start"
     fi
 }
@@ -329,7 +348,8 @@ _opp_state_label() {
 
 _opp_observation() {
     OPP_AGE="" OPP_STALE=true
-    _opp_paths && _opp_load || return 0
+    _opp_paths
+    _opp_load
     [ "$S_OBS" -gt 0 ] || return 0
     _opp_clock
     OPP_AGE=$((NOW - S_OBS))

@@ -36,11 +36,10 @@ watchdog() {
     # Thermal cutoff (opt-in). An unreadable temp skips this — a missing sensor must not stop a
     # healthy miner.
     if [ -n "$MAX_TEMP_C" ] && [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t > m) }'; then
-        if ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+        if ! _opp_thermal_stop "$hold_f"; then
             warn "watchdog: failed to stop $SERVICE_NAME at ${t}°C — will retry while above max_temp_c=${MAX_TEMP_C}°C."
             return 0
         fi
-        touch "$hold_f"
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0
     fi
