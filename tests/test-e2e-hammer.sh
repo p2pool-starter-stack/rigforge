@@ -86,3 +86,9 @@ assert_eq "api-impact hammer: each hammer_start records exactly one pid (#653)" 
 h653_assert_ge "api-impact hammer: a running hammer keeps issuing requests back to back (#653)" "$(cat "$H653/ticks.mid" 2>/dev/null)" 2
 assert_eq "api-impact hammer: nothing hits the endpoint after hammer_stop (#653)" "$(cat "$H653/ticks.after" 2>/dev/null)" "$(cat "$H653/ticks.mid" 2>/dev/null)"
 assert_eq "api-impact hammer: the pid list is empty after the stop (#653)" "$(cat "$H653/ticks.left" 2>/dev/null)" ""
+
+PH653="$(sed -n '/^phase_api_impact()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
+assert_contains "phase_api_impact starts its load through hammer_start (#653)" "$PH653" "hammer_start curl"
+assert_contains "phase_api_impact stops its load through hammer_stop (#653)" "$PH653" "hammer_stop"
+assert_absent "phase_api_impact keeps no raw pid-only kill loop (#653)" "$PH653" 'kill "$p"'
+assert_absent "phase_api_impact starts no bare background subshell (#653)" "$PH653" ") &"

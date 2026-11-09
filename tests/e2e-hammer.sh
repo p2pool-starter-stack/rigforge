@@ -2,6 +2,8 @@
 
 hammer_start() {
     [ "$#" -gt 0 ] || return 2
+    local had_m=0
+    case $- in *m*) had_m=1 ;; esac
     set -m
     (
         exec 9<&-
@@ -10,7 +12,7 @@ hammer_start() {
         done
     ) &
     local pid=$!
-    set +m
+    [ "$had_m" = 1 ] || set +m
     HAMMER_PIDS="${HAMMER_PIDS:+$HAMMER_PIDS }$pid"
 }
 
