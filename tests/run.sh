@@ -379,6 +379,7 @@ assert_eq "second-pool socks5 stays on the second pool (#400)" "$(PJ "$c" | jq -
 # A pool may carry BOTH a pin and a proxy — the two re-attach passes must not clobber each other.
 c="$(mkconf p_s5fp "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"socks5\":\"127.0.0.1:9050\"}] }")"
 assert_eq "socks5 and tls-fingerprint coexist (#400)" "$(PJ "$c" | jq -c '[(.[0]."tls-fingerprint" != null), (.[0].socks5 == "127.0.0.1:9050")]')" "[true,true]"
+bash "$ROOT/tests/test-pool-fields.sh" "$SCRIPT" "$ROOT/tests/contract/v1/feed.json" && ok "XMRig optional pool fields round-trip and validate (#527)" || bad "XMRig optional pool fields round-trip and validate (#527)" "suite failed"
 # #400 validation: the socks5 address gets the SAME host:port rules as the pool url. Each of these
 # is rejected for the pool url already; assert the proxy is judged by the same standard.
 c="$(mkconf p_s5noport "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1\"}] }")"
@@ -8870,11 +8871,7 @@ bare_e2e_git=$(grep -nE 'git -C "\$HERE"' "$ROOT/tests/e2e-real.sh" | grep -v 's
 assert_eq "no e2e-real git call omits -c safe.directory (nested sudo breaks git's SUDO_UID exemption)" "$bare_e2e_git" ""
 # ...and the row above is not vacuous: it would also pass on a file with no git calls left in it.
 hgit_calls=$(grep -cE '(^|[^A-Za-z_])_hgit ' "$ROOT/tests/e2e-real.sh")
-if [ "$hgit_calls" -ge 10 ]; then
-    ok "e2e-real still routes its git through the helper ($hgit_calls call sites)"
-else
-    bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"
-fi
+if [ "$hgit_calls" -ge 10 ]; then ok "e2e-real still routes its git through the helper ($hgit_calls call sites)"; else bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"; fi
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"

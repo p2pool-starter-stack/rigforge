@@ -86,10 +86,10 @@ RigForge generates the live XMRig `config.json` in the worker root. There is no 
 supported operator settings belong in your repo-root `config.json`. Every run (re-runs included)
 rebuilds the config from five sources:
 
-1. Your `config.json`: the `pools` array (with `user`/`pass`/`keepalive`/`tls` and failover
-   defaults filled in), the `donate-level`, and the `http` API block (bound to the LAN, read-only,
-   open by default; set `ACCESS_TOKEN` for a bearer token). These are the keys documented in the
-   [reference table](#configuration-reference).
+1. Your `config.json`: the `pools` array (with connection defaults filled in and supported optional
+   fields preserved), the `donate-level`, and the `http` API block (bound to the LAN, read-only, open
+   by default; set `ACCESS_TOKEN` for a bearer token). These are the keys documented in the [reference
+   table](#configuration-reference).
 2. Detected hardware: the per-CPU `cpu`/`randomx` tuning (thread count, `asm`, MSR, NUMA,
    HugePages). RigForge uses XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
@@ -153,20 +153,37 @@ The pool target uses XMRig's native `pools` array with the supported fields belo
 Only `url` is required; every other field has a default, so you specify only what
 you care about:
 
-| Field | Default if blank/omitted |
+| Field | Default and meaning |
 |---|---|
 | `url` | *(required)* — `host:port` (e.g. `pool.supportxmr.com:443` or `your-stack:3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
-| `user` | the machine hostname. For Pithead this is the rig's dashboard label; for a public pool set it to your Monero wallet address (see below). |
+| `user` | the machine hostname. This remains the pool login when `rig-id` is set. For Pithead this is the rig's dashboard label; for a public pool set it to your Monero wallet address (see below). |
 | `pass` | `"x"` — the stratum password / worker name. For an open Pithead stack the default works; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
-| `keepalive` | `true` |
+| `rig-id` | `null` (unset) — a separate worker label for pools that support XMRig's rig identifier. It accepts the same characters as `user` and may be empty. It coexists with `user`: `user` remains the pool login and keeps its hostname default. |
+| `nicehash` | `false` — enable the NiceHash Stratum protocol, where the pool assigns the nonce. Accepts only JSON `true` or `false`. |
+| `algo` | `null` (automatic) — pin a RandomX algorithm. Accepted values are `rx/0`, `rx/2`, `rx/wow`, `rx/arq`, `rx/graft`, `rx/sfx`, and `rx/yada`; any other value is rejected. |
+| `coin` | `null` (automatic) — let XMRig choose the algorithm for a RandomX coin by case-insensitive name or code: `monero`/`XMR`, `arqma`/`ARQ`, `graft`/`GRFT`, `wownero`/`WOW`, `zephyr`/`ZEPH`, `townforge`, or `yadacoin`/`YDA`. Unknown values and non-RandomX coins such as Sumokoin and Ravencoin are rejected. |
+| `keepalive` | `true` — send Stratum keepalive requests to prevent an idle connection timing out. |
 | `tls` | `false` — set `true` when you connect on the pool's TLS/SSL port. |
 | `tls-fingerprint` | `null` (no pin) — the pool cert's SHA-256 as 64 hex chars. XMRig does no CA validation on stratum TLS, so the pin is the only server authentication; without it, TLS encrypts but doesn't authenticate. Requires `"tls": true`. See [Pithead Integration › Stratum over TLS](pithead-integration.md#stratum-over-tls-optional). |
+| `sni` | `false` — send the pool hostname through TLS SNI for a name-based TLS endpoint. Accepts only JSON `true` or `false`; use it with `tls`. |
 | `socks5` | `null` (direct connection) — dial this pool through a SOCKS5 proxy at `host:port`, e.g. `"127.0.0.1:9050"` for a local Tor client. Same address rules as `url`. XMRig sends the pool's **hostname** to the proxy rather than resolving it first, so a v3 `.onion` stratum works with no extra setting. RigForge points the miner at a proxy; running one is yours to arrange. |
-| `enabled` | `true` |
+| `enabled` | `true` — allow XMRig to connect to this entry in the failover list. |
 | `daemon` | Omitted for Stratum; a strict boolean. Set `true` for solo mining. A `daemon+` URL implies `true`; explicit `false` with that scheme is refused. |
 | `daemon-poll-interval` | Omitted; XMRig defaults to 1000 milliseconds. A positive JSON integer no greater than 9007199254740991, only valid for a daemon pool. |
 | `daemon-job-timeout` | Omitted; XMRig defaults to 15000 milliseconds. A positive JSON integer no greater than 9007199254740991, only valid for a daemon pool. |
 | `daemon-zmq-port` | Omitted; optionally use the node's ZMQ notifications. An integer in 1–65535, only valid for a daemon pool. |
+
+Absent or `null` `rig-id`, `nicehash`, `algo`, `coin`, and `sni` values are omitted from the generated config.
+For `nicehash` and `sni`, an explicit `false` is preserved while `null` means unset. The algorithm and
+coin allowlists are pinned to XMRig v6.26.0's `src/base/crypto/Algorithm.cpp` and
+`src/base/crypto/Coin.cpp` at commit `b2ca72480c58d197e18c885d9fc1a0c8d517e60a`.
+
+XMRig defers to the pool when it supports algorithm negotiation, ignoring `algo` and `coin`.
+Avoid `coin` with NiceHash, where the pool controls which coin is mined.
+
+`status` and `doctor` report the live algorithm when it is not `rx/0`. HugePages sizing and the
+offline tune benchmark remain based on `rx/0`; RigForge makes no performance guarantee for another
+RandomX variant.
 
 Two common setups follow; pick the one that matches where you're mining.
 

@@ -449,19 +449,10 @@ parse_config() {
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # tls-fingerprint (#115): re-attach the pin from the raw config, emitted ONLY when set — adding
-    # it unconditionally (null) would change the generated config shape for every existing rig on
-    # its next apply. A second single-line pass rather than lines inside the map above: kcov can't
-    # attribute in-string program lines, and the patch-coverage gate needs every new line hittable.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
-
-    # Re-attach socks5 only when set, using the same shape/coverage rule as tls-fingerprint.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | {"rig-id": .["rig-id"], nicehash, algo, coin, sni} | with_entries(select(.value != null))]] | transpose | map(.[0] + .[1])' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # #265: jq's `//` treats an explicit false like null/missing, so the map above rewrites an
-    # operator's "keepalive": false / "enabled": false to the true default. Restore explicit falses
-    # from the raw config in another single-line pass (same kcov rationale as #115 above). Only a
-    # boolean false matches `== false`; non-boolean junk flows through `//` untouched to validation.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON") || error "Could not parse daemon pool fields."
@@ -492,14 +483,20 @@ parse_config() {
         if [ -n "$_user" ] && ! [[ "$_user" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
             error "Pool user '$_user' has invalid characters (allowed: letters, digits, . _ - : @ +)."
         fi
-        # #415: `pass` must be a STRING, checked before the charset rule below can be fooled. The
-        # feed masks a set password to the {"__secret__": true} sentinel and _control_commit
-        # resolves it back, but nothing stops a marker — or any other JSON object — reaching
-        # config.json by a hand edit or by a future writer that forgets to resolve one. `jq -r`
-        # renders an object as its JSON text, and the empty object `{}` renders as two graph
-        # characters on one line, so it passes the check below and becomes the rig's literal
-        # password. Type-check here so the guarantee does not depend on every writer remembering:
-        # the same posture as the non-string tls-fingerprint rejection below.
+        if ! jq -e 'has("rig-id") == false or (."rig-id" | type == "string" and (test("[^A-Za-z0-9._:@+-]") | not))' <<<"$_pool" >/dev/null 2>&1; then
+            error "Pool rig-id must be a string using only these characters: letters, digits, . _ - : @ + (or empty)."
+        fi
+        for _f in nicehash sni; do
+            if ! jq -e --arg f "$_f" 'has($f) == false or (.[$f] | type == "boolean")' <<<"$_pool" >/dev/null 2>&1; then
+                error "Pool $_f must be true or false."
+            fi
+        done
+        if ! jq -e '.algo == null or (.algo | IN("rx/0", "rx/2", "rx/wow", "rx/arq", "rx/graft", "rx/sfx", "rx/yada"))' <<<"$_pool" >/dev/null 2>&1; then
+            error "Pool algo must be a supported RandomX algorithm (rx/0, rx/2, rx/wow, rx/arq, rx/graft, rx/sfx, rx/yada): HugePages reservation and tune --bench assume a RandomX scratchpad."
+        fi
+        if ! jq -e '.coin == null or (.coin | ascii_downcase | IN("monero", "xmr", "arqma", "arq", "graft", "grft", "wownero", "wow", "zephyr", "zeph", "townforge", "yadacoin", "yda"))' <<<"$_pool" >/dev/null 2>&1; then
+            error "Pool coin must be a supported RandomX coin (monero/XMR, arqma/ARQ, graft/GRFT, wownero/WOW, zephyr/ZEPH, townforge, yadacoin/YDA): HugePages reservation and tune --bench assume a RandomX scratchpad."
+        fi
         if [ "$(jq -r '.pass | type' <<<"$_pool")" != "string" ]; then
             error "Pool pass must be a string (got a $(jq -r '.pass | type' <<<"$_pool")). A masked-secret marker from the API feed is not a password — send the real value, or omit 'pass' entirely."
         fi
@@ -741,7 +738,7 @@ parse_config() {
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
     local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host xmrig"
-    local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
+    local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 rig-id nicehash algo coin sni daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
         case "$k" in _*) continue ;; esac
@@ -3973,10 +3970,11 @@ mac_disable() {
     fi
 }
 
-# One-glance live summary from a single /2/summary fetch (#143). Facts only, no ✓/! judgment
-# markers (that's doctor's job); plain aligned lines stay grep-friendly. Never sudo, never prompts.
+_pool_algorithm() {
+    jq -r '.algo | select(type == "string" and . != "" and . != "rx/0")' 2>/dev/null || true
+}
 _status_api_summary() {
-    local body hs pool up acc rej hp
+    local body hs pool up acc rej hp pa
     body=$(_read_api_summary)
     if [ -z "$body" ]; then
         echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
@@ -3990,6 +3988,8 @@ _status_api_summary() {
     [ -n "${hs:-}" ] || return 0 # half-up API / unparseable body: stay quiet, platform block follows
     printf '  %-10s %s H/s\n' "Hashrate:" "$hs"
     printf '  %-10s %s\n' "Pool:" "$pool"
+    pa=$(printf '%s' "$body" | _pool_algorithm)
+    [ -n "$pa" ] && printf '  Algorithm: %s\n' "$pa"
     printf '  %-10s %s\n' "Uptime:" "$(_render_duration "$up")"
     printf '  %-10s %s accepted / %s rejected\n' "Shares:" "$acc" "$rej"
     [ -n "$hp" ] && printf '  %-10s %s\n' "HugePages:" "$hp"
@@ -5447,7 +5447,7 @@ doctor() {
     fi
 
     if [ -f "$CONFIG_JSON" ]; then
-        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool
+        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool pa
         pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
         # Advisory only: a listening TCP socket does not prove SOCKS/Tor or mining works.
         while IFS= read -r proxy; do
@@ -5462,6 +5462,8 @@ doctor() {
             _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed" socks-proxy
         done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
+            pa=$(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _read_api_summary | _pool_algorithm)
+            [ -n "$pa" ] && _ck_info "Algorithm: $pa" pool-algorithm
             if ! ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _check_donation; then
                 issues=$((issues + 1))
             fi
