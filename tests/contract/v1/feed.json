@@ -68,6 +68,9 @@
       "throttling": null,
       "xmp": null
     },
+    "opportunistic": {
+      "mode": "disabled"
+    },
     "power": {
       "hs_per_watt": null,
       "watts": null

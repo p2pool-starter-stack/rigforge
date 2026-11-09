@@ -15,14 +15,14 @@ watchdog() {
                 return 0
             fi
             rm -f "$hold_f"
-            log "watchdog: max_temp_c is no longer set — thermal hold lifted."
+            log "watchdog: max_temp_c is no longer set — thermal hold lifted, ${HANDOFF_NOTE:-miner started}."
         elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
             if ! _opp_handoff; then
                 warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
                 return 0
             fi
             rm -f "$hold_f"
-            log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted."
+            log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, ${HANDOFF_NOTE:-miner started}."
         else
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
         fi

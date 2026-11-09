@@ -292,7 +292,7 @@ _opp_halt() {
 _opp_handoff() {
     if [ "${OPP:-false}" = true ] && _opp_paths; then
         [ -e "$OPP_MANUAL" ] || sudo flock -x "$OPP_LOCK" touch "$OPP_OWNED"
-        log "opportunistic: the resource policy starts the miner when host capacity allows."
+        HANDOFF_NOTE="miner start left to the resource policy"
     else
         sudo systemctl start "$SERVICE_NAME" 2>/dev/null
     fi
@@ -309,8 +309,11 @@ _opp_thermal_stop() {
 _opp_install_unit() {
     local unit="$SYSTEMD_DIR/rigforge-opportunistic.service"
     if [ "${OPP:-false}" = true ]; then
-        SCRIPT_DIR="$SCRIPT_DIR" RIGFORGE_OPERATOR="$REAL_USER" envsubst '$SCRIPT_DIR $RIGFORGE_OPERATOR' \
-            <"$SCRIPT_DIR/systemd/rigforge-opportunistic.service.template" | sudo tee "$unit" >/dev/null
+        local body
+        body=$(<"$SCRIPT_DIR/systemd/rigforge-opportunistic.service.template")
+        body=${body//\$SCRIPT_DIR/"$SCRIPT_DIR"}
+        body=${body//\$RIGFORGE_OPERATOR/"$REAL_USER"}
+        printf '%s\n' "$body" | sudo tee "$unit" >/dev/null
         sudo systemctl daemon-reload || error "Could not reload systemd; miner activation refused."
         _opp_paths
         sudo install -d -m 0755 "$OPP_DIR" || error "Could not create $OPP_DIR; miner activation refused."
