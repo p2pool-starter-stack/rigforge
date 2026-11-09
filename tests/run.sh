@@ -42,13 +42,16 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
+bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
+assert_rc "config apply state detects source drift (#445)" "$?" 0
+bash "$ROOT/tests/test-hugepages-ceiling.sh"
+assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
 for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest; do
     bash "$ROOT/tests/test-$selftest.sh"
     assert_rc "XMRig $selftest regression (#533)" "$?" 0
 done
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
-
 # Snapshot this before the suite for the final tree-hygiene check.
 PYCACHE_PRE=absent
 [ -e "$ROOT/util/__pycache__" ] && PYCACHE_PRE=present
@@ -123,7 +126,7 @@ echo "${STUB_NPROC:-4}"
 EOF
     cat >"$bin/stat" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
+case "$*" in *"%u:%g:%a:%h"*) echo 0:0:600:1 ;; *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
 EOF
     cat >"$bin/hostname" <<'EOF'
 #!/usr/bin/env bash
@@ -207,11 +210,11 @@ EOF
 
 STUBS="$SANDBOX/stubs"
 make_stubs "$STUBS"
-RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing"
-mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING"
-export RIGFORGE_CONTROL_PROCESSING
-assert_rc "privileged consumers share a lock and refuse a planted processing symlink (#479)" "$(
-    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT"
+RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing" RIGFORGE_CONTROL_UPGRADE_STATE="$SANDBOX/upgrade-state"
+mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING" "$RIGFORGE_CONTROL_UPGRADE_STATE"
+export RIGFORGE_CONTROL_PROCESSING RIGFORGE_CONTROL_UPGRADE_STATE
+assert_rc "privileged consumers reject unsafe processing and throttle state (#479/#627)" "$(
+    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT" && bash "$ROOT/tests/test-upgrade-throttle-security.sh" "$SCRIPT" >/dev/null
     echo $?
 )" "0"
 assert_rc "appliance pool policy rejects edits and preserves tuning (#583)" "$(
@@ -380,6 +383,7 @@ assert_eq "second-pool socks5 stays on the second pool (#400)" "$(PJ "$c" | jq -
 # A pool may carry BOTH a pin and a proxy — the two re-attach passes must not clobber each other.
 c="$(mkconf p_s5fp "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"socks5\":\"127.0.0.1:9050\"}] }")"
 assert_eq "socks5 and tls-fingerprint coexist (#400)" "$(PJ "$c" | jq -c '[(.[0]."tls-fingerprint" != null), (.[0].socks5 == "127.0.0.1:9050")]')" "[true,true]"
+bash "$ROOT/tests/test-pool-fields.sh" "$SCRIPT" "$ROOT/tests/contract/v1/feed.json" && ok "XMRig optional pool fields round-trip and validate (#527)" || bad "XMRig optional pool fields round-trip and validate (#527)" "suite failed"
 # #400 validation: the socks5 address gets the SAME host:port rules as the pool url. Each of these
 # is rejected for the pool url already; assert the proxy is judged by the same standard.
 c="$(mkconf p_s5noport "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1\"}] }")"
@@ -2707,10 +2711,9 @@ assert_contains "max_temp_c 30 rejected (never restarts)" "$(parse_fails "$c")" 
 c="$(mkconf wd_thot "{ $POOL, \"max_temp_c\": \"hot\" }")"
 assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_temp_c must be"
 
-# #139: the watchdog() check itself. One check per run; restart only on the SECOND consecutive
-# unhealthy check (0 H/s and API-unreachable both count); thermal stop above max_temp_c with a
-# 5°C-hysteresis restart; unreadable temp or empty max_temp_c skips thermal entirely. systemctl
-# calls asserted via CALL_LOG; parse_config is shadowed so the test drives state directly.
+bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
+assert_rc "thermal watchdog command retries (#631)" "$?" 0
+
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
 run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]
@@ -8849,7 +8852,7 @@ assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "
 # The backup the rollback branch would need: a `null` here fails this as surely as a wrong path does.
 assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
-source "$ROOT/tests/test-control-upgrade.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
 
 # Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
 # its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
@@ -8872,6 +8875,7 @@ bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
 assert_eq "control writable-keys match across rigforge.sh + control-server.py (#236)" "$bash_ckeys" "$py_ckeys"
 echo "== black-box: the control server (#236) =="
+bash "$ROOT/tests/test-control-revocation.sh" && ok "receiver revocation fails closed (#626)" || bad "receiver revocation fails closed (#626)" "regression failed"
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the control-server wire suite runs in the other CI jobs"
 else
@@ -9524,7 +9528,7 @@ fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
 assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
 assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
-
+source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="

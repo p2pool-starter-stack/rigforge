@@ -12,23 +12,23 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh"
-
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh" # phase_control (#509), phase_access_tokens (#516), phase_api_allowlist (#617)
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-doctor-json.sh" && source "$HERE/tests/e2e-worker-proof.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
+    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_assert pass
     PASS=$((PASS + 1))
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
 }
 bad() {
+    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_assert fail
     FAIL=$((FAIL + 1))
     printf '  \033[1;31m✗\033[0m %s\n' "$1" >&2
     return 1
 }
-skip() { printf '  \033[1;33m∙\033[0m SKIP: %s\n' "$1"; }
-phase() { printf '\n\033[1m== e2e-pithead: %s ==\033[0m\n' "$1"; }
+skip() { proof_skip "$1" && printf '  \033[1;33m∙\033[0m SKIP: %s\n' "$1"; }
+phase() { proof_phase "${FUNCNAME[1]}" && printf '\n\033[1m== e2e-pithead: %s ==\033[0m\n' "$1"; }
 die() {
     printf '\033[31me2e-pithead: %s\033[0m\n' "$1" >&2
     exit 2
@@ -121,13 +121,14 @@ _cleanup() {
     }
     [ "$cleanup_ok" != 1 ] || rm -f "$SAVED_CFG" || cleanup_ok=0
     [ "${REPLAY_RUNNER_LOCK:-0}" = 1 ] || rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" || true
+    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_cleanup "$cleanup_ok"
     [ "$cleanup_ok" = 1 ]
 }
 snapshot_config() {
     SAVED_CFG="$(mktemp)"
     cp "$CFG" "$SAVED_CFG"
     systemctl is-active --quiet xmrig 2>/dev/null && SAVED_XMRIG_ACTIVE=1 || SAVED_XMRIG_ACTIVE=0
-    trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; exit "$E2E_EXIT_RC"' EXIT
+    trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; if [ "${E2E_PROOF_ACTIVE:-0}" = 1 ]; then proof_finish "$E2E_EXIT_RC" || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; fi; exit "$E2E_EXIT_RC"' EXIT
 }
 
 set_cfg() { # <jq program> [soft] [jq options...] -- soft: return 1 instead of dying when the edit or the apply fails (#514)
@@ -195,6 +196,7 @@ phase_connect() {
     else
         _connect_bad "no accepted share within ${share_to}s"
     fi
+    e2e_doctor_json
     # Discovery contract: the dashboard identifies workers by the stratum `user` label.
     local user
     user=$(jq -r '.pools[0].user' "$GEN_CFG" 2>/dev/null || true)
@@ -333,7 +335,7 @@ phase_api_impact() {
 
 phase_network() {
     phase "network — nothing listens or leaks beyond what the config defines"
-    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0
+    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0 settle polls=0
     # Wait up to 45s, then require the pool to be XMRig's only established TCP peer.
     remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
     while [ -z "$remotes" ] && [ "$waited" -lt 45 ]; do
@@ -360,11 +362,7 @@ phase_network() {
     ss -Htln 2>/dev/null | grep -q ':8081 ' && ok ":8081 listening from control alone, api never set (#507)" || bad ":8081 not listening though control implies api (#507)"
     set_cfg '.api = "enabled"'
     sleep 3
-    if phase_api_allowlist; then
-        ok "API allowlist rejects a second source while mining"
-    else
-        bad "API allowlist live probe failed"
-    fi
+    if phase_api_allowlist; then ok "API allowlist rejects a second source while mining"; else bad "API allowlist live probe failed"; fi
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
         ok ":8081 listening while api enabled"
     else
@@ -376,8 +374,16 @@ phase_network() {
     else
         bad "miner has unexpected listeners: $xl"
     fi
+    settle=$SECONDS
+    while :; do
+        k2=$(api8081 --max-time 5 http://127.0.0.1:8081/2/summary)
+        polls=$((polls + 1))
+        printf '%s' "$k2" | jq -e '.rigforge.xmrig_api != "unreachable"' >/dev/null 2>&1 && break
+        [ $((SECONDS - settle)) -ge 30 ] && break
+        sleep 2
+    done
+    printf 'summary-settle: polls=%s elapsed_s=%s\n' "$polls" "$((SECONDS - settle))"
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
-    k2=$(api8081 http://127.0.0.1:8081/2/summary)
     printf '%s\n' "${k1:-null}" "${k2:-null}" | summary_contract_diagnostics
     if [ -n "$k1" ] && printf '%s' "$k2" | jq -e '(.rigforge | type) == "object" and (.generated_at | type) == "string" and (.generated_at as $g | [try ($g | fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch empty] == [$g])' >/dev/null 2>&1 &&
         [ "$k1" = "$(printf '%s' "$k2" | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)" ]; then
@@ -521,6 +527,7 @@ summary() {
     printf '0 failed\n'
 }
 
+proof_preflight "${1:-all}"
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
@@ -528,6 +535,7 @@ require_preflight "$@"
 replay_lock "${1:-all}"
 
 snapshot_config
+proof_begin
 case "${1:-all}" in
 connect) phase_connect ;;
 worker-api) phase_worker_api ;;
@@ -551,4 +559,5 @@ all)
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT
+[ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_finish "$FAIL" || bad "worker proof incomplete or invalid"
 summary
