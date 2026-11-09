@@ -357,11 +357,7 @@ _opp_observation() {
     if [ "$OPP_AGE" -le "$((OPP_INTERVAL * 3))" ]; then OPP_STALE=false; fi
 }
 
-_opp_waiting() {
-    [ "${OPP:-false}" = true ] || return 1
-    _opp_observation
-    [ "$OPP_STALE" = false ] && [ "$S_PHASE" = waiting ]
-}
+_opp_waiting() { [ "${OPP:-false}" = true ] && _opp_observation && [ "$OPP_STALE" = false ] && [ "$S_PHASE" = waiting ]; }
 
 _opp_report() {
     [ "${OPP:-false}" = true ] || return 0
