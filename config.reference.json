@@ -44,6 +44,13 @@
     "hugepages_pool_ceiling_mb": 0,
     "threads": null,
     "shared_host": false,
+    "xmrig": {
+        "randomx": {
+            "mode": "fast",
+            "init": -1,
+            "init-avx2": -1
+        }
+    },
 
     "HOME_DIR": "DYNAMIC_HOME"
 }

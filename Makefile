@@ -43,7 +43,7 @@ test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) â
 smoke: ## Release pre-tag gate (quick): real xmrig --bench proves the built worker hashes (manual, Linux-only)
 	bash tests/smoke.sh
 
-coverage: ## Measure rigforge.sh + util/proposed-grub.sh + util/config-apply-state.sh coverage via kcov and enforce the committed floor (needs Docker)
+coverage: ## Measure product Bash coverage via kcov and enforce the committed floor (needs Docker)
 	bash tests/coverage.sh
 
 e2e-real: ## Release pre-tag gate (full): real build+tune+bench+doctor+uninstall on a rig (root; see RELEASING.md)
