@@ -15,19 +15,19 @@ _check_randomx_memory() {
     local settings available page_size free_1g=0 reserved_1g=0
     RX_MODE=""
     if [ ! -f "$CONFIG_JSON" ]; then
-        _ck_info "RandomX mode unavailable — no config.json"
+        _ck_info "RandomX mode unavailable — no config.json" randomx-mode
         return 0
     fi
     if ! settings=$(_read_randomx_config 2>/dev/null); then
-        _ck_warn "Invalid xmrig.randomx settings — check mode, init and init-avx2"
+        _ck_warn "Invalid xmrig.randomx settings — check mode, init and init-avx2" randomx-mode
         return 1
     fi
     RX_MODE=$(jq -r '.mode' <<<"$settings")
-    _ck_info "RandomX mode: $RX_MODE"
+    _ck_info "RandomX mode: $RX_MODE" randomx-mode
     [ "$RX_MODE" = fast ] && [ "${1:-n}" != y ] || return 0
     available=$(awk '/^MemAvailable:/ { available=$2; seen=1 } /^MemFree:/ { free=$2; seen_free=1 } /^HugePages_Free:/ { pages=$2 } /^HugePages_Rsvd:/ { reserved=$2 } /^Hugepagesize:/ { size=$2 } END { if (!seen && !seen_free) exit; if (pages < reserved) pages=reserved; printf "%.0f", (seen ? available : free) + (pages-reserved)*(size ? size : 2048) }' "$MEMINFO" 2>/dev/null) || available=""
     if [ -z "$available" ]; then
-        _ck_info "Available memory unknown — cannot check the RandomX fast dataset"
+        _ck_info "Available memory unknown — cannot check the RandomX fast dataset" randomx-memory
         return 0
     fi
     [ ! -r "${HUGEPAGES_1G_NR%/*}/free_hugepages" ] || read -r free_1g <"${HUGEPAGES_1G_NR%/*}/free_hugepages" || true
@@ -37,7 +37,7 @@ _check_randomx_memory() {
         available=$((available + (free_1g - reserved_1g) * 1048576))
     fi
     if [ "$available" -lt 2129920 ]; then
-        _ck_warn "RandomX fast needs at least 2080 MiB for its dataset; only $((available / 1024)) MiB available including free HugePages — set xmrig.randomx.mode to light or auto before starting"
+        _ck_warn "RandomX fast needs at least 2080 MiB for its dataset; only $((available / 1024)) MiB available including free HugePages — set xmrig.randomx.mode to light or auto before starting" randomx-memory
         return 1
     fi
 }
