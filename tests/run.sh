@@ -8871,11 +8871,7 @@ bare_e2e_git=$(grep -nE 'git -C "\$HERE"' "$ROOT/tests/e2e-real.sh" | grep -v 's
 assert_eq "no e2e-real git call omits -c safe.directory (nested sudo breaks git's SUDO_UID exemption)" "$bare_e2e_git" ""
 # ...and the row above is not vacuous: it would also pass on a file with no git calls left in it.
 hgit_calls=$(grep -cE '(^|[^A-Za-z_])_hgit ' "$ROOT/tests/e2e-real.sh")
-if [ "$hgit_calls" -ge 10 ]; then
-    ok "e2e-real still routes its git through the helper ($hgit_calls call sites)"
-else
-    bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"
-fi
+if [ "$hgit_calls" -ge 10 ]; then ok "e2e-real still routes its git through the helper ($hgit_calls call sites)"; else bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"; fi
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
@@ -9534,6 +9530,7 @@ fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
 assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
 assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
+(set -- && source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
 source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
