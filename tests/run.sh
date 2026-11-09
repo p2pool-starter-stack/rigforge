@@ -9533,10 +9533,10 @@ fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
 assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
 assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
+(set -- && source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
 source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
-(set -- && source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
 if [ "$PYCACHE_PRE" = present ]; then
     echo "  SKIP: util/__pycache__ predates this run — it cannot be attributed to the suite"
