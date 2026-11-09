@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh" # phase_control (#509), phase_access_tokens (#516), phase_api_allowlist (#617)
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-doctor-json.sh" && source "$HERE/tests/e2e-worker-proof.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-doctor-json.sh" && source "$HERE/tests/e2e-worker-proof.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-hammer.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
@@ -93,6 +93,7 @@ require_preflight() {
     [ -n "$GEN_CFG" ] || die "no generated worker config found — run setup first."
 }
 
+# shellcheck disable=SC2034
 SAVED_CFG="" SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS=""
 _restore_xmrig() {
     local active=0
@@ -105,9 +106,9 @@ _restore_xmrig() {
     [ "$active" = "$SAVED_XMRIG_ACTIVE" ]
 }
 _cleanup() {
-    local cleanup_ok=1 p
+    local cleanup_ok=1
     refresh_profile_finish || cleanup_ok=0
-    for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
+    hammer_stop
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
         "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
         :
@@ -286,7 +287,7 @@ phase_api_impact() {
         # shellcheck disable=SC2086 # word-splitting the sample list is the point
         printf '%s\n' $vals | awk '{s += $1; n++} END {if (n > 0) printf "%.1f", s / n}'
     }
-    local base loaded p tol="${E2E_API_IMPACT_TOLERANCE_PCT:-3}"
+    local base loaded tol="${E2E_API_IMPACT_TOLERANCE_PCT:-3}"
     base=$(sample_mean 6 5)
     # Worst-case polling, measured HONESTLY: a real dashboard polls from the STACK HOST, so the
     # load generator must not itself churn processes on the rig — per-iteration jq/curl spawns
@@ -297,17 +298,11 @@ phase_api_impact() {
     htok=$(jq -r '.ACCESS_TOKEN // empty' "$CFG" 2>/dev/null || true)
     [ -n "$htok" ] && hauth=(-H "Authorization: Bearer $htok")
     for _ in 1 2 3 4; do
-        (
-            while :; do
-                curl -fsS --max-time 300 "${hauth[@]}" "http://127.0.0.1:8081/2/summary?[1-10000]" >/dev/null 2>&1 || true
-            done
-        ) &
-        HAMMER_PIDS="$HAMMER_PIDS $!"
+        hammer_start curl -fsS --max-time 300 "${hauth[@]}" "http://127.0.0.1:8081/2/summary?[1-10000]"
     done
     sleep 5 # let the load establish before sampling
     loaded=$(sample_mean 6 5)
-    for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
-    HAMMER_PIDS=""
+    hammer_stop
     if [ -z "$base" ] || [ -z "$loaded" ]; then
         bad "could not sample hashrate around the load window (base='$base' loaded='$loaded')"
         return 0
