@@ -10,19 +10,19 @@ watchdog() {
     t=$(_read_temp)
     if [ -f "$hold_f" ]; then
         if [ -z "$MAX_TEMP_C" ]; then
-            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+            if ! _opp_handoff; then
                 warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
                 return 0
             fi
             rm -f "$hold_f"
-            log "watchdog: max_temp_c is no longer set — thermal hold lifted, miner started."
+            log "watchdog: max_temp_c is no longer set — thermal hold lifted."
         elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
-            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
+            if ! _opp_handoff; then
                 warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
                 return 0
             fi
             rm -f "$hold_f"
-            log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, miner started."
+            log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted."
         else
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
         fi

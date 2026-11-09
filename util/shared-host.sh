@@ -2,11 +2,11 @@
 # shellcheck disable=SC2034
 
 _shared_host_parse() {
-    SHARED_HOST=false SHARED_CPU_QUOTA=0 SHARED_MEMORY_MAX_MB=0
+    SHARED_HOST=false SHARED_CPU_QUOTA=0 SHARED_MEMORY_MAX_MB=0 OPP=false
     local profile
     profile=$(jq -c 'if has("shared_host") then .shared_host else false end' "$CONFIG_JSON") || error "Cannot read shared_host."
     [ "$profile" != false ] || return 0
-    jq -e 'type == "object" and (keys - ["cpu_quota_percent", "memory_max_mb", "existing_host_tuning"] | length == 0)
+    jq -e 'type == "object" and (keys - ["cpu_quota_percent", "memory_max_mb", "existing_host_tuning", "opportunistic"] | length == 0)
         and (.cpu_quota_percent | type == "number" and floor == . and . >= 1 and . <= 10000)
         and (.memory_max_mb | type == "number" and floor == . and . >= 3072 and . <= 1048576)
         and ((has("existing_host_tuning") | not) or .existing_host_tuning == "preserve")' <<<"$profile" >/dev/null ||
@@ -14,6 +14,7 @@ _shared_host_parse() {
     SHARED_HOST=true
     SHARED_CPU_QUOTA=$(jq -r .cpu_quota_percent <<<"$profile")
     SHARED_MEMORY_MAX_MB=$(jq -r .memory_max_mb <<<"$profile")
+    _opp_parse "$profile"
 }
 
 _shared_host_config() {
@@ -77,6 +78,10 @@ _shared_host_supported() {
     }
     [ "$((total - huge))" -ge "$(((SHARED_MEMORY_MAX_MB + 1024) * 1024))" ] || {
         echo "shared_host must leave at least 1024 MiB outside its ceiling and existing HugeTLB pools"
+        return 1
+    }
+    [ "${OPP:-false}" != true ] || [ -r "${RIGFORGE_PSI_DIR:-/proc/pressure}/memory" ] || {
+        echo "shared_host opportunistic mining requires kernel pressure-stall information (/proc/pressure/memory)"
         return 1
     }
 }
@@ -163,6 +168,7 @@ _shared_host_unit() {
         return
     fi
     sed '/^ExecStartPre=.* frequency-set -g performance$/d'
+    _opp_unit_section
     cat <<EOF
 
 # RigForge shared-host profile
@@ -202,6 +208,7 @@ _shared_host_check() {
             ($cap == null or ((.cpu.rx | type == "array" and length >= 1 and length <= $cap and all(.[]; type == "number" and floor == . and . >= -1)) and
                 .cpu["*"] == .cpu.rx and all(.cpu | to_entries[]; .key == "rx" or .key == "*" or (.value | type != "array" and type != "object"))))' "$cfg" >/dev/null ||
             error "Shared-host miner configuration is unsafe or stale; run apply."
+        _opp_gate
     fi
     log "Shared host: $reason"
 }
@@ -243,6 +250,7 @@ _shared_host_start_guard() {
 }
 
 _shared_host_remove() {
+    OPP=false _opp_install_unit
     local slice="$SYSTEMD_DIR/rigforge.slice" cg="${RIGFORGE_CGROUP_ROOT:-/sys/fs/cgroup}/rigforge.slice" procs=""
     grep -qFx 'Description=RigForge shared-host resource budget' "$slice" 2>/dev/null || return 0
     if [ -d "$cg" ]; then procs=$(find "$cg" -name cgroup.procs -exec cat {} + 2>/dev/null) || return 0; fi
@@ -293,4 +301,5 @@ _shared_host_report() {
         echo 'Miner is stopped; startup rechecks the controls before initialization'
     fi
     echo 'HugePages, MSR/cache tuning and governor changes are disabled; host settings are preserved'
+    _opp_report
 }

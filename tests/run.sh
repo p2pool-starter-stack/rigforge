@@ -763,6 +763,7 @@ assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests
 for _sh in "shared-host profile $PATH" "shared-host-lifecycle lifecycle $STUBS:$PATH"; do
     if read -r _f _l _p <<<"$_sh" && _o="$(PATH="$_p" bash "$ROOT/tests/test-$_f.sh" "$SCRIPT" 2>&1)"; then ok "shared-host $_l regressions (#577)"; else bad "shared-host $_l regressions (#577)" "$(printf '%s' "$_o" | tail -5)"; fi
 done
+if _o="$(bash "$ROOT/tests/test-opportunistic.sh" "$SCRIPT" 2>&1)"; then ok "opportunistic mining regressions (#578)"; else bad "opportunistic mining regressions (#578)" "$(printf '%s' "$_o" | tail -5)"; fi
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 echo "== unit: DONATION validation (new) =="
@@ -3273,7 +3274,7 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
 # sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|opportunistic-run|opportunistic-halt|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'

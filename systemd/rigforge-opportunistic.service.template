@@ -1,0 +1,13 @@
+[Unit]
+Description=RigForge opportunistic mining controller
+
+[Service]
+Type=simple
+Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
+ExecStart=$SCRIPT_DIR/rigforge.sh opportunistic-run
+ExecStopPost=+$SCRIPT_DIR/rigforge.sh opportunistic-halt
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -354,7 +354,9 @@ RigForge also wraps these so you don't have to remember the unit name:
 `./rigforge.sh status` / `logs` (no root needed) and `sudo ./rigforge.sh start` / `stop` / `restart`.
 
 The service is enabled at install, so it starts automatically on boot (and after the post-setup
-reboot).
+reboot). With the shared-host `opportunistic` option the policy may hold the miner stopped for host
+capacity; `status` and `doctor` say so, and `start`, `stop` and `restart` clear the hold
+(see [Shared-host profile](shared-host.md#opportunistic-mining-opt-in)).
 
 > On macOS there is no systemd service. RigForge builds and configures XMRig but you run it yourself. See
 > [Running on macOS](#running-on-macos) below.

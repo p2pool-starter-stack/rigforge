@@ -142,6 +142,8 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 
 # shellcheck source=util/shared-host.sh
 source "$(_script_dir)/util/shared-host.sh"
+# shellcheck source=util/opportunistic.sh
+source "$(_script_dir)/util/opportunistic.sh"
 # shellcheck source=util/randomx.sh
 source "$(_script_dir)/util/randomx.sh"
 
@@ -1219,6 +1221,7 @@ _render_xmrig_unit() {
     WORKER_ROOT="$WORKER_ROOT" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
         envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
         <"$SCRIPT_DIR/systemd/xmrig.service.template" | _shared_host_unit | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
+    _opp_install_unit
 }
 
 install_service() {
@@ -1253,10 +1256,10 @@ install_service() {
             log "Service unit installed and enabled — the caller decides whether to restart."
         elif [ "$XMRIG_REBUILD" = true ] || [ "${SHARED_HOST:-false}" = true ]; then
             log "Restarting XMRig service..."
-            sudo systemctl restart "$SERVICE_NAME.service"
+            _opp_manual systemctl restart "$SERVICE_NAME.service"
         else
             log "No rebuild — ensuring the service is running (no restart)."
-            sudo systemctl start "$SERVICE_NAME.service"
+            _opp_manual systemctl start "$SERVICE_NAME.service"
         fi
         [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
         SERVICE_INSTALLED=true
@@ -3964,14 +3967,14 @@ svc_start() {
         mac_start
         return
     }
-    sudo systemctl start "$SERVICE_NAME" && log "Started $SERVICE_NAME."
+    _opp_manual systemctl start "$SERVICE_NAME" && log "Started $SERVICE_NAME."
 }
 svc_stop() {
     [ "$OS_TYPE" = "Linux" ] || {
         mac_stop
         return
     }
-    sudo systemctl stop "$SERVICE_NAME" && log "Stopped $SERVICE_NAME."
+    _opp_manual systemctl stop "$SERVICE_NAME" && log "Stopped $SERVICE_NAME."
 }
 svc_restart() {
     _shared_host_start_guard
@@ -3980,7 +3983,7 @@ svc_restart() {
         mac_start
         return
     }
-    sudo systemctl restart "$SERVICE_NAME" && log "Restarted $SERVICE_NAME."
+    _opp_manual systemctl restart "$SERVICE_NAME" && log "Restarted $SERVICE_NAME."
 }
 svc_enable() {
     [ "$OS_TYPE" = "Linux" ] || {
@@ -4100,7 +4103,7 @@ _apply_runtime() { # [preserve-run-state]
         [ -f "$WORKER_ROOT/watchdog.thermal-hold" ] && why=" (the watchdog is holding it below max_temp_c)"
         log "Applied config. $SERVICE_NAME was stopped$why, so it was left stopped — the new config takes effect at the next 'sudo $0 start'."
     else
-        sudo systemctl restart "$SERVICE_NAME" || RIGFORGE_RESTART_FAILED=1
+        _opp_manual systemctl restart "$SERVICE_NAME" || RIGFORGE_RESTART_FAILED=1
         [ "$RIGFORGE_RESTART_FAILED" -eq 0 ] && log "Applied config and restarted $SERVICE_NAME." || warn "Config regenerated, but restarting $SERVICE_NAME failed."
     fi
     _reown_worker
@@ -5144,7 +5147,7 @@ _api_control_json() {
 }
 _api_control_history_json() { for f in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/changes"/*.json; do [ -f "$f" ] && jq -c '{change_id, status, reason}' "$f" 2>/dev/null; done | jq -cs '.' || true; } # #519: per-file so one malformed entry drops only itself; || true as the loop's rc leaks through pipefail
 _api_rigforge_block() {                                                                                                                                                                                            # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$(cat "$SCRIPT_DIR/RIGFORGE_REF" 2>/dev/null || echo '')" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$(cat "$SCRIPT_DIR/RIGFORGE_REF" 2>/dev/null || echo '')" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson opportunistic "$(_opportunistic_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, opportunistic: $opportunistic, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
 }
 # Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {
@@ -5283,6 +5286,8 @@ doctor() {
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         svc_up=y
         _ck_ok "service '$SERVICE_NAME' is active" service
+    elif _opp_waiting; then
+        _ck_info "service '$SERVICE_NAME' is waiting for host capacity (opportunistic mining) — see the resource profile above" service
     else
         _ck_warn "service '$SERVICE_NAME' is not active — start it with: sudo $0 start" service
         issues=$((issues + 1))
@@ -6037,6 +6042,8 @@ Info:
              the rigforge-control-apply.path unit ("control": "enabled" in config.json)
   control-upgrade (internal) fetch + redeploy a newer RigForge release staged by the control server —
              run by the rigforge-control-upgrade.path unit ("control_upgrade": "enabled" in config.json)
+  opportunistic-run, opportunistic-halt (internal) run the shared-host opportunistic mining controller and
+             stop the miner when it exits — driven by the rigforge-opportunistic unit (shared_host.opportunistic)
   support-bundle  collect doctor/version/configs/log-tail into a redacted tarball for bug reports
   completion print a bash/zsh tab-completion script: completion bash|zsh
   version    print the RigForge version  (-v, --version)
@@ -6051,7 +6058,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
     # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
     case "${1:-setup}" in
-    autotune | watchdog | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | version | --version | -v | help | -h | --help)
+    autotune | watchdog | opportunistic-run | opportunistic-halt | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | version | --version | -v | help | -h | --help)
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
@@ -6080,6 +6087,8 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         ;;
     autotune) autotune ;;
     watchdog) watchdog ;;
+    opportunistic-run) _opp_run ;;
+    opportunistic-halt) _opp_halt ;;
     doctor)
         shift
         doctor_command "$@" || exit 1
