@@ -367,4 +367,20 @@ _opp_install_unit
 [ ! -e "$OPP_OWNED" ] || fail 'disabling kept policy ownership'
 case "$(echo '[Service]' | _shared_host_unit)" in *BindsTo*) fail 'dedicated unit is bound to the controller' ;; esac
 
+mkdir -p "$D/copy" "$D/home"
+cp -R "$ROOT/rigforge.sh" "$ROOT/util" "$ROOT/systemd" "$ROOT/VERSION" "$D/copy/"
+printf '{"HOME_DIR":"%s","pools":[{"url":"h:3333"}],"shared_host":{"cpu_quota_percent":100,"memory_max_mb":4096,"opportunistic":true}}\n' "$D/home" >"$D/copy/config.json"
+printf '#!/bin/sh\nexec "$@"\n' >"$D/bin/sudo"
+printf '#!/bin/sh\ncase "$*" in *" 9") exit 0 ;; esac\nshift 2\nexec "$@"\n' >"$D/bin/flock"
+printf '#!/bin/sh\nexit 1\n' >"$D/bin/sleep"
+printf '#!/bin/sh\nif [ "$1" = -s ]; then echo Linux; else exec /usr/bin/uname "$@"; fi\n' >"$D/bin/uname"
+chmod +x "$D/bin/sudo" "$D/bin/flock" "$D/bin/sleep" "$D/bin/uname"
+reset
+(cd "$D/copy" && RIGFORGE_HOME="$D/copy" bash ./rigforge.sh opportunistic-halt >/dev/null 2>&1)
+eq 'the halt verb stops the miner' "$(calls stop)" 1
+[ -e "$OPP_OWNED" ] || fail 'the halt verb did not record the hold'
+reset
+(cd "$D/copy" && RIGFORGE_HOME="$D/copy" bash ./rigforge.sh opportunistic-run >/dev/null 2>&1) || true
+[ -f "$OPP_STATE" ] || fail 'the run verb did not take a sample'
+
 printf 'opportunistic regressions passed\n'
