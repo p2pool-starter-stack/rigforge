@@ -113,6 +113,9 @@ pithead#235):
 Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
 show `rigforge.stamp` as the baked release provenance instead.
 
+Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
+show `rigforge.stamp` as the baked release provenance instead.
+
 When a token is set, `:8081` accepts either the exact bearer for existing clients or the
 lowercase hex HMAC-SHA256 derived with that token as the key and `rigforge:api-read:v1` as the
 message. The derived bearer grants reads only: `:8082` rejects it and continues to require an exact

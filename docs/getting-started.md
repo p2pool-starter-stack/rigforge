@@ -1,6 +1,6 @@
 # Getting Started
 
-Install and tune an XMRig worker from a fresh machine. A single script, `rigforge.sh`, drives the
+Install and tune an XMRig worker from a fresh machine. The `rigforge.sh` entrypoint and bundled `util/` helpers drive the
 whole process, and most of it is automated.
 
 > **TL;DR**

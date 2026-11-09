@@ -46,6 +46,10 @@ bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
 assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
+for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest; do
+    bash "$ROOT/tests/test-$selftest.sh"
+    assert_rc "XMRig $selftest regression (#533)" "$?" 0
+done
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
 # Snapshot this before the suite for the final tree-hygiene check.
@@ -2463,6 +2467,7 @@ assert_eq "apply with control disabled removes the path watcher (#236)" "$([ -f 
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1234.5"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
@@ -2470,11 +2475,6 @@ rc=$?
 assert_rc "bench exits 0" "$rc" "0"
 assert_contains "bench reports hashrate" "$out" "1234.5 H/s"
 
-# #75: bench must strip `http`, `pools` and `log-file` from the config it hands to `xmrig --bench`. On
-# real hardware `log-file` sends the result off stdout (we capture nothing), `pools` makes XMRig mine
-# after the benchmark, and `http` keeps the API alive — so it never exits and the capture hangs. The
-# generated build config has all three; this fake fails if it still sees any, so a passing bench proves
-# the strip.
 assert_eq "build config has pools + http (precondition)" "$(J "$U/home/worker/xmrig/build/config.json" '(.pools != null) and (.http != null)')" "true"
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
@@ -2485,6 +2485,7 @@ if [ -n "$cfg" ] && grep -qE '"(http|pools|log-file)"' "$cfg" 2>/dev/null; then
     exit 7
 fi
 echo "miner speed 10s/60s/15m 4242.0 n/a n/a H/s max 4242.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "4242.0"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
@@ -2492,13 +2493,11 @@ rc=$?
 assert_rc "bench strips http/pools/log-file (#75)" "$rc" "0"
 assert_contains "bench (stripped) reports hashrate" "$out" "4242.0 H/s"
 
-# #61: the smoke check relies on `bench` failing loudly on a dirty run (so a broken build/config is
-# caught before tagging) and surfacing the XMRig output for diagnosis.
-# (a) XMRig hit MEMORY ALLOC FAILED (dataset/HugePages/memlock) — even with a hashrate present, fail.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "MEMORY ALLOC FAILED: mmap failed"
 echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1234.5"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
@@ -2521,6 +2520,7 @@ assert_contains "bench surfaces the no-hashrate XMRig output" "$out" "aborted be
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1234.5"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 
@@ -5367,13 +5367,6 @@ disable_calls="$(grep -F '[systemctl] disable' "$UNA/calls.log" 2>/dev/null)"
 assert_eq "appliance uninstall: every systemctl disable is --runtime (#353)" \
     "$(printf '%s\n' "$disable_calls" | grep -cv -- --runtime)" "0"
 
-# #54: tune is an iterative, noise-aware, multi-knob hill-climb. It sweeps prefetch_mode, cpu.yield and
-# the RandomX thread count (cpu.rx, around L3/2 MB), measures each candidate as the MEDIAN of N runs,
-# memoizes so a combo is never benchmarked twice, climbs from two seeds (auto + educated guess), and
-# writes the winner to a SEPARATE tune-overrides.json (merged into the config) — config.json untouched.
-# A fake xmrig emits a hashrate that depends on all three knobs so a clear global optimum exists:
-# prefetch=2, yield=false, threads=4 (the L3=8 MiB center; nproc=4). The fake also logs every call so we
-# can prove memoization (no candidate benchmarked twice).
 echo "== black-box: tune (iterative hill-climb, multi-knob) (#54) =="
 TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
 cp "$ROOT/VERSION" "$TN/"
@@ -5383,16 +5376,10 @@ mkdir -p "$TN/util"
 cp "$ROOT/util/proposed-grub.sh" "$TN/util/" && chmod +x "$TN/util/proposed-grub.sh"
 BD="$TN/home/worker/xmrig/build"
 mkdir -p "$BD"
-# #62: give every tune run in this block a controlled, HEALTHY clock source. The fake xmrig isn't a real
-# load, so real sysfs (e.g. an idle CI runner) would read a low clock and falsely flag every candidate as
-# throttled. Export a fake ~96%-of-max sysfs; the #62 throttle test overrides these to simulate a throttle.
 mkdir -p "$TN/cpuok/cpu0/cpufreq"
 printf '5000000\n' >"$TN/cpu_max"
 printf '4800000\n' >"$TN/cpuok/cpu0/cpufreq/scaling_cur_freq"
 export CPUFREQ_MAX="$TN/cpu_max" CPU_SYSFS="$TN/cpuok"
-# A built config for `tune` to sweep. Seeded with the knob values the in-script generator emits
-# (#55 removed the worker-config template this used to be copied from), so the hill-climb's "guess"
-# seed reads the same prefetch/yield/1gb-pages/priority starting points it would in production.
 cat >"$BD/config.json" <<'EOF'
 { "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
 EOF
@@ -5413,6 +5400,7 @@ base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; 0) base=1000 ;; *) base=
 tt="$t"; [ "$tt" = "-1" ] && tt=3                    # XMRig auto lands slightly off the L3 center
 pen=$(((tt > 4 ? tt - 4 : 4 - tt) * 30)); base=$((base - pen))   # RandomX peaks at threads=4
 echo "miner speed 10s/60s/15m $base.0 n/a n/a H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 cat >"$TN/config.json" <<EOF
@@ -5466,18 +5454,6 @@ assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
 
-# #277: a bench candidate whose xmrig stub emits no H/s line must not spam the ERR trap. _bench_once's
-# hashrate grep is allowed to find nothing under pipefail — the run records that candidate as 0 H/s and
-# carries on; only the run's own failures should ever look like an abort. Discriminates on the swept
-# prefetch value (same config-reading idiom as the stub in the #54 block above) so the seed reads 0 H/s
-# but the swept prefetch=2 candidate hashes for real, letting the search finish with a winner (rc 0) — a
-# run that legitimately never hashes is a separate, correctly-reported failure, not what this test is
-# after. No TUNE_POWER_CMD override here: RAPL_DIR is the suite-wide no-hardware fake (line 65), so this
-# run also exercises _xmrig_bench's RAPL sampling with no powercap sysfs present — the same ERR-trap class
-# #277 fixed for the hashrate grep, fixed for RAPL sampling by #290.
-# Linux-gated (#292): the cpufreq/bench-window plumbing this drives is Linux sysfs — on a real Mac the
-# path never runs, and the simulated fixture proved timing-flaky on the slow bash-3.2 macOS CI runner.
-# The Linux CI job + the kcov container still run it on every push.
 if [ "$(uname -s)" != Linux ]; then
     echo "  SKIP: tune bench black-box timing tests run in the Linux CI jobs (#292)"
 else
@@ -5498,6 +5474,7 @@ if [ "$m" = "1" ]; then
     echo "miner speed 10s/60s/15m n/a n/a n/a"
 else
     echo "miner speed 10s/60s/15m 1000.0 n/a n/a H/s max 1000.0 H/s"
+    printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 fi
 EOF
     chmod +x "$ZH/home/worker/xmrig/build/xmrig"
@@ -5539,6 +5516,7 @@ if [ "$n" = "2" ]; then
     exit 1
 fi
 echo "miner speed 10s/60s/15m 1000.0 n/a n/a H/s max 1000.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 EOF
 chmod +x "$TCBD/xmrig"
 cat >"$TC/config.json" <<EOF
@@ -5565,7 +5543,7 @@ cp "$ROOT/util/proposed-grub.sh" "$TT/util/" 2>/dev/null
 printf '5000000\n' >"$TT/cpu_max"
 printf '4800000\n' >"$TT/cpuok/cpu0/cpufreq/scaling_cur_freq"
 printf '{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": false }, "cpu": { "yield": false, "priority": 2 } }\n' >"$TT/home/worker/xmrig/build/config.json"
-printf '#!/usr/bin/env bash\necho "miner speed 10s 1100.0 H/s max 1100.0 H/s"\n' >"$TT/home/worker/xmrig/build/xmrig"
+printf '#!/usr/bin/env bash\nprintf "bench benchmark finished in 1.000 seconds (1100.0 h/s) hash sum = \\033[1;32m898B6E0431C28A6B\\033[0m\\n"\n' >"$TT/home/worker/xmrig/build/xmrig"
 chmod +x "$TT/home/worker/xmrig/build/xmrig"
 tune_target() { # <autotune-config-value> [tune-flags...]
     local atv="$1"
@@ -5656,6 +5634,7 @@ cat >"$BD/xmrig" <<'EOF'
 c="${JITTER_CTR:-/tmp/jit}"; n=0; [ -f "$c" ] && n=$(cat "$c"); echo $((n + 1)) >"$c"
 case $((n % 3)) in 0) d=-10 ;; 1) d=0 ;; *) d=10 ;; esac
 echo "speed $((1100 + d)).0 H/s max $((1100 + d)).0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$((1100 + d)).0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=3 JITTER_CTR="$TN/jit" \
@@ -5682,6 +5661,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000; case "$m" in 2) base=1100 ;; 1) base=1080 ;; *) base=1050 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_MIN_DELTA=0.5 \
@@ -5710,6 +5690,7 @@ echo "$i" >"$ctr"
 case "$m" in 2) c=102 ;; 1) c=100 ;; *) c=98 ;; esac
 case "$i" in 1) v=$((c - 10)) ;; 2) v=$((c - 5)) ;; 3) v=$c ;; 4) v=$((c + 5)) ;; 5) v=$((c + 10)) ;; *) v=$c ;; esac
 echo "speed $v.0 H/s max $v.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$v.0"
 EOF
 chmod +x "$BD/xmrig"
 CTRDIR="$TN/ctr"
@@ -5737,6 +5718,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 g=$(jq -r '.randomx."1gb-pages"' "$cfg" 2>/dev/null)
 base=1000; [ "$g" = true ] && base=1100
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
@@ -5751,6 +5733,7 @@ echo "== black-box: tune power/temp recording (#54) =="
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1200.0 H/s max 1200.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1200.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
@@ -5856,6 +5839,7 @@ cat >"$BD/xmrig" <<'EOF'
 trap 'touch "$PWR_DONE"' EXIT       # idle is marked only AFTER the run ends
 echo "speed 1500.0 H/s max 1500.0 H/s"
 sleep "${PWR_SLEEP:-0.6}"           # stay loaded long enough for the poll loop to sample power
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1500.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR" "$TN/pwr_done"
@@ -5879,6 +5863,7 @@ echo "== black-box: tune built-in RAPL power path (#81) =="
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1300.0 H/s max 1300.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1300.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR"
@@ -5952,6 +5937,7 @@ m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 if [ "$m" = 2 ]; then echo 200 >"$PWF"; hr=1200; else echo 100 >"$PWF"; hr=1000; fi
 echo "speed $hr.0 H/s max $hr.0 H/s"
 sleep "${PWR_SLEEP:-0.8}" # stay loaded so the poll loop's (correct) power samples dominate the up-front one
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$hr.0"
 EOF
 chmod +x "$BD/xmrig"
 PWF="$TN/pwf"
@@ -5974,6 +5960,7 @@ echo "== black-box: tune --efficiency falls back without a power source (#79) ==
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1100.0 H/s max 1100.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1100.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR"
@@ -6072,6 +6059,7 @@ m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000
 case "$m" in 2) base=1100 ;; 1) base=1050 ;; *) base=1000 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 ACTR="$TN/actr"
@@ -6108,6 +6096,7 @@ cat >"$FQBIN" <<'EOF'
 echo "speed 1000.0 H/s max 1000.0 H/s"
 for _ in $(seq 1 500); do [ -f "$FQDONE" ] && break; sleep 0.02; done # bounded: never outlive the test
 echo "benchmark finished"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 EOF
 chmod +x "$FQBIN"
 freqwrite() { ( # <freq sample kHz>... -> BENCH_FREQ_FILE content, via the real _xmrig_bench freq-write path
@@ -6154,6 +6143,7 @@ m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000
 case "$m" in 2) base=1100 ;; 1) base=1000 ;; *) base=950 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 mkdir -p "$TN/cpulow/cpu0/cpufreq"
@@ -6205,6 +6195,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 w=$(jq -r '.randomx.wrmsr' "$cfg" 2>/dev/null)
 base=1000; [ "$w" = "${WRMSR_WIN:-false}" ] && base=1100
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 wrmsr_run() { # <WRMSR_WIN> [tune_wrmsr value; OMIT the arg entirely to leave TUNE_WRMSR unset = default]
@@ -6247,6 +6238,7 @@ EOF
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1000.0 H/s max 1000.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR"
@@ -6831,6 +6823,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; *) base=1000 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEARCH=grid \
@@ -6855,6 +6848,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 hj=$(jq -r '.cpu."huge-pages-jit"' "$cfg" 2>/dev/null)
 base=1000; [ "$hj" = true ] && base=1100
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \

@@ -60,6 +60,8 @@ you like to your stack's single endpoint.
   while `status` shows live hashrate, pool, uptime, and shares.
 - `bios` is a guided, resumable walkthrough of the BIOS/UEFI changes RigForge can't make itself
   (XMP/EXPO, SMT, PBO/Eco Mode), and re-verifies what took after the reboot.
+- `stress --minutes 30` checks Linux stability after BIOS changes; `bench` checks the computed hash
+  as well as speed, and offline tuning rejects candidates that fail verification.
 - `backup` and `restore` snapshot your config and tuning; `support-bundle` collects a redacted
   tarball for bug reports; `completion` prints bash/zsh tab-completion.
 - Running a [Pithead](https://github.com/p2pool-starter-stack/pithead) fleet? An opt-in,
@@ -175,7 +177,8 @@ RigForge runs as root, so it's worth being explicit about what it does and doesn
   GitHub releases API, but only when you run it — nothing is scheduled and nothing else calls it.)
   The only outbound traffic is
   to *your* pool, to the pinned XMRig source on GitHub (cloned and commit-verified before building),
-  and to your distro's package mirrors.
+  and to your distro's package mirrors. Explicit `bench --submit` and `bench --verify ID` also contact
+  the upstream benchmark service; submission publishes hardware and performance information.
 - The XMRig donation defaults to **0%**. Set `"DONATION"` to a nonzero percentage to support
   the XMRig developers. After the one-time build migration on upgrade, lowering it takes effect
   with `apply`, without rebuilding. Explicit values in `config.json` are preserved.
