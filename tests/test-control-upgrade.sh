@@ -366,3 +366,13 @@ else
     assert_eq "control_upgrade proceeds once the rig lock is released (#670)" "$(st "$sFree")" "applied"
     assert_eq "released upgrade stamped the throttle" "$([ -e "$lentF/upgrade-state/upgrade-last" ] && echo y || echo n)" "y"
 fi
+assert_eq "rig_lock never marks the harness as rig owner for its whole run (#670)" \
+    "$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh" "$ROOT/tests/e2e-pithead.sh" "$ROOT/tests/e2e-control-replay.sh" | grep -c rigforge-rig-owner)" "0"
+for ownerFn in "e2e-pithead.sh:_cleanup" "e2e-real.sh:_control_cleanup" "e2e-real.sh:_upgrade_cleanup"; do
+    assert_contains "${ownerFn#*:} removes the rig owner marker (#670)" \
+        "$(sed -n "/^${ownerFn#*:}()/,/^}/p" "$ROOT/tests/${ownerFn%%:*}")" 'rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}"'
+done
+for ownerFile in e2e-pithead-control.sh e2e-pithead-tokens.sh e2e-control-replay.sh; do
+    assert_eq "$ownerFile clears the rig owner marker it sets (#670)" \
+        "$(grep -c '_rig_owner_mark$' "$ROOT/tests/$ownerFile")" "$(grep -c '_rig_owner_clear$' "$ROOT/tests/$ownerFile")"
+done

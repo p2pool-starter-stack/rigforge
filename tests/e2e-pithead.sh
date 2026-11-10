@@ -79,7 +79,6 @@ rig_lock() { # rig_lock <project> <suite> [shared]
     { printf '%s\n' "$_line" >"$hf" || printf '%s\n' "$_line" | sudo -n tee "$hf" >/dev/null; } 2>/dev/null || true
     # The trap fires at EXIT when the $hf local is out of scope, so re-derive the path from the
     # durable env/default; best-effort removal, may need sudo for a root-written marker. (#244/#249)
-    printf '%s\n' "$$" | sudo -n tee "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" >/dev/null 2>&1 || true
     trap 'rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || sudo -n rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true' EXIT
 }
 
@@ -108,6 +107,7 @@ _restore_xmrig() {
 }
 _cleanup() {
     local cleanup_ok=1
+    rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" 2>/dev/null || true
     refresh_profile_finish || cleanup_ok=0
     hammer_stop
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
