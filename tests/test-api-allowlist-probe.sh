@@ -107,6 +107,8 @@ run_case hook-failed 1
 
 check grep -Eq '^netns exec rfapi-[0-9]+ curl .*-w %\{http_code\} .*--interface 169\.254\.[0-9]+\.[0-9]+ ' "$TASK_TMP/success.ip"
 check grep -Eq '^169\.254\.' "$TASK_TMP/success.hook"
+check grep -Fq -- "--interface $(cat "$TASK_TMP/success.hook") " "$TASK_TMP/success.ip"
+check grep -Fq -- "address add $(cat "$TASK_TMP/success.hook")/" "$TASK_TMP/success.ip"
 
 (
     hash -r
