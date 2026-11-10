@@ -24,6 +24,10 @@ they cannot substitute for either complete group.
 | `control` (5) | Apply accepted, donation applied, config persisted, appliance pool edit atomically refused, thermal change reaches a new feed within its deadline | Preserves systemd/timer profiling and the full observation window; restores profiling and outer snapshot. |
 | `access-tokens` (7) | Named token refused by miner, raw and derived reads accepted by sister API, apply accepted and applied, both revocation checks | Mutation and revocation stay together; outer cleanup restores tokens and donation. |
 
+`shared-host` is deliberately not a worker-proof group: it has no retained pass
+count, and `proof_preflight` refuses it with that reason whenever a proof context
+is set. It runs only unbound (`bash tests/e2e-pithead.sh shared-host`).
+
 Each replay group (`control-replay-thermal`, `control-replay-pools`) retains its
 runner-owned fixture/reservation, nested connect assertions (8), scalar apply
 sequence, pools mutation, optional thermal mutation, publication window and final

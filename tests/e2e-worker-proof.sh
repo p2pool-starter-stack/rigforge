@@ -22,6 +22,7 @@ proof_preflight() {
         printf 'worker-proof: {"schema":1,"bound":false}\n'
         return 0
     }
+    [ "$1" != shared-host ] || die "shared-host is not a worker-proof group: its host-state and cgroup assertions have no retained pass count (docs/dev/worker-proof.md)"
     E2E_PROOF_CONTEXT=$(printf '%s' "$E2E_PROOF_CONTEXT" | python3 "$HERE/tests/worker-proof.py" context "$1") || die "invalid worker proof context"
     proof_identity || die "worker proof requires the requested clean head and ref"
 }

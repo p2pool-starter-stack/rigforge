@@ -59,8 +59,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 [ -s "$TASK_TMP/port" ]
 API_PORT=$(cat "$TASK_TMP/port")
-ALLOWED_SOURCE=$(ip -j -4 address show dev lo | jq -r '[.[].addr_info[] | select(.scope == "host")][0].local // empty')
-[ -n "$ALLOWED_SOURCE" ]
+export E2E_ALLOWLIST_HOST_CIDR=169.254.241.1/29 E2E_ALLOWLIST_NS_CIDR=169.254.241.2/29
+ALLOWED_SOURCE=169.254.241.3
 
 # shellcheck source=tests/e2e-pithead-allowlist.sh
 source "$ROOT/tests/e2e-pithead-allowlist.sh"
@@ -76,9 +76,12 @@ install_rules() {
     TABLE_CREATED=1
     nft 'add chain inet rigforge api { type filter hook input priority filter; policy accept; }'
     nft add rule inet rigforge api tcp dport "$API_PORT" iifname lo accept
-    nft add rule inet rigforge api tcp dport "$API_PORT" ip saddr "$ALLOWED_SOURCE" accept
     case "$mode" in
-    blocked) nft add rule inet rigforge api tcp dport "$API_PORT" counter drop ;;
+    wrong-saddr) nft add rule inet rigforge api tcp dport "$API_PORT" ip saddr 192.0.2.1 accept ;;
+    *) nft add rule inet rigforge api tcp dport "$API_PORT" ip saddr "$ALLOWED_SOURCE" accept ;;
+    esac
+    case "$mode" in
+    blocked | wrong-saddr) nft add rule inet rigforge api tcp dport "$API_PORT" counter drop ;;
     admitted)
         nft add rule inet rigforge api tcp dport "$API_PORT" iifname "$host_if" accept
         nft add rule inet rigforge api tcp dport "$API_PORT" counter drop
@@ -96,18 +99,25 @@ assert_clean() {
 }
 
 install_rules blocked
-api_allowlist_probe "$ALLOWED_SOURCE" "$ALLOWED_SOURCE" "$API_PORT" "probe-$RANDOM"
+api_allowlist_probe "$API_PORT" "probe-$RANDOM"
+assert_clean
+
+install_rules wrong-saddr
+if api_allowlist_probe "$API_PORT" "probe-$RANDOM"; then
+    printf 'api allowlist linux test: wrong saddr rule passed\n' >&2
+    exit 1
+fi
 assert_clean
 
 install_rules admitted
-if api_allowlist_probe "$ALLOWED_SOURCE" "$ALLOWED_SOURCE" "$API_PORT" "probe-$RANDOM"; then
+if api_allowlist_probe "$API_PORT" "probe-$RANDOM"; then
     printf 'api allowlist linux test: admitted namespace passed\n' >&2
     exit 1
 fi
 assert_clean
 
 install_rules stalled
-if api_allowlist_probe "$ALLOWED_SOURCE" "$ALLOWED_SOURCE" "$API_PORT" "probe-$RANDOM"; then
+if api_allowlist_probe "$API_PORT" "probe-$RANDOM"; then
     printf 'api allowlist linux test: unmoved counter passed\n' >&2
     exit 1
 fi

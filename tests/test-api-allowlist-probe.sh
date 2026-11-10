@@ -33,6 +33,12 @@ cat >"$FAKE_BIN/ip" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$IP_LOG"
 if [ "$1" = netns ] && [ "$2" = exec ]; then
+    case "$*" in
+    *http_code*)
+        printf '%s' "${HOST_CODE:-200}"
+        exit 0
+        ;;
+    esac
     exit "${NS_CURL_RC:-28}"
 fi
 if [ "$1" = netns ] && [ "$2" = del ] && [ "${NS_REMOVES_LINK:-0}" = 1 ]; then
@@ -53,16 +59,22 @@ printf '{"nftables":[{"rule":{"family":"inet","table":"rigforge","chain":"api","
 EOF
 cat >"$FAKE_BIN/curl" <<'EOF'
 #!/bin/sh
-printf '%s' "${HOST_CODE:-200}"
+printf '%s\n' "$*" >>"$IP_LOG.host-curl"
+exit 1
 EOF
 chmod +x "$FAKE_BIN/ip" "$FAKE_BIN/nft" "$FAKE_BIN/curl"
+
+allow_hook() {
+    printf '%s\n' "$1" >"$HOOK_OUT"
+    return "${HOOK_RC:-0}"
+}
 
 run_case() {
     local scenario=$1 expected=$2 rc
     export IP_LOG="$TASK_TMP/$scenario.ip" NFT_CALLS="$TASK_TMP/$scenario.nft" CLEANUP_STATE="$TASK_TMP/$scenario.cleanup"
     : >"$IP_LOG"
     printf 0 >"$NFT_CALLS"
-    export FAKE_PORT=$((10000 + RANDOM % 50000)) DROP_BEFORE=4 DROP_AFTER=5 NS_CURL_RC=28 HOST_CODE=200 HASH_VALUE=1 CLEANUP_RC=0 NS_REMOVES_LINK=0
+    export HOOK_OUT="$TASK_TMP/$scenario.hook" HOOK_RC=0 FAKE_PORT=$((10000 + RANDOM % 50000)) DROP_BEFORE=4 DROP_AFTER=5 NS_CURL_RC=28 HOST_CODE=200 HASH_VALUE=1 CLEANUP_RC=0 NS_REMOVES_LINK=0
     case "$scenario" in
     admitted) NS_CURL_RC=0 ;;
     cleanup-race) NS_REMOVES_LINK=1 ;;
@@ -71,11 +83,13 @@ run_case() {
     stopped-miner) HASH_VALUE=0 ;;
     malformed-hashrate) HASH_VALUE=unknown ;;
     cleanup-failed) CLEANUP_RC=1 ;;
+    hook-failed) HOOK_RC=1 ;;
     esac
     export DROP_BEFORE DROP_AFTER NS_CURL_RC HOST_CODE
-    PATH="$FAKE_BIN:$ORIGINAL_PATH" api_allowlist_probe "allowed-$RANDOM" "target-$RANDOM" "$FAKE_PORT" token >"$TASK_TMP/$scenario.out" 2>&1
+    PATH="$FAKE_BIN:$ORIGINAL_PATH" api_allowlist_probe "$FAKE_PORT" token allow_hook >"$TASK_TMP/$scenario.out" 2>&1
     rc=$?
     check test "$rc" -eq "$expected"
+    check test ! -e "$IP_LOG.host-curl"
     check grep -q '^netns del ' "$IP_LOG"
     check grep -q '^link del ' "$IP_LOG"
 }
@@ -89,10 +103,14 @@ run_case host-refused 1
 run_case stopped-miner 1
 run_case malformed-hashrate 1
 run_case cleanup-failed 1
+run_case hook-failed 1
+
+check grep -Eq '^netns exec rfapi-[0-9]+ curl .*-w %\{http_code\} .*--interface 169\.254\.[0-9]+\.[0-9]+ ' "$TASK_TMP/success.ip"
+check grep -Eq '^169\.254\.' "$TASK_TMP/success.hook"
 
 (
     hash -r
-    PATH="$FAKE_BIN" api_allowlist_probe allowed target "$FAKE_PORT" token
+    PATH="$FAKE_BIN" api_allowlist_probe "$FAKE_PORT" token
 ) >"$TASK_TMP/missing-tool.out" 2>&1
 check test "$?" -eq 1
 check grep -q 'missing required tool' "$TASK_TMP/missing-tool.out"
