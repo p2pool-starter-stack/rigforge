@@ -25,6 +25,14 @@ _shared_host_wait_share() {
     grep -q 'accepted (' "$WLOG" 2>/dev/null
 }
 
+_shared_host_status_has() {
+    local out
+    out=$("$RIGFORGE" status 2>&1 || true)
+    grep -q "$1" <<<"$out" && return 0
+    printf '%s\n' "$out" | sed 's/^/shared-host: status: /'
+    return 1
+}
+
 _opp_phase() { sed -n 's/^phase=//p' /var/lib/rigforge-opportunistic/state 2>/dev/null | head -1; }
 
 _opp_wait() {
@@ -71,7 +79,7 @@ _shared_host_opportunistic() {
     if [ "$(_opp_phase)" = active ]; then ok "opportunistic: idle host keeps mining"; else bad "opportunistic: idle host reads '$(_opp_phase)'"; fi
     sleep 60
     if systemctl is-active --quiet xmrig && [ "$(_opp_phase)" = active ]; then ok "opportunistic: sustained mining for 60s without a transition"; else bad "opportunistic: the miner left the active state on an idle host"; fi
-    "$RIGFORGE" status 2>&1 | grep -q '^Opportunistic mining: mining within the host budget' && ok "status reports active mining" || bad "status does not report active mining"
+    _shared_host_status_has '^Opportunistic mining: mining within the host budget' && ok "status reports active mining" || bad "status does not report active mining"
     mem_before=$(cat "$cg/memory.current" 2>/dev/null || echo 0)
     _opp_load start
     if yield_s=$(_opp_wait "$yield_max" inactive); then ok "opportunistic: yielded to competing CPU load in ${yield_s}s (limit ${yield_max}s)"; else bad "opportunistic: no yield within ${yield_max}s of competing load"; fi
@@ -79,7 +87,7 @@ _shared_host_opportunistic() {
     mem_after=$(cat "$cg/memory.current" 2>/dev/null || echo 0)
     printf 'shared-host: slice memory.current before=%s after=%s bytes\n' "$mem_before" "$mem_after"
     if [ "$mem_after" -lt $((mem_before / 4)) ]; then ok "opportunistic: the yield released the miner's memory"; else bad "opportunistic: memory was not released (before $mem_before after $mem_after)"; fi
-    "$RIGFORGE" status 2>&1 | grep -q '^Opportunistic mining: waiting for host capacity' && ok "status reports waiting for capacity" || bad "status does not report waiting for capacity"
+    _shared_host_status_has '^Opportunistic mining: waiting for host capacity' && ok "status reports waiting for capacity" || bad "status does not report waiting for capacity"
     : >"$WLOG" 2>/dev/null || true
     _opp_load stop
     if resume_s=$(_opp_wait "$resume_max" active); then ok "opportunistic: resumed ${resume_s}s after the load ended (limit ${resume_max}s)"; else bad "opportunistic: no resume within ${resume_max}s of the load ending"; fi
@@ -140,7 +148,7 @@ phase_shared_host() {
     else
         bad "generated XMRig config kept dedicated tuning"
     fi
-    if "$RIGFORGE" status 2>&1 | grep -q 'effective CPU quota 200000/100000 us'; then ok "status reports the shared profile's effective limits"; else bad "status does not report the effective shared limits"; fi
+    if _shared_host_status_has 'effective CPU quota 200000/100000 us'; then ok "status reports the shared profile's effective limits"; else bad "status does not report the effective shared limits"; fi
     if wait_for_job 120; then ok "shared-host miner received a stratum job"; else
         _shared_host_diagnose
         bad "no stratum job within 120s under shared_host"

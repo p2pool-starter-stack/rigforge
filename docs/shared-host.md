@@ -24,7 +24,10 @@ uses one initialization thread.
 The profile requires Linux systemd with unified cgroup v2 CPU and memory controllers, zero swap in
 the miner cgroup, and enough statically visible memory to leave at least 1024 MiB outside the
 configured ceiling and existing HugeTLB reservations. RigForge verifies the controls after systemd
-activates them and refuses miner activation when the effective values cannot be read back. `status`
+activates them and refuses miner activation when the effective values cannot be read back. While a
+loaded unit is out of profile, every start or restart is refused until `apply` runs again — including
+the watchdog's thermal-hold lift and its wedge restart — while the watchdog's thermal stop stays
+effective, so a hot miner is stopped regardless. `status`
 and `doctor` report the selected profile, requested limits, effective limits, and unsupported or
 stopped states.
 

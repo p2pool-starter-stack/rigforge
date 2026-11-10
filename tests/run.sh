@@ -2714,6 +2714,8 @@ assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_tem
 
 bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
 assert_rc "thermal watchdog command retries (#631)" "$?" 0
+bash "$ROOT/tests/test-watchdog-shared-host-guard.sh"
+assert_rc "watchdog shared-host guard ordering (#665)" "$?" 0
 
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
@@ -8854,6 +8856,7 @@ assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "
 assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
 PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-fetch-proxy.sh"
 
 # Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
 # its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
@@ -9205,6 +9208,7 @@ out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-malformed" ]; then touch "'"$DDIR
 assert_contains "malformed member blocks exact-target offline (#466)" "$out" "BAD worker did not become offline"
 assert_absent "malformed transition never proves offline (#466)" "$out" "OK stopped worker became offline"
 source "$ROOT/tests/test-e2e-gate-fail-closed.sh"
+source "$ROOT/tests/test-e2e-hammer.sh"
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
@@ -9488,12 +9492,13 @@ else
         --argjson started "$(mk_status_record started 1111111111111111 version '' '')" \
         --argjson applied "$(mk_status_record applied 2222222222222222 version 'upgraded to v9.9.9' '')" \
         --argjson noop "$(mk_status_record noop 3333333333333333 version 'already on v9.9.9 — nothing to upgrade' '')" \
+        --argjson busy "$(mk_status_record busy 8888888888888888 version 'rig is lent to a bench job; retry after it is returned' '')" \
         --argjson throttled "$(mk_status_record throttled 4444444444444444 version 'throttled — too soon since the last upgrade attempt' '')" \
         --argjson failed "$(mk_status_record failed 5555555555555555 version 'staged upgrade target malformed (want vX.Y.Z)' '')" \
         --argjson rejected "$(mk_status_record rejected 6666666666666666 DONATION 'rejected merge-failed' '')" \
         --argjson rolled_back "$(mk_status_record rolled_back 7777777777777777 watchdog,DONATION 'miner did not return to a live hashrate; rolled back and live' /b)" \
         --argjson pending "$live_pending" \
-        '{applied: $applied, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
+        '{applied: $applied, busy: $busy, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
     fixture_examples="$(jq -S '.examples' "$CONTRACT_DIR/control-status.json")"
     assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
 fi

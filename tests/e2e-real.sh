@@ -33,6 +33,8 @@
 set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/e2e-rig-owner.sh
+source "$HERE/tests/e2e-rig-owner.sh"
 RIGFORGE="$HERE/rigforge.sh"
 # Root may reach this through nested sudo, so every git call pins the operator-owned checkout (#401).
 _hgit() { git -C "$HERE" -c safe.directory="$HERE" "$@"; }
@@ -697,6 +699,7 @@ control() {
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
+    _rig_owner_mark
     continue_or_cleanup _control_cleanup control
 
     phase "control — POST a benign change (DONATION $cur_donation -> $new_donation) and poll to applied"
@@ -800,6 +803,7 @@ _restore_unit_state() { # <unit> <was-active:0|1> <was-enabled:0|1>
 }
 
 _control_cleanup() {
+    rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" 2>/dev/null || true
     [ "$CTL_CLEANUP_DONE" = 1 ] && return 0
     local cleanup_ok=1
     echo ""
@@ -909,6 +913,7 @@ _upgrade_clear_throttles() {
     [ ! -e "$UPG_STAMP" ] && [ ! -L "$UPG_STAMP" ] && [ ! -e "$UPG_LEGACY_STAMP" ] && [ ! -L "$UPG_LEGACY_STAMP" ] && [ ! -e "$UPG_LEGACY_LOCK" ] && [ ! -L "$UPG_LEGACY_LOCK" ]
 }
 _upgrade_cleanup() {
+    rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" 2>/dev/null || true
     local cleanup_ok=1
     _hgit tag -d v99.99.99 >/dev/null 2>&1 || ! _hgit show-ref --verify --quiet refs/tags/v99.99.99 || cleanup_ok=0
     _upgrade_clear_throttles || cleanup_ok=0
@@ -972,6 +977,7 @@ upgrade() {
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
+    _rig_owner_mark
     continue_or_cleanup _upgrade_cleanup upgrade
     rm -f "$stamp" 2>/dev/null || true
 

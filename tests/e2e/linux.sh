@@ -45,8 +45,10 @@ run_pass "deploy" || STATUS=1
 echo ""
 run_pass "appliance" -e RIGFORGE_APPLIANCE=1 || STATUS=1
 echo ""
+bash "$ROOT/tests/e2e/isolation.sh" || STATUS=1
+echo ""
 if [ "$STATUS" = 0 ]; then
-    echo "rigforge e2e: both passes (deploy + appliance) passed"
+    echo "rigforge e2e: all passes (deploy + appliance + isolation) passed"
 else
     echo "rigforge e2e: FAILED (see the failing pass above)"
 fi

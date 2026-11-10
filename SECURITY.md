@@ -12,8 +12,14 @@ version ping, and no usage beacon. (`upgrade --check` queries the GitHub release
 API, but only when you run it — nothing is scheduled and nothing else calls it.)
 The only outbound connections it makes are to
 *your* pool, to the pinned XMRig source on GitHub (a shallow clone whose commit is
-verified against a hardcoded hash before it's built), and to your distro's package
-mirrors. The XMRig developer donation defaults to 0% and is opt-in through `DONATION`
+verified against a hardcoded hash before it's built), to RigForge's own origin on
+GitHub (the `git fetch` of an opted-in remote upgrade, `control_upgrade`), and to your
+distro's package mirrors. Set `tor_socks5` in `config.json` to send `upgrade --check`,
+the XMRig clone and the remote-upgrade fetch through one SOCKS5 proxy (such as a local
+Tor client) with remote name resolution and no direct fallback. Package-manager
+installs (`apt`, `dnf`, `pacman`, `brew`, and the `jq` bootstrap) are not covered:
+routing them is the operator's job, and without that they reveal the rig's address to
+the mirrors. The XMRig developer donation defaults to 0% and is opt-in through `DONATION`
 in `config.json`. Donations go to the XMRig project's address; RigForge substitutes no
 wallet of its own into the mining path. Existing builds rebuild once on upgrade to
 install a zero minimum; later donation reductions take effect with `apply` without rebuilding.
