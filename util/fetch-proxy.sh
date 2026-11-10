@@ -30,7 +30,7 @@ _fetch_git() {
     local s5
     s5=$(_tor_socks5) || return 1
     if [ -n "$s5" ]; then
-        env -u NO_PROXY -u no_proxy GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c "http.proxy=socks5h://$s5" -c "remote.origin.proxy=socks5h://$s5" -c protocol.allow=never -c protocol.https.allow=always "$@"
+        env -u NO_PROXY -u no_proxy GIT_CONFIG_NOSYSTEM=1 HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent git -c "http.proxy=socks5h://$s5" -c "remote.origin.proxy=socks5h://$s5" -c protocol.allow=never -c protocol.https.allow=always "$@"
     else
         git "$@"
     fi

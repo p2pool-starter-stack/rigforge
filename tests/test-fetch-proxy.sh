@@ -17,7 +17,7 @@ X
 cat >"$FP/bin/git" <<'X'
 #!/usr/bin/env bash
 echo "git $*" >>"$FP_LOG"
-echo "gitenv ${GIT_CONFIG_NOSYSTEM:-} ${GIT_CONFIG_GLOBAL:-}" >>"$FP_LOG"
+echo "gitenv ${GIT_CONFIG_NOSYSTEM:-} ${HOME:-} ${XDG_CONFIG_HOME:-}" >>"$FP_LOG"
 echo "env ALL_PROXY=${ALL_PROXY:-} HTTPS_PROXY=${HTTPS_PROXY:-} https_proxy=${https_proxy:-} NO_PROXY=${NO_PROXY:-} no_proxy=${no_proxy:-}" >>"$FP_LOG"
 case "$*" in
 *"remote get-url origin"*) echo "${FP_ORIGIN:-https://github.com/p2pool-starter-stack/rigforge.git}"; exit 0 ;;
@@ -125,7 +125,7 @@ out="$(fp_clone "{\"tor_socks5\":\"$FP_PROXY\"}")"
 assert_contains "XMRig clone with the key set goes through the SOCKS5h proxy" "$(grep 'clone' "$FP/log")" "http.proxy=socks5h://$FP_PROXY"
 assert_contains "XMRig clone with the key set allows only https" "$(grep 'clone' "$FP/log")" "protocol.allow=never"
 assert_absent "XMRig clone with the key set never goes direct" "$(cat "$FP/log")" "DIRECT"
-assert_contains "XMRig clone with the key set ignores system and global git config" "$(grep '^gitenv' "$FP/log" | head -1)" "1 /dev/null"
+assert_contains "XMRig clone with the key set ignores system and global git config" "$(grep '^gitenv' "$FP/log" | head -1)" "1 /nonexistent /nonexistent"
 out="$(fp_clone '{"pools":[{"url":"h:3333"}]}')"
 assert_absent "XMRig clone with the key unset adds no proxy option" "$(grep 'clone' "$FP/log")" "http.proxy"
 

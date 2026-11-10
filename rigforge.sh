@@ -2086,11 +2086,6 @@ _upgrade_restart() { # <was-active: yes|no>
     sudo systemctl restart "$SERVICE_NAME.service"
 }
 
-# upgrade --check: compare the local VERSION against GitHub's latest release tag, on demand only.
-# This is the one place RigForge talks to GitHub's API, and it runs exactly when the operator types
-# it — never scheduled, never piggybacked on another verb (SECURITY.md's "no version ping" promise
-# stands because the check is explicit). Always returns 0: an update *hint* must never break a
-# script that calls it. Reads one file and one URL; no parse_config, no root, no other side effects.
 _upgrade_check() {
     local local_v remote_v url body highest via=""
     local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true) # guard inside the $() (#210)
