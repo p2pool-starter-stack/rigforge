@@ -78,7 +78,7 @@ fp_check() {
     fp_cfg "$1"
     : >"$FP/log"
     printf '1.4.0\n' >"$FP/VERSION"
-    env -u ALL_PROXY -u HTTPS_PROXY -u https_proxy FP_LOG="$FP/log" ${2:+FP_PROXY_DOWN=1} PATH="$FP/bin:$STUBS:$PATH" \
+    env -i PATH="$FP/bin:$STUBS:$PATH" FP_LOG="$FP/log" ${2:+FP_PROXY_DOWN=1} \
         bash -c 'S=$1; D=$2; C=$3; set --; source "$S"; SCRIPT_DIR="$D"; CONFIG_JSON="$C"; set +e; _upgrade_check 2>&1; echo "rc=$?"' fp-shell "$SCRIPT" "$FP" "$FP/config.json"
 }
 out="$(fp_check "{\"tor_socks5\":\"$FP_PROXY\"}")"
