@@ -87,7 +87,7 @@ for arg in "$@"; do
         jq_mount=${arg%:/usr/local/bin/jq:ro}
     fi
     [ "$arg" = --clean ] && have_clean=1
-    [ "$arg" = --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh,/src/util/config-apply-state.sh,/src/util/randomx.sh,/src/util/benchmark.sh,/src/util/stress.sh ] && have_scope=1
+    [ "$arg" = --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh,/src/util/config-apply-state.sh,/src/util/randomx.sh,/src/util/benchmark.sh,/src/util/stress.sh,/src/util/control-guards.sh ] && have_scope=1
     [ "$previous" = --platform ] && [ "$arg" = linux/amd64 ] && have_platform=1
     previous=$arg
 done

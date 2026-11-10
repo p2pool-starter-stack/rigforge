@@ -298,7 +298,7 @@ autotune restart) can step on between your `POST` and your poll. To avoid that r
 outcome (for a config change: `applied`/`rejected`/`rolled_back`/`failed` +
 `reason`/`backup`/`changed_keys`/`warnings`), or `404` if it isn't among the last ~20 recorded. Same
 bearer auth as `/status`. The same endpoint serves remote-*upgrade* change ids with a richer
-vocabulary (non-terminal `started`, terminal `noop`/`throttled` alongside the above — #320); see
+vocabulary (non-terminal `started`, terminal `noop`/`throttled` alongside the above — #320; `busy` for a rig lent to a bench job, on `/apply` too — #670); see
 [Operations › Remote upgrade](operations.md#writable-control-path-opt-in).
 
 Between your `POST` and a terminal outcome, `?change_id` reads `status: "pending"` with an

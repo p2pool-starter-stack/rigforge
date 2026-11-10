@@ -9491,12 +9491,13 @@ else
         --argjson started "$(mk_status_record started 1111111111111111 version '' '')" \
         --argjson applied "$(mk_status_record applied 2222222222222222 version 'upgraded to v9.9.9' '')" \
         --argjson noop "$(mk_status_record noop 3333333333333333 version 'already on v9.9.9 — nothing to upgrade' '')" \
+        --argjson busy "$(mk_status_record busy 8888888888888888 version 'rig is lent to a bench job; retry after it is returned' '')" \
         --argjson throttled "$(mk_status_record throttled 4444444444444444 version 'throttled — too soon since the last upgrade attempt' '')" \
         --argjson failed "$(mk_status_record failed 5555555555555555 version 'staged upgrade target malformed (want vX.Y.Z)' '')" \
         --argjson rejected "$(mk_status_record rejected 6666666666666666 DONATION 'rejected merge-failed' '')" \
         --argjson rolled_back "$(mk_status_record rolled_back 7777777777777777 watchdog,DONATION 'miner did not return to a live hashrate; rolled back and live' /b)" \
         --argjson pending "$live_pending" \
-        '{applied: $applied, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
+        '{applied: $applied, busy: $busy, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
     fixture_examples="$(jq -S '.examples' "$CONTRACT_DIR/control-status.json")"
     assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
 fi

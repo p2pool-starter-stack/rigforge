@@ -786,7 +786,14 @@ Polling an upgrade works like polling a config change, with a slightly richer vo
 `GET :8082/status?change_id=<id>` serves a non-terminal `started` once the root oneshot has claimed
 the intent (so a poller can tell "mid-build" from "queued"), then one terminal outcome: `applied`
 (the `reason` names the landed version), `rolled_back`, `noop` (already on the requested version —
-idempotent, not an error), `throttled` (inside the anti-beacon window — retry later), or `failed`
+idempotent, not an error), `throttled` (inside the anti-beacon window — retry later), `busy` (a bench-ci job holds the rig
+reservation lock `/var/lock/rig-e2e.lock`: nothing was fetched, built or stamped against the throttle — retry
+after the rig is returned; a remote config `apply` gets the same `busy` refusal, since the bench's restore
+would overwrite it; the one exception is a RigForge e2e control or upgrade phase on a reserved rig: only
+after it has swapped in its own random token and the loopback-only `api_allow_from`, so no other client can
+reach `/apply` or `/upgrade`, it writes a root-owned `/run/rigforge-rig-owner` file naming its live pid, and
+it removes the file before restoring the rig's own token; the guard honours the file only while that pid is
+alive), or `failed`
 (with `reason`). A run that dies after claiming the intent (an abort, or systemd stopping the unit)
 still records `failed`, with a `reason` saying the run was lost, the checkout may be half-updated
 and the upgrade will not be retried: check the installed version and request it again (#535). Only a

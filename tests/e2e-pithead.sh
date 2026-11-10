@@ -107,6 +107,7 @@ _restore_xmrig() {
 }
 _cleanup() {
     local cleanup_ok=1
+    rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" 2>/dev/null || true
     refresh_profile_finish || cleanup_ok=0
     hammer_stop
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&

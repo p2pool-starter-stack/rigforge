@@ -146,6 +146,8 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 source "$(_script_dir)/util/shared-host.sh"
 # shellcheck source=util/randomx.sh
 source "$(_script_dir)/util/randomx.sh"
+# shellcheck source=util/control-guards.sh
+source "$(_script_dir)/util/control-guards.sh"
 
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
@@ -4554,6 +4556,12 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
+    if _rig_lent_to_bench; then
+        rm -f "$staged"
+        _control_status "$status" busy "$cid" "$change_keys" "rig is lent to a bench job; retry after it is returned" ""
+        warn "control-apply: rig is lent to a bench job — change $cid refused."
+        return 0
+    fi
     # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
@@ -4632,32 +4640,6 @@ control_apply() {
     return 0
 }
 
-_control_upgrade_throttle_ok() (
-    local dir="$1" lock="$1/.upgrade-throttle.lock" stamp="$1/upgrade-last" now tmp min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
-    [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2
-    if [ -e "$lock" ] || [ -L "$lock" ]; then
-        [ ! -L "$lock" ] && [ -f "$lock" ] && [ "$(stat -c '%u:%g:%a:%h' "$lock" 2>/dev/null)" = "0:0:600:1" ] || return 2
-    fi
-    umask 077
-    exec 9>>"$lock" 2>/dev/null || return 2
-    flock -x 9 2>/dev/null || return 2
-    if [ -e "$stamp" ] || [ -L "$stamp" ]; then
-        [ ! -L "$stamp" ] && [ -f "$stamp" ] && [ "$(stat -c '%u:%g:%a:%h' "$stamp" 2>/dev/null)" = "0:0:600:1" ] || return 2
-        last=$(cat "$stamp" 2>/dev/null) || return 2
-    fi
-    case "$last" in '' | *[!0-9]*) return 2 ;; esac
-    now=$(date +%s) || return 2
-    if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
-        return 1
-    fi
-    tmp=$(mktemp "$dir/.upgrade-last.XXXXXX") || return 2
-    if ! printf '%s\n' "$now" >"$tmp" || ! mv -f "$tmp" "$stamp"; then
-        rm -f "$tmp"
-        return 2
-    fi
-    return 0
-)
-
 _control_upgrade_do() { # <ref>
     local ref="$1" cobj
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
@@ -4733,6 +4715,11 @@ control_upgrade() {
             warn "control-upgrade: $target <= installed v$installed — refused (anti-rollback)."
             return 0
         fi
+    fi
+    if _rig_lent_to_bench; then
+        _control_status "$status" busy "$cid" version "rig is lent to a bench job; retry after it is returned" ""
+        warn "control-upgrade: rig is lent to a bench job — refused."
+        return 0
     fi
     _fetch_preflight -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" || {
         _control_status "$status" failed "$cid" version "$FETCH_PREFLIGHT_REASON" ""
