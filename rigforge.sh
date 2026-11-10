@@ -1426,7 +1426,7 @@ _sister_api_failed() { ! warn "The configured sister API could NOT be started; c
 _control_failed() { warn "The writable control receiver could NOT be reconciled; check journalctl -u rigforge-control.service, then re-run 'sudo $0 $1'."; }
 _stop_control_receiver() {
     sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
-    if [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" = not-found ] && [ "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" = inactive ]; then return 0; fi
+    [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" != not-found ] || case "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" in inactive | failed) return 0 ;; esac
     sudo systemctl kill --kill-who=all --signal=KILL rigforge-control.service 2>/dev/null || true
     sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
     ! warn "Could not stop the control receiver; revocation is NOT confirmed. Stop rigforge-control.service before retrying."
