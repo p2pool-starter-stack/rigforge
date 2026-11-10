@@ -279,3 +279,78 @@ assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.
 echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
 bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
+
+echo "== unit: control_upgrade / control_apply refuse while the rig is lent to a bench job (#670) =="
+if ! command -v flock >/dev/null 2>&1; then
+    echo "  SKIP: no flock(1) on this host (macOS) — the lock-behaviour tests run in the Linux CI jobs"
+else
+    lentLock="$SANDBOX/rig-e2e.lock"
+    : >"$lentLock"
+    lent_run() { # <upgrade|apply> <fresh dir> -> status.json contents
+        local d="$2"
+        mkdir -p "$d/state/spool"
+        [ -d "$d/upgrade-state" ] || mkdir -m 700 "$d/upgrade-state"
+        printf '1.0.0' >"$d/VERSION"
+        printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
+        if [ "$1" = upgrade ]; then
+            printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
+        else
+            printf '{"DONATION":7}\n' >"$d/state/spool/pending-abc123.json"
+        fi
+        (
+            source "$SCRIPT"
+            parse_config() { :; }
+            OS_TYPE=Linux
+            SCRIPT_DIR="$d"
+            CONFIG_JSON="$d/config.json"
+            RIGFORGE_CONTROL_STATE="$d/state"
+            RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state"
+            RIGFORGE_RIG_LOCK="$lentLock"
+            CONTROL_UPGRADE_MIN_INTERVAL=3600
+            _control_upgrade_do() {
+                echo called >"$d/do-called"
+                return 0
+            }
+            _control_do_apply() {
+                echo called >"$d/do-called"
+                return 0
+            }
+            _control_do_apply_fast() {
+                echo called >"$d/do-called"
+                return 0
+            }
+            _wait_miner_live() { return 0; }
+            git() { case "$*" in *describe*) echo v0.0.1 ;; *rev-parse*) echo deadbeefcafe ;; *) return 0 ;; esac }
+            set +e
+            PATH="$STUBS:$PATH" "control_$1" >/dev/null 2>&1
+        )
+        cat "$d/state/status.json" 2>/dev/null
+    }
+    (
+        exec 9>"$lentLock"
+        flock -x 9
+        exec sleep 30
+    ) &
+    lentPid=$!
+    sleep 0.5
+    lentU=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    mkdir -m 700 "$lentU/upgrade-state"
+    printf '1\n' >"$lentU/upgrade-state/upgrade-last"
+    chmod 600 "$lentU/upgrade-state/upgrade-last"
+    sLent="$(lent_run upgrade "$lentU")"
+    assert_eq "control_upgrade while the rig lock is held -> busy (#670)" "$(st "$sLent")" "busy"
+    assert_contains "busy reason names the bench loan" "$sLent" "lent to a bench job"
+    assert_eq "busy upgrade did no fetch/checkout/build" "$([ -e "$lentU/do-called" ] && echo y || echo n)" "n"
+    assert_eq "busy upgrade left the throttle stamp unchanged" "$(cat "$lentU/upgrade-state/upgrade-last")" "1"
+    lentA=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sLentA="$(lent_run apply "$lentA")"
+    assert_eq "control_apply while the rig lock is held -> busy (#670)" "$(st "$sLentA")" "busy"
+    assert_eq "busy apply left config.json untouched" "$(jq -r '.DONATION // "none"' "$lentA/config.json")" "none"
+    assert_eq "busy apply did not apply" "$([ -e "$lentA/do-called" ] && echo y || echo n)" "n"
+    kill "$lentPid" 2>/dev/null || true
+    wait "$lentPid" 2>/dev/null || true
+    lentF=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sFree="$(lent_run upgrade "$lentF")"
+    assert_eq "control_upgrade proceeds once the rig lock is released (#670)" "$(st "$sFree")" "applied"
+    assert_eq "released upgrade stamped the throttle" "$([ -e "$lentF/upgrade-state/upgrade-last" ] && echo y || echo n)" "y"
+fi

@@ -95,7 +95,7 @@ echo "coverage: running tests/run.sh under kcov (this is slower than 'make test'
 docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --cap-add SYS_PTRACE \
     -v "$ROOT:/src" -v "$JQ_BIN:/usr/local/bin/jq:ro" -w /src \
     --entrypoint kcov "$KCOV_IMAGE" \
-    --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh,/src/util/config-apply-state.sh,/src/util/randomx.sh,/src/util/benchmark.sh,/src/util/stress.sh \
+    --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh,/src/util/config-apply-state.sh,/src/util/randomx.sh,/src/util/benchmark.sh,/src/util/stress.sh,/src/util/control-guards.sh \
     --clean /src/coverage ./tests/run.sh
 
 # kcov writes root-owned files onto the bind mount; hand them back to the caller so later steps and
