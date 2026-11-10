@@ -11,6 +11,7 @@ replay_lock() {
         printf '%s' "${E2E_PITHEAD_CONTROL_CONTEXT:-}" | jq -e '.version == 1 and .fixture == "pithead-control" and .thermal.feed_deadline_s == 90 and .thermal.starting_scalars == {max_temp_c:100,DONATION:0,watchdog_interval_min:5} and (.unknown | type == "array" and length > 0)' >/dev/null || die "invalid replay context"
         printf '%s' "${IT_RIG_POOLS_PROBE:-}" | jq -e 'type == "array" and length > 0 and all(.[]; type == "object" and all(.url,.user,.pass; type == "string" and length > 0))' >/dev/null || die "missing private pools probe"
         REPLAY_RUNNER_LOCK=1
+        printf '%s\n' "$$" | sudo -n tee "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" >/dev/null 2>&1 || true
         ;;
     *) die "fixture requires one declaring replay phase" ;;
     esac

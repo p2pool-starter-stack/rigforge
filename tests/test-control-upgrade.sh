@@ -347,6 +347,18 @@ else
     assert_eq "control_apply while the rig lock is held -> busy (#670)" "$(st "$sLentA")" "busy"
     assert_eq "busy apply left config.json untouched" "$(jq -r '.DONATION // "none"' "$lentA/config.json")" "none"
     assert_eq "busy apply did not apply" "$([ -e "$lentA/do-called" ] && echo y || echo n)" "n"
+    ownerMark="$SANDBOX/rig-owner"
+    printf '%s\n' "$$" >"$ownerMark"
+    lentO=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sOwn="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentO")"
+    assert_eq "control_upgrade proceeds while the lock is held by a live e2e harness marker (#670)" "$(st "$sOwn")" "applied"
+    true &
+    deadPid=$!
+    wait "$deadPid"
+    printf '%s\n' "$deadPid" >"$ownerMark"
+    lentD=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sDead="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentD")"
+    assert_eq "a stale marker (dead pid) does not bypass the guard (#670)" "$(st "$sDead")" "busy"
     kill "$lentPid" 2>/dev/null || true
     wait "$lentPid" 2>/dev/null || true
     lentF=$(mktemp -d "$SANDBOX/lent.XXXXXX")
