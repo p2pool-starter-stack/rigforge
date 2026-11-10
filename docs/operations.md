@@ -123,7 +123,8 @@ reported exit remain zero.
 
 Check IDs are stable for automation, but row availability depends on the worker's configuration and
 available probes. An ID may repeat: `socks-proxy`, for example, can produce one row for each configured
-proxy. Messages are operator-facing text and are not a stable interface. Consumers should therefore
+proxy. `tor-socks5` is one row: `info` when `tor_socks5` is unset, `ok` when its port accepts a TCP
+connection, `warn` when it does not or the value is invalid. Messages are operator-facing text and are not a stable interface. Consumers should therefore
 select rows by `id` and `status`, allow repeats, and use the summary and `exit` fields for the overall
 result.
 
@@ -511,7 +512,11 @@ sudo ./rigforge.sh upgrade      # regenerate config, reinstall units, restart; r
 `upgrade --check` compares your `VERSION` against the latest GitHub release and prints the upgrade
 recipe if you're behind. It's the only command that queries GitHub's API, it runs exactly when you
 type it (nothing is scheduled — see [SECURITY.md](../SECURITY.md)), and it always exits 0, so it's
-safe to call from your own scripts.
+safe to call from your own scripts. With [`tor_socks5`](configuration.md#configuration-reference) set it
+asks that proxy to resolve and reach GitHub, and an unreachable proxy ends in a warning, never a direct
+connection. The same key carries the XMRig source clone and a remote upgrade's `git fetch`; the remote
+upgrade refuses to start when the proxy does not answer or `origin` is not an https URL, and records
+that as its `failed` reason.
 
 `upgrade` skips the recompile when the pinned XMRig is already built with a zero minimum marker
 and a valid binary checksum, so it's cheap to run — but it is

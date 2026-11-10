@@ -67,6 +67,8 @@ source "$(_script_dir)/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 # shellcheck source=util/daemon-pools.sh
 source "$(_script_dir)/util/daemon-pools.sh"
+# shellcheck source=util/fetch-proxy.sh
+source "$(_script_dir)/util/fetch-proxy.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
@@ -419,6 +421,7 @@ parse_config() {
     if ! jq -e . "$CONFIG_JSON" >/dev/null 2>&1; then
         error "$CONFIG_JSON is not valid JSON."
     fi
+    _tor_socks5 >/dev/null
 
     # HOME_DIR becomes a filesystem path we mkdir/cd/write under (with sudo), so validate it via the
     # shared resolver (the same one the privileged uninstall/backup/restore use, so none of them can act
@@ -737,7 +740,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host xmrig"
+    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade tor_socks5 hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host xmrig"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 rig-id nicehash algo coin sni daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -969,7 +972,7 @@ compile_xmrig() {
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
     cd "$WORKER_ROOT"
     rm -rf xmrig.new
-    git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git xmrig.new
+    _fetch_git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git xmrig.new
 
     local actual
     actual="$(git -C xmrig.new rev-parse HEAD)"
@@ -2089,22 +2092,24 @@ _upgrade_restart() { # <was-active: yes|no>
 # stands because the check is explicit). Always returns 0: an update *hint* must never break a
 # script that calls it. Reads one file and one URL; no parse_config, no root, no other side effects.
 _upgrade_check() {
-    local local_v remote_v url body highest
+    local local_v remote_v url body highest via=""
     local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true) # guard inside the $() (#210)
     if [ -z "$local_v" ]; then
         warn "No VERSION file at $SCRIPT_DIR/VERSION — can't compare against the latest release."
         return 0
     fi
-    body=$(curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null || true)
+    via=$(_tor_socks5) || return 0
+    [ -z "$via" ] || via=" through tor_socks5 (no direct fallback)"
+    body=$(_fetch_curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null || true)
     if [ -z "$body" ]; then
-        warn "Couldn't reach GitHub to check for a newer release — try again later."
+        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
         return 0
     fi
     remote_v=$(printf '%s' "$body" | jq -r '.tag_name // empty' 2>/dev/null || true)
     url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null || true)
     remote_v="${remote_v#v}"
     if [ -z "$remote_v" ]; then
-        warn "Couldn't reach GitHub to check for a newer release — try again later."
+        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
         return 0
     fi
     if [ "$local_v" = "$remote_v" ]; then
@@ -4657,22 +4662,9 @@ _control_upgrade_throttle_ok() (
     return 0
 )
 
-# The fetch + reachability + checkout + rebuild half of control-upgrade, split out so the orchestration
-# is unit-testable with this stubbed (like control-apply's _control_do_apply). Returns 0 on a successful
-# checkout+build of <ref>, nonzero otherwise. <ref> is a validated vX.Y.Z tag (forward) or a prior
-# tag/commit (rollback). D5: the git checkout IS the fetch and the commit hash pins the whole tree; no
-# signing, GitHub over TLS is the trust root. D10: a forward tag's commit must be reachable from
-# origin/main — the branch releases are cut from (kills a tag pointing at a dangling/side commit).
-# NOT origin/HEAD: a fresh clone resolves that to develop (the repo default), and release tags are
-# merge commits on main that develop doesn't contain, so every legit upgrade would be refused (#318).
-# A clone without origin/main (e.g. single-branch) refuses too — fail closed, deploy from a full clone.
-# Immutable releases lock the tag→commit binding at the platform layer. Every git call pins `-c safe.directory="$SCRIPT_DIR"`: the
-# oneshot runs as root with NO $HOME, so git can't read root's safe.directory config and would fatal on
-# "dubious ownership" of the operator-owned install — every git op silently failing the upgrade (a real
-# miner-0 e2e finding the stubbed unit suite couldn't reach, since it stubs git).
 _control_upgrade_do() { # <ref>
     local ref="$1" cobj
-    git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
@@ -4746,8 +4738,11 @@ control_upgrade() {
             return 0
         fi
     fi
-    # D6 throttle: bound how often a rig fetches/rebuilds. rc 2 = throttle state unavailable — a
-    # fail-closed refusal (#321) that must read as a broken rig, not as "throttled — retry later".
+    _fetch_preflight -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" || {
+        _control_status "$status" failed "$cid" version "$FETCH_PREFLIGHT_REASON" ""
+        warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
+        return 0
+    }
     local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
@@ -5358,7 +5353,7 @@ doctor() {
     if [ -f "$CONFIG_JSON" ]; then
         local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool pa
         pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
-        # Advisory only: a listening TCP socket does not prove SOCKS/Tor or mining works.
+        _doctor_tor_socks5
         while IFS= read -r proxy; do
             (_validate_host_port "$proxy" "Pool socks5" 9050) >/dev/null 2>&1 || {
                 _ck_warn "configured SOCKS proxy has an invalid host:port — check pools[].socks5" socks-proxy
