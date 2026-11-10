@@ -4,7 +4,7 @@
 _tor_socks5() {
     local t v
     [ -f "$CONFIG_JSON" ] || return 0
-    t=$(jq -r 'if has("tor_socks5") then (.tor_socks5 | type) else "unset" end' "$CONFIG_JSON" 2>/dev/null) || return 0
+    t=$(jq -r 'if has("tor_socks5") then (.tor_socks5 | type) else "unset" end' "$CONFIG_JSON" 2>/dev/null) || error "Cannot read tor_socks5 from $CONFIG_JSON (unreadable or not a JSON object) — refusing to fetch without knowing whether a proxy is required."
     case "$t" in
     unset | null) return 0 ;;
     string) ;;
@@ -20,7 +20,7 @@ _fetch_curl() {
     local s5
     s5=$(_tor_socks5) || return 1
     if [ -n "$s5" ]; then
-        curl --proxy "socks5h://$s5" "$@"
+        env -u NO_PROXY -u no_proxy curl -q --proxy "socks5h://$s5" "$@"
     else
         curl "$@"
     fi
@@ -30,7 +30,7 @@ _fetch_git() {
     local s5
     s5=$(_tor_socks5) || return 1
     if [ -n "$s5" ]; then
-        git -c "http.proxy=socks5h://$s5" -c "remote.origin.proxy=socks5h://$s5" -c protocol.allow=never -c protocol.https.allow=always "$@"
+        env -u NO_PROXY -u no_proxy GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c "http.proxy=socks5h://$s5" -c "remote.origin.proxy=socks5h://$s5" -c protocol.allow=never -c protocol.https.allow=always "$@"
     else
         git "$@"
     fi
@@ -58,7 +58,7 @@ _fetch_preflight() {
     }
 }
 
-_fetch_proxy_reachable() { # <host:port>
+_fetch_proxy_reachable() {
     local h=${1%:*}
     h=${h#\[}
     h=${h%\]}

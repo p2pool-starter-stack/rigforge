@@ -7,7 +7,7 @@ fp_cfg() { printf '%s\n' "$1" >"$FP/config.json"; }
 cat >"$FP/bin/curl" <<'X'
 #!/usr/bin/env bash
 echo "curl $*" >>"$FP_LOG"
-echo "env ALL_PROXY=${ALL_PROXY:-} HTTPS_PROXY=${HTTPS_PROXY:-} https_proxy=${https_proxy:-}" >>"$FP_LOG"
+echo "env ALL_PROXY=${ALL_PROXY:-} HTTPS_PROXY=${HTTPS_PROXY:-} https_proxy=${https_proxy:-} NO_PROXY=${NO_PROXY:-} no_proxy=${no_proxy:-}" >>"$FP_LOG"
 case " $* " in
 *" --proxy socks5h://127.0.0.1:9050 "*) [ -z "${FP_PROXY_DOWN:-}" ] || exit 7 ;;
 *) echo DIRECT >>"$FP_LOG"; exit 7 ;;
@@ -17,7 +17,8 @@ X
 cat >"$FP/bin/git" <<'X'
 #!/usr/bin/env bash
 echo "git $*" >>"$FP_LOG"
-echo "env ALL_PROXY=${ALL_PROXY:-} HTTPS_PROXY=${HTTPS_PROXY:-} https_proxy=${https_proxy:-}" >>"$FP_LOG"
+echo "gitenv ${GIT_CONFIG_NOSYSTEM:-} ${GIT_CONFIG_GLOBAL:-}" >>"$FP_LOG"
+echo "env ALL_PROXY=${ALL_PROXY:-} HTTPS_PROXY=${HTTPS_PROXY:-} https_proxy=${https_proxy:-} NO_PROXY=${NO_PROXY:-} no_proxy=${no_proxy:-}" >>"$FP_LOG"
 case "$*" in
 *"remote get-url origin"*) echo "${FP_ORIGIN:-https://github.com/p2pool-starter-stack/rigforge.git}"; exit 0 ;;
 *" fetch "* | *" clone "*)
@@ -47,6 +48,10 @@ fp_cfg "{\"tor_socks5\":\"$FP_PROXY\"}"
 assert_eq "tor_socks5 host:port accepted" "$(fp_tor)" "$(printf '%s\nrc=0' "$FP_PROXY")"
 fp_cfg '{"tor_socks5":"[::1]:9050"}'
 assert_eq "tor_socks5 bracketed IPv6 accepted" "$(fp_tor)" "$(printf '[::1]:9050\nrc=0')"
+printf '{bad' >"$FP/config.json"
+out="$(fp_tor)"
+assert_contains "an unparseable config is refused, never read as 'no proxy'" "$out" "rc=1"
+assert_contains "an unparseable config says why" "$out" "Cannot read tor_socks5"
 for bad in '"socks5://127.0.0.1:9050"' '""' '9050' '"127.0.0.1"' '"h:99999"' '"<proxy>:9050"' '["127.0.0.1:9050"]'; do
     fp_cfg "{\"tor_socks5\":$bad}"
     out="$(fp_tor)"
@@ -78,14 +83,14 @@ fp_check() {
     fp_cfg "$1"
     : >"$FP/log"
     printf '1.4.0\n' >"$FP/VERSION"
-    env -i PATH="$FP/bin:$STUBS:$PATH" FP_LOG="$FP/log" ${2:+FP_PROXY_DOWN=1} \
+    env -i PATH="$FP/bin:$STUBS:$PATH" FP_LOG="$FP/log" NO_PROXY=api.github.com no_proxy=github.com ${2:+FP_PROXY_DOWN=1} \
         bash -c 'S=$1; D=$2; C=$3; set --; source "$S"; SCRIPT_DIR="$D"; CONFIG_JSON="$C"; set +e; _upgrade_check 2>&1; echo "rc=$?"' fp-shell "$SCRIPT" "$FP" "$FP/config.json"
 }
 out="$(fp_check "{\"tor_socks5\":\"$FP_PROXY\"}")"
 assert_contains "upgrade --check reaches the proxy and reports the release" "$out" "9.9.9 (you have 1.4.0)"
 assert_contains "upgrade --check asks the proxy to resolve the name (socks5h)" "$(cat "$FP/log")" "--proxy socks5h://$FP_PROXY"
 assert_absent "upgrade --check never dials GitHub directly with the key set" "$(cat "$FP/log")" "DIRECT"
-assert_contains "upgrade --check needs no proxy variable in the environment" "$(grep '^env' "$FP/log")" "ALL_PROXY= HTTPS_PROXY= https_proxy="
+assert_contains "upgrade --check ignores NO_PROXY and proxy variables in the environment" "$(grep '^env' "$FP/log")" "ALL_PROXY= HTTPS_PROXY= https_proxy= NO_PROXY= no_proxy="
 out="$(fp_check "{\"tor_socks5\":\"$FP_PROXY\"}" down)"
 assert_contains "upgrade --check with the proxy down fails closed with a clear message" "$out" "Couldn't reach GitHub through tor_socks5 (no direct fallback)"
 assert_contains "upgrade --check with the proxy down still exits 0" "$out" "rc=0"
@@ -98,7 +103,7 @@ out="$(fp_check '{"pools":[{"url":"h:3333"}]}')"
 assert_contains "upgrade --check with the key unset is unchanged: direct curl" "$out" "Couldn't reach GitHub to check"
 assert_eq "upgrade --check with the key unset adds no proxy flag" "$(grep -c -e '--proxy' "$FP/log")" "0"
 
-fp_clone() { # <config-json>
+fp_clone() {
     fp_cfg "$1"
     : >"$FP/log"
     local d
@@ -120,10 +125,11 @@ out="$(fp_clone "{\"tor_socks5\":\"$FP_PROXY\"}")"
 assert_contains "XMRig clone with the key set goes through the SOCKS5h proxy" "$(grep 'clone' "$FP/log")" "http.proxy=socks5h://$FP_PROXY"
 assert_contains "XMRig clone with the key set allows only https" "$(grep 'clone' "$FP/log")" "protocol.allow=never"
 assert_absent "XMRig clone with the key set never goes direct" "$(cat "$FP/log")" "DIRECT"
+assert_contains "XMRig clone with the key set ignores system and global git config" "$(grep '^gitenv' "$FP/log" | head -1)" "1 /dev/null"
 out="$(fp_clone '{"pools":[{"url":"h:3333"}]}')"
 assert_absent "XMRig clone with the key unset adds no proxy option" "$(grep 'clone' "$FP/log")" "http.proxy"
 
-fp_cu() { # <config-json> <origin> <proxy-reachable:yes|no> -> status.json
+fp_cu() {
     fp_cfg "$(printf '%s' "$1" | jq -c '. + {pools: [{url: "h:3333"}]}')"
     : >"$FP/log"
     local d
@@ -163,7 +169,7 @@ assert_eq "control-upgrade oneshot with the key set applies through the proxy" "
 assert_contains "control-upgrade's git fetch carries the proxy under the unit's own environment" "$(grep ' fetch ' "$FP/log")" "http.proxy=socks5h://$FP_PROXY"
 assert_contains "control-upgrade's git fetch pins the remote's proxy too" "$(grep ' fetch ' "$FP/log")" "remote.origin.proxy=socks5h://$FP_PROXY"
 assert_absent "control-upgrade never goes direct with the key set" "$(cat "$FP/log")" "DIRECT"
-assert_eq "control-upgrade ran with no proxy variable exported" "$(grep '^env' "$FP/log" | sort -u)" "env ALL_PROXY= HTTPS_PROXY= https_proxy="
+assert_eq "control-upgrade ran with no proxy variable exported" "$(grep '^env' "$FP/log" | sort -u)" "env ALL_PROXY= HTTPS_PROXY= https_proxy= NO_PROXY= no_proxy="
 s="$(fp_cu "{\"tor_socks5\":\"$FP_PROXY\"}" "git@github.com:p2pool-starter-stack/rigforge.git" yes)"
 assert_eq "control-upgrade refuses a non-https origin when the key is set" "$(printf '%s' "$s" | jq -r .status)" "failed"
 assert_contains "control-upgrade names the non-https origin" "$s" "not an https URL"
@@ -209,7 +215,7 @@ s="$(fp_cu_inproc "{\"tor_socks5\":\"$FP_PROXY\"}" "git@github.com:p2pool-starte
 assert_eq "control-upgrade (in-process) refuses a non-https origin with the key set" "$(printf '%s' "$s" | jq -r .status)" "failed"
 assert_contains "control-upgrade (in-process) records why" "$s" "not an https URL"
 
-fp_doctor() { # <config-json> <reachable:yes|no>
+fp_doctor() {
     fp_cfg "$1"
     (
         source "$SCRIPT"
