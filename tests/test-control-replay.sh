@@ -224,6 +224,7 @@ expected='{"max_temp_c":101}
 [ "$(cat "$CALLS")" = "$expected" ] || die 'recorded apply order differs'
 ! grep -q 'SECRET' "$CALLS" || die 'pool credentials escaped into log'
 # Exercise the real cleanup function: the runner marker survives, the ordinary marker does not.
+source "$ROOT/tests/e2e-hammer.sh"
 eval "$(sed -n '/^_cleanup()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 _restore_xmrig() { return 0; }
 # shellcheck disable=SC2034 # consumed by the extracted cleanup function

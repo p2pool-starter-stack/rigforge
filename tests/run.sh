@@ -9204,6 +9204,7 @@ out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-malformed" ]; then touch "'"$DDIR
 assert_contains "malformed member blocks exact-target offline (#466)" "$out" "BAD worker did not become offline"
 assert_absent "malformed transition never proves offline (#466)" "$out" "OK stopped worker became offline"
 source "$ROOT/tests/test-e2e-gate-fail-closed.sh"
+source "$ROOT/tests/test-e2e-hammer.sh"
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \

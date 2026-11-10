@@ -4,6 +4,7 @@
 echo "== unit: release e2e gates fail closed (#491) =="
 source "$ROOT/tests/test-summary-diagnostics.sh"
 source "$ROOT/tests/e2e-refresh-window.sh"
+source "$ROOT/tests/e2e-hammer.sh"
 T491="$(mktemp -d "$SANDBOX/gate491.XXXXXX")"
 
 PIT_SET="$(sed -n '/^set_cfg()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
