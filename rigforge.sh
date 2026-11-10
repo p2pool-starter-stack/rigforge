@@ -2163,6 +2163,7 @@ upgrade() {
     else
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) was already built — regenerated the config and reinstalled the units."
     fi
+    _reown_worker
     _upgrade_restart "$was_active"
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
