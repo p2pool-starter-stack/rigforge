@@ -178,6 +178,37 @@ s="$(fp_cu '{"pools":[{"url":"h:3333"}]}' "git@github.com:p2pool-starter-stack/r
 assert_eq "control-upgrade with the key unset is unchanged (ssh origin, no probe)" "$(printf '%s' "$s" | jq -r .status)" "applied"
 assert_absent "control-upgrade with the key unset adds no proxy option" "$(grep ' fetch ' "$FP/log")" "http.proxy"
 
+fp_cu_inproc() {
+    fp_cfg "$(printf '%s' "$1" | jq -c '. + {pools: [{url: "h:3333"}]}')"
+    : >"$FP/log"
+    local d
+    d="$(mktemp -d "$SANDBOX/fpi.XXXXXX")"
+    mkdir -p "$d/state/spool"
+    mkdir -m 700 "$d/upgrade-state"
+    printf '1.0.0' >"$d/VERSION"
+    printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux
+        SCRIPT_DIR="$d"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_CONTROL_STATE="$d/state"
+        RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state"
+        CONTROL_UPGRADE_MIN_INTERVAL=0
+        FP_LOG="$FP/log" FP_STUB_GIT="$STUBS/git" FP_ORIGIN="$2"
+        export FP_LOG FP_STUB_GIT FP_ORIGIN
+        _tcp_probe() { return 0; }
+        _control_claim_staged() { cp "$1" "$d/staged.json" && rm -f "$1" && printf '%s' "$d/staged.json"; }
+        _wait_miner_live() { return 0; }
+        set +e
+        PATH="$FP/bin:$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    )
+    cat "$d/state/status.json" 2>/dev/null
+}
+s="$(fp_cu_inproc "{\"tor_socks5\":\"$FP_PROXY\"}" "git@github.com:p2pool-starter-stack/rigforge.git")"
+assert_eq "control-upgrade (in-process) refuses a non-https origin with the key set" "$(printf '%s' "$s" | jq -r .status)" "failed"
+assert_contains "control-upgrade (in-process) records why" "$s" "not an https URL"
+
 fp_doctor() { # <config-json> <reachable:yes|no>
     fp_cfg "$1"
     (
