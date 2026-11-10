@@ -1180,7 +1180,7 @@ generate_xmrig_config() {
         _step=$(jq --argjson cap "$THREADS_CAP" '.cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$_new") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
     fi
 
-    _shared_host_config "$_new"
+    _shared_host_config "$_new" || _config_render_fail "$_new" "Applying the shared-host XMRig safeguards failed" || return 1
     _config_install "$_new" "${1:-}" || return 1
     _config_apply_stamp "${CONFIG_INPUT_HASH:-}" "${1:-}"
 
