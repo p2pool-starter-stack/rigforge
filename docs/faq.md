@@ -117,6 +117,12 @@ Not for a LAN pool, the normal case. An `.onion` pool needs a Tor SOCKS proxy: i
 Tor yourself, then set the pool’s `socks5` address. First-run setup offers `127.0.0.1:9050` for an
 onion pool and lets you override it. RigForge does not install, start, or supervise Tor.
 
+To keep RigForge's own fetches off the clearnet as well, set the top-level `tor_socks5` key (host:port,
+for example `127.0.0.1:9050`). It covers `upgrade --check`, the pinned XMRig clone and the remote-upgrade
+oneshot's `git fetch`, with remote DNS and no direct fallback. It does not cover package-manager
+installs (`apt`, `dnf`, `pacman`, `brew`, or the `jq` bootstrap): those are yours to route, for example
+with `Acquire::http::Proxy` for apt. See [Configuration](configuration.md#configuration-reference).
+
 ---
 
 ## Is macOS supported?

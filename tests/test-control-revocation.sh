@@ -76,8 +76,9 @@ stop_helper_case() {
                 ;;
             show)
                 case "$*:$mode" in
-                *LoadState*:absent | *LoadState*:active) printf 'not-found\n' ;;
+                *LoadState*:absent | *LoadState*:failed | *LoadState*:active) printf 'not-found\n' ;;
                 *ActiveState*:absent) printf 'inactive\n' ;;
+                *ActiveState*:failed) printf 'failed\n' ;;
                 *ActiveState*:active) printf 'active\n' ;;
                 *LoadState*:stuck) printf 'loaded\n' ;;
                 *ActiveState*:stuck) printf 'active\n' ;;
@@ -93,8 +94,8 @@ stop_helper_case() {
     [ "$rc" -eq "$expected" ] || fail "stop helper $mode returned $rc, expected $expected"
     out=$(cat "$d/output")
     case "$mode" in
-    absent)
-        ! grep -q '^kill ' "$d/calls" || fail "absent inactive receiver was killed"
+    absent | failed)
+        ! grep -q '^kill ' "$d/calls" || fail "absent $mode receiver was killed"
         ;;
     active)
         grep -q '^kill --kill-who=all --signal=KILL rigforge-control.service$' "$d/calls" || fail "not-found active receiver did not get an exact-unit kill"
@@ -110,6 +111,7 @@ stop_helper_case() {
 }
 
 stop_helper_case absent 0
+stop_helper_case failed 0
 stop_helper_case active 0
 stop_helper_case stuck 1
 
@@ -193,6 +195,25 @@ EOF
 
 disabled_case absent-upgrade
 disabled_case fail
+
+ghost="$T/failed-ghost"
+mkdir -p "$ghost/bin" "$ghost/units"
+cp "$recovery/bin/sudo" "$ghost/bin/"
+cat >"$ghost/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+stop) exit 5 ;;
+show) case "$*" in *LoadState*) echo not-found ;; *) echo failed ;; esac ;;
+esac
+exit 0
+EOF
+chmod +x "$ghost/bin/"*
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux CONTROL_MODE=disabled CONTROL_UPGRADE=disabled SYSTEMD_DIR="$ghost/units"
+    PATH="$ghost/bin:$PATH"
+    install_control >/dev/null 2>&1
+) || fail "a failed, unloaded receiver blocked the disabled reconcile"
 
 stale="$T/stale-upgrade"
 mkdir -p "$stale/bin" "$stale/units"

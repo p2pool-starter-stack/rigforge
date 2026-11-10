@@ -54,7 +54,7 @@ Not every verb needs root — the design, in four lines:
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
-| `upgrade` | Redeploy this RigForge release onto the rig: regenerate the live XMRig config, reinstall the systemd units, restart so both are in effect, re-tune if periodic autotune is enabled (the fastest knobs can shift between versions), and hand the files back to you. The **compile** is the conditional part — XMRig is rebuilt when the pinned version/commit changed, the compiled-minimum marker is missing or nonzero, or the binary checksum fails. A miner you had deliberately stopped is left stopped, and the regenerated config and unit take effect at your next `start` (#413). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
+| `upgrade` | Redeploy this RigForge release onto the rig: regenerate the live XMRig config, reinstall the systemd units, hand the files to you (and to `miner_user`, if set) so the miner can read its rebuilt tree, restart so both are in effect, and re-tune if periodic autotune is enabled (the fastest knobs can shift between versions). The **compile** is the conditional part — XMRig is rebuilt when the pinned version/commit changed, the compiled-minimum marker is missing or nonzero, or the binary checksum fails. A miner you had deliberately stopped is left stopped, and the regenerated config and unit take effect at your next `start` (#413). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. A miner that is deliberately stopped — a watchdog thermal hold, or your own `stop` — is left stopped, and picks up the new config at its next start. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled), then asks the running miner whether a live pool connection came up — and warns when none did (a bad `pools[0].url` otherwise mines nothing while looking applied, #343). Warn only, never a failure: the pool may be legitimately down at apply time. `apply` exits non-zero when the miner restart is rejected (#630; the control path then rolls the change back instead of reporting it applied), and when the watchdog units could not be re-rendered (#395) — that one is a real failure, because the cadence the rig is running would otherwise diverge from `config.json` silently. |
 | `uninstall` | Remove the service and revert all system changes (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
 | `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, the miner has a live pool connection (read from the miner's own local API — a running miner with no connection is not mining, #343; with the service stopped, one TCP dial of `pools[0]` stands in for a direct pool; a proxied connection cannot be verified until mining starts), HugePages are reserved, kernel lockdown isn't blocking MSR writes (read from `/sys/kernel/security/lockdown` — active lockdown means the MSR mod cannot apply, and `msr.allow_writes=on` can't override it), the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): the live algorithm when it differs from `rx/0`, an unreachable configured SOCKS proxy for an enabled pool (a successful TCP dial stays quiet and does not prove SOCKS/Tor health), CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. When the [writable control path](#writable-control-path-opt-in) is enabled, it's also a counted issue: `doctor` checks `rigforge-control` is active and its `/status` endpoint answers (#278), staying silent when control is disabled. Exits non-zero when critical issues are found (cron-friendly, matching Pithead's `status`). |
@@ -123,7 +123,8 @@ reported exit remain zero.
 
 Check IDs are stable for automation, but row availability depends on the worker's configuration and
 available probes. An ID may repeat: `socks-proxy`, for example, can produce one row for each configured
-proxy. Messages are operator-facing text and are not a stable interface. Consumers should therefore
+proxy. `tor-socks5` is one row: `info` when `tor_socks5` is unset, `ok` when its port accepts a TCP
+connection, `warn` when it does not or the value is invalid. Messages are operator-facing text and are not a stable interface. Consumers should therefore
 select rows by `id` and `status`, allow repeats, and use the summary and `exit` fields for the overall
 result.
 
@@ -332,6 +333,11 @@ watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
   A failed stop is logged and retried on later ticks while the miner remains active and above the
   cutoff. A failed recovery start is logged and retains the hold for later retries, including when
   `max_temp_c` is removed; only a successful start clears the hold.
+  On the shared-host profile a start is additionally refused while the loaded unit is out of
+  profile (for example `shared_host` added to `config.json` before `apply` ran): the tick that
+  wants to start — the hold lift, or the second wedge strike's restart — logs the guard's
+  `run apply` error and keeps the hold. Stopping is never guarded, so the thermal cutoff stops a
+  hot miner even while the unit is out of profile.
 - A miner that's **not running** is left alone — dead-process recovery is systemd's job.
 
 Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed
@@ -511,7 +517,11 @@ sudo ./rigforge.sh upgrade      # regenerate config, reinstall units, restart; r
 `upgrade --check` compares your `VERSION` against the latest GitHub release and prints the upgrade
 recipe if you're behind. It's the only command that queries GitHub's API, it runs exactly when you
 type it (nothing is scheduled — see [SECURITY.md](../SECURITY.md)), and it always exits 0, so it's
-safe to call from your own scripts.
+safe to call from your own scripts. With [`tor_socks5`](configuration.md#configuration-reference) set it
+asks that proxy to resolve and reach GitHub, and an unreachable proxy ends in a warning, never a direct
+connection. The same key carries the XMRig source clone and a remote upgrade's `git fetch`; the remote
+upgrade refuses to start when the proxy does not answer or `origin` is not an https URL, and records
+that as its `failed` reason.
 
 `upgrade` skips the recompile when the pinned XMRig is already built with a zero minimum marker
 and a valid binary checksum, so it's cheap to run — but it is

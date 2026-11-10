@@ -2713,6 +2713,8 @@ assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_tem
 
 bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
 assert_rc "thermal watchdog command retries (#631)" "$?" 0
+bash "$ROOT/tests/test-watchdog-shared-host-guard.sh"
+assert_rc "watchdog shared-host guard ordering (#665)" "$?" 0
 
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
@@ -8853,6 +8855,7 @@ assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "
 assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
 PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-fetch-proxy.sh"
 
 # Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
 # its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain

@@ -33,7 +33,7 @@ _shared_host_config() {
                 else [range(0; if ($rx | type) == "number" and $rx >= 1 and $rx == ($rx | floor) then ([$rx, $cap] | min) else $cap end) | -1] end) |
             .cpu["*"] = .cpu.rx
         else . end
-    ' "$1") || error "Could not apply shared-host XMRig safeguards."
+    ' "$1") || return 1
     printf '%s\n' "$content" >"$1"
 }
 

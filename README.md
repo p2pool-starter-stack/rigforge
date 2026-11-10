@@ -177,7 +177,9 @@ RigForge runs as root, so it's worth being explicit about what it does and doesn
   GitHub releases API, but only when you run it — nothing is scheduled and nothing else calls it.)
   The only outbound traffic is
   to *your* pool, to the pinned XMRig source on GitHub (cloned and commit-verified before building),
-  and to your distro's package mirrors. Explicit `bench --submit` and `bench --verify ID` also contact
+  to RigForge's own origin for an opted-in remote upgrade, and to your distro's package mirrors.
+  `tor_socks5` routes the GitHub fetches (`upgrade --check`, the XMRig clone, the remote-upgrade fetch)
+  through a SOCKS5 proxy; package installs stay yours to route. Explicit `bench --submit` and `bench --verify ID` also contact
   the upstream benchmark service; submission publishes hardware and performance information.
 - The XMRig donation defaults to **0%**. Set `"DONATION"` to a nonzero percentage to support
   the XMRig developers. After the one-time build migration on upgrade, lowering it takes effect

@@ -105,6 +105,15 @@ bak="$(find "$W" -name 'config.json.*.bak')"
 check "failed restore keeps the last good copy it names" "$("$REAL_JQ" -r '._orig' "$bak") $(printf '%s' "$out" | grep -c "previous copy is $bak")" "true 1"
 check "the kept backup is owner-only under a permissive umask" "$(stat -c '%a' "$bak" 2>/dev/null || stat -f '%Lp' "$bak")" 600
 
+W="$D/shared-safeguard"
+mkdir "$W"
+printf '{"_orig":true}\n' >"$W/config.json"
+printf '{"cpu":4}\n' >"$W/tune-overrides.json"
+check "failed shared-host safeguard render returns failure" "$(SHARED_HOST=true render "$W" "$D")" 1
+check "last good config.json survives a failed shared-host safeguard render" "$("$REAL_JQ" -r '._orig' "$W/config.json")" true
+check "failed shared-host safeguard render leaves no secret-bearing temp file" "$(find "$W" -name 'config.json.*' | wc -l | tr -d ' ')" 0
+check "failed shared-host safeguard render writes no apply stamp" "$(find "$W" -name '.rigforge-apply.json*' | wc -l | tr -d ' ')" 0
+
 W="$D/ok"
 mkdir "$W"
 printf '{"_orig":true}\n' >"$W/config.json"
