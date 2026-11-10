@@ -4791,24 +4791,23 @@ watchdog() {
         error "watchdog drives the live systemd service and is only supported on Linux."
     fi
     parse_config
-    _shared_host_start_guard
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
     if [ -f "$hold_f" ]; then
+        local lift_reason=""
         if [ -z "$MAX_TEMP_C" ]; then
-            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
-                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
-                return 0
-            fi
-            rm -f "$hold_f"
-            log "watchdog: max_temp_c is no longer set — thermal hold lifted, miner started."
+            lift_reason="max_temp_c is no longer set"
         elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
+            lift_reason="temp ${t}°C is below $((MAX_TEMP_C - 5))°C"
+        fi
+        if [ -n "$lift_reason" ]; then
+            _shared_host_start_guard
             if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
                 warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
                 return 0
             fi
             rm -f "$hold_f"
-            log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, miner started."
+            log "watchdog: $lift_reason — thermal hold lifted, miner started."
         else
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
         fi
@@ -4844,6 +4843,7 @@ watchdog() {
         f=$((f + 1))
         if [ "$f" -ge 2 ]; then
             rm -f "$fails_f"
+            _shared_host_start_guard
             sudo systemctl restart "$SERVICE_NAME" 2>/dev/null || true
             warn "watchdog: miner wedged ($f consecutive checks with 0 H/s or an unreachable API) — restarted."
         else

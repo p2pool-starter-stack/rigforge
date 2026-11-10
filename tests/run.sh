@@ -2713,6 +2713,8 @@ assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_tem
 
 bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
 assert_rc "thermal watchdog command retries (#631)" "$?" 0
+bash "$ROOT/tests/test-watchdog-shared-host-guard.sh"
+assert_rc "watchdog shared-host guard ordering (#665)" "$?" 0
 
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"

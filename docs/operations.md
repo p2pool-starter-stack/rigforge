@@ -332,6 +332,11 @@ watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
   A failed stop is logged and retried on later ticks while the miner remains active and above the
   cutoff. A failed recovery start is logged and retains the hold for later retries, including when
   `max_temp_c` is removed; only a successful start clears the hold.
+  On the shared-host profile a start is additionally refused while the loaded unit is out of
+  profile (for example `shared_host` added to `config.json` before `apply` ran): the tick that
+  wants to start — the hold lift, or the second wedge strike's restart — logs the guard's
+  `run apply` error and keeps the hold. Stopping is never guarded, so the thermal cutoff stops a
+  hot miner even while the unit is out of profile.
 - A miner that's **not running** is left alone — dead-process recovery is systemd's job.
 
 Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed
