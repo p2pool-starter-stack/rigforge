@@ -240,7 +240,7 @@ install_api() { :; }
 install_control() { :; }
 install_api_firewall() { :; }
 link_cli() { :; }
-_reown_worker() { :; }
+_reown_worker() { trace reown; }
 finish_deployment() { :; }
 _upgrade_restart() { trace restart; }
 _post_upgrade_retune() { :; }
@@ -259,6 +259,7 @@ assert_order prepare service
 upgrade >/dev/null
 assert_order prepare compile
 assert_order prepare restart
+[ "$(grep -n -m1 '^reown$' "$D/trace" | cut -d: -f1)" -lt "$(grep -n '^restart$' "$D/trace" | cut -d: -f1)" ] || fail "upgrade restarted the miner before re-owning the worker tree"
 : >"$D/trace"
 apply >/dev/null
 assert_order prepare runtime
