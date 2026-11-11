@@ -25,25 +25,25 @@ _rig_owner_marker_admits() (
     [ "$(jq -r '.ACCESS_TOKEN // ""' "$cfg" 2>/dev/null)" = "$token" ] || return 1
     allow=$(jq -r '.api_allow_from // ""' "$cfg" 2>/dev/null) || return 1
     case "$allow" in
-        */32)
-            host="${allow%/32}"
-            [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
-            ;;
-        */128)
-            host="${allow%/128}"
-            [ -n "$host" ] && [ "${host#*:}" != "$host" ] || return 1
-            ;;
-        '')
+    */32)
+        host="${allow%/32}"
+        [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+        ;;
+    */128)
+        host="${allow%/128}"
+        [ -n "$host" ] && [ "${host#*:}" != "$host" ] || return 1
+        ;;
+    '')
+        return 1
+        ;;
+    *)
+        host="$allow"
+        if [ "${host#*:}" != "$host" ]; then
+            [ "${host#*/}" = "$host" ] || return 1
+        elif ! [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
             return 1
-            ;;
-        *)
-            host="$allow"
-            if [ "${host#*:}" != "$host" ]; then
-                [ "${host#*/}" = "$host" ] || return 1
-            elif ! [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-                return 1
-            fi
-            ;;
+        fi
+        ;;
     esac
     [ "$source" = "$host" ]
 )
