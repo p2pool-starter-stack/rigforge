@@ -38,3 +38,14 @@ doctor_command() {
         error "Unexpected argument for doctor: '${2:-$1}'. Run '$0 help'."
     fi
 }
+
+_doctor_service_check() {
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        _ck_ok "service '$SERVICE_NAME' is active" service
+    elif _opp_waiting; then
+        _ck_info "service '$SERVICE_NAME' is waiting for host capacity (opportunistic mining) — see the resource profile above" service
+    else
+        _ck_warn "service '$SERVICE_NAME' is not active — start it with: sudo $0 start" service
+        return 1
+    fi
+}

@@ -84,7 +84,7 @@ pithead#235):
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
   as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
-  `watchdog` (armed state, thermal-hold, `max_temp_c`), `config` (the effective **writable**
+  `watchdog` (armed state, thermal-hold, `max_temp_c`), `opportunistic` (`{mode: "disabled"}`, or the shared-host policy's state, reason, observation age and budget; a zero hashrate while its `state` is `waiting` is intended, see [Shared-host profile](shared-host.md)), `config` (the effective **writable**
   config — exactly the control-path allowlist, pool secrets masked to `{"__secret__": true}`; see
   the prefill note in §3), and
   `config_meta` (`{revision, changed_at, source, last_change_id}` — `revision` is a keyed digest of the

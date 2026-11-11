@@ -64,13 +64,110 @@ tuning, even after disabling the profile, because ownership of inherited setting
 Apply the profile with `sudo ./rigforge.sh apply` after editing `config.json`. Repeated setup, apply,
 upgrade, and reboot preserve the selected profile.
 
+## Opportunistic mining (opt-in)
+
+Set `opportunistic` inside `shared_host` to let the miner back off when other applications need the
+machine and start again after capacity has been back for a sustained period. `true` selects the
+defaults; an object overrides any of them:
+
+```json
+{
+  "shared_host": {
+    "cpu_quota_percent": 200,
+    "memory_max_mb": 4096,
+    "opportunistic": {
+      "interval_s": 10,
+      "cpu_enter_pct": 60,
+      "cpu_exit_pct": 30,
+      "memory_stall_enter_pct": 10,
+      "memory_stall_exit_pct": 2,
+      "min_available_mb": 1024,
+      "enter_samples": 3,
+      "exit_samples": 6,
+      "quiet_s": 300
+    }
+  }
+}
+```
+
+The controller is `rigforge-opportunistic.service`, a small loop that samples every `interval_s`
+seconds (2 to 300) using kernel counters only, so the miner's own work is never counted as
+competition:
+
+| Signal | Source | Meaning |
+|---|---|---|
+| Other CPU use | `/proc/stat` busy time minus `rigforge.slice` `cpu.stat` `usage_usec` | Percent of total host CPU time used outside the miner's budget. |
+| Memory stalls | `/proc/pressure/memory` `some` total minus `rigforge.slice` `memory.pressure` total | Percent of the sample interval in which other tasks stalled on memory. |
+| Available memory | `MemAvailable` in `/proc/meminfo` | MiB the host can still hand out without reclaim. |
+
+The miner is stopped after `enter_samples` consecutive samples (1 to 60) with other CPU use at or
+above `cpu_enter_pct` (5 to 100), memory stalls at or above `memory_stall_enter_pct` (1 to 100), or
+available memory under `min_available_mb` (256 to 1048576). It is started again only when
+`exit_samples` consecutive samples (1 to 600) show other CPU use under `cpu_exit_pct` (0 to 95, below
+the enter value), memory stalls under `memory_stall_exit_pct` (0 to 99, below the enter value) and
+available memory of at least `memory_max_mb` plus `min_available_mb`, and at least `quiet_s` seconds
+(0 to 86400) have passed since the miner was stopped. Values between the enter and exit thresholds
+change nothing. Every start reinitializes the RandomX dataset, so size `exit_samples` and `quiet_s`
+from the dataset initialization time your rig logs (`dataset ready (N ms)`); the bench scenario
+records it. A stop, not a pause, is used because a stopped miner releases its dataset memory; the
+resume check budgets that memory before starting. Memory does not stay reserved while waiting, and
+the profile's ordinary-page rules (no HugePages) are unchanged.
+
+The kernel must provide pressure-stall information (`/proc/pressure/memory`); without it `apply`
+refuses the profile. At run time a missing or malformed metric stops the miner at once and
+`status` reports `metrics unavailable`; the controller resumes it by the normal rule after the
+metrics return. If the controller itself exits for any reason, including a config edit that disabled the
+policy before `apply`, `ExecStopPost` stops the miner and records the hold, and systemd restarts
+the controller after ten seconds, and the miner unit is bound to the controller
+(`BindsTo`, ordered after it), so a miner never runs without a live controller. Restarting the
+controller therefore stops mining until the resume rule, including the quiet interval, is met. The
+enabled miner unit still starts at boot before the first sample; the controller yields within
+`enter_samples` intervals if the host has no capacity, so the boot start is not budget-gated. An invalid `opportunistic` value is
+rejected by `apply`.
+
+Independent reasons never override each other. The policy holds a stop it made with an ownership
+marker (`owned` in the root-owned `/var/lib/rigforge-opportunistic`, kept across controller restart and reboot, next to the controller's state and lock)
+and resumes only a miner it stopped:
+
+| Reason | Who owns it | Policy behavior |
+|---|---|---|
+| Resource pressure | the controller | Stops and resumes as above. |
+| Manual stop | the operator (`rigforge stop` records a `manual` marker; a `systemctl stop` the policy did not make is treated the same) | Never resumed, even if a thermal hold releases meanwhile; `rigforge stop`, `start`, `restart` and an `apply` that restarts the miner clear any policy hold first, serialized with the controller. |
+| Thermal hold | the watchdog | Never started while the hold file exists; when the watchdog releases it the start decision passes to the policy rather than starting under load. |
+| Maintenance | RigForge builds and helpers inside `rigforge.slice` | No resume while one is running. |
+| Service failure | systemd (`Restart=no`) | Reported as `miner service failed` and never restarted by the policy. |
+
+The miner unit refuses to start while the ownership marker exists, so a boot or a dependency
+restart cannot bypass the policy; after a reboot a held miner stays held until the controller
+resumes it, and `sudo ./rigforge.sh start` overrides the hold. Disabling `opportunistic` and running
+`apply` removes the controller, its state and the hold; start a miner left stopped with
+`sudo ./rigforge.sh start`.
+
+`status` and `doctor` print one of: mining within the host budget, waiting for host capacity, stopped
+manually, miner service failed, thermal hold, paused for maintenance, metrics unavailable, or no
+observation yet, with the time and reason of the last transition, the age of the last observation
+(older than three intervals is stale: the controller is not sampling, and `doctor` counts it as an issue), the latest CPU, stall and
+memory readings, and the effective budget. `doctor` treats a miner waiting for capacity as healthy
+rather than as a stopped service. The same data is in the read feed under `rigforge.opportunistic`
+(`mode`, `state`, `reason`, `last_transition_epoch`, `observed_epoch`, `observation_age_s`, `stale`,
+`other_cpu_pct`, `memory_stall_pct`, `available_mb`, `budget`); it names no process or workload.
+A zero hashrate while `state` is `waiting` is intended and is not a crash; the watchdog does not
+restart a miner the policy holds.
+
+This first version only stops and starts the miner. Gradual thread scaling and work windows are
+separate work, and a warm pause cannot replace the memory release. The thresholds describe your
+host, not a guarantee for a foreground workload: measure that workload's service level on your rig.
+
 The opt-in `shared-host` phase of `tests/e2e-pithead.sh` (bench `tier4-e2e`, not part of `all`)
 switches a provisioned rig to the profile, checks the effective slice limits, the miner's cgroup,
 the generated XMRig settings, `status`, and an accepted share, then restores the dedicated
 configuration. It compares HugePages, governors, the MSR module, the kernel command line and the
 fstab, limits, modules and GRUB files before, during and after. Measured coexistence with a
 foreground workload is the separate bench coexistence scenario owned by #579; the CPU quota and
-memory ceiling alone do not establish that workload's service-level budget.
+memory ceiling alone do not establish that workload's service-level budget. The same phase then
+enables opportunistic mining and, with recorded thresholds, times the yield to competing CPU load,
+checks that the miner's memory is released, times the resume, requires an accepted share and a
+quiet minute afterwards, and checks that a manual stop is never resumed.
 
 The XMRig controls follow the [XMRig CPU configuration](https://xmrig.com/docs/miner/config/cpu).
 The resource controls follow [systemd resource control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html);
