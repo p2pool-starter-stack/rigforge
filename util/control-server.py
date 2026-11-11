@@ -92,15 +92,7 @@ def load_upgrade_enabled(cfg_path):
     return str(v).strip().lower() in ("enabled", "true", "on")
 
 
-def stage_change(spool, body_bytes, prefix="pending"):
-    """Write the accepted change to spool/<prefix>-<id>.json atomically; return the change id.
-
-    The temp name is dot-prefixed so no path-unit glob matches a half-written file; os.replace is
-    atomic within the dir, and both file and dir are fsynced so the change survives a crash the
-    instant it is acknowledged. #308: config changes stage as pending-*.json (watched by the apply
-    path unit); upgrade requests stage as upgrade-*.json (a DISTINCT glob) so the apply unit never
-    fires on an upgrade intent and vice-versa.
-    """
+def stage_change(spool, body_bytes, prefix="pending", peer=None):
     cid = os.urandom(8).hex()
     os.makedirs(spool, exist_ok=True)
     with open(os.path.join(spool, ".queue.lock"), "a+b") as lock:
@@ -111,6 +103,10 @@ def stage_change(spool, body_bytes, prefix="pending"):
         tmp = os.path.join(spool, ".tmp-" + cid)
         final = os.path.join(spool, prefix + "-" + cid + ".json")
         try:
+            with open(os.path.join(spool, ".peer-" + cid), "wb") as f:
+                f.write(str(peer or "").encode())
+                f.flush()
+                os.fsync(f.fileno())
             with open(tmp, "wb") as f:
                 f.write(body_bytes)
                 f.flush()
@@ -122,6 +118,10 @@ def stage_change(spool, body_bytes, prefix="pending"):
                     os.unlink(tmp)
                 except OSError as e:
                     print("control spool temporary cleanup failed: %s" % e, file=sys.stderr)
+        live = {n[8:-5] for n in os.listdir(spool) if n.endswith(".json") and n[:8] in ("pending-", "upgrade-")}
+        for stale in (n for n in os.listdir(spool) if n.startswith(".peer-") and n[6:] not in live):
+            try: os.unlink(os.path.join(spool, stale))
+            except OSError: pass
         try:
             dfd = os.open(spool, os.O_RDONLY)
             try:
@@ -315,7 +315,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "Bad Request", {"error": 'body must be exactly {"version": "vX.Y.Z"}'})
         staged = json.dumps({"version": body["version"]}).encode()
         try:
-            cid = stage_change(os.path.join(STATE_DIR, "spool"), staged, prefix="upgrade")
+            cid = stage_change(os.path.join(STATE_DIR, "spool"), staged, prefix="upgrade", peer=self.client_address[0])
         except DurabilityUncertain as e:
             return self._send(202, "Accepted", dict(status="accepted", change_id=e.cid, warning=str(e), note="request is staged; do not retry now; poll GET /status?change_id=%s; if it remains unknown or pending, inspect the rig before resubmitting" % e.cid))
         except SpoolFull:
@@ -344,7 +344,7 @@ class Handler(BaseHTTPRequestHandler):
         staged = json.dumps({k: change[k] for k in change}).encode()
         warning = None
         try:
-            cid = stage_change(os.path.join(STATE_DIR, "spool"), staged)
+            cid = stage_change(os.path.join(STATE_DIR, "spool"), staged, peer=self.client_address[0])
         except DurabilityUncertain as e:
             cid = e.cid
             warning = str(e)

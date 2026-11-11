@@ -280,22 +280,24 @@ echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
 bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
 
-echo "== unit: control_upgrade / control_apply refuse while the rig is lent to a bench job (#670) =="
+echo "== unit: control_upgrade / control_apply refuse while the rig is lent to a bench job (#670/#688) =="
 if ! command -v flock >/dev/null 2>&1; then
     echo "  SKIP: no flock(1) on this host (macOS) — the lock-behaviour tests run in the Linux CI jobs"
 else
     lentLock="$SANDBOX/rig-e2e.lock"
     : >"$lentLock"
-    lent_run() { # <upgrade|apply> <fresh dir> -> status.json contents
-        local d="$2"
+    lent_run() { # <upgrade|apply> <fresh dir> [request-source] -> status.json contents
+        local d="$2" src="${3:-}"
         mkdir -p "$d/state/spool"
         [ -d "$d/upgrade-state" ] || mkdir -m 700 "$d/upgrade-state"
         printf '1.0.0' >"$d/VERSION"
-        printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
+        [ -f "$d/config.json" ] || printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
         if [ "$1" = upgrade ]; then
             printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
+            [ -z "$src" ] || printf '%s' "$src" >"$d/state/spool/.peer-abc123def4567890"
         else
             printf '{"DONATION":7}\n' >"$d/state/spool/pending-abc123.json"
+            [ -z "$src" ] || printf '%s' "$src" >"$d/state/spool/.peer-abc123"
         fi
         (
             source "$SCRIPT"
@@ -348,16 +350,35 @@ else
     assert_eq "busy apply left config.json untouched" "$(jq -r '.DONATION // "none"' "$lentA/config.json")" "none"
     assert_eq "busy apply did not apply" "$([ -e "$lentA/do-called" ] && echo y || echo n)" "n"
     ownerMark="$SANDBOX/rig-owner"
+    markTok="harnessWindowToken0123456789ab"
+    origTok="rigsOwnAccessToken9876543210zz"
+    markCfg() { printf '{"pools":[{"url":"h:3333"}],"ACCESS_TOKEN":"%s","api_allow_from":"%s"}\n' "$1" "$2" >"$3/config.json"; }
     printf '%s\n' "$$" >"$ownerMark"
     lentO=$(mktemp -d "$SANDBOX/lent.XXXXXX")
     sOwn="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentO")"
-    assert_eq "control_upgrade proceeds while the lock is held by a live e2e harness marker (#670)" "$(st "$sOwn")" "applied"
+    assert_eq "a pid-only marker admits nothing while the lock is held (#688)" "$(st "$sOwn")" "busy"
+    while IFS='|' read -r verb mtok ctok allow src want note; do
+        d=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+        printf '%s\n%s\n%s\n' "$$" "$mtok" "$origTok" >"$ownerMark"
+        markCfg "$ctok" "$allow" "$d"
+        assert_eq "$note (#688)" "$(st "$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run "$verb" "$d" "$src")")" "$want"
+    done <<CASES
+upgrade|$markTok|$markTok|192.0.2.5/32|192.0.2.5|applied|control_upgrade proceeds for the pinned borrowing host under a swapped token
+apply|$markTok|$markTok|127.0.0.1/32|127.0.0.1|applied|control_apply proceeds for the pinned host under a swapped token
+upgrade|$markTok|$markTok|192.0.2.5/32|198.51.100.9|busy|a marker answers busy to a request from another address
+apply|$markTok|$markTok|192.0.2.5/32|198.51.100.9|busy|control_apply answers busy to a request from another address
+upgrade|$markTok|$markTok|192.0.2.5/32||busy|a change staged without a recorded source gets busy under the marker
+upgrade|$origTok|$origTok|192.0.2.5/32|192.0.2.5|busy|a marker whose token is the still-active rig token gets busy
+upgrade|$markTok|$origTok|192.0.2.5/32|192.0.2.5|busy|a marker naming a harness token over the rig's still-baked token gets busy
+upgrade|$markTok|$markTok|192.0.2.0/24|192.0.2.5|busy|a marker over a multi-host allow-list gets busy
+CASES
     true &
     deadPid=$!
     wait "$deadPid"
-    printf '%s\n' "$deadPid" >"$ownerMark"
+    printf '%s\n%s\n%s\n' "$deadPid" "$markTok" "$origTok" >"$ownerMark"
     lentD=$(mktemp -d "$SANDBOX/lent.XXXXXX")
-    sDead="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentD")"
+    markCfg "$markTok" "192.0.2.5/32" "$lentD"
+    sDead="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentD" 192.0.2.5)"
     assert_eq "a stale marker (dead pid) does not bypass the guard (#670)" "$(st "$sDead")" "busy"
     kill "$lentPid" 2>/dev/null || true
     wait "$lentPid" 2>/dev/null || true
@@ -374,5 +395,5 @@ for ownerFn in "e2e-pithead.sh:_cleanup" "e2e-real.sh:_control_cleanup" "e2e-rea
 done
 for ownerFile in e2e-pithead-control.sh e2e-pithead-tokens.sh e2e-control-replay.sh; do
     assert_eq "$ownerFile clears the rig owner marker it sets (#670)" \
-        "$(grep -c '_rig_owner_mark$' "$ROOT/tests/$ownerFile")" "$(grep -c '_rig_owner_clear$' "$ROOT/tests/$ownerFile")"
+        "$(grep -c '_rig_owner_mark ' "$ROOT/tests/$ownerFile")" "$(grep -c '_rig_owner_clear$' "$ROOT/tests/$ownerFile")"
 done

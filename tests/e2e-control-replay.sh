@@ -142,13 +142,14 @@ _replay_setup() {
     fi
 }
 phase_control_replay() {
-    local kind="$1" tok port api_port cid before payload
+    local kind="$1" tok port api_port cid before payload owner_orig
     [ "$REPLAY_RUNNER_LOCK" = 1 ] || bad "replay requires verified runner reservation"
     phase "control replay — $kind publication (#540)"
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
+    owner_orig=$(jq -r '.ACCESS_TOKEN // ""' "$CFG")
     # Replay only the recorded scalars; preserve worker threads, tuning and payout identity.
     _replay_setup || bad "replay setup failed"
-    _rig_owner_mark
+    _rig_owner_mark "$CFG" "$owner_orig"
     phase_connect preserve-pools || bad "replay mining precondition failed"
     port=$(jq -r '.control_port // 8082' "$CFG")
     api_port=$(jq -r '.api_port // 8081' "$CFG")
