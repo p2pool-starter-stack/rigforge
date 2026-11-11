@@ -5261,15 +5261,8 @@ doctor() {
 
     # Service active?
     local svc_up=n
-    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        svc_up=y
-        _ck_ok "service '$SERVICE_NAME' is active" service
-    elif _opp_waiting; then
-        _ck_info "service '$SERVICE_NAME' is waiting for host capacity (opportunistic mining) — see the resource profile above" service
-    else
-        _ck_warn "service '$SERVICE_NAME' is not active — start it with: sudo $0 start" service
-        issues=$((issues + 1))
-    fi
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then svc_up=y; fi
+    _doctor_service_check || issues=$((issues + 1))
 
     if [ -f "$CONFIG_JSON" ]; then
         local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool pa

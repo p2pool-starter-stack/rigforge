@@ -80,6 +80,7 @@ _opp_paths
 STEP=60
 T=1000 UP=1000 BUSY=0 IDLE=0 SU=0 HM=0 SM=0
 reset() {
+    mkdir -p "$D/opp"
     rm -f "$D/calls" "$D/start-fails" "$OPP_STATE" "$OPP_OWNED" "$OPP_MANUAL" "$OPP_THERMAL"
     : >"$D/calls"
     echo active >"$D/active"
@@ -92,7 +93,7 @@ write_metrics() {
     printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=%s\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' "$HM" >"$D/psi/memory"
     printf 'usage_usec %s\n' "$SU" >"$D/cg/rigforge.slice/cpu.stat"
     printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=%s\n' "$SM" >"$D/cg/rigforge.slice/memory.pressure"
-    printf 'MemTotal: 16000000 kB\nMemAvailable: %s kB\n' "$(($1 * 1024))" >"$MEMINFO"
+    printf 'MemTotal: 16000000 kB\nHugetlb: 0 kB\nMemAvailable: %s kB\n' "$(($1 * 1024))" >"$MEMINFO"
     echo "$T" >"$D/now"
 }
 tick() {
@@ -366,6 +367,54 @@ _opp_install_unit
 [ ! -e "$SYSTEMD_DIR/rigforge-opportunistic.service" ] || fail 'disabling kept the controller unit'
 [ ! -e "$OPP_OWNED" ] || fail 'disabling kept policy ownership'
 case "$(echo '[Service]' | _shared_host_unit)" in *BindsTo*) fail 'dedicated unit is bound to the controller' ;; esac
+
+OPP=true
+reset
+touch "$OPP_OWNED" "$OPP_MANUAL"
+ticks 2 0 0 0 0 8000
+[ ! -e "$OPP_OWNED" ] && [ ! -e "$OPP_MANUAL" ] || fail 'a running miner kept stale policy markers'
+
+reset
+ticks 2 0 0 0 0 8000
+out=$(_doctor_service_check)
+case "$out" in *"is active"*) ;; *) fail "doctor does not report an active miner: $out" ;; esac
+ticks 3 80 0 0 0 8000
+rc=0
+out=$(_doctor_service_check) || rc=$?
+eq 'doctor treats a miner waiting for capacity as healthy' "$rc" 0
+case "$out" in *"waiting for host capacity"*) ;; *) fail "doctor does not explain the wait: $out" ;; esac
+echo $((T + 300)) >"$D/now"
+rc=0
+out=$(_doctor_service_check) || rc=$?
+eq 'doctor flags a stale observation' "$rc" 1
+case "$out" in *"is not active"*) ;; *) fail "doctor does not warn on a stale wait: $out" ;; esac
+reset
+ticks 2 0 0 0 0 8000
+echo inactive >"$D/active"
+ticks 2 0 0 0 0 8000
+rc=0
+(_doctor_service_check) >/dev/null || rc=$?
+eq 'doctor flags a manually stopped miner' "$rc" 1
+OPP=false
+reset
+echo inactive >"$D/active"
+rc=0
+(_doctor_service_check) >/dev/null || rc=$?
+eq 'doctor flags a stopped miner without the policy' "$rc" 1
+OPP=true
+
+printf 'cpu memory\n' >"$D/cg/cgroup.controllers"
+printf '#!/bin/sh\nexit 0\n' >"$D/bin/systemd-run"
+chmod +x "$D/bin/systemd-run"
+reset
+mkdir -p "$D/nopsi"
+SHARED_HOST=true
+_shared_host_supported >/dev/null || fail 'the fixture host is not supported with pressure information'
+out=$(RIGFORGE_PSI_DIR="$D/nopsi" _shared_host_supported) && fail 'apply accepted opportunistic mining without pressure information'
+case "$out" in *"requires kernel pressure-stall information"*) ;; *) fail "unexpected refusal: $out" ;; esac
+OPP=false
+RIGFORGE_PSI_DIR="$D/nopsi" _shared_host_supported >/dev/null || fail 'the profile without opportunistic mining needs pressure information'
+OPP=true
 
 mkdir -p "$D/copy" "$D/home"
 cp -R "$ROOT/rigforge.sh" "$ROOT/util" "$ROOT/systemd" "$ROOT/VERSION" "$D/copy/"
