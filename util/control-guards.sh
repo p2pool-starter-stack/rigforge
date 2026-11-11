@@ -51,6 +51,7 @@ _rig_owner_marker_admits() (
 _control_consume_source() (
     local f="$1/.peer-$2" v
     [ -f "$f" ] && [ ! -L "$f" ] || return 0
+    [ -z "$(tail -n +2 -- "$f" 2>/dev/null)" ] || return 0
     v=$(head -n 1 "$f" 2>/dev/null)
     rm -f "$f"
     printf '%s' "$v"
