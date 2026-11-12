@@ -797,7 +797,10 @@ file of exactly three lines: its live pid, that temporary token, and the token i
 had none). The guard admits a change under that file only while the pid is alive, the config's active
 `ACCESS_TOKEN` is the marker's temporary token and differs from the recorded original, `api_allow_from` holds
 exactly one host, and the change was received from that host — a pid-only marker admits nothing, and neither
-does a marker whose token or allow-list is still the rig's own (#688). After the window the harness restores
+does a marker whose token or allow-list is still the rig's own (#688). The swap takes effect only once the
+control receiver restarts with the new config (the ordinary config-apply path does), and the guard checks
+`ACCESS_TOKEN` alone — named `ACCESS_TOKENS` entries are not consulted, so the harness pins or clears any of
+them for the window. After the window the harness restores
 the rig's own token and allow-list and removes the file), or `failed`
 (with `reason`). A run that dies after claiming the intent (an abort, or systemd stopping the unit)
 still records `failed`, with a `reason` saying the run was lost, the checkout may be half-updated

@@ -45,7 +45,7 @@ _rig_owner_marker_admits() (
         fi
         ;;
     esac
-    [ "$source" = "$host" ]
+    [ "$source" = "$host" ] || [ "${source#::ffff:}" = "$host" ]
 )
 
 _control_consume_source() (

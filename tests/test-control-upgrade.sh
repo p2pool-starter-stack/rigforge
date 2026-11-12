@@ -286,7 +286,7 @@ if ! command -v flock >/dev/null 2>&1; then
 else
     lentLock="$SANDBOX/rig-e2e.lock"
     : >"$lentLock"
-    lent_run() { # <upgrade|apply> <fresh dir> [request-source] -> status.json contents
+    lent_run() {
         local d="$2" src="${3:-}"
         mkdir -p "$d/state/spool"
         [ -d "$d/upgrade-state" ] || mkdir -m 700 "$d/upgrade-state"
@@ -357,29 +357,28 @@ else
     lentO=$(mktemp -d "$SANDBOX/lent.XXXXXX")
     sOwn="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentO")"
     assert_eq "a pid-only marker admits nothing while the lock is held (#688)" "$(st "$sOwn")" "busy"
-    while IFS='|' read -r verb mtok ctok allow src want note; do
-        d=$(mktemp -d "$SANDBOX/lent.XXXXXX")
-        printf '%s\n%s\n%s\n' "$$" "$mtok" "$origTok" >"$ownerMark"
-        markCfg "$ctok" "$allow" "$d"
-        assert_eq "$note (#688)" "$(st "$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run "$verb" "$d" "$src")")" "$want"
-    done <<CASES
-upgrade|$markTok|$markTok|192.0.2.5/32|192.0.2.5|applied|control_upgrade proceeds for the pinned borrowing host under a swapped token
-apply|$markTok|$markTok|127.0.0.1/32|127.0.0.1|applied|control_apply proceeds for the pinned host under a swapped token
-upgrade|$markTok|$markTok|192.0.2.5/32|198.51.100.9|busy|a marker answers busy to a request from another address
-apply|$markTok|$markTok|192.0.2.5/32|198.51.100.9|busy|control_apply answers busy to a request from another address
-upgrade|$markTok|$markTok|192.0.2.5/32||busy|a change staged without a recorded source gets busy under the marker
-upgrade|$origTok|$origTok|192.0.2.5/32|192.0.2.5|busy|a marker whose token is the still-active rig token gets busy
-upgrade|$markTok|$origTok|192.0.2.5/32|192.0.2.5|busy|a marker naming a harness token over the rig's still-baked token gets busy
-upgrade|$markTok|$markTok|192.0.2.0/24|192.0.2.5|busy|a marker over a multi-host allow-list gets busy
-CASES
     true &
     deadPid=$!
     wait "$deadPid"
-    printf '%s\n%s\n%s\n' "$deadPid" "$markTok" "$origTok" >"$ownerMark"
-    lentD=$(mktemp -d "$SANDBOX/lent.XXXXXX")
-    markCfg "$markTok" "192.0.2.5/32" "$lentD"
-    sDead="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentD" 192.0.2.5)"
-    assert_eq "a stale marker (dead pid) does not bypass the guard (#670)" "$(st "$sDead")" "busy"
+    while IFS='|' read -r pid verb mtok ctok allow src want note; do
+        d=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+        printf '%s\n%s\n%s\n' "$pid" "$mtok" "$origTok" >"$ownerMark"
+        markCfg "$ctok" "$allow" "$d"
+        assert_eq "$note (#688)" "$(st "$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run "$verb" "$d" "$src")")" "$want"
+    done <<CASES
+$$|upgrade|$markTok|$markTok|192.0.2.5/32|192.0.2.5|applied|control_upgrade proceeds for the pinned borrowing host under a swapped token
+$$|apply|$markTok|$markTok|127.0.0.1|127.0.0.1|applied|control_apply proceeds for the pinned host under a swapped token
+$$|upgrade|$markTok|$markTok|fd00::1|fd00::1|applied|the admit rule covers a bare IPv6 host
+$$|upgrade|$markTok|$markTok|fd00::2/128|fd00::2|applied|the admit rule covers a /128 host
+$$|apply|$markTok|$markTok|192.0.2.5/32|::ffff:192.0.2.5|applied|a dual-stack receiver's IPv4-mapped source matches the pinned IPv4 host
+$$|upgrade|$markTok|$markTok|192.0.2.5/32|198.51.100.9|busy|a marker answers busy to a request from another address
+$$|upgrade|$markTok|$markTok|fd00::/64|fd00::1|busy|a marker over a wide IPv6 prefix gets busy
+$$|upgrade|$markTok|$markTok|192.0.2.5/32||busy|a change staged without a recorded source gets busy under the marker
+$$|upgrade|$origTok|$origTok|192.0.2.5/32|192.0.2.5|busy|a marker whose token is the still-active rig token gets busy
+$$|upgrade|$markTok|$origTok|192.0.2.5/32|192.0.2.5|busy|a marker naming a harness token over the rig's still-baked token gets busy
+$$|upgrade|$markTok|$markTok|192.0.2.0/24|192.0.2.5|busy|a marker over a multi-host allow-list gets busy
+$deadPid|upgrade|$markTok|$markTok|192.0.2.5/32|192.0.2.5|busy|a stale marker (dead pid) does not bypass the guard
+CASES
     kill "$lentPid" 2>/dev/null || true
     wait "$lentPid" 2>/dev/null || true
     lentF=$(mktemp -d "$SANDBOX/lent.XXXXXX")
@@ -389,6 +388,7 @@ CASES
 fi
 assert_eq "rig_lock never marks the harness as rig owner for its whole run (#670)" \
     "$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh" "$ROOT/tests/e2e-pithead.sh" "$ROOT/tests/e2e-control-replay.sh" | grep -c rigforge-rig-owner)" "0"
+for fn in control_apply control_upgrade; do assert_eq "$fn consumes the request source before claiming the change (#688)" "$(awk -v f=0 "/^$fn\\(\\)/{f=1} f && /_control_consume_source|_control_claim_staged/ {print; exit}" "$SCRIPT" | grep -c _control_consume_source)" "1"; done
 for ownerFn in "e2e-pithead.sh:_cleanup" "e2e-real.sh:_control_cleanup" "e2e-real.sh:_upgrade_cleanup"; do
     assert_contains "${ownerFn#*:} removes the rig owner marker (#670)" \
         "$(sed -n "/^${ownerFn#*:}()/,/^}/p" "$ROOT/tests/${ownerFn%%:*}")" 'rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}"'

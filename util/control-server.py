@@ -121,7 +121,7 @@ def stage_change(spool, body_bytes, prefix="pending", peer=None):
         live = {n[8:-5] for n in os.listdir(spool) if n.endswith(".json") and n[:8] in ("pending-", "upgrade-")}
         for stale in (n for n in os.listdir(spool) if n.startswith(".peer-") and n[6:] not in live):
             try: os.unlink(os.path.join(spool, stale))
-            except OSError: pass
+            except OSError as e: print("control spool peer cleanup failed: %s" % e, file=sys.stderr)
         try:
             dfd = os.open(spool, os.O_RDONLY)
             try:
