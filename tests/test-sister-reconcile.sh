@@ -158,7 +158,7 @@ done
 WORKER_ROOT="$TEST_DIR/w" SERVICE_NAME=xmrig-fixture WATCHDOG_RC=0 API_RC=0
 mkdir -p "$WORKER_ROOT/xmrig/build"
 _apply_runtime() { _real_apply_runtime "$@"; }
-generate_xmrig_config() { :; }
+_stage_xmrig_config() { :; }
 _miner_deliberately_stopped() { return 1; }
 sudo() { return 1; }
 RIGFORGE_APPLY_FAIL_REASON=""

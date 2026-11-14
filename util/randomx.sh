@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 _read_randomx_config() {
-    jq -ce 'if has("xmrig") then .xmrig | select(type == "object") | select((keys - ["randomx"]) == []) | if has("randomx") then .randomx else {} end else {} end | select(type == "object") | select((keys - ["mode", "init", "init-avx2"]) == []) | {mode: "fast", init: -1, "init-avx2": -1} + . | select(.mode == "auto" or .mode == "fast" or .mode == "light") | select(.init | type == "number" and floor == . and (. == -1 or (. >= 1 and . <= 2147483647))) | select(."init-avx2" == -1 or ."init-avx2" == 0 or ."init-avx2" == 1)' "$CONFIG_JSON"
+    jq -ce 'if has("xmrig") then .xmrig | select(type == "object") | if has("randomx") then .randomx else {} end else {} end | select(type == "object") | {mode: "fast", init: -1, "init-avx2": -1} + with_entries(select(.key == "mode" or .key == "init" or .key == "init-avx2")) | select(.mode == "auto" or .mode == "fast" or .mode == "light") | select(.init | type == "number" and floor == . and (. == -1 or (. >= 1 and . <= 2147483647))) | select(."init-avx2" == -1 or ."init-avx2" == 0 or ."init-avx2" == 1)' "$CONFIG_JSON"
 }
 
 _apply_randomx_config() {

@@ -20,6 +20,12 @@ WORKER_ROOT="$TEST_TMP/worker"
 BUILD_DIR="$WORKER_ROOT/xmrig/build"
 CONFIG_META_FILE="$TEST_TMP/config-meta.json"
 mkdir -p "$BUILD_DIR"
+cat >"$BUILD_DIR/xmrig" <<'STUB'
+#!/bin/sh
+[ "$1" = --config ] && [ -f "$2" ] && [ "$3" = --dry-run ] || exit 19
+exit 0
+STUB
+chmod +x "$BUILD_DIR/xmrig"
 jq 'del(.HOME_DIR)' "$ROOT/config.minimal.json" >"$CONFIG_JSON"
 
 _worker_root_for_home() { printf '%s\n' "$WORKER_ROOT"; }
@@ -223,6 +229,39 @@ BEFORE=$(cat "$STAMP")
 [ ! -s "$TEST_TMP/stage.err" ] || fail 'stage generation is silent on stderr'
 [ "$(cat "$STAMP")" = "$BEFORE" ] || fail 'stage generation leaves the live apply stamp untouched'
 [ -f "$STAGE_DIR/config.json" ] || fail 'stage generation writes the staged config'
+
+rewrite_config '.threads = 2'
+expect_stale config.json
+cat >"$BUILD_DIR/xmrig" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod +x "$BUILD_DIR/xmrig"
+validation_rc=0
+apply >/dev/null 2>&1 || validation_rc=$?
+[ "$validation_rc" -ne 0 ] || fail 'a refused validation fails the apply'
+[ ! -e "$STAMP" ] || fail 'a refused validation leaves no apply stamp'
+check_state
+contains "$CHECK_OUT" 'no apply stamp' 'a refused validation cannot leave a current stamp'
+absent "$CHECK_OUT" 'Generated configuration matches' 'a refused apply is never reported as matching'
+cat >"$BUILD_DIR/xmrig" <<'STUB'
+#!/bin/sh
+[ "$1" = --config ] && [ -f "$2" ] && [ "$3" = --dry-run ] || exit 19
+exit 0
+STUB
+chmod +x "$BUILD_DIR/xmrig"
+apply_now
+expect_current
+
+rewrite_config '.threads = 3'
+expect_stale config.json
+BEFORE_PREVIEW=$(cat "$STAMP")
+_apply_plan >/dev/null 2>&1 || fail 'apply --dry-run succeeds'
+[ "$(cat "$STAMP")" = "$BEFORE_PREVIEW" ] || fail 'preview leaves the live apply stamp untouched'
+expect_stale config.json
+apply_now
+expect_current
+
 WORKER_ROOT="$TEST_TMP/fresh-worker"
 rm -rf "$STAGE_DIR" && mkdir -p "$STAGE_DIR"
 (cd "$STAGE_DIR" && generate_xmrig_config stage) >/dev/null 2>"$TEST_TMP/stage.err" || fail 'fresh-install stage generation succeeds'

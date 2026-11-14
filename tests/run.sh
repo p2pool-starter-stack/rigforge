@@ -42,6 +42,7 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
+for _t in xmrig-overlay xmrig-logging config-ownership; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -2262,10 +2263,9 @@ EOF
     if [ "${3:-n}" = y ]; then : >"$ARS/worker/watchdog.thermal-hold"; fi
     (
         source "$SCRIPT"
-        # The regen and the re-own are covered by the black-box apply tests; what is under test here is
-        # purely which service action this function takes, so both are stubbed out.
         parse_config() { :; }
-        generate_xmrig_config() { :; }
+        _stage_xmrig_config() { :; }
+        _render_xmrig_unit() { :; }
         _reown_worker() { :; }
         OS_TYPE=Linux
         SYSTEMD_DIR="$ARS/systemd"
@@ -3063,7 +3063,7 @@ cat >"$SB/config.json" <<EOF
 { "HOME_DIR": "$SB/home", "ACCESS_TOKEN": "FAKETOKEN_ce7a11", "ACCESS_TOKENS": {"bench": "FAKEBENCHTOKEN_9f21"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
 EOF
 cat >"$SB/home/worker/xmrig/build/config.json" <<EOF
-{ "http": {"access-token": "FAKETOKEN_ce7a11"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
+{ "colors": false, "print-time": 900, "http": {"access-token": "FAKETOKEN_ce7a11"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
 EOF
 printf 'net      use pool pool.lan:3333\nmsr      preset ok\nspeed 10s 1234.5 H/s\n' >"$SB/home/worker/xmrig.log"
 printf '{"randomx":{"scratchpad_prefetch_mode":2}}\n' >"$SB/home/worker/tune-overrides.json"
@@ -3082,6 +3082,7 @@ assert_eq "CRITICAL: pool pass appears nowhere in the bundle (#147)" "$(grep -rl
 assert_eq "ACCESS_TOKENS redacted structurally (#516)" "$(J "$SBX/config.redacted.json" '.ACCESS_TOKENS.bench')" "<redacted>"
 assert_eq "wallet masked to first-4…last-4 (#147)" "$(J "$SBX/config.redacted.json" '.pools[0].user')" "4AbC…xyz9"
 assert_eq "generated config token redacted structurally (#147)" "$(J "$SBX/xmrig-config.redacted.json" '.http."access-token"')" "<redacted>"
+assert_eq "bundle records the logging values in effect (#530)" "$(jq -c '[.colors, ."print-time", ."health-print-time", .verbose, .syslog]' "$SBX/xmrig-logging.json")" "[false,900,60,0,false]"
 assert_eq "log tail collected (#147)" "$([ -f "$SBX/xmrig.log.tail" ] && echo y || echo n)" "y"
 assert_eq "tune overrides collected (#147)" "$([ -f "$SBX/tune-overrides.json" ] && echo y || echo n)" "y"
 assert_eq "manifest lists collected files (#147)" "$(J "$SBX/manifest.json" '.files | length > 3')" "true"
@@ -3129,15 +3130,13 @@ assert_eq "macOS bundle still collects system.txt (#147)" "$([ -f "$SBX/system.t
 # appear in the plan, so a new pipeline step can't ship without a plan line.
 echo "== black-box: setup --dry-run plan + no-mutation guard (#146) =="
 DR="$(mktemp -d "$SANDBOX/dryrun.XXXXXX")"
-mkdir -p "$DR/etc"
+mkdir -p "$DR/etc" "$DR/home/worker/xmrig/build"
+printf '#!/bin/sh\nexit 0\n' >"$DR/home/worker/xmrig/build/xmrig" && chmod +x "$DR/home/worker/xmrig/build/xmrig"
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >"$DR/etc/grub"
 printf 'proc /proc proc defaults 0 0\n' >"$DR/etc/fstab"
 cat >"$DR/config.json" <<EOF
 { "HOME_DIR": "$DR/home", "pools": [{"url": "poolbox.lan:3333"}], "autotune": "performance", "api": "enabled", "add_to_path": true }
 EOF
-# RIGFORGE_HOME points SCRIPT_DIR at the sandbox, so seed a DETERMINISTIC stand-in for our own
-# util/proposed-grub.sh — the unit suite pins the plan's rendering; the container e2e runs the
-# real probe against a real kernel.
 mkdir -p "$DR/util"
 cat >"$DR/util/proposed-grub.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -3198,7 +3197,7 @@ printf 'hugetlbfs /dev/hugepages hugetlbfs defaults 0 0\nhugetlbfs_1g %s hugetlb
 cat >"$DR3/config.json" <<EOF
 { "HOME_DIR": "$DR3/home", "pools": [{"url": "poolbox.lan:3333"}], "api_allow_from": "10.0.0.9" }
 EOF
-touch "$DR3/home/worker/tune-overrides.json"
+printf '{}\n' >"$DR3/home/worker/tune-overrides.json"
 # A genuinely "already built" worker: executable + matching commit marker (no sha record = legacy build).
 printf '#!/bin/sh\n' >"$DR3/home/worker/xmrig/build/xmrig"
 chmod +x "$DR3/home/worker/xmrig/build/xmrig"
@@ -3956,11 +3955,12 @@ assert_contains "reown: miner user keeps config.json + log writable (#140)" "$(c
 # User=root; config says rf-appuser.
 echo "== unit: apply re-renders the installed unit to the configured miner_user (#140) =="
 APR="$(mktemp -d "$SANDBOX/apprr.XXXXXX")"
-mkdir -p "$APR/sysd" "$APR/home/worker/xmrig/build"
+mkdir -p "$APR/sysd" "$APR/logrotate" "$APR/home/worker/xmrig/build"
 printf 'User=root\n' >"$APR/sysd/xmrig.service"
 cat >"$APR/config.json" <<EOF
 { "HOME_DIR": "$APR/home", "miner_user": "rf-appuser", "pools": [{"url": "h:3333"}] }
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$APR/home/worker/xmrig/build/xmrig" && chmod +x "$APR/home/worker/xmrig/build/xmrig"
 (
     source "$SCRIPT"
     OS_TYPE=Linux
@@ -3968,14 +3968,13 @@ EOF
     SYSTEMD_DIR="$APR/sysd"
     SERVICE_NAME=xmrig
     CONFIG_JSON="$APR/config.json"
-    _apply_runtime() { :; }
     install_autotune() { :; }
     install_api() { :; }
     install_api_firewall() { :; }
     _autotune_apply_notice() { :; }
-    sudo() { "$@"; }
+    sudo() { [ "$1" = chown ] || "$@"; }
     set +e
-    PATH="$STUBS:$PATH" CALL_LOG="$APR/calls.log" apply >/dev/null 2>&1
+    PATH="$STUBS:$PATH" LOGROTATE_DIR="$APR/logrotate" CALL_LOG="$APR/calls.log" apply >/dev/null 2>&1
 )
 apr_unit="$(cat "$APR/sysd/xmrig.service")"
 assert_contains "apply: unit re-rendered to the configured user (#140)" "$apr_unit" "User=rf-appuser"
@@ -5238,6 +5237,10 @@ assert_contains "log status: appliance journal confirms MSR (#477)" "$( (
     source "$SCRIPT"
     OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT=$'\033[1;32mmsr register values for "ryzen_19h" preset have been set successfully\033[0m' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
 ))" "ok"
+assert_contains "log status: plain journal (colors off) confirms MSR (#530)" "$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT='msr register values for "ryzen_19h" preset have been set successfully' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
+))" "ok"
 # Unreadable registers are counted in _MSR_UNREAD, kept OUT of _MSR_BAD (so they don't read as mismatches).
 out="$( (
     source "$SCRIPT"
@@ -5385,10 +5388,10 @@ export CPUFREQ_MAX="$TN/cpu_max" CPU_SYSFS="$TN/cpuok"
 cat >"$BD/config.json" <<'EOF'
 { "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
 EOF
-# Fake xmrig: hashrate = f(prefetch, yield, threads, 1gb-pages), peak at prefetch=2/yield=false/threads=4.
 # BENCH_LOG records one line per invocation (used to assert no double-benchmarking).
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
+case " $* " in *" --dry-run "*) exit 0 ;; esac
 cfg=""
 for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 [ -n "${BENCH_LOG:-}" ] && echo call >>"$BENCH_LOG"
@@ -6653,7 +6656,7 @@ assert_contains "plan: GRUB skip arm (#797)" "$apdr_out" "skipping GRUB updates 
 assert_contains "plan: runtime-only msr arm (#797)" "$apdr_out" "modprobe msr at runtime only (appliance: no modules-load drop-in)"
 assert_contains "plan: runtime mounts, no fstab/limits writes (#797)" "$apdr_out" "appliance mode: mount hugetlbfs at runtime"
 assert_contains "plan: unit goes to /run with --runtime (#797)" "$apdr_out" "/run/systemd/system/xmrig.service"
-assert_contains "plan: enable --runtime wording (#797)" "$apdr_out" "enable --runtime --now"
+assert_contains "plan: runtime enable and conditional restart (#797/#529)" "$apdr_out" "enable --runtime; restart if binary/config changed, otherwise start (deferred if reboot required)"
 assert_contains "plan: grow-only preview still renders (#797/#328)" "$apdr_out" "grow the pool so 200 2MB HugePages are available"
 for mut in apt-get modprobe tee mount sysctl update-grub; do
     assert_absent "appliance dry-run never invokes $mut (#797/#146)" "$(cat "$APDR/calls.log" 2>/dev/null)" "[$mut]"

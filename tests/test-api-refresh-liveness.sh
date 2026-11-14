@@ -208,6 +208,8 @@ if miner_log_has 'accepted (' "$EFR/large.log"; then ok "e2e large-log match can
 RIGFORGE_APPLIANCE=1
 journalctl() { printf '\033[1;32mnew job from pithead:3333\033[0m\n'; }
 if miner_log_has 'new job from' /nonexistent; then ok "e2e appliance journal matching ignores ANSI color (#483/#484)"; else bad "e2e appliance journal matching ignores ANSI color (#483/#484)" "colored job line not found"; fi
+journalctl() { printf 'new job from pithead:3333\n'; }
+if miner_log_has 'new job from' /nonexistent; then ok "e2e appliance journal matching accepts plain text (#530)"; else bad "e2e appliance journal matching accepts plain text (#530)" "plain job line not found"; fi
 unset RIGFORGE_APPLIANCE
 if fresh_share 2 1; then ok "fresh-share proof accepts a counter increase (#472/#484)"; else bad "fresh-share proof accepts a counter increase (#472/#484)" "counter did not increase"; fi
 fresh_share 1 1 && bad "fresh-share proof accepted retained history (#472)" "counter did not increase" || ok "fresh-share proof rejects retained history (#472/#484)"
