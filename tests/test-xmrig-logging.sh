@@ -46,7 +46,7 @@ generate_case() {
     local name="$1" overlay="$2" tune="$3" cap="$4" script="${5:-$SCRIPT}" d cfg
     d="$TMP/$name"
     cfg="$d/config.json"
-    mkdir -p "$d/out" "$TMP/runtime/worker"
+    mkdir -p "$d/out" "$TMP/runtime/worker/xmrig/build"
     base_config "$cfg" "$overlay"
     rm -f "$TMP/runtime/worker/tune-overrides.json"
     [ -z "$tune" ] || printf '%s\n' "$tune" >"$TMP/runtime/worker/tune-overrides.json"
