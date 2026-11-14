@@ -232,6 +232,23 @@ assert "xmrig" not in runpy.run_path(sys.argv[1])["WRITABLE"]
 PY
 then ok 'remote control cannot write xmrig'; else bad 'remote control cannot write xmrig' 'xmrig is writable'; fi
 
+echo '== xmrig overlay: HugePages thread sizing =='
+setup_threads() {
+    (
+        source "$SCRIPT"
+        WORKER_ROOT="$TMP/sizing"
+        XMRIG_OVERLAY="$1"
+        _rx_setup_threads
+        printf '%s' "$RX_SETUP_THREADS"
+    )
+}
+mkdir -p "$TMP/sizing"
+printf '{"cpu":{"rx":24}}\n' >"$TMP/sizing/tune-overrides.json"
+eq 'overlay cpu.rx sizes the reservation' "$(setup_threads '{"cpu":{"rx":20}}')" 20
+eq 'tuned cpu.rx sizes the reservation without an overlay pin' "$(setup_threads '{"cpu":{"yield":true}}')" 24
+eq 'non-numeric overlay cpu.rx falls back to the tuned count' "$(setup_threads '{"cpu":{"rx":[0,1]}}')" 24
+eq 'RIGFORGE_THREADS still wins over the overlay' "$(RIGFORGE_THREADS=12 setup_threads '{"cpu":{"rx":20}}')" 12
+
 echo '== xmrig overlay: apply validation =='
 APPLY="$TMP/apply"
 mkdir -p "$APPLY/runtime/worker/xmrig/build" "$APPLY/bin"
