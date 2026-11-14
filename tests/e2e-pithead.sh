@@ -543,7 +543,7 @@ access-tokens) phase_access_tokens ;;
 shared-host) phase_shared_host ;;
 thread-profile) phase_thread_profile ;;
 all)
-    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens phase_thread_profile; do
+    for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens; do
         "$run_phase"
         [ "$FAIL" -eq 0 ] || break
     done
