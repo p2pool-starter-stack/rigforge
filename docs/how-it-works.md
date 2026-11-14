@@ -178,8 +178,9 @@ sudo reboot                                     # the GRUB HugePages change need
 sudo ./rigforge.sh tune                         # now <n> threads benchmarks with full backing
 ```
 
-`setup` also reads the tuned `cpu.rx` from `tune-overrides.json` automatically, so once you've tuned, a
-plain `sudo ./rigforge.sh setup` keeps the reservation matched to your winning thread count.
+Without `RIGFORGE_THREADS`, `setup` sizes for a numeric `cpu.rx` pinned in the `xmrig` overlay, or
+else the tuned `cpu.rx` from `tune-overrides.json`, so once you've pinned or tuned, a plain
+`sudo ./rigforge.sh setup` keeps the reservation matched to the thread count the miner runs.
 
 Reservation sizing also follows `xmrig.randomx.mode`. `fast` and `auto` keep the existing
 topology-aware dataset reservation; XMRig may fall back from `auto` at allocation time, but that does
