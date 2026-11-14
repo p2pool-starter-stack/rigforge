@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-RX_AUTO_PROBED=0
+RX_AUTO_RC=""
 RX_AUTO_THREADS=""
 
 _rx_validate_cap() {
@@ -26,8 +26,9 @@ _rx_probe_reap() {
 
 _rx_probe_auto() {
     local bin sinkdir sink pid deadline arr="" oldtrap
-    bin="$WORKER_ROOT/xmrig/build/xmrig"
-    { [ "${OS_TYPE:-}" = Linux ] && [ -x "$bin" ] && command -v jq >/dev/null 2>&1; } || return 1
+    bin="$PWD/xmrig"
+    [ -x "$bin" ] || bin="$WORKER_ROOT/xmrig/build/xmrig"
+    { [ "${OS_TYPE:-}" = Linux ] && [ -x "$bin" ] && command -v jq >/dev/null 2>&1; } || return 2
     sinkdir=$(mktemp -d) || return 1
     sink="$sinkdir/probe.json"
     jq '{autosave: true, http: {enabled: false},
@@ -60,14 +61,16 @@ _rx_probe_auto() {
 
 _rx_ensure_auto() {
     [ -n "${RX_AUTO_THREADS:-}" ] && return 0
-    [ "${RX_AUTO_PROBED:-0}" = 1 ] && return 1
-    RX_AUTO_PROBED=1
-    local arr
-    if arr=$(_rx_probe_auto "$1") && RX_AUTO_THREADS=$(jq -r 'length' <<<"$arr" 2>/dev/null) && [ "${RX_AUTO_THREADS:-0}" -ge 1 ]; then
+    [ -n "${RX_AUTO_RC:-}" ] && return "$RX_AUTO_RC"
+    local arr rc=0
+    arr=$(_rx_probe_auto "$1") || rc=$?
+    if [ "$rc" = 0 ] && RX_AUTO_THREADS=$(jq -r 'length' <<<"$arr" 2>/dev/null) && [ "${RX_AUTO_THREADS:-0}" -ge 1 ]; then
+        RX_AUTO_RC=0
         return 0
     fi
     RX_AUTO_THREADS=""
-    return 1
+    RX_AUTO_RC=$((rc == 2 ? 2 : 1))
+    return "$RX_AUTO_RC"
 }
 
 _rx_request_count() {
@@ -78,7 +81,7 @@ _rx_request_count() {
 }
 
 _rx_finalize_cpu_rx() {
-    local cfg="$1" rx req="" auto="" cap="" eff out len
+    local cfg="$1" rx req="" auto="" cap="" eff out len rc
     rx=$(jq -c '.cpu.rx' "$cfg" 2>/dev/null) || return 1
     if [ -n "${THREADS_CAP:-}" ] && [ -z "$(_rx_validate_cap)" ]; then
         warn "THREADS_CAP='${THREADS_CAP}' is not a valid positive integer — ignoring it (thread cap NOT applied)."
@@ -87,9 +90,10 @@ _rx_finalize_cpu_rx() {
     [ "$rx" = false ] && return 0
     req=$(_rx_request_count "$cfg")
     if [ -n "$cap" ] || [ -n "$req" ]; then
-        if _rx_ensure_auto "$cfg"; then
+        _rx_ensure_auto "$cfg" && rc=0 || rc=$?
+        if [ "$rc" = 0 ]; then
             auto="$RX_AUTO_THREADS"
-        else
+        elif [ "$rc" = 1 ]; then
             warn "Could not observe XMRig's auto thread profile; the thread count is applied without the auto-selection ceiling."
         fi
     fi
@@ -116,7 +120,13 @@ _rx_clamp_candidate() {
     local eff cap
     eff=$(_rx_request_count "$1")
     [ -z "$eff" ] && return 0
+    local cache="$2.rxauto" seen
+    if [ -s "$cache" ]; then
+        seen=$(<"$cache")
+        case "$seen" in '' | *[!0-9]*) RX_AUTO_RC=1 ;; *) RX_AUTO_THREADS="$seen" ;; esac
+    fi
     _rx_ensure_auto "$2" || true
+    [ -s "$cache" ] || printf '%s' "${RX_AUTO_THREADS:-none}" >"$cache"
     cap=$(_rx_validate_cap)
     eff=$(_rx_min_count "$eff" "$cap" "${RX_AUTO_THREADS:-}")
     jq --argjson n "$eff" '.cpu.rx = {mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}' "$1" >"$1.rx$$" &&
