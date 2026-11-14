@@ -27,10 +27,11 @@ _control_startup_diagnostics() {
 
 phase_control() {
     phase "control — writable control path DONATION apply round trip (#344/#509)"
-    local tok cur new port api_port resp code cid st waited=0 body max_temp target_temp
+    local tok cur new port api_port resp code cid st waited=0 body max_temp target_temp owner_orig
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur=$(jq -r '.DONATION // 0' "$CFG")
     new=$(((cur + 1) % 101))
+    owner_orig=$(jq -r '.ACCESS_TOKEN // ""' "$CFG")
     max_temp=$(jq -r 'if .max_temp_c == null or .max_temp_c == "" then 100 else .max_temp_c end' "$CFG")
     [ "$max_temp" -le 100 ] || max_temp=100
     [ "$max_temp" -gt 40 ] || bad "cannot lower the existing thermal cutoff safely"
@@ -43,7 +44,7 @@ phase_control() {
         _control_startup_diagnostics
         return 1
     }
-    _rig_owner_mark
+    _rig_owner_mark "$CFG" "$owner_orig"
     resp="$(mktemp)"
     code=$(_control_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"DONATION\": $new}" "http://127.0.0.1:$port/apply" 2>/dev/null || true)

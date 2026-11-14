@@ -13,7 +13,7 @@ if [ "$#" = 0 ]; then
     }
     trap replay_test_cleanup EXIT
     for kind in thermal pools; do
-        for success in fresh history; do
+        for success in fresh history busy-refused; do
             bash "$0" "$kind" "$success" >"$REPLAY_TEST_DIR/$kind-$success.log" 2>&1
             grep -q "replay $kind published within 90s" "$REPLAY_TEST_DIR/$kind-$success.log"
             grep -q 'finish-profile' "$REPLAY_TEST_DIR/$kind-$success.log"
@@ -30,7 +30,7 @@ if [ "$#" = 0 ]; then
             fi
         done
     done
-    for mode in missing inactive context probe other bad-id mining curl-failed status-missing status-malformed status-failed; do
+    for mode in missing inactive context probe other bad-id mining curl-failed status-missing status-malformed status-failed busy-applied; do
         if bash "$0" thermal "$mode" >"$REPLAY_TEST_DIR/$mode.log" 2>&1; then
             echo "replay $mode unexpectedly passed" >&2
             exit 1
@@ -153,6 +153,8 @@ phase_connect() {
 refresh_profile_start() { :; }
 refresh_profile_state() { :; }
 refresh_profile_finish() { echo finish-profile; }
+ip() { printf '2: eth0    inet 192.0.2.7/24 brd 192.0.2.255 scope global eth0\\       valid_lft forever\n'; }
+skip() { echo "skip:$1"; }
 head() { printf 'synthetic-token'; }
 xxd() { cat; }
 sleep() { SECONDS=$((SECONDS + $1)); }
@@ -177,6 +179,15 @@ curl() {
         shift
     done
     if [ -n "$output" ]; then
+        if [[ "$url" == http://192.0.2.* ]]; then
+            if [ "$mode" = busy-refused ]; then
+                printf 403
+                return 0
+            fi
+            printf '{"change_id":"ffff000000000001"}' >"$output"
+            printf 202
+            return 0
+        fi
         [ "$(LC_ALL=C ls -ld "${data#@}" | cut -c1-10)" = '-rw-------' ] || return 1
         jq -c 'if has("pools") then {pools:"PRIVATE"} else . end' "${data#@}" >>"$CALLS"
         id=$(printf '%016x' "$(wc -l <"$CALLS")")
@@ -185,6 +196,10 @@ curl() {
         printf 202
         [ "$mode" != curl-failed ] || return 7
     elif [[ "$url" == */status* ]]; then
+        if [[ "$url" == *change_id=ffff000000000001* ]]; then
+            [ "$mode" = busy-applied ] && printf '{"status":"applied"}' || printf '{"status":"busy"}'
+            return 0
+        fi
         case "$mode" in
         status-missing) printf '{}' ;;
         status-malformed) printf '{"status":"PRIVATE $(never-execute)"}' ;;

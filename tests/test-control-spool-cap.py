@@ -161,7 +161,7 @@ with tempfile.TemporaryDirectory() as spool:
     def fail_dir_sync(fd):
         global calls
         calls += 1
-        if calls == 2:
+        if calls == 3:
             raise OSError("failed directory sync")
         real_fsync(fd)
 
@@ -179,6 +179,7 @@ class FakeHandler:
     def __init__(self, body):
         self.body = body
         self.sent = None
+        self.client_address = ("203.0.113.9", 40000)
 
     def _read_json_body(self):
         return self.body
@@ -206,3 +207,48 @@ try:
     assert "inspect the rig before resubmitting" in upgrade.sent[2]["note"]
 finally:
     stage.__globals__["stage_change"] = real_stage
+
+with tempfile.TemporaryDirectory() as spool:
+    cid = stage(spool, b"{}", "pending", peer="192.0.2.5")
+    assert (Path(spool) / ("pending-" + cid + ".json")).read_bytes() == b"{}"
+    assert (Path(spool) / (".peer-" + cid)).read_text() == "192.0.2.5"
+    assert not list(Path(spool).glob(".tmp-*"))
+    (Path(spool) / ("pending-" + cid + ".json")).unlink()
+    orphan = Path(spool) / ".peer-0123456789abcdef"
+    orphan.write_text("198.51.100.9")
+    peerless = stage(spool, b"{}")
+    assert not orphan.exists()
+    assert (Path(spool) / (".peer-" + peerless)).read_text() == ""
+
+with tempfile.TemporaryDirectory() as spool:
+    for _ in range(limit):
+        stage(spool, b"{}", peer="192.0.2.5")
+    try:
+        stage(spool, b"{}")
+        raise AssertionError("a full queue of peer-backed changes did not refuse")
+    except full:
+        pass
+    assert len(list(Path(spool).glob(".peer-*"))) == limit
+
+with tempfile.TemporaryDirectory() as spool:
+    real_open = open
+
+    class PeerWriteFail:
+        def __init__(self, path): self.file = real_open(path, "wb")
+        def __enter__(self): return self
+        def write(self, _body): raise OSError("peer write failure")
+        def __exit__(self, *_): self.file.close()
+
+    try:
+        stage.__globals__["open"] = lambda path, mode="r", **kwargs: PeerWriteFail(path) if mode == "wb" else real_open(path, mode, **kwargs)
+        stage(spool, b"{}", peer="192.0.2.5")
+        raise AssertionError("peer write failure was hidden")
+    except OSError as e:
+        assert str(e) == "peer write failure"
+    finally:
+        del stage.__globals__["open"]
+    assert not list(Path(spool).glob(".tmp-*")) and not list(Path(spool).glob("*.json"))
+    assert len(list(Path(spool).glob(".peer-*"))) == 1
+    stage(spool, b"{}", peer="192.0.2.5")
+    assert len(list(Path(spool).glob(".peer-*"))) == 1
+    assert [p.read_text() for p in Path(spool).glob(".peer-*")] == ["192.0.2.5"]

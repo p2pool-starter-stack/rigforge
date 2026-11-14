@@ -657,10 +657,11 @@ control() {
     _snapshot_control_state
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _control_cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true; exit "$E2E_EXIT_RC"' EXIT
 
-    local tok cur_donation new_donation control_port api_port read_tok rev_before rev_after cid st tmp
+    local tok cur_donation new_donation control_port api_port read_tok rev_before rev_after cid st tmp owner_orig
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur_donation=$(jq -r '.DONATION // 0' "$HERE/config.json" 2>/dev/null || echo 0)
     new_donation=$(((cur_donation + 1) % 101))
+    owner_orig=$(jq -r '.ACCESS_TOKEN // ""' "$HERE/config.json" 2>/dev/null || echo "")
 
     # Every request is local, so restrict the temporary receiver to loopback.
     tmp="$(mktemp)"
@@ -699,7 +700,7 @@ control() {
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
-    _rig_owner_mark
+    _rig_owner_mark "$HERE/config.json" "$owner_orig"
     continue_or_cleanup _control_cleanup control
 
     phase "control — POST a benign change (DONATION $cur_donation -> $new_donation) and poll to applied"
@@ -948,9 +949,10 @@ upgrade() {
     _snapshot_control_state
     trap 'E2E_EXIT_RC=$?; trap - EXIT; _upgrade_cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" 2>/dev/null || true; exit "$E2E_EXIT_RC"' EXIT
 
-    local tok control_port tmp installed st
+    local tok control_port tmp installed st owner_orig
     local stamp="$UPG_STAMP"
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
+    owner_orig=$(jq -r '.ACCESS_TOKEN // ""' "$HERE/config.json" 2>/dev/null || echo "")
     tmp="$(mktemp)"
     if jq --arg tok "$tok" '.control = "enabled" | .control_upgrade = "enabled" | .ACCESS_TOKEN = $tok | .api_allow_from = "127.0.0.1/32"' \
         "$HERE/config.json" >"$tmp" && [ -s "$tmp" ]; then
@@ -977,7 +979,7 @@ upgrade() {
     _await_receiver "$tok" "$control_port" &&
         ok "authed GET /status reachable (HTTP $RCV_CODE, try $RCV_TRY)" ||
         bad "receiver not reachable on :$control_port after $((RCV_TRY * 2))s (last HTTP '$RCV_CODE')"
-    _rig_owner_mark
+    _rig_owner_mark "$HERE/config.json" "$owner_orig"
     continue_or_cleanup _upgrade_cleanup upgrade
     rm -f "$stamp" 2>/dev/null || true
 

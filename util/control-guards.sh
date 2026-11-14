@@ -1,14 +1,60 @@
 # shellcheck shell=bash
 _rig_lent_to_bench() (
     local lock="${RIGFORGE_RIG_LOCK:-/var/lock/rig-e2e.lock}"
-    local marker="${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" owner
+    local marker="${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}"
+    local source="${1:-}"
     [ -f "$lock" ] || return 1
-    if [ -f "$marker" ] && [ ! -L "$marker" ] && [ -O "$marker" ]; then
-        owner=$(tr -d '[:space:]' <"$marker" 2>/dev/null)
-        case "$owner" in '' | *[!0-9]*) ;; *) ! kill -0 "$owner" 2>/dev/null || return 1 ;; esac
+    if [ -f "$marker" ] && [ ! -L "$marker" ] && [ -O "$marker" ] && _rig_owner_marker_admits "$marker" "$source"; then
+        return 1
     fi
     exec 7<"$lock" 2>/dev/null || return 0
     ! flock -n -x 7 2>/dev/null
+)
+
+_rig_owner_marker_admits() (
+    local marker="$1" source="$2" cfg="${CONFIG_JSON:-}" lines owner token orig allow host
+    [ -n "$source" ] && [ -n "$cfg" ] && [ -f "$cfg" ] && [ ! -L "$cfg" ] || return 1
+    mapfile -t lines <"$marker" 2>/dev/null || return 1
+    [ "${#lines[@]}" -eq 3 ] || return 1
+    owner="${lines[0]}"
+    token="${lines[1]}"
+    orig="${lines[2]}"
+    case "$owner" in '' | *[!0-9]*) return 1 ;; esac
+    kill -0 "$owner" 2>/dev/null || return 1
+    [ -n "$token" ] && [ "$token" != "$orig" ] || return 1
+    [ "$(jq -r '.ACCESS_TOKEN // ""' "$cfg" 2>/dev/null)" = "$token" ] || return 1
+    allow=$(jq -r '.api_allow_from // ""' "$cfg" 2>/dev/null) || return 1
+    case "$allow" in
+    */32)
+        host="${allow%/32}"
+        [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+        ;;
+    */128)
+        host="${allow%/128}"
+        [ -n "$host" ] && [ "${host#*:}" != "$host" ] || return 1
+        ;;
+    '')
+        return 1
+        ;;
+    *)
+        host="$allow"
+        if [ "${host#*:}" != "$host" ]; then
+            [ "${host#*/}" = "$host" ] || return 1
+        elif ! [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            return 1
+        fi
+        ;;
+    esac
+    [ "$source" = "$host" ] || [ "${source#::ffff:}" = "$host" ]
+)
+
+_control_consume_source() (
+    local f="$1/.peer-$2" v
+    [ -f "$f" ] && [ ! -L "$f" ] || return 0
+    [ -z "$(tail -n +2 -- "$f" 2>/dev/null)" ] || return 0
+    v=$(head -n 1 "$f" 2>/dev/null)
+    rm -f "$f"
+    printf '%s' "$v"
 )
 
 _control_upgrade_throttle_ok() (

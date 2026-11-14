@@ -32,18 +32,19 @@ _access_tokens_ready() { # <api|control> <port> <setup|revocation>
 
 phase_access_tokens() {
     phase "access-tokens — a non-master ACCESS_TOKENS entry authenticates :8081 and :8082 (#516)"
-    local master bench cur new port api_port resp code cid st waited=0 body bread curl_rc=0 control_active=0
+    local master bench cur new port api_port resp code cid st waited=0 body bread curl_rc=0 control_active=0 owner_orig
     master=$(head -c 32 /dev/urandom | xxd -p -c 256)
     bench=$(head -c 32 /dev/urandom | xxd -p -c 256)
     cur=$(jq -r '.DONATION // 0' "$CFG")
     new=$(((cur + 1) % 101))
+    owner_orig=$(jq -r '.ACCESS_TOKEN // ""' "$CFG")
     printf '{"master":"%s","bench":"%s"}' "$master" "$bench" | set_cfg '.api="enabled" | .control="enabled" | .ACCESS_TOKEN=$tokens[0].master | .ACCESS_TOKENS={"bench":$tokens[0].bench} | .api_allow_from="127.0.0.1/32"' soft --slurpfile tokens /dev/stdin ||
         bad "could not enable api+control with a named ACCESS_TOKENS entry"
     port=$(jq -r '.control_port // 8082' "$CFG")
     api_port=$(jq -r '.api_port // 8081' "$CFG")
     _access_tokens_ready api "$api_port" setup || return 1
     _access_tokens_ready control "$port" setup || return 1
-    _rig_owner_mark
+    _rig_owner_mark "$CFG" "$owner_orig"
 
     # :8080 stays master-only — a named entry must not reach xmrig's own API. The refusal code is a
     # present-but-wrong Bearer, not a missing one, and varies by xmrig version (same reasoning as

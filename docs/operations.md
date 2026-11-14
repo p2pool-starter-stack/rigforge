@@ -789,11 +789,19 @@ the intent (so a poller can tell "mid-build" from "queued"), then one terminal o
 idempotent, not an error), `throttled` (inside the anti-beacon window — retry later), `busy` (a bench-ci job holds the rig
 reservation lock `/var/lock/rig-e2e.lock`: nothing was fetched, built or stamped against the throttle — retry
 after the rig is returned; a remote config `apply` gets the same `busy` refusal, since the bench's restore
-would overwrite it; the one exception is a RigForge e2e control or upgrade phase on a reserved rig: only
-after it has swapped in its own random token and the loopback-only `api_allow_from`, so no other client can
-reach `/apply` or `/upgrade`, it writes a root-owned `/run/rigforge-rig-owner` file naming its live pid, and
-it removes the file before restoring the rig's own token; the guard honours the file only while that pid is
-alive), or `failed`
+would overwrite it; the one exception is a harness — a RigForge e2e control or upgrade phase, or a remote
+borrowing stack reaching the rig over the network — that first swaps `ACCESS_TOKEN` for its own random token
+and pins `api_allow_from` to exactly one host the harness controls (loopback or the borrowing stack's address),
+so no other client can reach `/apply` or `/upgrade`, and then writes a root-owned `/run/rigforge-rig-owner`
+file of exactly three lines: its live pid, that temporary token, and the token it replaced (empty if the rig
+had none). The guard admits a change under that file only while the pid is alive, the config's active
+`ACCESS_TOKEN` is the marker's temporary token and differs from the recorded original, `api_allow_from` holds
+exactly one host, and the change was received from that host — a pid-only marker admits nothing, and neither
+does a marker whose token or allow-list is still the rig's own (#688). The swap takes effect only once the
+control receiver restarts with the new config (the ordinary config-apply path does), and the guard checks
+`ACCESS_TOKEN` alone — named `ACCESS_TOKENS` entries are not consulted, so the harness pins or clears any of
+them for the window. After the window the harness restores
+the rig's own token and allow-list and removes the file), or `failed`
 (with `reason`). A run that dies after claiming the intent (an abort, or systemd stopping the unit)
 still records `failed`, with a `reason` saying the run was lost, the checkout may be half-updated
 and the upgrade will not be retried: check the installed version and request it again (#535). Only a

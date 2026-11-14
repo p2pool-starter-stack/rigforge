@@ -111,7 +111,7 @@ if [ "${1:-}" = --case ]; then
     phase_control_replay() {
         phase control-replay
         phase_connect
-        passes 1
+        passes 2
     }
     set -- "$mode"
     eval "$(printf '%s\n' "$source_text" | awk '/^proof_preflight "|^require_preflight "/ {started=1} started')"

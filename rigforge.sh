@@ -4548,7 +4548,7 @@ control_apply() {
     spool="$state/spool"
     status="$state/status.json"
     backups="$SCRIPT_DIR/config-backups"
-    local newest older cid change_keys result rc backup staged
+    local newest older cid change_keys result rc backup staged request_source
     newest=$(ls -t "$spool"/pending-*.json 2>/dev/null | head -1) || true
     if [ -z "$newest" ]; then
         log "control-apply: nothing staged."
@@ -4560,6 +4560,7 @@ control_apply() {
     fi
     cid=$(basename "$newest" .json)
     cid="${cid#pending-}"
+    request_source=$(_control_consume_source "$spool" "$cid")
     if ! staged=$(_control_claim_staged "$newest" "$cid"); then
         _control_status "$status" failed "$cid" "?" "could not secure the staged change" ""
         warn "control-apply: could not freeze change $cid in the root-only processing directory."
@@ -4568,7 +4569,7 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
-    if _rig_lent_to_bench; then
+    if _rig_lent_to_bench "$request_source"; then
         rm -f "$staged"
         _control_status "$status" busy "$cid" "$change_keys" "rig is lent to a bench job; retry after it is returned" ""
         warn "control-apply: rig is lent to a bench job — change $cid refused."
@@ -4680,7 +4681,7 @@ control_upgrade() {
     local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status
     spool="$state/spool"
     status="$state/status.json"
-    local newest older cid target installed old_tag staged
+    local newest older cid target installed old_tag staged request_source
     newest=$(ls -t "$spool"/upgrade-*.json 2>/dev/null | head -1) || true
     if [ -z "$newest" ]; then
         log "control-upgrade: nothing staged."
@@ -4690,6 +4691,7 @@ control_upgrade() {
     [ -n "$older" ] && printf '%s\n' "$older" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
     cid=$(basename "$newest" .json)
     cid="${cid#upgrade-}"
+    request_source=$(_control_consume_source "$spool" "$cid")
     if ! staged=$(_control_claim_staged "$newest" "$cid"); then
         _control_status "$status" failed "$cid" version "could not secure staged upgrade (processing directory, move, or symlink)" ""
         warn "control-upgrade: could not freeze $cid in the root-only processing directory."
@@ -4728,7 +4730,7 @@ control_upgrade() {
             return 0
         fi
     fi
-    if _rig_lent_to_bench; then
+    if _rig_lent_to_bench "$request_source"; then
         _control_status "$status" busy "$cid" version "rig is lent to a bench job; retry after it is returned" ""
         warn "control-upgrade: rig is lent to a bench job — refused."
         return 0

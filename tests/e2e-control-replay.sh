@@ -122,6 +122,37 @@ _replay_window() { # <thermal|pools> -- publication of this exact ID, not a late
     done
     [ "$observed" = 1 ]
 }
+_replay_busy_probe() { # #688: under the held reservation the marker admits only its pinned source; a request from another address must settle busy (busy discards the change, so no residue)
+    local lan resp code id started st
+    lan=$(ip -4 -o addr show scope global 2>/dev/null | awk 'NR==1 { split($4, a, "/"); print a[1] }') || true
+    [ -n "$lan" ] || {
+        skip "no global address on the rig — non-pinned-source busy probe skipped"
+        return 0
+    }
+    resp=$(mktemp) || return 1
+    code=$(_control_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 --max-filesize 16384 \
+        -H 'Content-Type: application/json' -d "{\"max_temp_c\": $(jq -r '.max_temp_c // 100' "$CFG")}" "http://$lan:$port/apply" 2>/dev/null) || code=000
+    id=$(jq -ser 'select(length == 1) | .[0].change_id | select(type == "string" and test("^[0-9a-f]{16}$"))' "$resp" 2>/dev/null || true)
+    rm -f "$resp"
+    if [ "$code" != 202 ] || [ -z "$id" ]; then
+        skip "control port refused a non-pinned-source request (HTTP $code) — busy probe skipped"
+        return 0
+    fi
+    started=$SECONDS
+    while [ "$((SECONDS - started))" -lt 60 ]; do
+        st=$(_control_curl "$tok" -fsS --max-time 3 --max-filesize 16384 "http://127.0.0.1:$port/status?change_id=$id" 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
+        printf 'replay-busy-probe: elapsed_s=%s status=%s\n' "$((SECONDS - started))" "${st:-unknown}"
+        case "$st" in
+        busy)
+            ok "a change from a source outside the marker pin settles busy under the reservation (#688)"
+            return 0
+            ;;
+        applied | rolled_back | failed | rejected) return 1 ;;
+        esac
+        sleep 5
+    done
+    return 1
+}
 _replay_setup() {
     local stage
     stage=$(mktemp) || return 1
@@ -142,13 +173,14 @@ _replay_setup() {
     fi
 }
 phase_control_replay() {
-    local kind="$1" tok port api_port cid before payload
+    local kind="$1" tok port api_port cid before payload owner_orig
     [ "$REPLAY_RUNNER_LOCK" = 1 ] || bad "replay requires verified runner reservation"
     phase "control replay — $kind publication (#540)"
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
+    owner_orig=$(jq -r '.ACCESS_TOKEN // ""' "$CFG")
     # Replay only the recorded scalars; preserve worker threads, tuning and payout identity.
     _replay_setup || bad "replay setup failed"
-    _rig_owner_mark
+    _rig_owner_mark "$CFG" "$owner_orig"
     phase_connect preserve-pools || bad "replay mining precondition failed"
     port=$(jq -r '.control_port // 8082' "$CFG")
     api_port=$(jq -r '.api_port // 8081' "$CFG")
@@ -165,9 +197,11 @@ phase_control_replay() {
         before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         cid=$(printf '{"max_temp_c":102}' | _replay_apply) || bad "replay thermal apply refused"
     fi
-    local rc=0
+    local rc=0 probe_rc=0
     _replay_window "$kind" || rc=1
     refresh_profile_finish || bad "replay profiling or restoration failed"
+    _replay_busy_probe || probe_rc=1
     _rig_owner_clear
     [ "$rc" = 0 ] && ok "replay $kind published within 90s (#540)" || bad "replay $kind feed stale after 90s (#540)"
+    [ "$probe_rc" = 0 ] || bad "a change from a source outside the marker pin was not refused busy under the reservation (#688)"
 }
