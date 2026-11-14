@@ -71,7 +71,7 @@ Most of the hashrate comes from configuration, not the silicon. RigForge uses XM
 auto-detection and adds dedicated-miner defaults:
 
 - Auto-detected thread count, ASM path, MSR preset and NUMA. XMRig reads the CPU topology and
-  sizes everything to it (`cpu.rx: -1`, `cpu.asm: auto`, `randomx.wrmsr: true`, `randomx.numa: true`),
+  sizes everything to it (`cpu.rx: {}`, `cpu.asm: auto`, `randomx.wrmsr: true`, `randomx.numa: true`),
   which stays correct for CPUs a model-name table would miss. See
   [Hardware › How RigForge tunes](hardware.md#how-rigforge-tunes).
 - Dedicated-miner defaults: `cpu.yield: false` (busy-wait for max hashrate) and `cpu.priority: 2`.

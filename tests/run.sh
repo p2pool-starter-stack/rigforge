@@ -40,6 +40,7 @@ trap 'rc=$?
     fi
     exit "$rc"' EXIT
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
+command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 bash "$ROOT/tests/test-xmrig-overlay.sh" "$SCRIPT" || FAIL=$((FAIL + 1))
@@ -850,7 +851,7 @@ cfg="$d/config.json"
 if [ "$(uname -s)" = Darwin ]; then cfg_mode="$(stat -f '%Lp' "$cfg")"; else cfg_mode="$(stat -c '%a' "$cfg")"; fi
 assert_eq "generated config is owner-only (0600)" "$cfg_mode" "600"
 assert_eq "generic: persistent log remains configured outside appliance mode (#477)" "$(J "$cfg" '."log-file"')" "$d/xmrig.log"
-assert_eq "generic: rx auto (-1)" "$(J "$cfg" '.cpu.rx')" "-1"
+assert_eq "generic: rx auto — empty object, XMRig's own profile loads (#588)" "$(JC "$cfg" '.cpu.rx')" "{}"
 assert_eq "generic: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
 assert_eq "generic: numa on (XMRig default)" "$(J "$cfg" '.randomx.numa')" "true"
 assert_eq "generic: huge-pages on" "$(J "$cfg" '.cpu."huge-pages"')" "true"
@@ -925,7 +926,7 @@ log_out="$(
 )"
 cfg="$d/config.json"
 assert_eq "epyc: numa on" "$(J "$cfg" '.randomx.numa')" "true"
-assert_eq "epyc: rx auto (-1)" "$(J "$cfg" '.cpu.rx')" "-1"
+assert_eq "epyc: rx auto — empty object, XMRig's own profile loads (#588)" "$(JC "$cfg" '.cpu.rx')" "{}"
 assert_eq "epyc: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
 assert_eq "epyc: randomx.wrmsr on" "$(J "$cfg" '.randomx.wrmsr')" "true"
 assert_eq "epyc: http stays restricted" "$(J "$cfg" '.http.restricted')" "true"
@@ -940,7 +941,7 @@ export STUB_CPU_MODEL="AMD Ryzen 9 7950X3D 16-Core Processor" STUB_NPROC=4 STUB_
 SIM_OS=Linux SIM_DON=1
 d="$(gen_config)"
 cfg="$d/config.json"
-assert_eq "x3d: rx auto (-1), not all-cores" "$(J "$cfg" '.cpu.rx')" "-1"
+assert_eq "x3d: rx auto — empty object, not all-cores (#588)" "$(JC "$cfg" '.cpu.rx')" "{}"
 assert_eq "x3d: asm auto" "$(J "$cfg" '.cpu.asm')" "auto"
 assert_eq "x3d: priority 2" "$(J "$cfg" '.cpu.priority')" "2"
 assert_eq "x3d: yield off" "$(J "$cfg" '.cpu.yield')" "false"
@@ -1511,8 +1512,6 @@ out="$( (
 assert_contains "inevaluable ceiling names its own key and range (#412)" "$out" "hugepages_pool_ceiling_mb must be"
 assert_absent "inevaluable ceiling no longer leaks bash's raw complaint (#412)" "$out" "integer expression expected"
 
-# generate_xmrig_config: the thread cap clamps cpu.rx AFTER any tune overlay (a stale tuned count can't
-# exceed the operator's headroom); a valid count at/under the cap is left alone.
 echo "== config-gen: threads cap clamps cpu.rx (#305) =="
 gen_capped() { # <cap> <tuned-rx-or-empty> -> echoes config dir
     local d
@@ -1536,9 +1535,9 @@ gen_capped() { # <cap> <tuned-rx-or-empty> -> echoes config dir
     )
     echo "$d"
 }
-assert_eq "cap pins cpu.rx from auto (-1 -> 6)" "$(J "$(gen_capped 6 "")/config.json" '.cpu.rx')" "6"
-assert_eq "cap clamps a tuned rx above it (16 -> 6)" "$(J "$(gen_capped 6 16)/config.json" '.cpu.rx')" "6"
-assert_eq "cap leaves a tuned rx at/under it alone (4 stays 4)" "$(J "$(gen_capped 6 4)/config.json" '.cpu.rx')" "4"
+assert_eq "cap pins cpu.rx from auto (object threads=6, #588)" "$(J "$(gen_capped 6 "")/config.json" '.cpu.rx.threads')" "6"
+assert_eq "cap clamps a tuned rx above it (16 -> 6, #588)" "$(J "$(gen_capped 6 16)/config.json" '.cpu.rx.threads')" "6"
+assert_eq "cap leaves a tuned rx at/under it alone (4 stays 4, #588)" "$(J "$(gen_capped 6 4)/config.json" '.cpu.rx.threads')" "4"
 
 # _grub_proposed's keep-existing guard: in co-resident mode, an ambient reservation that already covers
 # miner + headroom is left untouched (MERGED := CURRENT -> no reboot); an insufficient one still gets the
@@ -5395,15 +5394,16 @@ cat >"$BD/xmrig" <<'EOF'
 case " $* " in *" --dry-run "*) exit 0 ;; esac
 cfg=""
 for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
+[ -z "$cfg" ] && exit 0
 [ -n "${BENCH_LOG:-}" ] && echo call >>"$BENCH_LOG"
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 y=$(jq -r '.cpu.yield' "$cfg" 2>/dev/null)
-t=$(jq -r '.cpu.rx' "$cfg" 2>/dev/null)
+t=$(jq -r 'if (.cpu.rx | type) == "object" then .cpu.rx.threads elif (.cpu.rx | type) == "array" then (.cpu.rx | length) else .cpu.rx end' "$cfg" 2>/dev/null)
 g=$(jq -r '.randomx."1gb-pages"' "$cfg" 2>/dev/null)
 base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; 0) base=1000 ;; *) base=1050 ;; esac
 [ "$y" = false ] && base=$((base + 20))             # yield off is a touch faster
 [ "$g" = true ] && base=$((base + 5))               # 1G pages help (only swept when reserved)
-tt="$t"; [ "$tt" = "-1" ] && tt=3                    # XMRig auto lands slightly off the L3 center
+tt="$t"; case "$tt" in -1 | null | '') tt=3 ;; esac
 pen=$(((tt > 4 ? tt - 4 : 4 - tt) * 30)); base=$((base - pen))   # RandomX peaks at threads=4
 echo "miner speed 10s/60s/15m $base.0 n/a n/a H/s max $base.0 H/s"
 printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
@@ -5434,7 +5434,7 @@ assert_eq "overrides file written" "$([ -f "$OVR" ] && echo y || echo n)" "y"
 assert_eq "config.json NOT touched (no .bak)" "$([ -f "$BD/config.json.bak" ] && echo y || echo n)" "n"
 assert_eq "winning prefetch in overrides" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "winning yield in overrides" "$(J "$OVR" '.cpu.yield')" "false"
-assert_eq "winning thread count in overrides" "$(J "$OVR" '.cpu.rx')" "4"
+assert_eq "winning thread count in overrides" "$(J "$OVR" '.cpu.rx.threads')" "4"
 # 1gb-pages was NOT swept here (no 1G pages reserved on the test host), so it isn't pinned in overrides.
 assert_eq "1gb-pages not pinned when unreserved" "$(J "$OVR" '.randomx["1gb-pages"] // "absent"')" "absent"
 assert_contains "tune notes the reboot-bound 1gb-pages skip" "$out" "skipping the 1gb-pages knob"
@@ -5458,7 +5458,7 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" RIGFORGE_HO
 assert_rc "apply after tune exits 0" "$?" "0"
 assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
-assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
+assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx.threads')" "4"
 
 if [ "$(uname -s)" != Linux ]; then
     echo "  SKIP: tune bench black-box timing tests run in the Linux CI jobs (#292)"
