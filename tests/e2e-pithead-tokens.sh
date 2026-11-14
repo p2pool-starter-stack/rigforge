@@ -43,6 +43,7 @@ phase_access_tokens() {
     api_port=$(jq -r '.api_port // 8081' "$CFG")
     _access_tokens_ready api "$api_port" setup || return 1
     _access_tokens_ready control "$port" setup || return 1
+    _rig_owner_mark
 
     # :8080 stays master-only — a named entry must not reach xmrig's own API. The refusal code is a
     # present-but-wrong Bearer, not a missing one, and varies by xmrig version (same reasoning as
@@ -75,6 +76,7 @@ phase_access_tokens() {
     [ "$st" = applied ] && ok "DONATION $cur -> $new reached 'applied' via the bench entry within ${waited}s (#516)" ||
         bad "bench-entry DONATION change $cid did not reach 'applied' within 300s (last status: ${st:-unreachable})"
 
+    _rig_owner_clear
     # Revocation: drop the entry and confirm it stops on both ports (red before / green after #516).
     set_cfg '.ACCESS_TOKENS={}' soft || bad "could not revoke the bench ACCESS_TOKENS entry"
     _access_tokens_ready api "$api_port" revocation || return 1

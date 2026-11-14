@@ -56,9 +56,12 @@ you like to your stack's single endpoint.
 - An opt-in `watchdog` restarts a wedged miner (alive but hashing 0 H/s), and with `max_temp_c` set
   it stops the miner above that temperature and resumes once it cools.
 - `doctor` health-checks HugePages, the MSR mod, the governor, the service, and the pool
-  connection (the miner's own view of it); `status` shows live hashrate, pool, uptime, and shares.
+  connection (the miner's own view of it); `doctor --json` emits the same checks for automation,
+  while `status` shows live hashrate, pool, uptime, and shares.
 - `bios` is a guided, resumable walkthrough of the BIOS/UEFI changes RigForge can't make itself
   (XMP/EXPO, SMT, PBO/Eco Mode), and re-verifies what took after the reboot.
+- `stress --minutes 30` checks Linux stability after BIOS changes; `bench` checks the computed hash
+  as well as speed, and offline tuning rejects candidates that fail verification.
 - `backup` and `restore` snapshot your config and tuning; `support-bundle` collects a redacted
   tarball for bug reports; `completion` prints bash/zsh tab-completion.
 - Running a [Pithead](https://github.com/p2pool-starter-stack/pithead) fleet? An opt-in,
@@ -71,18 +74,17 @@ you like to your stack's single endpoint.
 
 ## 📊 Does it actually help?
 
-Measured on a Ryzen **7800X3D**, mining live to a real pool (not a synthetic `--bench`):
+RigForge automates upstream XMRig tuning. The benefit depends on the hardware and the starting
+OS configuration.
 
-| | Stock XMRig | RigForge | |
-|---|--:|--:|:--|
-| **Hashrate** | 10,416 H/s | **10,779 H/s** | **+3.5%** |
-| **Power** | 86.8 W | **83.5 W** | **−3.8%** |
-| **Efficiency** | 120.1 H/s/W | **129.2 H/s/W** | **+7.6%** |
+The [historical benchmark report](docs/benchmarks.md) records live-mining observations on a Ryzen
+7800X3D and an EPYC 7642. These are illustrative results, not measurements of the RigForge baked
+into Pithead 2.0.0. Reported power and efficiency use **CPU-package RAPL**, not wall power; they
+do not establish whole-system efficiency or temperature gains.
 
-Without HugePages the CPU stalls on memory, so stock XMRig draws more power for less work. RigForge is
-faster and runs cooler. On a 48-core EPYC the gap is +6.6%, and RigForge matched an expert's
-hand-tuned config while avoiding a prefetch setting that halves RandomX on that chip. Full method,
-both CPUs, and the caveats: [Benchmarks](docs/benchmarks.md).
+No percentage uplift is established here for the current candidate. Numeric launch claims require
+the [candidate comparison protocol](docs/benchmarks.md#candidate-comparison-protocol) and a dated
+report for the exact baked revision.
 
 ---
 
@@ -90,12 +92,16 @@ both CPUs, and the caveats: [Benchmarks](docs/benchmarks.md).
 
 On the machine you want to turn into a miner:
 
+<!-- docs-replay:quick-start:begin -->
+
 ```bash
-git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
+git clone --branch v1.18.1 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 sudo ./rigforge.sh
 ```
+
+<!-- docs-replay:quick-start:end -->
 
 The script needs root to install packages and tune the system. First-run setup asks for your pool URL
 and optional password. For an `.onion` pool it offers a validated SOCKS proxy override, defaulting to
@@ -129,8 +135,9 @@ doesn't prove — deploying from a git checkout at the release tag is the strong
 |---|---|
 | **[Getting Started](docs/getting-started.md)** | Prerequisites, install, first-run setup, the Linux reboot, and verification. |
 | **[Hardware Requirements](docs/hardware.md)** | Worker CPU / RAM / HugePages requirements and the per-CPU tuning profiles. |
-| **[Benchmarks](docs/benchmarks.md)** | Measured stock-vs-tuned hashrate and efficiency on real hardware, with the method and caveats. |
+| **[Benchmarks](docs/benchmarks.md)** | Historical stock-vs-tuned observations, CPU-package (RAPL) power only, not wall power, and the candidate comparison protocol. |
 | **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
+| **[Shared-host profile](docs/shared-host.md)** | Opt-in CPU and memory bounds for co-resident workloads. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
 | **[How It Works](docs/how-it-works.md)** | What the script actually does: compile, HugePages, MSR, NUMA, governor, service. |
 | **[Pithead Integration](docs/pithead-integration.md)** | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080` (plus the optional enriched sister API on `:8081`), and the token rules. |
@@ -170,7 +177,10 @@ RigForge runs as root, so it's worth being explicit about what it does and doesn
   GitHub releases API, but only when you run it — nothing is scheduled and nothing else calls it.)
   The only outbound traffic is
   to *your* pool, to the pinned XMRig source on GitHub (cloned and commit-verified before building),
-  and to your distro's package mirrors.
+  to RigForge's own origin for an opted-in remote upgrade, and to your distro's package mirrors.
+  `tor_socks5` routes the GitHub fetches (`upgrade --check`, the XMRig clone, the remote-upgrade fetch)
+  through a SOCKS5 proxy; package installs stay yours to route. Explicit `bench --submit` and `bench --verify ID` also contact
+  the upstream benchmark service; submission publishes hardware and performance information.
 - The XMRig donation defaults to **0%**. Set `"DONATION"` to a nonzero percentage to support
   the XMRig developers. After the one-time build migration on upgrade, lowering it takes effect
   with `apply`, without rebuilding. Explicit values in `config.json` are preserved.
@@ -215,7 +225,7 @@ heavy XMRig compile and the package install are stubbed. It skips cleanly if Doc
 No XMRig binary is compiled by the tests; the heavy native build is stubbed. The suite asserts the
 *orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
 
-**`make coverage`** measures line coverage of `rigforge.sh` + `util/proposed-grub.sh` by running the
+**`make coverage`** measures line coverage of `rigforge.sh` and its shell helpers by running the
 suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned container, since kcov is
 Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`,
 so both the sourced functions and the command-dispatch paths are credited. CI enforces two gates: a

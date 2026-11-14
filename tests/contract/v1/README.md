@@ -18,6 +18,8 @@ normalized and byte-compared against the committed file on every run — see
 
 The feed guard omits `DONATION` from its input config, so `feed.json` pins the zero default and the
 revision of that effective configuration under a fixed test key. Both values stay byte-strict when the default changes.
+It also supplies appliance mode and a fixed `RIGFORGE_REF`, so `rigforge.appliance` and
+`rigforge.stamp` stay byte-strict; separate rows cover DIY mode and a missing stamp.
 
 `control-status.json` has two producers because it has two servers of truth. `_control_status()` is
 the single choke point `control_apply`/`control_upgrade` write terminal outcomes through — the right
@@ -75,9 +77,10 @@ word `rigforge.sh` actually passes to `_control_status` AND every `"status": "<w
 `util/control-server.py` itself writes to a file `GET /status` can serve (both read straight off the
 source, `grep` over call sites — not a hand-maintained list, and not just one side of the wire). A
 new status word landing in *either* file can't land without the guard noticing, fixture or not.
-Current vocabulary: `applied`, `failed`, `noop`, `pending`, `rejected`, `rolled_back`, `started`,
+Current vocabulary: `applied`, `busy`, `failed`, `noop`, `pending`, `rejected`, `rolled_back`, `started`,
 `throttled`. `noop`/`throttled`/`started` are the non-terminal / idempotent additions from #320;
-`pending` (#344) is `stage_pending()`'s own non-terminal status for a change accepted but not yet
+`busy` (#670) is the retry-later refusal while a bench-ci job holds the rig reservation lock, for both
+`/upgrade` and `/apply`; `pending` (#344) is `stage_pending()`'s own non-terminal status for a change accepted but not yet
 run — it never comes from `_control_status`, only from the receiver itself.
 
 The control-server.py grep intentionally excludes any `"status": "<word>"` on a line also matching

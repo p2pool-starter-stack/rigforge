@@ -352,7 +352,7 @@ tt="$t"
 [ "$tt" = "-1" ] && tt=6
 pen=$(((tt > 8 ? tt - 8 : 8 - tt) * 100))
 base=$((base - pen))
-echo "speed 10s/60s/15m $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 X
 chmod +x "$BUILD/xmrig"
 OVR="$WORK/data-home/worker/tune-overrides.json"

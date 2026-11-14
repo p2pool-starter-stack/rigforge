@@ -168,6 +168,11 @@ jobs:
       # /run/systemd/system, no package installs, no fstab/limits/logrotate writes, --runtime enables.
       - name: Run end-to-end suite
         run: make test-e2e
+      - name: Run API allowlist kernel test
+        run: >-
+          docker run --rm --privileged -v "$PWD:/src:ro"
+          alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+          sh -c 'apk add --no-cache bash iproute2 nftables curl jq python3 >/dev/null && bash /src/tests/test-api-allowlist-linux.sh'
 
   coverage:
     name: Coverage (kcov + diff-cover)
@@ -186,8 +191,6 @@ jobs:
           persist-credentials: false # the fetch below is read-only on a public repo (zizmor: artipacked)
       - name: Fetch base branch for diff-cover
         run: git fetch --no-tags origin "$BASE_REF"
-      # Runs tests/run.sh under a digest-pinned kcov image, reports rigforge.sh + util/proposed-grub.sh
-      # coverage, and fails if the total drops below the committed floor (tests/coverage-floor.txt).
       - name: Measure coverage (kcov) + enforce the total floor
         run: make coverage
       # Patch coverage is the real lever: it requires NEW/CHANGED lines to be tested, which is what keeps

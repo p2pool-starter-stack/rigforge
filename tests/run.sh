@@ -42,9 +42,16 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
+bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
+assert_rc "config apply state detects source drift (#445)" "$?" 0
+bash "$ROOT/tests/test-hugepages-ceiling.sh"
+assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
+for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest; do
+    bash "$ROOT/tests/test-$selftest.sh"
+    assert_rc "XMRig $selftest regression (#533)" "$?" 0
+done
 # Keep py_compile output in the disposable sandbox (#418).
 export PYTHONPYCACHEPREFIX="$SANDBOX/pycache"
-
 # Snapshot this before the suite for the final tree-hygiene check.
 PYCACHE_PRE=absent
 [ -e "$ROOT/util/__pycache__" ] && PYCACHE_PRE=present
@@ -119,7 +126,7 @@ echo "${STUB_NPROC:-4}"
 EOF
     cat >"$bin/stat" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
+case "$*" in *"%u:%g:%a:%h"*) echo 0:0:600:1 ;; *"%u:%g:%a"*) echo 0:0:700 ;; *) /usr/bin/stat "$@" ;; esac
 EOF
     cat >"$bin/hostname" <<'EOF'
 #!/usr/bin/env bash
@@ -203,11 +210,11 @@ EOF
 
 STUBS="$SANDBOX/stubs"
 make_stubs "$STUBS"
-RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing"
-mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING"
-export RIGFORGE_CONTROL_PROCESSING
-assert_rc "privileged consumers share a lock and refuse a planted processing symlink (#479)" "$(
-    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT"
+RIGFORGE_CONTROL_PROCESSING="$SANDBOX/control-processing" RIGFORGE_CONTROL_UPGRADE_STATE="$SANDBOX/upgrade-state"
+mkdir -m 700 "$RIGFORGE_CONTROL_PROCESSING" "$RIGFORGE_CONTROL_UPGRADE_STATE"
+export RIGFORGE_CONTROL_PROCESSING RIGFORGE_CONTROL_UPGRADE_STATE
+assert_rc "privileged consumers reject unsafe processing and throttle state (#479/#627)" "$(
+    bash "$ROOT/tests/test-control-hardening.sh" "$SCRIPT" && bash "$ROOT/tests/test-upgrade-throttle-security.sh" "$SCRIPT" >/dev/null
     echo $?
 )" "0"
 assert_rc "appliance pool policy rejects edits and preserves tuning (#583)" "$(
@@ -376,6 +383,7 @@ assert_eq "second-pool socks5 stays on the second pool (#400)" "$(PJ "$c" | jq -
 # A pool may carry BOTH a pin and a proxy — the two re-attach passes must not clobber each other.
 c="$(mkconf p_s5fp "{ \"pools\": [{\"url\":\"h:443\",\"tls\":true,\"tls-fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"socks5\":\"127.0.0.1:9050\"}] }")"
 assert_eq "socks5 and tls-fingerprint coexist (#400)" "$(PJ "$c" | jq -c '[(.[0]."tls-fingerprint" != null), (.[0].socks5 == "127.0.0.1:9050")]')" "[true,true]"
+bash "$ROOT/tests/test-pool-fields.sh" "$SCRIPT" "$ROOT/tests/contract/v1/feed.json" && ok "XMRig optional pool fields round-trip and validate (#527)" || bad "XMRig optional pool fields round-trip and validate (#527)" "suite failed"
 # #400 validation: the socks5 address gets the SAME host:port rules as the pool url. Each of these
 # is rejected for the pool url already; assert the proxy is judged by the same standard.
 c="$(mkconf p_s5noport "{ \"pools\": [{\"url\":\"h:3333\",\"socks5\":\"127.0.0.1\"}] }")"
@@ -752,6 +760,9 @@ ec1="$(mktemp -d "$SANDBOX/ec1.XXXXXX")"
 )
 assert_eq "#344: SETUP_URL_TRIES=1 leaves no room for a retry" "$([ -f "$ec1/config.json" ] && echo yes || echo no)" "no"
 assert_rc "config render is atomic and fails closed (#634)" "$(bash "$ROOT/tests/test-config-atomic.sh" "$SCRIPT" >/dev/null 2>&1 && echo 0 || echo 1)" 0
+for _sh in "shared-host profile $PATH" "shared-host-lifecycle lifecycle $STUBS:$PATH"; do
+    if read -r _f _l _p <<<"$_sh" && _o="$(PATH="$_p" bash "$ROOT/tests/test-$_f.sh" "$SCRIPT" 2>&1)"; then ok "shared-host $_l regressions (#577)"; else bad "shared-host $_l regressions (#577)" "$(printf '%s' "$_o" | tail -5)"; fi
+done
 bash "$ROOT/tests/test-donation.sh" "$SCRIPT"
 assert_rc "donation runtime and migration regressions (#602)" "$?" 0
 if bash "$ROOT/tests/test-config-ownership.sh" "$SCRIPT"; then ok "config ownership regressions (#529)"; else bad "config ownership regressions (#529)" "regression failed"; fi
@@ -2458,6 +2469,7 @@ assert_eq "apply with control disabled removes the path watcher (#236)" "$([ -f 
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1234.5"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
@@ -2465,11 +2477,6 @@ rc=$?
 assert_rc "bench exits 0" "$rc" "0"
 assert_contains "bench reports hashrate" "$out" "1234.5 H/s"
 
-# #75: bench must strip `http`, `pools` and `log-file` from the config it hands to `xmrig --bench`. On
-# real hardware `log-file` sends the result off stdout (we capture nothing), `pools` makes XMRig mine
-# after the benchmark, and `http` keeps the API alive — so it never exits and the capture hangs. The
-# generated build config has all three; this fake fails if it still sees any, so a passing bench proves
-# the strip.
 assert_eq "build config has pools + http (precondition)" "$(J "$U/home/worker/xmrig/build/config.json" '(.pools != null) and (.http != null)')" "true"
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
@@ -2480,6 +2487,7 @@ if [ -n "$cfg" ] && grep -qE '"(http|pools|log-file)"' "$cfg" 2>/dev/null; then
     exit 7
 fi
 echo "miner speed 10s/60s/15m 4242.0 n/a n/a H/s max 4242.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "4242.0"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
@@ -2487,13 +2495,11 @@ rc=$?
 assert_rc "bench strips http/pools/log-file (#75)" "$rc" "0"
 assert_contains "bench (stripped) reports hashrate" "$out" "4242.0 H/s"
 
-# #61: the smoke check relies on `bench` failing loudly on a dirty run (so a broken build/config is
-# caught before tagging) and surfacing the XMRig output for diagnosis.
-# (a) XMRig hit MEMORY ALLOC FAILED (dataset/HugePages/memlock) — even with a hashrate present, fail.
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "MEMORY ALLOC FAILED: mmap failed"
 echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1234.5"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 out="$(cd "$U" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" bench </dev/null 2>&1)"
@@ -2516,6 +2522,7 @@ assert_contains "bench surfaces the no-hashrate XMRig output" "$out" "aborted be
 cat >"$U/home/worker/xmrig/build/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "miner speed 10s/60s/15m 1234.5 n/a n/a H/s max 1234.5 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1234.5"
 EOF
 chmod +x "$U/home/worker/xmrig/build/xmrig"
 
@@ -2706,10 +2713,11 @@ assert_contains "max_temp_c 30 rejected (never restarts)" "$(parse_fails "$c")" 
 c="$(mkconf wd_thot "{ $POOL, \"max_temp_c\": \"hot\" }")"
 assert_contains "max_temp_c non-integer rejected" "$(parse_fails "$c")" "max_temp_c must be"
 
-# #139: the watchdog() check itself. One check per run; restart only on the SECOND consecutive
-# unhealthy check (0 H/s and API-unreachable both count); thermal stop above max_temp_c with a
-# 5°C-hysteresis restart; unreadable temp or empty max_temp_c skips thermal entirely. systemctl
-# calls asserted via CALL_LOG; parse_config is shadowed so the test drives state directly.
+bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
+assert_rc "thermal watchdog command retries (#631)" "$?" 0
+bash "$ROOT/tests/test-watchdog-shared-host-guard.sh"
+assert_rc "watchdog shared-host guard ordering (#665)" "$?" 0
+
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
 run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]
@@ -3269,7 +3277,7 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 # Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
 # systemd, not operators) are excluded by name.
 # sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
@@ -5065,6 +5073,8 @@ assert_contains "doctor: rdmsr verifies the registers (#66)" "$out" "verified vi
 # Readable but wrong values (a silently-dropped write) -> mismatch WARN.
 out="$(run_doctor_msr "$DOC/rdmsr_bad")"
 assert_contains "doctor: rdmsr mismatch WARN (#66)" "$out" "don't match the ryzen_19h_zen4 preset"
+out="$(LOCKDOWN_FILE="$DOC/lockdown_integrity" run_doctor_msr "$DOC/rdmsr_bad")"
+assert_contains "doctor: rdmsr mismatch attributed to lockdown (#333)" "$out" "kernel lockdown ('integrity') dropped the write"
 # Non-root: the read-back is SKIPPED with an advisory — NOT a false mismatch (regression guard for the gate).
 out="$(run_doctor_msr "$DOC/rdmsr_ok" user)"
 assert_contains "doctor: non-root asks for sudo to verify MSRs (#66)" "$out" "run 'doctor' as root"
@@ -5361,13 +5371,6 @@ disable_calls="$(grep -F '[systemctl] disable' "$UNA/calls.log" 2>/dev/null)"
 assert_eq "appliance uninstall: every systemctl disable is --runtime (#353)" \
     "$(printf '%s\n' "$disable_calls" | grep -cv -- --runtime)" "0"
 
-# #54: tune is an iterative, noise-aware, multi-knob hill-climb. It sweeps prefetch_mode, cpu.yield and
-# the RandomX thread count (cpu.rx, around L3/2 MB), measures each candidate as the MEDIAN of N runs,
-# memoizes so a combo is never benchmarked twice, climbs from two seeds (auto + educated guess), and
-# writes the winner to a SEPARATE tune-overrides.json (merged into the config) — config.json untouched.
-# A fake xmrig emits a hashrate that depends on all three knobs so a clear global optimum exists:
-# prefetch=2, yield=false, threads=4 (the L3=8 MiB center; nproc=4). The fake also logs every call so we
-# can prove memoization (no candidate benchmarked twice).
 echo "== black-box: tune (iterative hill-climb, multi-knob) (#54) =="
 TN="$(mktemp -d "$SANDBOX/tune.XXXXXX")"
 cp "$ROOT/VERSION" "$TN/"
@@ -5377,16 +5380,10 @@ mkdir -p "$TN/util"
 cp "$ROOT/util/proposed-grub.sh" "$TN/util/" && chmod +x "$TN/util/proposed-grub.sh"
 BD="$TN/home/worker/xmrig/build"
 mkdir -p "$BD"
-# #62: give every tune run in this block a controlled, HEALTHY clock source. The fake xmrig isn't a real
-# load, so real sysfs (e.g. an idle CI runner) would read a low clock and falsely flag every candidate as
-# throttled. Export a fake ~96%-of-max sysfs; the #62 throttle test overrides these to simulate a throttle.
 mkdir -p "$TN/cpuok/cpu0/cpufreq"
 printf '5000000\n' >"$TN/cpu_max"
 printf '4800000\n' >"$TN/cpuok/cpu0/cpufreq/scaling_cur_freq"
 export CPUFREQ_MAX="$TN/cpu_max" CPU_SYSFS="$TN/cpuok"
-# A built config for `tune` to sweep. Seeded with the knob values the in-script generator emits
-# (#55 removed the worker-config template this used to be copied from), so the hill-climb's "guess"
-# seed reads the same prefetch/yield/1gb-pages/priority starting points it would in production.
 cat >"$BD/config.json" <<'EOF'
 { "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": true }, "cpu": { "yield": false, "priority": 2 } }
 EOF
@@ -5407,6 +5404,7 @@ base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; 0) base=1000 ;; *) base=
 tt="$t"; [ "$tt" = "-1" ] && tt=3                    # XMRig auto lands slightly off the L3 center
 pen=$(((tt > 4 ? tt - 4 : 4 - tt) * 30)); base=$((base - pen))   # RandomX peaks at threads=4
 echo "miner speed 10s/60s/15m $base.0 n/a n/a H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 cat >"$TN/config.json" <<EOF
@@ -5460,18 +5458,6 @@ assert_eq "generated config has tuned prefetch" "$(J "$BD/config.json" '.randomx
 assert_eq "generated config has tuned yield" "$(J "$BD/config.json" '.cpu.yield')" "false"
 assert_eq "generated config has tuned threads" "$(J "$BD/config.json" '.cpu.rx')" "4"
 
-# #277: a bench candidate whose xmrig stub emits no H/s line must not spam the ERR trap. _bench_once's
-# hashrate grep is allowed to find nothing under pipefail — the run records that candidate as 0 H/s and
-# carries on; only the run's own failures should ever look like an abort. Discriminates on the swept
-# prefetch value (same config-reading idiom as the stub in the #54 block above) so the seed reads 0 H/s
-# but the swept prefetch=2 candidate hashes for real, letting the search finish with a winner (rc 0) — a
-# run that legitimately never hashes is a separate, correctly-reported failure, not what this test is
-# after. No TUNE_POWER_CMD override here: RAPL_DIR is the suite-wide no-hardware fake (line 65), so this
-# run also exercises _xmrig_bench's RAPL sampling with no powercap sysfs present — the same ERR-trap class
-# #277 fixed for the hashrate grep, fixed for RAPL sampling by #290.
-# Linux-gated (#292): the cpufreq/bench-window plumbing this drives is Linux sysfs — on a real Mac the
-# path never runs, and the simulated fixture proved timing-flaky on the slow bash-3.2 macOS CI runner.
-# The Linux CI job + the kcov container still run it on every push.
 if [ "$(uname -s)" != Linux ]; then
     echo "  SKIP: tune bench black-box timing tests run in the Linux CI jobs (#292)"
 else
@@ -5492,6 +5478,7 @@ if [ "$m" = "1" ]; then
     echo "miner speed 10s/60s/15m n/a n/a n/a"
 else
     echo "miner speed 10s/60s/15m 1000.0 n/a n/a H/s max 1000.0 H/s"
+    printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 fi
 EOF
     chmod +x "$ZH/home/worker/xmrig/build/xmrig"
@@ -5533,6 +5520,7 @@ if [ "$n" = "2" ]; then
     exit 1
 fi
 echo "miner speed 10s/60s/15m 1000.0 n/a n/a H/s max 1000.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 EOF
 chmod +x "$TCBD/xmrig"
 cat >"$TC/config.json" <<EOF
@@ -5559,7 +5547,7 @@ cp "$ROOT/util/proposed-grub.sh" "$TT/util/" 2>/dev/null
 printf '5000000\n' >"$TT/cpu_max"
 printf '4800000\n' >"$TT/cpuok/cpu0/cpufreq/scaling_cur_freq"
 printf '{ "randomx": { "scratchpad_prefetch_mode": 1, "1gb-pages": false }, "cpu": { "yield": false, "priority": 2 } }\n' >"$TT/home/worker/xmrig/build/config.json"
-printf '#!/usr/bin/env bash\necho "miner speed 10s 1100.0 H/s max 1100.0 H/s"\n' >"$TT/home/worker/xmrig/build/xmrig"
+printf '#!/usr/bin/env bash\nprintf "bench benchmark finished in 1.000 seconds (1100.0 h/s) hash sum = \\033[1;32m898B6E0431C28A6B\\033[0m\\n"\n' >"$TT/home/worker/xmrig/build/xmrig"
 chmod +x "$TT/home/worker/xmrig/build/xmrig"
 tune_target() { # <autotune-config-value> [tune-flags...]
     local atv="$1"
@@ -5650,6 +5638,7 @@ cat >"$BD/xmrig" <<'EOF'
 c="${JITTER_CTR:-/tmp/jit}"; n=0; [ -f "$c" ] && n=$(cat "$c"); echo $((n + 1)) >"$c"
 case $((n % 3)) in 0) d=-10 ;; 1) d=0 ;; *) d=10 ;; esac
 echo "speed $((1100 + d)).0 H/s max $((1100 + d)).0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$((1100 + d)).0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=3 JITTER_CTR="$TN/jit" \
@@ -5676,6 +5665,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000; case "$m" in 2) base=1100 ;; 1) base=1080 ;; *) base=1050 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto TUNE_MIN_DELTA=0.5 \
@@ -5704,6 +5694,7 @@ echo "$i" >"$ctr"
 case "$m" in 2) c=102 ;; 1) c=100 ;; *) c=98 ;; esac
 case "$i" in 1) v=$((c - 10)) ;; 2) v=$((c - 5)) ;; 3) v=$c ;; 4) v=$((c + 5)) ;; 5) v=$((c + 10)) ;; *) v=$c ;; esac
 echo "speed $v.0 H/s max $v.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$v.0"
 EOF
 chmod +x "$BD/xmrig"
 CTRDIR="$TN/ctr"
@@ -5731,6 +5722,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 g=$(jq -r '.randomx."1gb-pages"' "$cfg" 2>/dev/null)
 base=1000; [ "$g" = true ] && base=1100
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
@@ -5745,6 +5737,7 @@ echo "== black-box: tune power/temp recording (#54) =="
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1200.0 H/s max 1200.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1200.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
@@ -5850,6 +5843,7 @@ cat >"$BD/xmrig" <<'EOF'
 trap 'touch "$PWR_DONE"' EXIT       # idle is marked only AFTER the run ends
 echo "speed 1500.0 H/s max 1500.0 H/s"
 sleep "${PWR_SLEEP:-0.6}"           # stay loaded long enough for the poll loop to sample power
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1500.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR" "$TN/pwr_done"
@@ -5873,6 +5867,7 @@ echo "== black-box: tune built-in RAPL power path (#81) =="
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1300.0 H/s max 1300.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1300.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR"
@@ -5946,6 +5941,7 @@ m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 if [ "$m" = 2 ]; then echo 200 >"$PWF"; hr=1200; else echo 100 >"$PWF"; hr=1000; fi
 echo "speed $hr.0 H/s max $hr.0 H/s"
 sleep "${PWR_SLEEP:-0.8}" # stay loaded so the poll loop's (correct) power samples dominate the up-front one
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$hr.0"
 EOF
 chmod +x "$BD/xmrig"
 PWF="$TN/pwf"
@@ -5968,6 +5964,7 @@ echo "== black-box: tune --efficiency falls back without a power source (#79) ==
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1100.0 H/s max 1100.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1100.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR"
@@ -6066,6 +6063,7 @@ m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000
 case "$m" in 2) base=1100 ;; 1) base=1050 ;; *) base=1000 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 ACTR="$TN/actr"
@@ -6102,6 +6100,7 @@ cat >"$FQBIN" <<'EOF'
 echo "speed 1000.0 H/s max 1000.0 H/s"
 for _ in $(seq 1 500); do [ -f "$FQDONE" ] && break; sleep 0.02; done # bounded: never outlive the test
 echo "benchmark finished"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 EOF
 chmod +x "$FQBIN"
 freqwrite() { ( # <freq sample kHz>... -> BENCH_FREQ_FILE content, via the real _xmrig_bench freq-write path
@@ -6148,6 +6147,7 @@ m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000
 case "$m" in 2) base=1100 ;; 1) base=1000 ;; *) base=950 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 mkdir -p "$TN/cpulow/cpu0/cpufreq"
@@ -6199,6 +6199,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 w=$(jq -r '.randomx.wrmsr' "$cfg" 2>/dev/null)
 base=1000; [ "$w" = "${WRMSR_WIN:-false}" ] && base=1100
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 wrmsr_run() { # <WRMSR_WIN> [tune_wrmsr value; OMIT the arg entirely to leave TUNE_WRMSR unset = default]
@@ -6241,6 +6242,7 @@ EOF
 cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 echo "speed 1000.0 H/s max 1000.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "1000.0"
 EOF
 chmod +x "$BD/xmrig"
 rm -f "$OVR"
@@ -6825,6 +6827,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; *) base=1000 ;; esac
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEARCH=grid \
@@ -6849,6 +6852,7 @@ for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 hj=$(jq -r '.cpu."huge-pages-jit"' "$cfg" 2>/dev/null)
 base=1000; [ "$hj" = true ] && base=1100
 echo "speed $base.0 H/s max $base.0 H/s"
+printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
 EOF
 chmod +x "$BD/xmrig"
 out="$(cd "$TN" && PATH="$STUBS:$PATH" TUNE_ITERS=1 TUNE_SEEDS=auto \
@@ -7182,7 +7186,7 @@ assert_contains "firewall: loopback always accepted (#142)" "$nft_body" 'iifname
 assert_contains "firewall: the configured source is accepted (#142)" "$nft_body" "ip saddr 192.168.1.10 accept"
 assert_contains "firewall: :8080 guarded, others dropped (#142)" "$nft_body" "tcp dport { 8080 }"
 assert_contains "firewall: applied via nft -f (#142)" "$(cat "$FW/calls.log")" "[nft] -f"
-# API enabled -> :8081 joins the guarded set.
+assert_contains "firewall: blocked requests have a measurable counter (#586)" "$nft_body" "counter drop"
 run_fw "192.168.1.0/24" enabled >/dev/null
 assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/api-firewall.nft")" "8080, 8081"
 # Cleared -> table destroyed, file removed.
@@ -7894,7 +7898,7 @@ rfblk="$(
     printf '%s\n' '{ "pools":[{"url":"h:3333","pass":"PWNEEDLE415"}] }' >"$rfd/config.json"
     (
         source "$SCRIPT"
-        CONFIG_JSON="$rfd/config.json"
+        CONFIG_JSON="$rfd/config.json" RIGFORGE_APPLIANCE=0
         SCRIPT_DIR="$rfd"
         CONFIG_META_FILE="$rfd/meta.json"
         set +e
@@ -7910,6 +7914,8 @@ assert_eq "feed: served config still masks pass + config_meta has a revision (co
 # emits is `__secret__`, so a needle of "secret" would match the MASK and report a leak that is not
 # one — the assertion has to be able to tell the two apart to mean anything.
 assert_absent "feed: no pool password anywhere in the served block (contract)" "$rfblk" "PWNEEDLE415"
+assert_eq "feed: DIY appliance is a boolean false (#452)" "$(printf '%s' "$rfblk" | jq -c '.appliance')" "false"
+assert_eq "feed: missing stamp is null (#452)" "$(printf '%s' "$rfblk" | jq -r 'has("stamp") and .stamp == null')" "true"
 # missing staged file -> unreadable branch; broken config -> merge-fail branch
 missing_d=$(mktemp -d "$SANDBOX/cm.XXXXXX")
 printf '%s\n' "$CFG_236" >"$missing_d/config.json"
@@ -8850,7 +8856,8 @@ assert_eq "the sidecar records the change_id that caused it (#435, #254)" "$(J "
 # The backup the rollback branch would need: a `null` here fails this as surely as a wrong path does.
 assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$(caast backup)" ] && echo y || echo n)" "y"
 
-source "$ROOT/tests/test-control-upgrade.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-fetch-proxy.sh"
 
 # Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
 # its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
@@ -8863,16 +8870,13 @@ bare_e2e_git=$(grep -nE 'git -C "\$HERE"' "$ROOT/tests/e2e-real.sh" | grep -v 's
 assert_eq "no e2e-real git call omits -c safe.directory (nested sudo breaks git's SUDO_UID exemption)" "$bare_e2e_git" ""
 # ...and the row above is not vacuous: it would also pass on a file with no git calls left in it.
 hgit_calls=$(grep -cE '(^|[^A-Za-z_])_hgit ' "$ROOT/tests/e2e-real.sh")
-if [ "$hgit_calls" -ge 10 ]; then
-    ok "e2e-real still routes its git through the helper ($hgit_calls call sites)"
-else
-    bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"
-fi
+if [ "$hgit_calls" -ge 10 ]; then ok "e2e-real still routes its git through the helper ($hgit_calls call sites)"; else bad "e2e-real routes too few git calls through _hgit" "expected >= 10, got $hgit_calls"; fi
 echo "== unit: control writable-keys drift guard — bash vs python (#236) =="
 bash_ckeys="$(grep -oE 'CONTROL_WRITABLE_KEYS="[^"]*"' "$SCRIPT" | head -1 | sed 's/.*="//; s/"//' | tr ' ' '\n' | sort | tr '\n' ' ')"
 py_ckeys="$(grep -oE 'WRITABLE = \{[^}]*\}' "$ROOT/util/control-server.py" | grep -oE '"[a-zA-Z_]+"' | tr -d '"' | sort | tr '\n' ' ')"
 assert_eq "control writable-keys match across rigforge.sh + control-server.py (#236)" "$bash_ckeys" "$py_ckeys"
 echo "== black-box: the control server (#236) =="
+bash "$ROOT/tests/test-control-revocation.sh" && ok "receiver revocation fails closed (#626)" || bad "receiver revocation fails closed (#626)" "regression failed"
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  SKIP: python3 not present (kcov container) — the control-server wire suite runs in the other CI jobs"
 else
@@ -9205,6 +9209,7 @@ out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-malformed" ]; then touch "'"$DDIR
 assert_contains "malformed member blocks exact-target offline (#466)" "$out" "BAD worker did not become offline"
 assert_absent "malformed transition never proves offline (#466)" "$out" "OK stopped worker became offline"
 source "$ROOT/tests/test-e2e-gate-fail-closed.sh"
+source "$ROOT/tests/test-e2e-hammer.sh"
 echo "== unit: rig_lock — the shared-rig flock (#183) =="
 RL_SRC="$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh")"
 assert_eq "e2e-real.sh and e2e-pithead.sh carry the identical helper (#183)" \
@@ -9488,12 +9493,13 @@ else
         --argjson started "$(mk_status_record started 1111111111111111 version '' '')" \
         --argjson applied "$(mk_status_record applied 2222222222222222 version 'upgraded to v9.9.9' '')" \
         --argjson noop "$(mk_status_record noop 3333333333333333 version 'already on v9.9.9 — nothing to upgrade' '')" \
+        --argjson busy "$(mk_status_record busy 8888888888888888 version 'rig is lent to a bench job; retry after it is returned' '')" \
         --argjson throttled "$(mk_status_record throttled 4444444444444444 version 'throttled — too soon since the last upgrade attempt' '')" \
         --argjson failed "$(mk_status_record failed 5555555555555555 version 'staged upgrade target malformed (want vX.Y.Z)' '')" \
         --argjson rejected "$(mk_status_record rejected 6666666666666666 DONATION 'rejected merge-failed' '')" \
         --argjson rolled_back "$(mk_status_record rolled_back 7777777777777777 watchdog,DONATION 'miner did not return to a live hashrate; rolled back and live' /b)" \
         --argjson pending "$live_pending" \
-        '{applied: $applied, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
+        '{applied: $applied, busy: $busy, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
     fixture_examples="$(jq -S '.examples' "$CONTRACT_DIR/control-status.json")"
     assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
 fi
@@ -9501,13 +9507,14 @@ fi
 FEEDFX="$(mktemp -d "$SANDBOX/feedfx.XXXXXX")"
 mkdir -p "$FEEDFX/home" "$FEEDFX/data" "$FEEDFX/control"
 printf 'v0.0.0-fixture\n' >"$FEEDFX/VERSION"
+printf 'ref=0000000000000000000000000000000000000000 version=0.0.0-fixture\n' >"$FEEDFX/RIGFORGE_REF"
 printf 'fixture-revision-key' >"$FEEDFX/revkey"
 printf '{ "HOME_DIR": "%s/home", "pools": [{"url": "h:3333", "pass": "secret"}], "watchdog": "enabled", "max_temp_c": 85 }\n' "$FEEDFX" >"$FEEDFX/config.json"
 printf '%s' '{"status":"rolled_back","change_id":"7777777777777777","source":"control","applied_at":"2026-01-01T00:00:00Z","changed_keys":["watchdog","DONATION"],"reason":"miner did not return to a live hashrate; rolled back and live","backup":"/b","warnings":["thermal protection changed: watchdog"]}' >"$FEEDFX/control/status.json"
 printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}' >"$FEEDFX/xmrig-body.json"
 (
     source "$SCRIPT"
-    OS_TYPE=Linux
+    OS_TYPE=Linux RIGFORGE_APPLIANCE=1
     SCRIPT_DIR="$FEEDFX"
     CONFIG_JSON="$FEEDFX/config.json"
     CONFIG_META_FILE="$FEEDFX/meta.json"
@@ -9515,15 +9522,6 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
     RIGFORGE_API_DATA="$FEEDFX/data"
     RIGFORGE_CONTROL_STATE="$FEEDFX/control"
     API_CMD="cat '$FEEDFX/xmrig-body.json'"
-    # _health_json shells out to the REAL `systemctl is-active` for service_active — API_CMD only
-    # replaces the worker-API curl, not that. On any Linux box genuinely running the xmrig unit (i.e.
-    # every fleet rig) the untouched default SERVICE_NAME=xmrig would read "active" there and byte-
-    # diff this fixture on rigs while passing everywhere else. Point it at a unit name no rig will
-    # ever have instead of putting $STUBS on PATH: the generic systemctl stub there always exits 0
-    # (fine for the tests that use it, which never assert exact service_active/autotune values), which
-    # would make this read "active" unconditionally instead of fixing anything. Pins service_active:
-    # false and, since both are gated on it, clock_pct_of_boost/throttling: null too — see
-    # contract/v1/README.md.
     SERVICE_NAME="rigforge-contract-fixture-nonexistent"
     set +e
     api_refresh 2>/dev/null
@@ -9531,7 +9529,10 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
 live_feed="$(jq -S '.generated_at = "NORMALIZED" | .rigforge.version = "NORMALIZED" | .rigforge.xmrig_version = "NORMALIZED" | .rigforge.xmrig_commit = "NORMALIZED"' "$FEEDFX/data/summary.json")"
 fixture_feed="$(jq -S . "$CONTRACT_DIR/feed.json")"
 assert_eq "sister-API feed shape matches the fixture (#351)" "$live_feed" "$fixture_feed"
-
+assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.appliance' "$FEEDFX/data/summary.json")" "true"
+assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
+(set -- && source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
+source "$ROOT/tests/daemon-pools.sh"
 # ---------------------------------------------------------------------------
 echo ""
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
@@ -9543,8 +9544,8 @@ else
     assert_eq "no util/__pycache__ left in the tracked tree (#418)" "$pycache_post" "absent"
 fi
 
-# ---------------------------------------------------------------------------
-echo ""
+bash "$ROOT/tests/docs-replay-commands.sh"
+assert_rc "docs replay markers (#586)" "$?" 0
 SUITE_COMPLETE=1
 printf 'rigforge tests: \033[1;32m%d passed\033[0m, ' "$PASS"
 if [ "$FAIL" -gt 0 ]; then

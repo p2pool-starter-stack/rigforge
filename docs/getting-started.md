@@ -1,12 +1,12 @@
 # Getting Started
 
-Install and tune an XMRig worker from a fresh machine. A single script, `rigforge.sh`, drives the
+Install and tune an XMRig worker from a fresh machine. The `rigforge.sh` entrypoint and bundled `util/` helpers drive the
 whole process, and most of it is automated.
 
 > **TL;DR**
 >
 > ```bash
-> git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
+> git clone --branch v1.18.1 https://github.com/p2pool-starter-stack/rigforge.git
 > cd rigforge
 > chmod +x rigforge.sh
 > sudo ./rigforge.sh
@@ -38,19 +38,27 @@ You don't need to install build dependencies yourself. RigForge installs the too
 
 ## 2. Get the code
 
+<!-- docs-replay:clone:begin -->
+
 ```bash
-git clone --branch v1.18.0 https://github.com/p2pool-starter-stack/rigforge.git
+git clone --branch v1.18.1 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 ```
+
+<!-- docs-replay:clone:end -->
 
 Want to see exactly what setup would do to this machine before handing it root? The dry run
 prints a numbered plan (missing packages, the GRUB diff, HugePages count, units) and changes
 nothing — it doesn't even need sudo:
 
+<!-- docs-replay:dry-run:begin -->
+
 ```bash
 ./rigforge.sh setup --dry-run
 ```
+
+<!-- docs-replay:dry-run:end -->
 
 Have your **pool URL** ready, a `host:port`. For a Pithead stack that's the stack machine's address
 and its proxy port `3333` (e.g. `stack.lan:3333`); with Pithead you do **not** need a wallet, since the
@@ -66,9 +74,13 @@ stack handles payouts centrally.
 
 ## 3. Run setup
 
+<!-- docs-replay:setup:begin -->
+
 ```bash
 sudo ./rigforge.sh
 ```
+
+<!-- docs-replay:setup:end -->
 
 `setup` is the default command and is safe to re-run. On a fresh machine it walks through:
 
@@ -103,9 +115,13 @@ uses `./rigforge.sh` throughout. (`uninstall` removes the symlink.)
 To apply HugePages and the other kernel tuning, a reboot is **required** on Linux. The script tells
 you when:
 
+<!-- docs-replay:reboot:begin -->
+
 ```bash
 sudo reboot
 ```
+
+<!-- docs-replay:reboot:end -->
 
 After the reboot the `xmrig` service starts automatically. (macOS needs no reboot.)
 

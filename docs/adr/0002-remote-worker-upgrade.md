@@ -53,9 +53,16 @@ GitHub is therefore accepted as the trust root. The residual risk is explicit: a
 
 ### D6. Fail-closed, throttled, rollback-guarded, with a terminal status
 
+The throttle lock and timestamp live in the root upgrade unit's persistent
+`StateDirectory=rigforge-control-upgrade` with mode `0700`, separate from the receiver's
+state (#627). The verb requires a root-owned, non-symlink directory and rejects existing
+throttle objects unless they are root-owned regular files with mode `0600` and one link.
+Locking failure, timestamp I/O errors, or invalid timestamps refuse the upgrade. Receiver-owned legacy files are never
+opened or migrated; the new directory starts a fresh cooldown on the first attempt.
+
 `control-upgrade` is fail-closed and every step is rollback-guarded, reusing the upgrade flow's rebuild decision, including the pinned version/commit, compiled-minimum marker and binary checksum checks. A **pre-dial throttle stamp** on the rig bounds how often it will reach out to GitHub, so a looping or hostile consumer cannot turn the fleet into a beacon or a request amplifier. The stamp is fail-closed end to end (#636): if the lock cannot be opened or taken, or the attempt time cannot be written, the upgrade is refused as `failed` (throttle state unavailable) rather than allowed unrecorded. Outcomes use the same `/status` surface as control-apply, extended with a **`failed`** terminal (with reason) alongside `applied` / `rolled_back`, so a pre-apply refusal (target outside the allowed bound, throttled, fetch/build error) surfaces a clear terminal result to the consumer's poll rather than hanging in a non-terminal state.
 
-*Amended (#320, consumer feedback from pithead #597):* the status vocabulary grew three additive members so a poller never has to string-match `reason`. A non-terminal **`started`** is written the moment the oneshot claims the intent (D8 move done), so "mid-run" and "oneshot died mid-run" are distinguishable from "queued" (since #535 a run that dies after the claim records a terminal `failed` saying so, and only a `SIGKILL` or power loss leaves `started` behind); **`noop`** replaces `failed` for the already-on-target refusal (idempotent, not an error); **`throttled`** replaces `failed` for the D6 throttle refusal (retry-later, not an error). `applied`'s `reason` echoes the landed version. All other refusals stay `failed`.
+*Amended (#320, consumer feedback from pithead #597):* the status vocabulary grew three additive members so a poller never has to string-match `reason`. A non-terminal **`started`** is written the moment the oneshot claims the intent (D8 move done), so "mid-run" and "oneshot died mid-run" are distinguishable from "queued" (since #535 a run that dies after the claim records a terminal `failed` saying so, and only a `SIGKILL` or power loss leaves `started` behind); **`noop`** replaces `failed` for the already-on-target refusal (idempotent, not an error); **`throttled`** replaces `failed` for the D6 throttle refusal (retry-later, not an error). `applied`'s `reason` echoes the landed version. **`busy`** (#670) replaces `failed` for a rig lent to a bench job (the rig reservation lock is held): refused before the throttle stamp, fetch or build, retry-later. All other refusals stay `failed`.
 
 ### D7. Auth and source-pinning inherited from ADR 0001 D4/D9
 
