@@ -15,7 +15,7 @@ they cannot substitute for either complete group.
 | Phase row | Retained successful assertions | Dependency and restoration |
 | --- | --- | --- |
 | `connect` (8) | Stratum job, accepted share, doctor JSON report (one schema-valid report, reported exit matches status, summary matches rows, live service check, live pool-connection check), generated worker label | Sets the pool and restarts the physical worker. |
-| `worker-api` (5) | Open read, bind policy, restricted write refusal, unauthenticated refusal, matching bearer read | Uses the connected worker; restores the open token posture. |
+| `worker-api` (10) | Open read, bind policy, restricted write refusal, unauthenticated refusal, matching bearer read, then the xmrig overlay rows (merged config, unit restart, mining, feed round trip, removal restores) | Uses the connected worker; restores the open token posture. |
 | `api-impact` (3) | Sister API available, loaded hashrate within baseline tolerance, responsiveness under mining load | Uses live hashing; starts/stops recorded load processes and disables the sister API. |
 | `network` (10) | Pool-only peers, control-implied listener, enabled API listener, API allowlist rejects a second source while mining, miner-only listener policy, complete summary superset and metadata, keyed feed revision with a private key file, token leak sweep, pool-password leak sweep, disabled listener closed | Consumes the preceding mutations; restores disabled API/control and the open token posture. |
 | `stratum-auth` (4) | Right credential mines, wrong credential rejected, no jobs with wrong credential, recovery with right credential | Fault and recovery stay together; original config is restored by outer cleanup. |

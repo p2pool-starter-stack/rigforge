@@ -80,7 +80,7 @@ _bench_once() { printf 'benched\n' >"$D/benched"; }
 eq "$(RANDOMX_JSON='[]' _measure 2 false 4 true 2 false false true 2>/dev/null)" 0
 [ ! -e "$D/benched" ] || fail 'tune benchmarked a candidate whose config failed to render'
 
-parse_ok '{"xmrig":{"randomx":{"mode":"light"}}}'
+parse_ok '{}'
 WORKER_ROOT="$D/null-randomx/worker"
 mkdir -p "$WORKER_ROOT/xmrig/build"
 printf '{"randomx":null}\n' >"$WORKER_ROOT/tune-overrides.json"
@@ -99,11 +99,9 @@ done
 for invalid in \
     '{"xmrig":null}' \
     '{"xmrig":[]}' \
-    '{"xmrig":{"extra":1}}' \
     '{"xmrig":{"randomx":null}}' \
     '{"xmrig":{"randomx":[]}}' \
     '{"xmrig":{"randomx":"fast"}}' \
-    '{"xmrig":{"randomx":{"extra":1}}}' \
     '{"xmrig":{"randomx":{"mode":null}}}' \
     '{"xmrig":{"randomx":{"mode":"slow"}}}' \
     '{"xmrig":{"randomx":{"mode":1}}}' \
@@ -121,6 +119,10 @@ for invalid in \
     parse_fails "$invalid"
 done
 parse_ok '{"xmrig":{"randomx":{"init":1,"init-avx2":-1}}}'
+parse_ok '{"xmrig":{"cpu":{"yield":false},"randomx":{"mode":"light","numa":false}}}'
+eq "$RX_MODE" light
+overlay_config=$(generate overlay-randomx '{"randomx":{"numa":true,"1gb-pages":true}}')
+eq "$(jq -c '{yield:.cpu.yield,mode:.randomx.mode,numa:.randomx.numa,"1gb-pages":.randomx."1gb-pages"}' "$overlay_config")" '{"yield":false,"mode":"light","numa":false,"1gb-pages":false}'
 
 PROPOSED="$ROOT/util/proposed-grub.sh"
 PSTUB="$D/proposed-stubs"
