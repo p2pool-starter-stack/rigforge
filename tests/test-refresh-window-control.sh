@@ -166,6 +166,7 @@ curl() {
     fi
 }
 # Install the real EXIT snapshot/cleanup trap before running any failure case.
+source "$ROOT/tests/e2e-hammer.sh"
 eval "$(sed -n '/^_cleanup()/,/^}/p; /^snapshot_config()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 # shellcheck disable=SC2034 # consumed by the extracted cleanup function
 HAMMER_PIDS='' RIG_LOCK_HOLDER="$TEST_WINDOW_DIR/holder"

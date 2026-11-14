@@ -148,6 +148,7 @@ phase_control_replay() {
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
     # Replay only the recorded scalars; preserve worker threads, tuning and payout identity.
     _replay_setup || bad "replay setup failed"
+    _rig_owner_mark
     phase_connect preserve-pools || bad "replay mining precondition failed"
     port=$(jq -r '.control_port // 8082' "$CFG")
     api_port=$(jq -r '.api_port // 8081' "$CFG")
@@ -167,5 +168,6 @@ phase_control_replay() {
     local rc=0
     _replay_window "$kind" || rc=1
     refresh_profile_finish || bad "replay profiling or restoration failed"
+    _rig_owner_clear
     [ "$rc" = 0 ] && ok "replay $kind published within 90s (#540)" || bad "replay $kind feed stale after 90s (#540)"
 }

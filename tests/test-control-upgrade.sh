@@ -5,6 +5,7 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down|buildfail|har
     local d
     d=$(mktemp -d "$SANDBOX/cu.XXXXXX")
     mkdir -p "$d/state/spool"
+    mkdir -m 700 "$d/upgrade-state"
     printf '%s' "$2" >"$d/VERSION"
     printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
     [ -n "$1" ] && printf '%s\n' "$1" >"$d/state/spool/upgrade-abc123def4567890.json"
@@ -14,6 +15,7 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down|buildfail|har
         SCRIPT_DIR="$d"
         CONFIG_JSON="$d/config.json"
         RIGFORGE_CONTROL_STATE="$d/state"
+        RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state"
         CONTROL_UPGRADE_MIN_INTERVAL=0
         DO="$3"
         WML=0
@@ -95,6 +97,12 @@ sl="$(
 assert_contains "staged symlink refused (D8 spool handoff)" "$sl" "symlink"
 
 echo "== unit: _control_upgrade_throttle_ok (#308) =="
+if ! command -v flock >/dev/null; then
+    mkdir -p "$SANDBOX/flock-stub"
+    printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/flock-stub/flock"
+    chmod +x "$SANDBOX/flock-stub/flock"
+    PATH="$SANDBOX/flock-stub:$PATH"
+fi
 td=$(mktemp -d "$SANDBOX/thr.XXXXXX")
 (
     source "$SCRIPT"
@@ -114,12 +122,8 @@ assert_eq "throttle: second attempt within the window blocked" "$?" "1"
     _control_upgrade_throttle_ok "$td"
 )
 assert_eq "throttle: zero interval always allowed" "$?" "0"
-# Fail CLOSED when the lock can't be opened (#321): the anti-beacon throttle must not silently
-# disable itself on exactly the degraded state dir an attacker might arrange. rc 2, not 1, so the
-# caller can report the real cause instead of "throttled — retry later". The dangling symlink into
-# a missing dir makes the open fail for ANY uid (root included), unlike a chmod-based setup.
 roThr="$SANDBOX/thr-ro"
-mkdir -p "$roThr"
+mkdir -m 700 "$roThr"
 ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
 (
     source "$SCRIPT"
@@ -127,6 +131,26 @@ ln -s "$roThr/no-such-dir/lock" "$roThr/.upgrade-throttle.lock"
     _control_upgrade_throttle_ok "$roThr"
 ) >/dev/null 2>&1
 assert_eq "throttle: unopenable lock fails CLOSED (rc 2) (#321)" "$?" "2"
+
+badStamp="$SANDBOX/thr-stamp"
+mkdir -p "$badStamp/upgrade-last"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    _control_upgrade_throttle_ok "$badStamp"
+) >/dev/null 2>&1
+assert_eq "throttle: unwritable stamp fails CLOSED (rc 2) (#636)" "$?" "2"
+noFlock="$SANDBOX/thr-flock"
+mkdir -p "$noFlock/bin"
+printf '#!/bin/sh\nexit 1\n' >"$noFlock/bin/flock"
+chmod +x "$noFlock/bin/flock"
+(
+    source "$SCRIPT"
+    CONTROL_UPGRADE_MIN_INTERVAL=3600
+    PATH="$noFlock/bin:$PATH"
+    _control_upgrade_throttle_ok "$noFlock"
+) >/dev/null 2>&1
+assert_eq "throttle: rejected lock fails CLOSED (rc 2) (#636)" "$?" "2"
 
 # _control_upgrade_do against a STUB git (+ stub rigforge.sh) so the real fetch/reachability/checkout
 # lines run under coverage — and, more importantly, the D10 reachability guard is exercised for real.
@@ -169,16 +193,19 @@ assert_eq "D10 guard does not consult origin/HEAD (#318)" \
 
 cuThr=$(mktemp -d "$SANDBOX/cuthr.XXXXXX")
 mkdir -p "$cuThr/state/spool"
+mkdir -m 700 "$cuThr/upgrade-state"
 printf '1.0.0' >"$cuThr/VERSION"
 printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuThr/config.json"
 printf '{"version":"v9.9.9"}\n' >"$cuThr/state/spool/upgrade-abc123def4567890.json"
-date +%s >"$cuThr/state/upgrade-last"
+date +%s >"$cuThr/upgrade-state/upgrade-last"
+chmod 600 "$cuThr/upgrade-state/upgrade-last"
 sThr="$(
     source "$SCRIPT"
     OS_TYPE=Linux
     SCRIPT_DIR="$cuThr"
     CONFIG_JSON="$cuThr/config.json"
     RIGFORGE_CONTROL_STATE="$cuThr/state"
+    RIGFORGE_CONTROL_UPGRADE_STATE="$cuThr/upgrade-state"
     CONTROL_UPGRADE_MIN_INTERVAL=3600
     _control_upgrade_do() { return 0; }
     _wait_miner_live() { return 0; }
@@ -192,16 +219,18 @@ assert_contains "throttled reason says why" "$sThr" "too soon"
 
 cuTs=$(mktemp -d "$SANDBOX/cuts.XXXXXX")
 mkdir -p "$cuTs/state/spool"
+mkdir -m 700 "$cuTs/upgrade-state"
 printf '1.0.0' >"$cuTs/VERSION"
 printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuTs/config.json"
 printf '{"version":"v9.9.9"}\n' >"$cuTs/state/spool/upgrade-abc123def4567890.json"
-ln -s "$cuTs/state/no-such-dir/lock" "$cuTs/state/.upgrade-throttle.lock"
+ln -s "$cuTs/no-such-dir/lock" "$cuTs/upgrade-state/.upgrade-throttle.lock"
 sTs="$(
     source "$SCRIPT"
     OS_TYPE=Linux
     SCRIPT_DIR="$cuTs"
     CONFIG_JSON="$cuTs/config.json"
     RIGFORGE_CONTROL_STATE="$cuTs/state"
+    RIGFORGE_CONTROL_UPGRADE_STATE="$cuTs/upgrade-state"
     CONTROL_UPGRADE_MIN_INTERVAL=3600
     _control_upgrade_do() { return 0; }
     _wait_miner_live() { return 0; }
@@ -215,6 +244,7 @@ assert_contains "fail-closed reason names the throttle state, not 'throttled'" "
 
 cuSt=$(mktemp -d "$SANDBOX/cust.XXXXXX")
 mkdir -p "$cuSt/state/spool"
+mkdir -m 700 "$cuSt/upgrade-state"
 printf '1.0.0' >"$cuSt/VERSION"
 printf '{"pools":[{"url":"h:3333"}]}\n' >"$cuSt/config.json"
 printf '{"version":"v9.9.9"}\n' >"$cuSt/state/spool/upgrade-abc123def4567890.json"
@@ -224,6 +254,7 @@ printf '{"version":"v9.9.9"}\n' >"$cuSt/state/spool/upgrade-abc123def4567890.jso
     SCRIPT_DIR="$cuSt"
     CONFIG_JSON="$cuSt/config.json"
     RIGFORGE_CONTROL_STATE="$cuSt/state"
+    RIGFORGE_CONTROL_UPGRADE_STATE="$cuSt/upgrade-state"
     CONTROL_UPGRADE_MIN_INTERVAL=0
     _control_upgrade_do() {
         cp "$cuSt/state/status.json" "$cuSt/mid-status.json" 2>/dev/null
@@ -248,3 +279,100 @@ assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.
 echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
 bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
+
+echo "== unit: control_upgrade / control_apply refuse while the rig is lent to a bench job (#670) =="
+if ! command -v flock >/dev/null 2>&1; then
+    echo "  SKIP: no flock(1) on this host (macOS) — the lock-behaviour tests run in the Linux CI jobs"
+else
+    lentLock="$SANDBOX/rig-e2e.lock"
+    : >"$lentLock"
+    lent_run() { # <upgrade|apply> <fresh dir> -> status.json contents
+        local d="$2"
+        mkdir -p "$d/state/spool"
+        [ -d "$d/upgrade-state" ] || mkdir -m 700 "$d/upgrade-state"
+        printf '1.0.0' >"$d/VERSION"
+        printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json"
+        if [ "$1" = upgrade ]; then
+            printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
+        else
+            printf '{"DONATION":7}\n' >"$d/state/spool/pending-abc123.json"
+        fi
+        (
+            source "$SCRIPT"
+            parse_config() { :; }
+            OS_TYPE=Linux
+            SCRIPT_DIR="$d"
+            CONFIG_JSON="$d/config.json"
+            RIGFORGE_CONTROL_STATE="$d/state"
+            RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state"
+            RIGFORGE_RIG_LOCK="$lentLock"
+            CONTROL_UPGRADE_MIN_INTERVAL=3600
+            _control_upgrade_do() {
+                echo called >"$d/do-called"
+                return 0
+            }
+            _control_do_apply() {
+                echo called >"$d/do-called"
+                return 0
+            }
+            _control_do_apply_fast() {
+                echo called >"$d/do-called"
+                return 0
+            }
+            _wait_miner_live() { return 0; }
+            git() { case "$*" in *describe*) echo v0.0.1 ;; *rev-parse*) echo deadbeefcafe ;; *) return 0 ;; esac }
+            set +e
+            PATH="$STUBS:$PATH" "control_$1" >/dev/null 2>&1
+        )
+        cat "$d/state/status.json" 2>/dev/null
+    }
+    (
+        exec 9>"$lentLock"
+        flock -x 9
+        exec sleep 30
+    ) &
+    lentPid=$!
+    sleep 0.5
+    lentU=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    mkdir -m 700 "$lentU/upgrade-state"
+    printf '1\n' >"$lentU/upgrade-state/upgrade-last"
+    chmod 600 "$lentU/upgrade-state/upgrade-last"
+    sLent="$(lent_run upgrade "$lentU")"
+    assert_eq "control_upgrade while the rig lock is held -> busy (#670)" "$(st "$sLent")" "busy"
+    assert_contains "busy reason names the bench loan" "$sLent" "lent to a bench job"
+    assert_eq "busy upgrade did no fetch/checkout/build" "$([ -e "$lentU/do-called" ] && echo y || echo n)" "n"
+    assert_eq "busy upgrade left the throttle stamp unchanged" "$(cat "$lentU/upgrade-state/upgrade-last")" "1"
+    lentA=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sLentA="$(lent_run apply "$lentA")"
+    assert_eq "control_apply while the rig lock is held -> busy (#670)" "$(st "$sLentA")" "busy"
+    assert_eq "busy apply left config.json untouched" "$(jq -r '.DONATION // "none"' "$lentA/config.json")" "none"
+    assert_eq "busy apply did not apply" "$([ -e "$lentA/do-called" ] && echo y || echo n)" "n"
+    ownerMark="$SANDBOX/rig-owner"
+    printf '%s\n' "$$" >"$ownerMark"
+    lentO=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sOwn="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentO")"
+    assert_eq "control_upgrade proceeds while the lock is held by a live e2e harness marker (#670)" "$(st "$sOwn")" "applied"
+    true &
+    deadPid=$!
+    wait "$deadPid"
+    printf '%s\n' "$deadPid" >"$ownerMark"
+    lentD=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sDead="$(RIGFORGE_RIG_OWNER_MARKER="$ownerMark" lent_run upgrade "$lentD")"
+    assert_eq "a stale marker (dead pid) does not bypass the guard (#670)" "$(st "$sDead")" "busy"
+    kill "$lentPid" 2>/dev/null || true
+    wait "$lentPid" 2>/dev/null || true
+    lentF=$(mktemp -d "$SANDBOX/lent.XXXXXX")
+    sFree="$(lent_run upgrade "$lentF")"
+    assert_eq "control_upgrade proceeds once the rig lock is released (#670)" "$(st "$sFree")" "applied"
+    assert_eq "released upgrade stamped the throttle" "$([ -e "$lentF/upgrade-state/upgrade-last" ] && echo y || echo n)" "y"
+fi
+assert_eq "rig_lock never marks the harness as rig owner for its whole run (#670)" \
+    "$(sed -n '/^rig_lock()/,/^}/p' "$ROOT/tests/e2e-real.sh" "$ROOT/tests/e2e-pithead.sh" "$ROOT/tests/e2e-control-replay.sh" | grep -c rigforge-rig-owner)" "0"
+for ownerFn in "e2e-pithead.sh:_cleanup" "e2e-real.sh:_control_cleanup" "e2e-real.sh:_upgrade_cleanup"; do
+    assert_contains "${ownerFn#*:} removes the rig owner marker (#670)" \
+        "$(sed -n "/^${ownerFn#*:}()/,/^}/p" "$ROOT/tests/${ownerFn%%:*}")" 'rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}"'
+done
+for ownerFile in e2e-pithead-control.sh e2e-pithead-tokens.sh e2e-control-replay.sh; do
+    assert_eq "$ownerFile clears the rig owner marker it sets (#670)" \
+        "$(grep -c '_rig_owner_mark$' "$ROOT/tests/$ownerFile")" "$(grep -c '_rig_owner_clear$' "$ROOT/tests/$ownerFile")"
+done

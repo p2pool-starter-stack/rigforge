@@ -7,10 +7,74 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-11-08
+
+### Changed
+
+- **XMRig donation is opt-in, and lowering it takes effect (#602, #603).**
+  Omitted `DONATION` now defaults to zero; explicit values in `config.json` are preserved.
+  Existing XMRig builds rebuild once on upgrade to install a compiled donation minimum of zero.
+  Subsequent donation reductions take effect on `apply`, which restarts XMRig, without rebuilding.
+  `doctor` warns when the donation level XMRig reports differs from the configured value. A rig that omits `DONATION` now reports `0` in the feed's `config` block, where it used to report `1`.
+
+- **Appliance rigs refuse pool edits from the control path (#583, #590).**
+  On an appliance rig Pithead's configuration owns the pool, so a Worker Inspect pool edit used to look applied and then revert at reboot. A control request that contains `pools` now finishes `rejected` with reason `appliance-pools-read-only` before any config write, including a request that mixes pools with tuning. Tuning-only requests still apply, and ordinary rigs still accept pool edits. HTTP 202 still means staged; poll the change ID for the outcome.
+
+- **Quick-start clones are pinned to the release tag, and the upgrade recipe follows (#584, #585).**
+  The README and getting-started guide clone `--branch v1.18.1` instead of the default `develop` branch. A tag checkout is a detached HEAD, so the documented upgrade is now `git fetch --tags && git checkout vX.Y.Z && sudo ./rigforge.sh upgrade`, and the `upgrade --check` hint and help text say the same.
+
 ### Fixed
 
-- **The thread cap and tuned thread counts now reach XMRig 6.x (#588, #601).**
-  XMRig 6.26's per-algorithm thread-profile parser accepts an array or an object and silently ignores a bare integer, so the generated `cpu.rx: -1` / integer forms fell back to the all-core auto profile — a `threads` ceiling or a tuned count was never enforced. RigForge now observes XMRig's own auto profile once (a brief run against a sink config) and emits only forms XMRig honours: XMRig's own profile verbatim when nothing is set, a threads object when the cap or a tuned count lands below auto, never anything above the observed auto count — including bench candidates, which are clamped under the same ceiling.
+- **A failed XMRig rebuild no longer removes the live miner (#612, #615).**
+  `setup` and `upgrade` used to move the live `xmrig/` tree aside before cloning and building its replacement, so a failed clone or build left no binary or `config.json`, and repeated failures pruned the last good archive. Every existing build rebuilds once on this upgrade (#602), so the rebuild now happens in `xmrig.new` beside the live tree and is swapped in only after it succeeds.
+
+- **A rebuilt miner is activated with a valid configuration (#635, #652).**
+  The candidate `config.json` is written and validated inside the new build before the swap, so a failure leaves the live miner untouched. The swap is recorded before its first rename, and the next `setup` or `upgrade` rolls an interrupted swap forward or restores the archive.
+
+- **A failed config render keeps the last valid miner config (#634, #651).**
+  The XMRig config used to be rendered straight into the live `config.json`, so a failing write truncated it. It is now rendered, overlaid, clamped and validated in a temporary file and installed only when complete, with the previous contents restored if the final write fails; the runtime apply then returns an error instead of restarting the miner on a stale config. A malformed `tune-overrides.json` now fails the render instead of being skipped silently.
+
+- **Setup and upgrade still apply the API firewall when the sister API fails to start (#613, #614).**
+  A failed sister API made `setup` and `upgrade` abort before the firewall, so a new `api_allow_from` was never applied and upgrade also skipped its miner restart and ownership reconciliation. Both now finish the control path, firewall and remaining steps, then warn and exit non-zero, as `apply` already did.
+
+- **The sister API and control receiver start from a private home checkout (#362, #595).**
+  Their unprivileged `DynamicUser` could not open the Python entrypoint under a `0750` home, so the sister API stayed down while `apply` reported success. Each entrypoint is now loaded through systemd credentials beside its config, and `apply` reports sister-API render, start, refresh and listener failures with a non-zero exit after completing the rest of its reconciliation.
+
+- **A rejected miner restart is no longer reported as applied (#630, #648).**
+  `apply` used to swallow a failed `systemctl restart`, so `apply` and the control path recorded the new payout as applied. `apply` now warns, finishes its reconciliation and exits non-zero, and control-apply rolls back with reason `could not restart the miner` unless another failure reason was already set.
+
+- **Remote upgrade fails closed when its throttle state cannot be saved (#636, #650).**
+  A failed `flock` or attempt-timestamp write was ignored, so with an unwritable timestamp every newer-version remote upgrade ran without a rate limit. Either failure now refuses the upgrade as `failed`.
+
+- **The persistent HugePages ceiling holds when reserved headroom is preserved (#633, #642).**
+  With `hugepages_pool_ceiling_mb` set and non-zero reserved headroom, the guard that preserves a co-resident reservation could replace a correctly capped proposal with an oversized existing 2MB reservation. An existing reservation is now kept only when it meets demand and stays within the 2MB ceiling; the 1GB pool is still excluded.
+
+- **The thermal watchdog retries after a failed stop or start (#631, #638).**
+  The hold was recorded even when stopping the miner failed, and cleared before a recovery start succeeded, so later timer ticks could skip the retry, including after `max_temp_c` was removed. The hold is now created only after a successful stop and cleared only after a successful start; a failed command warns and the next tick retries.
+
+- **Tests and tooling.**
+  - The worker↔Pithead gate can bind its results to an exact head, platform and plan and print one `worker-proof:` receipt, checked by a new validator (#620, #641).
+  - The `network` phase waits up to 30 seconds for the sister snapshot to recover after a restart before its wire check (#563, #654).
+  - The coverage runner verifies a cached `jq` against its pinned checksum on every use and clears stale reports before setup (#621, #643).
+  - Contract-harness credentials no longer appear in process arguments (#559, #561).
+  - `make test-suite` fails when the aggregate suite exits early with status zero, and the timer-refresh fixtures run under macOS Bash 3.2 (#549, #593).
+  - markdownlint-cli2 is pinned to 0.23.3 and watched by the weekly tool-pin check (#544, #592).
+  - A hosted CI job runs real `setup` from a `0750` home on fresh Ubuntu 24.04, and the control harness waits for listener readiness before its first POST (#362, #595).
+  - The real-hardware `dev-fee` phase proves the one-time donation rebuild and the runtime reductions on a freshly built miner (#602, #603).
+
+### Security
+
+- **The public configuration revision no longer lets a feed reader test pool-password guesses (#629, #647).**
+  The `revision` served beside the masked feed was a bare SHA-256 of the unmasked config, so anyone holding the feed could check password guesses offline. It is now keyed with a per-rig random secret in `.rigforge-revision-key` (mode 0600, git-ignored, never served, not in backups or support bundles). The first feed refresh after upgrading creates the key, so every rig's revision changes once with no new `last_change_id`; a poller that flags unrecorded revision moves will report one drift per rig. Deleting the key causes the same one-time move.
+
+- **A revoked token can no longer keep writing through a stale control receiver (#626, #640).**
+  When a named token was revoked and the control receiver could not be replaced, the old process kept the token it had loaded and its writes were still applied. The receiver is now stopped before any unit or credential change, and killed if systemd refuses the stop; if both fail, the run warns that revocation is not confirmed. `setup`, `upgrade` and `apply` exit non-zero when the receiver cannot be reconciled, after still reconciling the firewall, and `apply` records a failure reason for the control path. The receiver unit is now `Type=notify` and reports ready only after it has loaded credentials and bound its port. Disabling control now removes the unit files even when remote upgrade was never enabled. `docs/pithead-integration.md` describes where the revocation boundary sits.
+
+- **The writable control receiver stays down when the API firewall fails to load (#628, #646).**
+  On first enable, a rejected `nft` load used to leave the receiver running without its source restriction (bearer auth still applied), and at boot nothing ordered the receiver after the rule load. The receiver unit now loads the firewall in `ExecStartPre` and refuses to start if `nft` rejects the rules, and a settings change stops the receiver, loads the rules, and only then restarts it.
+
+- **The root remote-upgrade throttle no longer uses receiver-writable files (#627, #644).**
+  The root upgrader opened its throttle lock and timestamp in state the unprivileged receiver could write, so a compromised receiver could plant a symlink and redirect a privileged write. Throttle state now lives in the upgrade unit's own `0700` state directory, unsafe objects are refused, and lock or timestamp errors fail closed. The old files are not migrated, so the first remote-upgrade attempt after upgrading starts a fresh cooldown.
 
 ## [1.18.0] - 2026-10-02
 

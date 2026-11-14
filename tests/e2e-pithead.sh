@@ -12,22 +12,23 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" # phase_control (#509), phase_access_tokens (#516)
-
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-thread-profile.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh" # phase_control (#509), phase_access_tokens (#516), phase_api_allowlist (#617)
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-doctor-json.sh" && source "$HERE/tests/e2e-worker-proof.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-hammer.sh" && source "$HERE/tests/e2e-thread-profile.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
 ok() {
+    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_assert pass
     PASS=$((PASS + 1))
     printf '  \033[1;32m✓\033[0m %s\n' "$1"
 }
 bad() {
+    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_assert fail
     FAIL=$((FAIL + 1))
     printf '  \033[1;31m✗\033[0m %s\n' "$1" >&2
     return 1
 }
-skip() { printf '  \033[1;33m∙\033[0m SKIP: %s\n' "$1"; }
-phase() { printf '\n\033[1m== e2e-pithead: %s ==\033[0m\n' "$1"; }
+skip() { proof_skip "$1" && printf '  \033[1;33m∙\033[0m SKIP: %s\n' "$1"; }
+phase() { proof_phase "${FUNCNAME[1]}" && printf '\n\033[1m== e2e-pithead: %s ==\033[0m\n' "$1"; }
 die() {
     printf '\033[31me2e-pithead: %s\033[0m\n' "$1" >&2
     exit 2
@@ -92,6 +93,7 @@ require_preflight() {
     [ -n "$GEN_CFG" ] || die "no generated worker config found — run setup first."
 }
 
+# shellcheck disable=SC2034
 SAVED_CFG="" SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS=""
 _restore_xmrig() {
     local active=0
@@ -104,10 +106,11 @@ _restore_xmrig() {
     [ "$active" = "$SAVED_XMRIG_ACTIVE" ]
 }
 _cleanup() {
-    local cleanup_ok=1 p threads_ok=1
+    local cleanup_ok=1 threads_ok=1
+    rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" 2>/dev/null || true
     refresh_profile_finish || cleanup_ok=0
     if [ -n "${THREAD_PROFILE_SAVED:-}" ]; then thread_profile_restore || threads_ok=0; fi
-    for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
+    hammer_stop
     if [ -n "$SAVED_CFG" ] && [ -f "$SAVED_CFG" ] && cp "$SAVED_CFG" "$CFG" &&
         [ "$threads_ok" = 1 ] && "$RIGFORGE" apply >/dev/null 2>&1 && cmp -s "$SAVED_CFG" "$CFG"; then
         :
@@ -121,13 +124,14 @@ _cleanup() {
     }
     [ "$cleanup_ok" != 1 ] || rm -f "$SAVED_CFG" || cleanup_ok=0
     [ "${REPLAY_RUNNER_LOCK:-0}" = 1 ] || rm -f "${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}" || true
+    [ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_cleanup "$cleanup_ok"
     [ "$cleanup_ok" = 1 ]
 }
 snapshot_config() {
     SAVED_CFG="$(mktemp)"
     cp "$CFG" "$SAVED_CFG"
     systemctl is-active --quiet xmrig 2>/dev/null && SAVED_XMRIG_ACTIVE=1 || SAVED_XMRIG_ACTIVE=0
-    trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; exit "$E2E_EXIT_RC"' EXIT
+    trap 'E2E_EXIT_RC=$?; trap - EXIT; _cleanup || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; if [ "${E2E_PROOF_ACTIVE:-0}" = 1 ]; then proof_finish "$E2E_EXIT_RC" || [ "$E2E_EXIT_RC" -ne 0 ] || E2E_EXIT_RC=1; fi; exit "$E2E_EXIT_RC"' EXIT
 }
 
 set_cfg() { # <jq program> [soft] [jq options...] -- soft: return 1 instead of dying when the edit or the apply fails (#514)
@@ -195,6 +199,7 @@ phase_connect() {
     else
         _connect_bad "no accepted share within ${share_to}s"
     fi
+    e2e_doctor_json
     # Discovery contract: the dashboard identifies workers by the stratum `user` label.
     local user
     user=$(jq -r '.pools[0].user' "$GEN_CFG" 2>/dev/null || true)
@@ -284,28 +289,17 @@ phase_api_impact() {
         # shellcheck disable=SC2086 # word-splitting the sample list is the point
         printf '%s\n' $vals | awk '{s += $1; n++} END {if (n > 0) printf "%.1f", s / n}'
     }
-    local base loaded p tol="${E2E_API_IMPACT_TOLERANCE_PCT:-3}"
+    local base loaded tol="${E2E_API_IMPACT_TOLERANCE_PCT:-3}"
     base=$(sample_mean 6 5)
-    # Worst-case polling, measured HONESTLY: a real dashboard polls from the STACK HOST, so the
-    # load generator must not itself churn processes on the rig — per-iteration jq/curl spawns
-    # pollute the same L3 the assertion measures (the v1.3 gate spent three iterations discovering
-    # that). One token read, then ONE long-lived curl per client issuing sequential requests via a
-    # URL range: zero client-side spawns between requests, full pressure on the server path.
     local htok hauth=()
     htok=$(jq -r '.ACCESS_TOKEN // empty' "$CFG" 2>/dev/null || true)
     [ -n "$htok" ] && hauth=(-H "Authorization: Bearer $htok")
     for _ in 1 2 3 4; do
-        (
-            while :; do
-                curl -fsS --max-time 300 "${hauth[@]}" "http://127.0.0.1:8081/2/summary?[1-10000]" >/dev/null 2>&1 || true
-            done
-        ) &
-        HAMMER_PIDS="$HAMMER_PIDS $!"
+        hammer_start curl -fsS --max-time 300 "${hauth[@]}" "http://127.0.0.1:8081/2/summary?[1-10000]"
     done
-    sleep 5 # let the load establish before sampling
+    sleep 5
     loaded=$(sample_mean 6 5)
-    for p in $HAMMER_PIDS; do kill "$p" 2>/dev/null || true; done
-    HAMMER_PIDS=""
+    hammer_stop
     if [ -z "$base" ] || [ -z "$loaded" ]; then
         bad "could not sample hashrate around the load window (base='$base' loaded='$loaded')"
         return 0
@@ -333,7 +327,7 @@ phase_api_impact() {
 
 phase_network() {
     phase "network — nothing listens or leaks beyond what the config defines"
-    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0
+    local port="${PITHEAD_URL##*:}" remotes bad_remote=0 r xl k1 k2 sweep waited=0 settle polls=0
     # Wait up to 45s, then require the pool to be XMRig's only established TCP peer.
     remotes=$(ss -Htnp 2>/dev/null | awk '$1 == "ESTAB" && /xmrig/ {print $5}' | sort -u)
     while [ -z "$remotes" ] && [ "$waited" -lt 45 ]; do
@@ -360,6 +354,7 @@ phase_network() {
     ss -Htln 2>/dev/null | grep -q ':8081 ' && ok ":8081 listening from control alone, api never set (#507)" || bad ":8081 not listening though control implies api (#507)"
     set_cfg '.api = "enabled"'
     sleep 3
+    if phase_api_allowlist; then ok "API allowlist rejects a second source while mining"; else bad "API allowlist live probe failed"; fi
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
         ok ":8081 listening while api enabled"
     else
@@ -371,14 +366,28 @@ phase_network() {
     else
         bad "miner has unexpected listeners: $xl"
     fi
+    settle=$SECONDS
+    while :; do
+        k2=$(api8081 --max-time 5 http://127.0.0.1:8081/2/summary)
+        polls=$((polls + 1))
+        printf '%s' "$k2" | jq -e '.rigforge.xmrig_api != "unreachable"' >/dev/null 2>&1 && break
+        [ $((SECONDS - settle)) -ge 30 ] && break
+        sleep 2
+    done
+    printf 'summary-settle: polls=%s elapsed_s=%s\n' "$polls" "$((SECONDS - settle))"
     k1=$(api8080 http://127.0.0.1:8080/2/summary | jq -cS 'keys' 2>/dev/null || true)
-    k2=$(api8081 http://127.0.0.1:8081/2/summary)
     printf '%s\n' "${k1:-null}" "${k2:-null}" | summary_contract_diagnostics
     if [ -n "$k1" ] && printf '%s' "$k2" | jq -e '(.rigforge | type) == "object" and (.generated_at | type) == "string" and (.generated_at as $g | [try ($g | fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) catch empty] == [$g])' >/dev/null 2>&1 &&
         [ "$k1" = "$(printf '%s' "$k2" | jq -cS 'del(.rigforge, .generated_at) | keys' 2>/dev/null || true)" ]; then
         ok "wire superset: sister /2/summary = xmrig's keys + rigforge + generated_at"
     else
         bad "sister summary lacks valid metadata or its XMRig key superset differs"
+    fi
+    if printf '%s' "$k2" | jq -e '.rigforge.config_meta.revision | test("^[0-9a-f]{16}$")' >/dev/null 2>&1 &&
+        [ "$(stat -c %a "$HERE/.rigforge-revision-key" 2>/dev/null)" = 600 ] && ! printf '%s' "$k2" | grep -qF "$(cat "$HERE/.rigforge-revision-key" 2>/dev/null)"; then
+        ok "feed revision is keyed: 16-hex, key file 0600 and never served (#629)"
+    else
+        bad "feed revision is not a keyed 16-hex digest, or the key is missing, readable or served (#629)"
     fi
     set_cfg '.ACCESS_TOKEN = "tok-net1" | .pools[0].pass = "pass-net1"'
     sleep 3
@@ -499,7 +508,7 @@ phase_dashboard() {
     "$RIGFORGE" start >/dev/null 2>&1
 }
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-selftest.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-shared-host.sh"
 
 summary() {
     printf '\ne2e-pithead: \033[1;32m%d ok\033[0m, ' "$PASS"
@@ -510,11 +519,15 @@ summary() {
     printf '0 failed\n'
 }
 
+proof_preflight "${1:-all}"
 require_preflight "$@"
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|all)"
+# Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
+# #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|shared-host|selftest|all)"
 replay_lock "${1:-all}"
 
 snapshot_config
+proof_begin
 case "${1:-all}" in
 connect) phase_connect ;;
 worker-api) phase_worker_api ;;
@@ -523,10 +536,11 @@ network) phase_network ;;
 network-sequence) phase_network_sequence ;;
 stratum-auth) phase_stratum_auth required ;;
 dashboard) phase_dashboard ;;
-dev-fee) phase_dev_fee ;;
+dev-fee | selftest) "phase_${1//-/_}" ;;
 control) phase_control ;;
 control-replay-thermal | control-replay-pools) phase_control_replay "${1##*-}" ;;
 access-tokens) phase_access_tokens ;;
+shared-host) phase_shared_host ;;
 thread-profile) phase_thread_profile ;;
 all)
     for run_phase in phase_connect phase_worker_api phase_api_impact phase_network phase_stratum_auth phase_dashboard phase_dev_fee phase_control phase_access_tokens phase_thread_profile; do
@@ -534,8 +548,9 @@ all)
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|shared-host|selftest|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT
+[ "${E2E_PROOF_ACTIVE:-0}" != 1 ] || proof_finish "$FAIL" || bad "worker proof incomplete or invalid"
 summary

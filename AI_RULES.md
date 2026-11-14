@@ -1,8 +1,10 @@
 # Working in RigForge
 
 RigForge is a portable Bash CLI plus systemd services that provision and run an
-XMRig worker for a Pithead coordinator, or any RandomX Stratum pool. This is the
+XMRig worker for a Pithead coordinator, any RandomX Stratum pool, or a solo daemon pool. This is the
 shared source for `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`.
+RigForge does not install, run or supervise the node. `self-select`, `submit-to-origin`
+and `spend-secret-key` are unsupported.
 
 ## Start here
 
