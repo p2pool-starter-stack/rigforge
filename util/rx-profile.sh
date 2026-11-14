@@ -93,6 +93,21 @@ _rx_request_count() {
            else empty end' "$1" 2>/dev/null
 }
 
+_rx_clamp_rx_object() {
+    local cfg="$1" req="$2" cap="$3" eff="$4" mx out
+    [ -n "$eff" ] || return 0
+    if [ -n "$req" ]; then
+        [ "$eff" -lt "$req" ] || return 0
+        out=$(jq --argjson n "$eff" '.cpu.rx = (.cpu.rx | .threads = $n | .max_threads_cnt = $n)' "$cfg" 2>/dev/null) || return 1
+        printf '%s\n' "$out" >"$cfg"
+        return
+    fi
+    mx=$(jq -r '.cpu.rx.max_threads_cnt | if type == "number" then . else "" end' "$cfg" 2>/dev/null)
+    { [ -n "$cap" ] || { [ -n "$mx" ] && [ "$mx" != 0 ] && [ "$mx" -gt "$eff" ]; }; } || return 0
+    out=$(jq --argjson n "$eff" '.cpu.rx = (.cpu.rx | .max_threads_cnt = (if (.max_threads_cnt | type) == "number" and .max_threads_cnt >= 1 and .max_threads_cnt < $n then .max_threads_cnt else $n end))' "$cfg" 2>/dev/null) || return 1
+    printf '%s\n' "$out" >"$cfg"
+}
+
 _rx_finalize_cpu_rx() {
     local cfg="$1" rx req="" auto="" cap="" eff out len rc
     rx=$(jq -c '.cpu.rx' "$cfg" 2>/dev/null) || return 1
@@ -111,6 +126,10 @@ _rx_finalize_cpu_rx() {
         fi
     fi
     eff=$(_rx_min_count "$auto" "$cap" "$req")
+    if [ "${rx:0:1}" = "{" ] && [ "$rx" != "{}" ]; then
+        _rx_clamp_rx_object "$cfg" "$req" "$cap" "$eff"
+        return
+    fi
     if [ "${rx:0:1}" = "[" ]; then
         len=$(jq '.cpu.rx | length' "$cfg" 2>/dev/null)
         { [ -n "$eff" ] && [ "$eff" -lt "$len" ]; } || return 0
@@ -130,7 +149,7 @@ _rx_finalize_cpu_rx() {
 }
 
 _rx_clamp_candidate() {
-    local out="$1" eff cap
+    local out="$1" eff req cap rx
     if [ "$3" = "-1" ]; then
         jq '.cpu.rx = {}' "$out" >"$out.rx$$" && cat "$out.rx$$" >"$out" && rm -f "$out.rx$$" || return 1
         _rx_finalize_cpu_rx "$out"
@@ -138,9 +157,17 @@ _rx_clamp_candidate() {
     fi
     eff=$(_rx_request_count "$out")
     [ -z "$eff" ] && return 0
+    req="$eff"
     _rx_ensure_auto "$2" || true
     cap=$(_rx_validate_cap)
     eff=$(_rx_min_count "$eff" "$cap" "${RX_AUTO_THREADS:-}")
+    rx=$(jq -c '.cpu.rx' "$out" 2>/dev/null) || return 1
+    if [ "${rx:0:1}" = "{" ] && [ "$rx" != "{}" ]; then
+        [ "$eff" -lt "$req" ] || return 0
+        jq --argjson n "$eff" '.cpu.rx = (.cpu.rx | .threads = $n | .max_threads_cnt = $n)' "$out" >"$out.rx$$" &&
+            cat "$out.rx$$" >"$out" && rm -f "$out.rx$$"
+        return
+    fi
     jq --argjson n "$eff" '.cpu.rx = {mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}' "$out" >"$out.rx$$" &&
         cat "$out.rx$$" >"$out" && rm -f "$out.rx$$"
 }

@@ -1496,7 +1496,7 @@ _rx_setup_threads() {
     RX_SETUP_THREADS=""
     if [ -n "${RIGFORGE_THREADS:-}" ]; then
         RX_SETUP_THREADS="$RIGFORGE_THREADS"
-    elif RX_SETUP_THREADS=$(jq -er '.cpu.rx | numbers' <<<"$XMRIG_OVERLAY" 2>/dev/null); then
+    elif RX_SETUP_THREADS=$(jq -er '.cpu.rx | if type == "object" then .threads else . end | numbers' <<<"$XMRIG_OVERLAY" 2>/dev/null); then
         :
     elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         RX_SETUP_THREADS=$(jq -r '(.cpu.rx | if type == "object" then .threads elif type == "array" then length else . end) // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""

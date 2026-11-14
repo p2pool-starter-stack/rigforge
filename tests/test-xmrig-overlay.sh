@@ -102,6 +102,11 @@ eq 'tune overrides generated defaults' "$(jq -r '.cpu.priority' "$tuned")" 3
 ordered="$(generate_case ordered '{"xmrig":{"cpu":{"priority":4,"rx":8}}}' '{"cpu":{"priority":3,"rx":9}}' 4)"
 eq 'overlay overrides tune' "$(jq -r '.cpu.priority' "$ordered")" 4
 eq 'thread cap overrides overlay' "$(jq -r 'if (.cpu.rx | type) == "object" then .cpu.rx.threads else "form:" + (.cpu.rx | type) end' "$ordered")" 4
+obj='{"xmrig":{"cpu":{"rx":{"mode":1,"threads":4,"max_threads_cnt":4,"intensity":2,"affinity":5}}}}'
+kept="$(generate_case kept "$obj" '' '')"
+eq 'object profile without a cap generates unchanged' "$(jq -r '.cpu.rx | [.mode, .threads, .max_threads_cnt, .intensity, .affinity] | @tsv' "$kept")" "$(printf '1\t4\t4\t2\t5')"
+capped="$(generate_case capped "$obj" '' 3)"
+eq 'cap clamps an object profile and keeps its other keys' "$(jq -r '.cpu.rx | [.mode, .threads, .max_threads_cnt, .intensity, .affinity] | @tsv' "$capped")" "$(printf '1\t3\t3\t2\t5')"
 
 echo '== xmrig overlay: tuning pins =='
 pin_out="$(
@@ -131,6 +136,16 @@ has 'pin listing includes prefetch' "$pins" randomx.scratchpad_prefetch_mode
 )
 eq 'tune candidates enforce overlay' "$(jq -r '.randomx.scratchpad_prefetch_mode' "$TMP/tune-candidate.json")" 3
 eq 'tune candidates enforce thread cap last' "$(jq -r 'if (.cpu.rx | type) == "object" then .cpu.rx.threads else "form:" + (.cpu.rx | type) end' "$TMP/tune-candidate.json")" 4
+(
+    source "$SCRIPT"
+    OS_TYPE=Darwin
+    TUNE_BASE="$TMP/tune-base2.json"
+    printf '{"cpu":{"priority":2,"rx":-1},"randomx":{"scratchpad_prefetch_mode":1}}\n' >"$TUNE_BASE"
+    XMRIG_OVERLAY='{"cpu":{"rx":{"mode":1,"threads":8,"max_threads_cnt":8,"intensity":2,"affinity":5}}}'
+    THREADS_CAP=4
+    _tune_config "$TMP/tune-candidate2.json" 2 false 8 true 3 false false true
+)
+eq 'tune candidates clamp object thread counts and keep its other keys' "$(jq -r '.cpu.rx | [.mode, .threads, .max_threads_cnt, .intensity, .affinity] | @tsv' "$TMP/tune-candidate2.json")" "$(printf '1\t4\t4\t2\t5')"
 
 tune_case() {
     local search="$1" variant="${2:-$1}" overlay="${3:-}" expected="${4:-}" d
@@ -248,6 +263,7 @@ printf '{"cpu":{"rx":24}}\n' >"$TMP/sizing/tune-overrides.json"
 eq 'overlay cpu.rx sizes the reservation' "$(setup_threads '{"cpu":{"rx":20}}')" 20
 eq 'tuned cpu.rx sizes the reservation without an overlay pin' "$(setup_threads '{"cpu":{"yield":true}}')" 24
 eq 'non-numeric overlay cpu.rx falls back to the tuned count' "$(setup_threads '{"cpu":{"rx":[0,1]}}')" 24
+eq 'object overlay cpu.rx sizes the reservation by its thread count' "$(setup_threads '{"cpu":{"rx":{"mode":1,"threads":20,"intensity":2}}}')" 20
 eq 'RIGFORGE_THREADS still wins over the overlay' "$(RIGFORGE_THREADS=12 setup_threads '{"cpu":{"rx":20}}')" 12
 
 echo '== xmrig overlay: apply validation =='
