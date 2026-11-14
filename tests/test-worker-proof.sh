@@ -54,7 +54,7 @@ if [ "${1:-}" = --case ]; then
         [ "$state" = connected ]
         phase worker-api
         state=worker
-        passes 5
+        passes 10
     }
     phase_api_impact() {
         [ "$state" = worker ]
