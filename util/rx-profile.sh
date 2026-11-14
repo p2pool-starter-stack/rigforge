@@ -67,7 +67,6 @@ _rx_ensure_auto() {
         return 0
     fi
     RX_AUTO_THREADS=""
-    warn "Could not observe XMRig's auto thread profile; the thread count is applied without the auto-selection ceiling."
     return 1
 }
 
@@ -88,7 +87,11 @@ _rx_finalize_cpu_rx() {
     [ "$rx" = false ] && return 0
     req=$(_rx_request_count "$cfg")
     if [ -n "$cap" ] || [ -n "$req" ]; then
-        _rx_ensure_auto "$cfg" && auto="$RX_AUTO_THREADS"
+        if _rx_ensure_auto "$cfg"; then
+            auto="$RX_AUTO_THREADS"
+        else
+            warn "Could not observe XMRig's auto thread profile; the thread count is applied without the auto-selection ceiling."
+        fi
     fi
     eff=$(_rx_min_count "$auto" "$cap" "$req")
     if [ "${rx:0:1}" = "[" ]; then
