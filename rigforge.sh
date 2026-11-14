@@ -2555,13 +2555,12 @@ _now_s() { date +%s.%N 2>/dev/null; }
 
 # A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
-    jq -cn --argjson p "$1" --argjson y "$2" --arg t "$3" --argjson g "$4" --argjson pr "$5" \
+    local rx='{}'
+    [ "$3" = "-1" ] || rx="{\"rx\": $(_rx_object "$3")}"
+    jq -cn --argjson p "$1" --argjson y "$2" --argjson rx "$rx" --argjson g "$4" --argjson pr "$5" \
         --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
         { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq, wrmsr: $wr },
-          cpu: ({ yield: $y, priority: $pr, "huge-pages-jit": $hj } +
-                (if $t == "-1" then {} else
-                    { rx: { mode: 0, threads: ($t | tonumber), max_threads_cnt: ($t | tonumber), intensity: 1, affinity: -1 } }
-                end)) }'
+          cpu: ({ yield: $y, priority: $pr, "huge-pages-jit": $hj } + $rx) }'
 }
 
 # Materialize a full candidate config by merging the knob snippet over the base config.

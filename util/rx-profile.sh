@@ -8,6 +8,10 @@ _rx_validate_cap() {
     return 0
 }
 
+_rx_object() {
+    jq -cn --argjson n "$1" '{mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}'
+}
+
 _rx_min_count() {
     local v best=""
     for v in "$@"; do
