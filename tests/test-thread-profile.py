@@ -22,6 +22,8 @@ assert c["randomx"]["rdmsr"] is False
 assert c["cpu"]["huge-pages"] is False
 assert c["pools"][0]["url"].startswith("127.0.0.1:")
 assert c["pools"][0]["user"] == "rigforge-profile"
+assert set(c["pools"][0]) == {"url", "user"}
+assert c["randomx"]["1gb-pages"] is False
 assert not c.get("log-file")
 assert os.stat(p).st_mode & 0o777 == 0o600
 c["cpu"]["rx"] = list(range(8))
@@ -38,18 +40,18 @@ def count(profile):
 
 
 class ThreadProfile(unittest.TestCase):
-    def generate(self, cap, tuned=None, candidate=False):
+    def generate(self, cap, tuned=None, candidate=False, shared=False, script=FAKE):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             build = root / "xmrig/build"
             build.mkdir(parents=True)
             (root / "logrotate").mkdir()
             binary = build / "xmrig"
-            binary.write_text(FAKE)
+            binary.write_text(script)
             binary.chmod(0o700)
             if tuned is not None:
                 (root / "tune-overrides.json").write_text(json.dumps({"cpu": {"rx": tuned}}))
-            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_SCRIPT=str(SCRIPT), PROFILE_CAP=str(cap))
+            env = dict(os.environ, SHARED_HOST="true" if shared else "false", PROFILE_ROOT=d, PROFILE_SCRIPT=str(SCRIPT), PROFILE_CAP=str(cap))
             command = """
 source "$PROFILE_SCRIPT"
 lscpu() { printf 'Model name: Test CPU\\n'; }
@@ -73,6 +75,7 @@ _tune_config "$PWD/candidate.json" 1 false 12 false 2 false false false
 """
             result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.output = result.stdout + result.stderr
             p = build / ("candidate.json" if candidate else "config.json")
             self.assertEqual(p.stat().st_mode & 0o777, 0o600)
             return json.loads(p.read_text())
@@ -100,6 +103,20 @@ _tune_config "$PWD/candidate.json" 1 false 12 false 2 false false false
 
     def test_object_override_cannot_raise_auto(self):
         self.assertEqual(count(self.generate(16, {"threads": 12, "intensity": 1, "affinity": -1})["cpu"]["rx"]), 8)
+
+    def test_leading_zero_cap_is_decimal(self):
+        self.assertEqual(count(self.generate("02")["cpu"]["rx"]), 2)
+
+    def test_uncapped_bench_candidate_uses_auto_ceiling(self):
+        self.assertEqual(count(self.generate("", candidate=True)["cpu"]["rx"]), 8)
+
+    def test_shared_host_keeps_object_override_below_cap(self):
+        self.assertEqual(count(self.generate(6, {"threads": 2, "intensity": 1, "affinity": -1}, shared=True)["cpu"]["rx"]), 2)
+
+    def test_probe_failure_warns_and_still_applies_cap(self):
+        c = self.generate(3, script="#!/bin/sh\nexit 1\n")
+        self.assertEqual(count(c["cpu"]["rx"]), 3)
+        self.assertIn("Could not observe XMRig's auto thread profile", self.output)
 
     def test_bench_candidate_uses_same_ceiling(self):
         self.assertEqual(count(self.generate(16, candidate=True)["cpu"]["rx"]), 8)

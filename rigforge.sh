@@ -1494,7 +1494,7 @@ _rx_setup_threads() {
     elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         RX_SETUP_THREADS=$(jq -r '(.cpu.rx | if type == "object" then .threads elif type == "array" then length else . end) // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
     fi
-    case "$RX_SETUP_THREADS" in -1 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
+    case "$RX_SETUP_THREADS" in -1 | 0 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
 }
 
 # Read-only GRUB computation shared by tune_kernel (the mutation half) and the setup --dry-run plan
@@ -2555,7 +2555,6 @@ _now_s() { date +%s.%N 2>/dev/null; }
 
 # A candidate's knob values as an overrides snippet (the same shape tune writes for the winner).
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
-    # #588: XMRig ignores an integer cpu.rx, so candidates/overlays carry the object form (auto omits it).
     jq -cn --argjson p "$1" --argjson y "$2" --arg t "$3" --argjson g "$4" --argjson pr "$5" \
         --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
         { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq, wrmsr: $wr },
@@ -3251,7 +3250,7 @@ tune() {
     # we never freeze a knob the search didn't explore.
     local ovr
     ovr=$(jq -n --argjson p "$G_p" --argjson y "$G_y" '{randomx:{scratchpad_prefetch_mode:$p}, cpu:{yield:$y}}')
-    [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = {mode: 0, threads: $t, max_threads_cnt: $t, intensity: 1, affinity: -1}') # #588: object form only
+    [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = {mode: 0, threads: $t, max_threads_cnt: $t, intensity: 1, affinity: -1}')
     case " $ACTIVE_KNOBS " in *" priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
     case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
     case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac

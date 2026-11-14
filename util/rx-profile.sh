@@ -1,23 +1,13 @@
 #!/usr/bin/env bash
-# #588: XMRig 6.x thread-profile plumbing for generate_xmrig_config/_tune_config (sourced by rigforge.sh).
-#
-# XMRig 6.26's per-algorithm profile parser accepts an array or an object and SILENTLY IGNORES a bare
-# integer, falling back to the all-core auto profile — so RigForge observes XMRig's own auto profile once
-# per process (a brief run against a sink config) and emits only forms XMRig honours:
-#   - nothing set        -> cpu.rx omitted entirely; XMRig's own profile loads verbatim
-#   - at/above the auto ceiling -> XMRig's observed short array, never a raise above it
-#   - capped/tuned below auto -> {mode,threads,max_threads_cnt,intensity,affinity}
 RX_AUTO_PROBED=0
 RX_AUTO_THREADS=""
 
-# echoes a validated THREADS_CAP, empty when unset/invalid
 _rx_validate_cap() {
     [ -n "${THREADS_CAP:-}" ] || return 0
-    [[ "$THREADS_CAP" =~ ^[0-9]+$ ]] && [ "$THREADS_CAP" -ge 1 ] && printf '%s' "$THREADS_CAP"
+    [[ "$THREADS_CAP" =~ ^[0-9]{1,6}$ ]] && [ "$((10#$THREADS_CAP))" -ge 1 ] && printf '%s' "$((10#$THREADS_CAP))"
     return 0
 }
 
-# echoes the smallest positive integer argument, empty when none apply
 _rx_min_count() {
     local v best=""
     for v in "$@"; do
@@ -28,67 +18,67 @@ _rx_min_count() {
     printf '%s' "$best"
 }
 
-# runs XMRig once against a sink config (dead local pool, no hugepages/MSRs, autosave on) and echoes the
-# auto thread array it writes back — the cache-aware sizing we must never exceed, observed live.
-_rx_probe_auto() { # <config.json>
-    local bin sinkdir sink pid deadline n=0
+_rx_probe_reap() {
+    kill -9 "$1" 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+    rm -rf "$2"
+}
+
+_rx_probe_auto() {
+    local bin sinkdir sink pid deadline arr="" oldtrap
     bin="$WORKER_ROOT/xmrig/build/xmrig"
     { [ "${OS_TYPE:-}" = Linux ] && [ -x "$bin" ] && command -v jq >/dev/null 2>&1; } || return 1
     sinkdir=$(mktemp -d) || return 1
     sink="$sinkdir/probe.json"
-    jq 'del(.cpu.rx) | .autosave = true | .cpu["huge-pages"] = false | .randomx.wrmsr = false | .randomx.rdmsr = false |
-        .pools = [(((.pools | first) // {}) | .url = "127.0.0.1:1" | .user = "rigforge-profile")] |
-        .http = {enabled: false} | del(."log-file")' "$1" >"$sink" 2>/dev/null || {
+    jq '{autosave: true, http: {enabled: false},
+         cpu: ({"huge-pages": false} + ((.cpu // {}) | with_entries(select(.key == "max-threads-hint" or .key == "asm")))),
+         randomx: {"1gb-pages": false, wrmsr: false, rdmsr: false},
+         pools: [{url: "127.0.0.1:1", user: "rigforge-profile"}]}' "$1" >"$sink" 2>/dev/null || {
         rm -rf "$sinkdir"
         return 1
     }
     chmod 600 "$sink"
     "$bin" --config "$sink" </dev/null >"$sinkdir/out.log" 2>&1 &
     pid=$!
+    oldtrap=$(trap -p INT TERM HUP)
+    # shellcheck disable=SC2064
+    trap "_rx_probe_reap $pid $sinkdir; exit 143" INT TERM HUP
     deadline=$((SECONDS + ${RX_PROBE_TIMEOUT:-10}))
-    while :; do
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if jq -e '.cpu.rx | type == "array" and length >= 1' "$sink" >/dev/null 2>&1; then
-            jq -c '.cpu.rx' "$sink" 2>/dev/null
-            kill "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            rm -rf "$sinkdir"
-            return 0
+            arr=$(jq -c '.cpu.rx' "$sink" 2>/dev/null)
+            break
         fi
-        [ "$SECONDS" -ge "$deadline" ] && break
-        kill -0 "$pid" 2>/dev/null || {
-            n=$((n + 1))
-            [ "$n" -ge 5 ] && break
-        }
+        kill -0 "$pid" 2>/dev/null || break
         sleep 0.2
     done
-    kill -9 "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    rm -rf "$sinkdir"
-    return 1
+    _rx_probe_reap "$pid" "$sinkdir"
+    trap - INT TERM HUP
+    [ -z "$oldtrap" ] || eval "$oldtrap"
+    [ -n "$arr" ] && printf '%s' "$arr"
 }
 
-# observes XMRig's auto profile once per process; RX_AUTO_THREADS then acts as the ceiling.
-_rx_ensure_auto() { # <config.json>
+_rx_ensure_auto() {
     [ -n "${RX_AUTO_THREADS:-}" ] && return 0
     [ "${RX_AUTO_PROBED:-0}" = 1 ] && return 1
     RX_AUTO_PROBED=1
     local arr
-    arr=$(_rx_probe_auto "$1") || return 1
-    RX_AUTO_THREADS=$(jq -r 'length' <<<"$arr" 2>/dev/null) || return 1
-    [ -n "$RX_AUTO_THREADS" ] && [ "$RX_AUTO_THREADS" -ge 1 ]
+    if arr=$(_rx_probe_auto "$1") && RX_AUTO_THREADS=$(jq -r 'length' <<<"$arr" 2>/dev/null) && [ "${RX_AUTO_THREADS:-0}" -ge 1 ]; then
+        return 0
+    fi
+    RX_AUTO_THREADS=""
+    warn "Could not observe XMRig's auto thread profile; the thread count is applied without the auto-selection ceiling."
+    return 1
 }
 
-# echoes the profile's requested thread count (number >= 1, array length, object .threads), empty if none
-_rx_request_count() { # <config.json>
+_rx_request_count() {
     jq -r 'if (.cpu.rx | type) == "number" and .cpu.rx >= 1 then .cpu.rx
            elif (.cpu.rx | type) == "array" and (.cpu.rx | length) >= 1 then (.cpu.rx | length)
            elif (.cpu.rx | type) == "object" and (.cpu.rx.threads | type) == "number" and .cpu.rx.threads >= 1 then .cpu.rx.threads
            else empty end' "$1" 2>/dev/null
 }
 
-# rewrites an existing config's cpu.rx to min(observed auto, cap, request) in a form XMRig honours;
-# at the auto ceiling the observed short array, below it a threads object, unconstrained an empty object.
-_rx_finalize_cpu_rx() { # <config.json>
+_rx_finalize_cpu_rx() {
     local cfg="$1" rx req="" auto="" cap="" eff out len
     rx=$(jq -c '.cpu.rx' "$cfg" 2>/dev/null) || return 1
     if [ -n "${THREADS_CAP:-}" ] && [ -z "$(_rx_validate_cap)" ]; then
@@ -106,26 +96,24 @@ _rx_finalize_cpu_rx() { # <config.json>
         { [ -n "$eff" ] && [ "$eff" -lt "$len" ]; } || return 0
     fi
     if [ -z "$eff" ]; then
-        out=$(jq '.cpu.rx = {}' "$cfg" 2>/dev/null) && printf '%s\n' "$out" >"$cfg"
-        return 0
+        out=$(jq '.cpu.rx = {}' "$cfg" 2>/dev/null) || return 1
+        printf '%s\n' "$out" >"$cfg"
+        return
     fi
     if [ -n "$auto" ] && [ "$eff" -ge "$auto" ]; then
         out=$(jq --argjson n "$auto" '.cpu.rx = [range($n) | -1]' "$cfg" 2>/dev/null)
     else
         out=$(jq --argjson n "$eff" '.cpu.rx = {mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}' "$cfg" 2>/dev/null)
     fi
-    [ -n "$out" ] && printf '%s\n' "$out" >"$cfg"
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out" >"$cfg"
 }
 
-# bench candidates run under the same ceiling generation applies — never above the observed auto
-# profile, so the tuner cannot benchmark a thread count XMRig would refuse to run anyway.
-_rx_clamp_candidate() { # <candidate.json> <base config it was merged over>
+_rx_clamp_candidate() {
     local eff cap
     eff=$(_rx_request_count "$1")
     [ -z "$eff" ] && return 0
-    if [ -n "${THREADS_CAP:-}" ]; then
-        _rx_ensure_auto "$2" || true
-    fi
+    _rx_ensure_auto "$2" || true
     cap=$(_rx_validate_cap)
     eff=$(_rx_min_count "$eff" "$cap" "${RX_AUTO_THREADS:-}")
     jq --argjson n "$eff" '.cpu.rx = {mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}' "$1" >"$1.rx$$" &&

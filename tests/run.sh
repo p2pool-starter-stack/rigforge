@@ -1511,7 +1511,6 @@ out="$( (
 assert_contains "inevaluable ceiling names its own key and range (#412)" "$out" "hugepages_pool_ceiling_mb must be"
 assert_absent "inevaluable ceiling no longer leaks bash's raw complaint (#412)" "$out" "integer expression expected"
 
-# generate_xmrig_config: cpu.rx is emitted in the form XMRig honours, capped AFTER any tune overlay (#305/#588).
 echo "== config-gen: threads cap clamps cpu.rx (#305) =="
 gen_capped() { # <cap> <tuned-rx-or-empty> -> echoes config dir
     local d
@@ -5391,7 +5390,7 @@ cat >"$BD/xmrig" <<'EOF'
 #!/usr/bin/env bash
 cfg=""
 for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
-[ -z "$cfg" ] && exit 0  # #588: a bare `--config <path>` run is the auto-profile probe, not a bench call
+[ -z "$cfg" ] && exit 0
 [ -n "${BENCH_LOG:-}" ] && echo call >>"$BENCH_LOG"
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 y=$(jq -r '.cpu.yield' "$cfg" 2>/dev/null)
@@ -5400,7 +5399,7 @@ g=$(jq -r '.randomx."1gb-pages"' "$cfg" 2>/dev/null)
 base=1000; case "$m" in 2) base=1200 ;; 1) base=1100 ;; 0) base=1000 ;; *) base=1050 ;; esac
 [ "$y" = false ] && base=$((base + 20))             # yield off is a touch faster
 [ "$g" = true ] && base=$((base + 5))               # 1G pages help (only swept when reserved)
-tt="$t"; case "$tt" in -1 | null | '') tt=3 ;; esac   # XMRig auto lands slightly off the L3 center
+tt="$t"; case "$tt" in -1 | null | '') tt=3 ;; esac
 pen=$(((tt > 4 ? tt - 4 : 4 - tt) * 30)); base=$((base - pen))   # RandomX peaks at threads=4
 echo "miner speed 10s/60s/15m $base.0 n/a n/a H/s max $base.0 H/s"
 printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
