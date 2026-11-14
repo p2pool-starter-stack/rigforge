@@ -43,6 +43,7 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 bash "$ROOT/tests/test-xmrig-overlay.sh" "$SCRIPT" || FAIL=$((FAIL + 1))
+bash "$ROOT/tests/test-xmrig-logging.sh" "$SCRIPT" || FAIL=$((FAIL + 1))
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -3063,7 +3064,7 @@ cat >"$SB/config.json" <<EOF
 { "HOME_DIR": "$SB/home", "ACCESS_TOKEN": "FAKETOKEN_ce7a11", "ACCESS_TOKENS": {"bench": "FAKEBENCHTOKEN_9f21"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
 EOF
 cat >"$SB/home/worker/xmrig/build/config.json" <<EOF
-{ "http": {"access-token": "FAKETOKEN_ce7a11"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
+{ "colors": false, "print-time": 900, "http": {"access-token": "FAKETOKEN_ce7a11"}, "pools": [{"url": "pool.lan:3333", "user": "4AbCdEfGh1234567890abcdefFAKEWALLETxyz9", "pass": "FAKEPASS_b0a7"}] }
 EOF
 printf 'net      use pool pool.lan:3333\nmsr      preset ok\nspeed 10s 1234.5 H/s\n' >"$SB/home/worker/xmrig.log"
 printf '{"randomx":{"scratchpad_prefetch_mode":2}}\n' >"$SB/home/worker/tune-overrides.json"
@@ -3082,6 +3083,7 @@ assert_eq "CRITICAL: pool pass appears nowhere in the bundle (#147)" "$(grep -rl
 assert_eq "ACCESS_TOKENS redacted structurally (#516)" "$(J "$SBX/config.redacted.json" '.ACCESS_TOKENS.bench')" "<redacted>"
 assert_eq "wallet masked to first-4…last-4 (#147)" "$(J "$SBX/config.redacted.json" '.pools[0].user')" "4AbC…xyz9"
 assert_eq "generated config token redacted structurally (#147)" "$(J "$SBX/xmrig-config.redacted.json" '.http."access-token"')" "<redacted>"
+assert_eq "bundle records the logging values in effect (#530)" "$(jq -c '[.colors, ."print-time", ."health-print-time", .verbose, .syslog]' "$SBX/xmrig-logging.json")" "[false,900,60,0,false]"
 assert_eq "log tail collected (#147)" "$([ -f "$SBX/xmrig.log.tail" ] && echo y || echo n)" "y"
 assert_eq "tune overrides collected (#147)" "$([ -f "$SBX/tune-overrides.json" ] && echo y || echo n)" "y"
 assert_eq "manifest lists collected files (#147)" "$(J "$SBX/manifest.json" '.files | length > 3')" "true"
@@ -5235,6 +5237,10 @@ assert_contains "log status: missing file -> none (#66)" "$( (
 assert_contains "log status: appliance journal confirms MSR (#477)" "$( (
     source "$SCRIPT"
     OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT=$'\033[1;32mmsr register values for "ryzen_19h" preset have been set successfully\033[0m' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
+))" "ok"
+assert_contains "log status: plain journal (colors off) confirms MSR (#530)" "$( (
+    source "$SCRIPT"
+    OS_TYPE=Linux SERVICE_NAME=xmrig STUB_JOURNAL_OUTPUT='msr register values for "ryzen_19h" preset have been set successfully' PATH="$STUBS:$PATH" _msr_log_status /nonexistent
 ))" "ok"
 # Unreadable registers are counted in _MSR_UNREAD, kept OUT of _MSR_BAD (so they don't read as mismatches).
 out="$( (

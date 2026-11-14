@@ -48,7 +48,7 @@ if [ "${1:-}" = --case ]; then
         phase connect
         state=connected
         printf mutated >"$CFG"
-        passes 8
+        passes 10
     }
     phase_worker_api() {
         [ "$state" = connected ]
