@@ -190,4 +190,4 @@ assert_nonzero 'service action failure propagates' "$rc"
 assert_log_has 'failed service action was attempted' '[systemctl] restart xmrig.service' "$ACTION/calls.log"
 
 printf 'config ownership tests: %s passed, %s failed\n' "$PASS" "$FAIL"
-[ "$FAIL" -eq 0 ] && bash "$ROOT/tests/test-e2e-config-ownership.sh"
+bash "$ROOT/tests/test-e2e-config-ownership.sh" && [ "$FAIL" -eq 0 ]
