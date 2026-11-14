@@ -40,9 +40,7 @@ trap 'rc=$?
     fi
     exit "$rc"' EXIT
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
-_tp_rc=0
-command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" || _tp_rc=$?; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
-assert_rc "XMRig thread profile regression (#588)" "$_tp_rc" 0
+command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 bash "$ROOT/tests/test-xmrig-overlay.sh" "$SCRIPT" || FAIL=$((FAIL + 1))

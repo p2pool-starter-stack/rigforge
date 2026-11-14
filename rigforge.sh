@@ -2563,9 +2563,7 @@ _now_s() { date +%s.%N 2>/dev/null; }
 
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
     local rx='{}'
-    if [ "$3" != "-1" ]; then
-        [[ "$3" =~ ^[0-9]+$ ]] && rx="{\"rx\": $(_rx_object "$3")}" || rx="{\"rx\": $3}"
-    fi
+    [ "$3" != "-1" ] && { [[ "$3" =~ ^[0-9]+$ ]] && rx="{\"rx\": $(_rx_object "$3")}" || rx="{\"rx\": $3}"; }
     jq -cn --argjson p "$1" --argjson y "$2" --argjson rx "$rx" --argjson g "$4" --argjson pr "$5" \
         --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
         { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq, wrmsr: $wr },
