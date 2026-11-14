@@ -31,7 +31,7 @@ _rx_probe_reap() {
 _rx_probe_auto() {
     local bin sinkdir sink pid deadline arr="" oldtrap
     bin="$WORKER_ROOT/xmrig/build/xmrig"
-    case "$PWD" in "$WORKER_ROOT"/*) [ -f "$PWD/xmrig" ] && [ -x "$PWD/xmrig" ] && bin="$PWD/xmrig" ;; esac
+    case "$PWD" in "$WORKER_ROOT/xmrig/build" | "$WORKER_ROOT/xmrig.new/build") [ -f "$PWD/xmrig" ] && [ -x "$PWD/xmrig" ] && bin="$PWD/xmrig" ;; esac
     { [ "${OS_TYPE:-}" = Linux ] && [ -x "$bin" ] && command -v jq >/dev/null 2>&1; } || return 2
     sinkdir=$(mktemp -d) || return 1
     sink="$sinkdir/probe.json"
@@ -69,10 +69,11 @@ _rx_ensure_auto() {
     local arr rc=0 seen cache="${TUNE_TMP:+$TUNE_TMP/rxauto}"
     if [ -n "$cache" ] && [ -s "$cache" ]; then
         seen=$(<"$cache")
-        case "$seen" in
-        '' | *[!0-9]*) RX_AUTO_RC=1 ;;
-        *) RX_AUTO_THREADS="$seen" RX_AUTO_RC=0 ;;
-        esac
+        if RX_AUTO_THREADS=$(jq -r 'length' <<<"$seen" 2>/dev/null) && [ "${RX_AUTO_THREADS:-0}" -ge 1 ]; then
+            RX_AUTO_ARR="$seen" RX_AUTO_RC=0
+        else
+            RX_AUTO_THREADS="" RX_AUTO_RC=1
+        fi
         return "$RX_AUTO_RC"
     fi
     arr=$(_rx_probe_auto "$1") || rc=$?
@@ -81,7 +82,7 @@ _rx_ensure_auto() {
     else
         RX_AUTO_THREADS="" RX_AUTO_RC=$((rc == 2 ? 2 : 1))
     fi
-    [ -z "$cache" ] || printf '%s' "${RX_AUTO_THREADS:-none}" >"$cache"
+    [ -z "$cache" ] || printf '%s' "${RX_AUTO_ARR:-none}" >"$cache"
     return "$RX_AUTO_RC"
 }
 

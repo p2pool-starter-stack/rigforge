@@ -41,7 +41,7 @@ trap 'rc=$?
     exit "$rc"' EXIT
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 _tp_rc=0
-if command -v python3 >/dev/null 2>&1; then python3 "$ROOT/tests/test-thread-profile.py" || _tp_rc=$?; else echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"; fi
+command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" || _tp_rc=$?; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 assert_rc "XMRig thread profile regression (#588)" "$_tp_rc" 0
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
