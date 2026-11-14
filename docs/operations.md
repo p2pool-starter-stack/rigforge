@@ -495,10 +495,12 @@ recompile. Use it for a pool change, a new rig label, TLS, failover pools, or `D
 builds need one upgrade to install the zero donation minimum; later reductions use `apply`. See
 [Configuration › Changing settings later](configuration.md#changing-settings-later).
 
-A full `setup` re-run also regenerates the config, but it's meant for re-provisioning, and so that it
-won't interrupt a running miner, does not restart an already-built worker on its own. When you want
-an edit to take effect, use `apply`. (On macOS, `apply` regenerates the config but you restart the
-miner yourself; see [Running on macOS](#running-on-macos).)
+A full `setup` re-run also regenerates the config and, on Linux, restarts the service if the generated
+config changed or XMRig was rebuilt. An unchanged re-run leaves a running miner undisturbed;
+a pending reboot defers startup until that reboot. Use `apply` for an edit without re-provisioning.
+XMRig does not hot-reload edits to its generated config or save its own changes back to that file.
+On macOS, `apply` regenerates the config but you restart the miner yourself; see
+[Running on macOS](#running-on-macos).
 
 `apply` restarts a miner that is **running**. A miner that is deliberately stopped is left stopped:
 the regenerated config and the re-rendered unit sit on disk and take effect the next time the miner

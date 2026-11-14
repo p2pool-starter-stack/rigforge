@@ -1136,7 +1136,6 @@ generate_xmrig_config() {
         --arg host "$HTTP_HOST" \
         --arg os "$OS_TYPE" \
         '{
-            autosave: true,
             cpu: {
                 enabled: true,
                 "huge-pages": $huge_pages,
@@ -1170,7 +1169,7 @@ generate_xmrig_config() {
             },
             opencl: false,
             cuda: false
-        } + (if $log == "" then {} else {"log-file": $log} end) + {"print-time": 60, "health-print-time": 60} + (if $os == "Linux" then {colors: false} else {} end)' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
+        } + (if $log == "" then {} else {"log-file": $log} end) + {autosave: false, watch: false, "print-time": 60, "health-print-time": 60} + (if $os == "Linux" then {colors: false} else {} end)' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
 
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         _step=$(_shared_host_merge "$_new" "$WORKER_ROOT/tune-overrides.json") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Applying $WORKER_ROOT/tune-overrides.json failed (fix or remove it)" || return 1
@@ -1260,11 +1259,11 @@ install_service() {
             # a rebuild it must not restart twice. The unit is rendered, reloaded and enabled here;
             # nothing is started or restarted.
             log "Service unit installed and enabled — the caller decides whether to restart."
-        elif [ "$XMRIG_REBUILD" = true ] || [ "${SHARED_HOST:-false}" = true ]; then
+        elif [ "$XMRIG_REBUILD" = true ] || [ "${SHARED_HOST:-false}" = true ] || [ "${XMRIG_CONFIG_CHANGED:-false}" = true ]; then
             log "Restarting XMRig service..."
             sudo systemctl restart "$SERVICE_NAME.service"
         else
-            log "No rebuild — ensuring the service is running (no restart)."
+            log "No rebuild or config change — ensuring the service is running (no restart)."
             sudo systemctl start "$SERVICE_NAME.service"
         fi
         [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
@@ -1935,7 +1934,7 @@ _setup_plan() {
                 _p "configuring limits" "fstab already configured; memlock unlimited for $REAL_USER in $LIMITS_CONF"
             fi
         fi
-        _p "installing the service" "render systemd/xmrig.service.template -> $SYSTEMD_DIR/$SERVICE_NAME.service (User=${MINER_USER:-root}), daemon-reload, enable${ENABLE_RUNTIME:+ $ENABLE_RUNTIME} --now"
+        _p "installing the service" "render systemd/xmrig.service.template -> $SYSTEMD_DIR/$SERVICE_NAME.service (User=${MINER_USER:-root}), daemon-reload, enable${ENABLE_RUNTIME:+ $ENABLE_RUNTIME}; restart if binary/config changed, otherwise start (deferred if reboot required)"
     fi
     case "$AUTOTUNE_MODE" in
     disabled) _p "configuring autotune" "no periodic timer (autotune disabled) — an installed one would be removed" ;;
@@ -1978,7 +1977,7 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0 _control_rc=0
+    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
@@ -2005,7 +2004,10 @@ main() {
     CURRENT_STEP="compiling XMRig"
     compile_xmrig
     CURRENT_STEP="generating XMRig config"
+    if [ -f config.json ]; then config_before=$(_sha256 config.json); fi
     generate_xmrig_config
+    if [ -f config.json ]; then config_after=$(_sha256 config.json); fi
+    if [ "$config_before" != "$config_after" ]; then XMRIG_CONFIG_CHANGED=true; fi
     CURRENT_STEP="tuning the kernel"
     tune_kernel
     CURRENT_STEP="configuring limits"
@@ -2069,11 +2071,6 @@ _post_upgrade_retune() {
 # files on disk, not a changed rig, until the service restarts — the same "written, reported applied,
 # never in effect" gap #413 is about, one layer further down. So an upgrade restarts, exactly as
 # `apply` does after regenerating the same file.
-#
-# Deliberately NOT gated on "did the generated config actually change": the config we emit carries
-# `autosave: true`, so XMRig rewrites build/config.json itself at runtime and the on-disk copy is never
-# byte-identical to a freshly generated one. A before/after hash would therefore report "changed" on
-# every rig on every upgrade — the same restart, dressed up as a measurement.
 #
 # A miner that was NOT running is never started here: the regenerated config and unit sit on disk and
 # the next deliberate `start`/`apply` picks them up. An upgrade must respect a hold, whether it came
