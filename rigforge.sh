@@ -69,6 +69,8 @@ SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 source "$(_script_dir)/util/xmrig-overlay.sh"
 # shellcheck source=util/daemon-pools.sh
 source "$(_script_dir)/util/daemon-pools.sh"
+# shellcheck source=util/fetch-proxy.sh
+source "$(_script_dir)/util/fetch-proxy.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
@@ -144,6 +146,10 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 
 # shellcheck source=util/shared-host.sh
 source "$(_script_dir)/util/shared-host.sh"
+# shellcheck source=util/randomx.sh
+source "$(_script_dir)/util/randomx.sh"
+# shellcheck source=util/control-guards.sh
+source "$(_script_dir)/util/control-guards.sh"
 
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
@@ -419,6 +425,7 @@ parse_config() {
     if ! jq -e . "$CONFIG_JSON" >/dev/null 2>&1; then
         error "$CONFIG_JSON is not valid JSON."
     fi
+    _tor_socks5 >/dev/null
 
     # HOME_DIR becomes a filesystem path we mkdir/cd/write under (with sudo), so validate it via the
     # shared resolver (the same one the privileged uninstall/backup/restore use, so none of them can act
@@ -449,19 +456,10 @@ parse_config() {
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # tls-fingerprint (#115): re-attach the pin from the raw config, emitted ONLY when set — adding
-    # it unconditionally (null) would change the generated config shape for every existing rig on
-    # its next apply. A second single-line pass rather than lines inside the map above: kcov can't
-    # attribute in-string program lines, and the patch-coverage gate needs every new line hittable.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
-
-    # Re-attach socks5 only when set, using the same shape/coverage rule as tls-fingerprint.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | {"rig-id": .["rig-id"], nicehash, algo, coin, sni} | with_entries(select(.value != null))]] | transpose | map(.[0] + .[1])' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    # #265: jq's `//` treats an explicit false like null/missing, so the map above rewrites an
-    # operator's "keepalive": false / "enabled": false to the true default. Restore explicit falses
-    # from the raw config in another single-line pass (same kcov rationale as #115 above). Only a
-    # boolean false matches `== false`; non-boolean junk flows through `//` untouched to validation.
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
     POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON") || error "Could not parse daemon pool fields."
@@ -492,14 +490,20 @@ parse_config() {
         if [ -n "$_user" ] && ! [[ "$_user" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
             error "Pool user '$_user' has invalid characters (allowed: letters, digits, . _ - : @ +)."
         fi
-        # #415: `pass` must be a STRING, checked before the charset rule below can be fooled. The
-        # feed masks a set password to the {"__secret__": true} sentinel and _control_commit
-        # resolves it back, but nothing stops a marker — or any other JSON object — reaching
-        # config.json by a hand edit or by a future writer that forgets to resolve one. `jq -r`
-        # renders an object as its JSON text, and the empty object `{}` renders as two graph
-        # characters on one line, so it passes the check below and becomes the rig's literal
-        # password. Type-check here so the guarantee does not depend on every writer remembering:
-        # the same posture as the non-string tls-fingerprint rejection below.
+        if ! jq -e 'has("rig-id") == false or (."rig-id" | type == "string" and (test("[^A-Za-z0-9._:@+-]") | not))' <<<"$_pool" >/dev/null 2>&1; then
+            error "Pool rig-id must be a string using only these characters: letters, digits, . _ - : @ + (or empty)."
+        fi
+        for _f in nicehash sni; do
+            if ! jq -e --arg f "$_f" 'has($f) == false or (.[$f] | type == "boolean")' <<<"$_pool" >/dev/null 2>&1; then
+                error "Pool $_f must be true or false."
+            fi
+        done
+        if ! jq -e '.algo == null or (.algo | IN("rx/0", "rx/2", "rx/wow", "rx/arq", "rx/graft", "rx/sfx", "rx/yada"))' <<<"$_pool" >/dev/null 2>&1; then
+            error "Pool algo must be a supported RandomX algorithm (rx/0, rx/2, rx/wow, rx/arq, rx/graft, rx/sfx, rx/yada): HugePages reservation and tune --bench assume a RandomX scratchpad."
+        fi
+        if ! jq -e '.coin == null or (.coin | ascii_downcase | IN("monero", "xmr", "arqma", "arq", "graft", "grft", "wownero", "wow", "zephyr", "zeph", "townforge", "yadacoin", "yda"))' <<<"$_pool" >/dev/null 2>&1; then
+            error "Pool coin must be a supported RandomX coin (monero/XMR, arqma/ARQ, graft/GRFT, wownero/WOW, zephyr/ZEPH, townforge, yadacoin/YDA): HugePages reservation and tune --bench assume a RandomX scratchpad."
+        fi
         if [ "$(jq -r '.pass | type' <<<"$_pool")" != "string" ]; then
             error "Pool pass must be a string (got a $(jq -r '.pass | type' <<<"$_pool")). A masked-secret marker from the API feed is not a password — send the real value, or omit 'pass' entirely."
         fi
@@ -725,8 +729,11 @@ parse_config() {
         fi
         [[ "$MINER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || error "miner_user '$MINER_USER' is not a valid system username (lowercase, digits, _ -; max 32 chars)."
     fi
-
     _parse_xmrig_overlay
+    RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx must be an object whose mode is auto/fast/light, init is -1 or a positive integer, and init-avx2 is -1/0/1."
+    RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
+    export RX_MODE
+
     _shared_host_parse
     _warn_unknown_config_keys
 }
@@ -738,8 +745,8 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="xmrig pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host"
-    local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
+    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade tor_socks5 hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host xmrig"
+    local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 rig-id nicehash algo coin sni daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
         case "$k" in _*) continue ;; esac
@@ -970,7 +977,7 @@ compile_xmrig() {
     log "Cloning and patching XMRig source code ($XMRIG_VERSION)..."
     cd "$WORKER_ROOT"
     rm -rf xmrig.new
-    git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git xmrig.new
+    _fetch_git clone --quiet --branch "$XMRIG_VERSION" --depth 1 https://github.com/xmrig/xmrig.git xmrig.new
 
     local actual
     actual="$(git -C xmrig.new rev-parse HEAD)"
@@ -1105,7 +1112,6 @@ generate_xmrig_config() {
     fi
 
     FULL_USER="$(hostname)"
-
     local _new _step
     _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
     jq -n --argjson pools "$POOLS_JSON" \
@@ -1171,9 +1177,10 @@ generate_xmrig_config() {
     fi
 
     _merge_xmrig_overlay "$_new" || _config_render_fail "$_new" "Merging the XMRig overlay failed" || return 1
+    _apply_randomx_config "$_new" || _config_render_fail "$_new" "Applying the xmrig.randomx settings failed" || return 1
     _cap_xmrig_threads "$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
 
-    _shared_host_config "$_new"
+    _shared_host_config "$_new" || _config_render_fail "$_new" "Applying the shared-host XMRig safeguards failed" || return 1
     _config_install "$_new" "${1:-}" || return 1
     _config_apply_stamp "${CONFIG_INPUT_HASH:-}" "${1:-}"
 
@@ -1427,7 +1434,7 @@ _sister_api_failed() { ! warn "The configured sister API could NOT be started; c
 _control_failed() { warn "The writable control receiver could NOT be reconciled; check journalctl -u rigforge-control.service, then re-run 'sudo $0 $1'."; }
 _stop_control_receiver() {
     sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
-    if [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" = not-found ] && [ "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" = inactive ]; then return 0; fi
+    [ "$(systemctl show -p LoadState --value rigforge-control.service 2>/dev/null)" != not-found ] || case "$(systemctl show -p ActiveState --value rigforge-control.service 2>/dev/null)" in inactive | failed) return 0 ;; esac
     sudo systemctl kill --kill-who=all --signal=KILL rigforge-control.service 2>/dev/null || true
     sudo systemctl stop rigforge-control.service 2>/dev/null && return 0
     ! warn "Could not stop the control receiver; revocation is NOT confirmed. Stop rigforge-control.service before retrying."
@@ -1643,6 +1650,7 @@ tune_kernel() {
         # Fallback when proposed-grub.sh is missing: 3072 × 2MB = 6 GB of huge pages — enough for the
         # ~2.3 GB RandomX dataset plus per-thread scratchpads on a large desktop/server, without over-
         # reserving on smaller hosts. proposed-grub.sh computes an exact, hardware-sized value instead.
+        [ "${RX_MODE:-}" != light ] || error "RandomX light mode requires util/proposed-grub.sh for safe HugePages sizing."
         warn "Utility script not found. Fallback to safe default (3072)."
         _ensure_hugepages 3072
     fi
@@ -1903,6 +1911,8 @@ _setup_plan() {
                     _reboot=" — a reboot WILL be required"
                 fi
             fi
+        elif [ "${RX_MODE:-}" = light ]; then
+            _pages="FAIL: RandomX light mode requires util/proposed-grub.sh"
         fi
         # Grow-only preview (#328): same availability check _ensure_hugepages runs, read-only.
         local _hpline="grow the pool so $_pages 2MB HugePages are available (grow-only runtime sysctl)"
@@ -2081,28 +2091,25 @@ _upgrade_restart() { # <was-active: yes|no>
     sudo systemctl restart "$SERVICE_NAME.service"
 }
 
-# upgrade --check: compare the local VERSION against GitHub's latest release tag, on demand only.
-# This is the one place RigForge talks to GitHub's API, and it runs exactly when the operator types
-# it — never scheduled, never piggybacked on another verb (SECURITY.md's "no version ping" promise
-# stands because the check is explicit). Always returns 0: an update *hint* must never break a
-# script that calls it. Reads one file and one URL; no parse_config, no root, no other side effects.
 _upgrade_check() {
-    local local_v remote_v url body highest
+    local local_v remote_v url body highest via=""
     local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true) # guard inside the $() (#210)
     if [ -z "$local_v" ]; then
         warn "No VERSION file at $SCRIPT_DIR/VERSION — can't compare against the latest release."
         return 0
     fi
-    body=$(curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null || true)
+    via=$(_tor_socks5) || return 0
+    [ -z "$via" ] || via=" through tor_socks5 (no direct fallback)"
+    body=$(_fetch_curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null || true)
     if [ -z "$body" ]; then
-        warn "Couldn't reach GitHub to check for a newer release — try again later."
+        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
         return 0
     fi
     remote_v=$(printf '%s' "$body" | jq -r '.tag_name // empty' 2>/dev/null || true)
     url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null || true)
     remote_v="${remote_v#v}"
     if [ -z "$remote_v" ]; then
-        warn "Couldn't reach GitHub to check for a newer release — try again later."
+        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
         return 0
     fi
     if [ "$local_v" = "$remote_v" ]; then
@@ -2161,6 +2168,7 @@ upgrade() {
     else
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) was already built — regenerated the config and reinstalled the units."
     fi
+    _reown_worker
     _upgrade_restart "$was_active"
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
@@ -2561,101 +2569,25 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     shift
     _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out" || return 1
     _merge_xmrig_overlay "$out" || return 1
+    _apply_randomx_config "$out" || return 1
     _cap_xmrig_threads "$out"
 }
 
-# Run `xmrig --bench=<size>` headlessly and echo its full output. XMRig's `--bench` prints the result and
-# then waits for Ctrl+C instead of exiting (#75). It block-buffers stdout to a non-TTY, but flushes its
-# `--log-file` per line — so we point that at a temp file and poll it for the 'benchmark finished' line
-# (which carries the hashrate), then stop xmrig. We also keep stdout (a fake xmrig in the tests writes
-# there and exits — process-gone ends the loop too). `http`/`pools`/`log-file`/`background` are stripped
-# from the config so xmrig doesn't serve the API, mine, or daemonize. `BENCH_TIMEOUT` bounds a stuck run.
-_xmrig_bench() { # <bin> <bench-size> <config|"">
-    [ "${SHARED_HOST:-false}" != true ] || error "Offline benchmarks are unavailable in shared_host; use tune --now for a bounded live prefetch trial."
-    local bin="$1" size="$2" cfg="${3:-}" bcfg="" tmpcfg="" out logf xpid deadline freqs="" f
-    local wsamples="" pe0="" pt0="" pmax="" w # #81: power-window state
-    out="$(mktemp 2>/dev/null || echo "/tmp/rf-bo-$$")"
-    logf="$(mktemp 2>/dev/null || echo "/tmp/rf-bl-$$")"
-    if [ -n "$cfg" ] && [ -f "$cfg" ] && command -v jq >/dev/null 2>&1; then
-        tmpcfg="$(mktemp 2>/dev/null || true)"
-        if [ -n "$tmpcfg" ] && jq 'del(.http, .pools, ."log-file", .background)' "$cfg" >"$tmpcfg" 2>/dev/null; then bcfg="$tmpcfg"; fi
-    fi
-    # shellcheck disable=SC2086 # the :+ expansion is an intentional optional word
-    "$bin" --bench="$size" ${bcfg:+--config="$bcfg"} --log-file="$logf" >"$out" 2>&1 &
-    xpid=$!
-    # #62: when asked, sample the effective CPU clock THROUGHOUT the (sustained) window and keep the min,
-    # so the caller can tell a throttled run from a genuinely slow config. One sample up front covers a
-    # very short (test) run; the poll loop adds samples across a real ~minutes-long benchmark.
-    if [ -n "${BENCH_FREQ_FILE:-}" ]; then
-        f=$(_cpu_eff_khz)
-        [ -n "$f" ] && freqs="$f"
-    fi
-    # #81: bracket the same loaded window for power. With TUNE_POWER_CMD we poll instantaneous watts in the
-    # loop; otherwise we read the RAPL package energy counter now and at the end and divide by the elapsed
-    # time. Averaged into BENCH_WATTS_FILE, so hs_per_watt reflects LOAD power, not the old idle reading.
-    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
-        if [ -n "${TUNE_POWER_CMD:-}" ]; then
-            w=$(_read_watts_now)
-            case "$w" in '') ;; *) wsamples="$w" ;; esac
-        else
-            # `|| true` (same idiom as _autotune_sample's RAPL guard, #81/#290): no powercap sysfs is an
-            # expected "no RAPL" outcome, not a failure — an unguarded _rapl_sum here fires the ERR trap.
-            pe0=$(_rapl_sum energy_uj || true)
-            pt0=$(_now_s)
-            pmax=$(_rapl_sum max_energy_range_uj || true)
-        fi
-    fi
-    deadline=$(($(date +%s) + ${BENCH_TIMEOUT:-1800}))
-    while kill -0 "$xpid" 2>/dev/null; do
-        grep -qs 'benchmark finished' "$logf" "$out" && break
-        [ "$(date +%s)" -ge "$deadline" ] && break
-        if [ -n "${BENCH_FREQ_FILE:-}" ]; then
-            f=$(_cpu_eff_khz)
-            [ -n "$f" ] && freqs="$freqs $f"
-        fi
-        if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -n "${TUNE_POWER_CMD:-}" ]; then
-            w=$(_read_watts_now)
-            case "$w" in '') ;; *) wsamples="$wsamples $w" ;; esac
-        fi
-        sleep 0.2
-    done
-    # #81: read the end-of-window energy BEFORE killing xmrig (still loaded), then average over the window.
-    if [ -n "${BENCH_WATTS_FILE:-}" ]; then
-        local pe1="" pt1="" secs="" wout=""
-        if [ -n "${TUNE_POWER_CMD:-}" ]; then
-            # shellcheck disable=SC2086 # intentional word-split of the sample list
-            wout=$(_mean $wsamples)
-        elif [ -n "$pe0" ]; then
-            pe1=$(_rapl_sum energy_uj || true) # guard (#290): a mid-window sysfs read can still miss
-            pt1=$(_now_s)
-            secs=$(awk -v a="$pt0" -v b="$pt1" 'BEGIN { if (a == "" || b == "") exit; printf "%.3f", b - a }')
-            wout=$(_watts_from_energy "$pe0" "$pe1" "${pmax:-0}" "$secs")
-        fi
-        printf '%s' "$wout" >"$BENCH_WATTS_FILE"
-    fi
-    # `|| true`: xmrig --bench exits ON ITS OWN when the benchmark finishes, so by here it's often already
-    # gone — an unguarded kill then returns non-zero and, under set -Eeuo, fires the ERR trap INSIDE this
-    # measurement subshell, aborting it before it echoes the result (→ spurious "aborted" spam + a 0 H/s
-    # reading). Guarding it keeps the bench result intact whether or not xmrig is still alive.
-    kill "$xpid" 2>/dev/null || true
-    wait "$xpid" 2>/dev/null || true
-    # The MEDIAN clock over the window — robust to the brief low-clock dataset-init phase, which the raw
-    # min would mistake for thermal throttling (#62).
-    # shellcheck disable=SC2086 # $freqs is an intentional word-split list of samples
-    if [ -n "${BENCH_FREQ_FILE:-}" ]; then _median $freqs | awk 'NF{printf "%d", $0+0}' >"$BENCH_FREQ_FILE"; fi
-    cat "$logf" "$out" 2>/dev/null
-    rm -f "$out" "$logf" "$tmpcfg" 2>/dev/null || true
-}
+# shellcheck source=util/benchmark.sh
+source "$(_script_dir)/util/benchmark.sh"
+# shellcheck source=util/stress.sh
+source "$(_script_dir)/util/stress.sh"
 
 # One offline benchmark of a config file → peak H/s (empty on failure).
 _bench_once() {
     local out
-    out=$(_xmrig_bench "$TUNE_BIN" "${TUNE_BENCH:-10M}" "$1")
-    # `|| true` (same idiom as the watchdog's `_read_api_hashrate || true` guard): a candidate with no H/s
-    # line is expected (a zero-hashrate iteration, not a crash) — under pipefail this grep's failure would
-    # otherwise ride out as _bench_once's own exit status and fire the ERR trap ("aborted while ...") at
-    # every call site (#277).
-    printf '%s' "$out" | _parse_hashrate || true
+    out=$(_xmrig_bench "$TUNE_BIN" "${TUNE_BENCH:-10M}" "$1") || true
+    if _bench_result "$out"; then
+        printf '%s' "$BENCH_HR"
+    else
+        warn "Benchmark correctness failure ($BENCH_VERDICT): rejecting this tune candidate."
+        return 1
+    fi
 }
 
 # Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
@@ -2724,11 +2656,14 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
         watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
-        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr"
+        _tune_config "$cfg" "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr" || { warn "  tune: rendering the candidate config failed — skipping it." >&2 && printf 0 && return 0; }
         for i in $(seq 1 "${TUNE_ITERS:-5}"); do
             : >"$TUNE_TMP/freq"  # #62: _xmrig_bench writes the effective clock seen during this run
             : >"$TUNE_TMP/watts" # #81: ... and the average watts under load
-            s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" BENCH_WATTS_FILE="$TUNE_TMP/watts" _bench_once "$cfg")
+            if ! s=$(BENCH_FREQ_FILE="$TUNE_TMP/freq" BENCH_WATTS_FILE="$TUNE_TMP/watts" _bench_once "$cfg"); then
+                samples=(0)
+                break
+            fi
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
@@ -2964,7 +2899,7 @@ _gridsearch() {
 # from what the generated config actually uses (both default false). Shared by the seeds.
 _seed_hj() { jq -r '.cpu."huge-pages-jit" // false' "$TUNE_BASE"; }
 _seed_cq() { jq -r '.randomx.cache_qos // false' "$TUNE_BASE"; }
-_seed_g() { jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; } # base 1gb-pages value (default true)
+_seed_g() { if [ "${RX_MODE:-}" = light ]; then echo false; else jq -r '.randomx | if has("1gb-pages") then ."1gb-pages" else true end' "$TUNE_BASE"; fi; }
 # wrmsr seed: the base config's value as a single token (true/false/number). An array (advanced custom
 # MSRs) isn't a sweepable scalar, so seed from the safe default 'true' and let the operator set TUNE_WRMSR.
 _seed_wr() { jq -r '(.randomx | if has("wrmsr") then .wrmsr else true end) | if (type=="boolean" or type=="number") then tostring else "true" end' "$TUNE_BASE"; }
@@ -3215,11 +3150,11 @@ tune() {
     # leave it at the base value and say so, rather than benchmarking a no-op.
     local nr=0
     [ -r "$HUGEPAGES_1G_NR" ] && nr=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
-    if [ "${nr:-0}" -gt 0 ] 2>/dev/null; then
+    if [ "${nr:-0}" -gt 0 ] 2>/dev/null && [ "${RX_MODE:-}" != light ]; then
         TUNE_ONEGB="${TUNE_ONEGB:-true false}"
     else
         TUNE_ONEGB="$(_seed_g)"
-        log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
+        [ "${RX_MODE:-}" = light ] || log "Note: 1G HugePages not reserved — skipping the 1gb-pages knob (it needs a GRUB change + reboot; run 'setup')."
     fi
 
     # Active knobs = those with more than one candidate value (the rest are fixed, not searched).
@@ -3805,6 +3740,12 @@ support_bundle() {
     if [ -n "$wr" ] && [ -f "$wr/xmrig.log" ]; then
         tail -n 500 "$wr/xmrig.log" >"$STAGE_DIR/xmrig.log.tail" 2>/dev/null && _take xmrig.log.tail
     fi
+    if [ -f "$wr/rigforge-bench.json" ] && _bench_bundle "$wr/rigforge-bench.json" >"$STAGE_DIR/rigforge-bench.json"; then
+        _take rigforge-bench.json
+    else
+        rm -f "$STAGE_DIR/rigforge-bench.json"
+        _skip "rigforge-bench.json(absent-or-invalid)"
+    fi
     for f in tune-overrides.json rigforge-tune.json; do
         [ -n "$wr" ] && [ -f "$wr/$f" ] && cp "$wr/$f" "$STAGE_DIR/$f" && _take "$f"
     done
@@ -3973,10 +3914,11 @@ mac_disable() {
     fi
 }
 
-# One-glance live summary from a single /2/summary fetch (#143). Facts only, no ✓/! judgment
-# markers (that's doctor's job); plain aligned lines stay grep-friendly. Never sudo, never prompts.
+_pool_algorithm() {
+    jq -r '.algo | select(type == "string" and . != "" and . != "rx/0")' 2>/dev/null || true
+}
 _status_api_summary() {
-    local body hs pool up acc rej hp
+    local body hs pool up acc rej hp pa
     body=$(_read_api_summary)
     if [ -z "$body" ]; then
         echo "RigForge: worker API not reachable at 127.0.0.1:8080 (miner stopped or still starting)."
@@ -3990,6 +3932,8 @@ _status_api_summary() {
     [ -n "${hs:-}" ] || return 0 # half-up API / unparseable body: stay quiet, platform block follows
     printf '  %-10s %s H/s\n' "Hashrate:" "$hs"
     printf '  %-10s %s\n' "Pool:" "$pool"
+    pa=$(printf '%s' "$body" | _pool_algorithm)
+    [ -n "$pa" ] && printf '  Algorithm: %s\n' "$pa"
     printf '  %-10s %s\n' "Uptime:" "$(_render_duration "$up")"
     printf '  %-10s %s accepted / %s rejected\n' "Shares:" "$acc" "$rej"
     [ -n "$hp" ] && printf '  %-10s %s\n' "HugePages:" "$hp"
@@ -4073,7 +4017,7 @@ svc_disable() {
 # verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
-_rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
+_rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios stress status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
 _rigforge() {
     local cur verb
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -4087,6 +4031,8 @@ _rigforge() {
     setup | apply) COMPREPLY=($(compgen -W "--dry-run" -- "$cur")) ;;
     doctor) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
     upgrade) COMPREPLY=($(compgen -W "--check" -- "$cur")) ;;
+    bench) COMPREPLY=($(compgen -W "--submit --verify" -- "$cur")) ;;
+    stress) COMPREPLY=($(compgen -W "--minutes" -- "$cur")) ;;
     bios) COMPREPLY=($(compgen -W "--perf --efficiency" -- "$cur")) ;;
     uninstall | backup) COMPREPLY=($(compgen -W "-y --yes" -- "$cur")) ;;
     restore) COMPREPLY=($(compgen -W "-y --yes" -- "$cur") $(compgen -f -- "$cur")) ;;
@@ -4620,6 +4566,12 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
+    if _rig_lent_to_bench; then
+        rm -f "$staged"
+        _control_status "$status" busy "$cid" "$change_keys" "rig is lent to a bench job; retry after it is returned" ""
+        warn "control-apply: rig is lent to a bench job — change $cid refused."
+        return 0
+    fi
     # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
@@ -4698,48 +4650,9 @@ control_apply() {
     return 0
 }
 
-_control_upgrade_throttle_ok() (
-    local dir="$1" lock="$1/.upgrade-throttle.lock" stamp="$1/upgrade-last" now tmp min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
-    [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2
-    if [ -e "$lock" ] || [ -L "$lock" ]; then
-        [ ! -L "$lock" ] && [ -f "$lock" ] && [ "$(stat -c '%u:%g:%a:%h' "$lock" 2>/dev/null)" = "0:0:600:1" ] || return 2
-    fi
-    umask 077
-    exec 9>>"$lock" 2>/dev/null || return 2
-    flock -x 9 2>/dev/null || return 2
-    if [ -e "$stamp" ] || [ -L "$stamp" ]; then
-        [ ! -L "$stamp" ] && [ -f "$stamp" ] && [ "$(stat -c '%u:%g:%a:%h' "$stamp" 2>/dev/null)" = "0:0:600:1" ] || return 2
-        last=$(cat "$stamp" 2>/dev/null) || return 2
-    fi
-    case "$last" in '' | *[!0-9]*) return 2 ;; esac
-    now=$(date +%s) || return 2
-    if [ $((now - last)) -lt "$min" ] 2>/dev/null; then
-        return 1
-    fi
-    tmp=$(mktemp "$dir/.upgrade-last.XXXXXX") || return 2
-    if ! printf '%s\n' "$now" >"$tmp" || ! mv -f "$tmp" "$stamp"; then
-        rm -f "$tmp"
-        return 2
-    fi
-    return 0
-)
-
-# The fetch + reachability + checkout + rebuild half of control-upgrade, split out so the orchestration
-# is unit-testable with this stubbed (like control-apply's _control_do_apply). Returns 0 on a successful
-# checkout+build of <ref>, nonzero otherwise. <ref> is a validated vX.Y.Z tag (forward) or a prior
-# tag/commit (rollback). D5: the git checkout IS the fetch and the commit hash pins the whole tree; no
-# signing, GitHub over TLS is the trust root. D10: a forward tag's commit must be reachable from
-# origin/main — the branch releases are cut from (kills a tag pointing at a dangling/side commit).
-# NOT origin/HEAD: a fresh clone resolves that to develop (the repo default), and release tags are
-# merge commits on main that develop doesn't contain, so every legit upgrade would be refused (#318).
-# A clone without origin/main (e.g. single-branch) refuses too — fail closed, deploy from a full clone.
-# Immutable releases lock the tag→commit binding at the platform layer. Every git call pins `-c safe.directory="$SCRIPT_DIR"`: the
-# oneshot runs as root with NO $HOME, so git can't read root's safe.directory config and would fatal on
-# "dubious ownership" of the operator-owned install — every git op silently failing the upgrade (a real
-# miner-0 e2e finding the stubbed unit suite couldn't reach, since it stubs git).
 _control_upgrade_do() { # <ref>
     local ref="$1" cobj
-    git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
@@ -4813,8 +4726,16 @@ control_upgrade() {
             return 0
         fi
     fi
-    # D6 throttle: bound how often a rig fetches/rebuilds. rc 2 = throttle state unavailable — a
-    # fail-closed refusal (#321) that must read as a broken rig, not as "throttled — retry later".
+    if _rig_lent_to_bench; then
+        _control_status "$status" busy "$cid" version "rig is lent to a bench job; retry after it is returned" ""
+        warn "control-upgrade: rig is lent to a bench job — refused."
+        return 0
+    fi
+    _fetch_preflight -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" || {
+        _control_status "$status" failed "$cid" version "$FETCH_PREFLIGHT_REASON" ""
+        warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
+        return 0
+    }
     local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
@@ -4858,24 +4779,23 @@ watchdog() {
         error "watchdog drives the live systemd service and is only supported on Linux."
     fi
     parse_config
-    _shared_host_start_guard
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
     if [ -f "$hold_f" ]; then
+        local lift_reason=""
         if [ -z "$MAX_TEMP_C" ]; then
-            if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
-                warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
-                return 0
-            fi
-            rm -f "$hold_f"
-            log "watchdog: max_temp_c is no longer set — thermal hold lifted, miner started."
+            lift_reason="max_temp_c is no longer set"
         elif [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t < m - 5) }'; then
+            lift_reason="temp ${t}°C is below $((MAX_TEMP_C - 5))°C"
+        fi
+        if [ -n "$lift_reason" ]; then
+            _shared_host_start_guard
             if ! sudo systemctl start "$SERVICE_NAME" 2>/dev/null; then
                 warn "watchdog: failed to start $SERVICE_NAME — thermal hold retained; will retry."
                 return 0
             fi
             rm -f "$hold_f"
-            log "watchdog: temp ${t}°C is below $((MAX_TEMP_C - 5))°C — thermal hold lifted, miner started."
+            log "watchdog: $lift_reason — thermal hold lifted, miner started."
         else
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
         fi
@@ -4911,6 +4831,7 @@ watchdog() {
         f=$((f + 1))
         if [ "$f" -ge 2 ]; then
             rm -f "$fails_f"
+            _shared_host_start_guard
             sudo systemctl restart "$SERVICE_NAME" 2>/dev/null || true
             warn "watchdog: miner wedged ($f consecutive checks with 0 H/s or an unreachable API) — restarted."
         else
@@ -4921,31 +4842,6 @@ watchdog() {
     fi
     rm -f "$fails_f"
     log "watchdog: healthy ($hr H/s)."
-}
-
-# bench (#11): run a one-off xmrig --bench and report the hashrate. A quick perf/health check.
-bench() {
-    parse_config
-    local bin="$WORKER_ROOT/xmrig/build/xmrig" cfg="$WORKER_ROOT/xmrig/build/config.json"
-    [ -x "$bin" ] || error "No built worker at $bin. Run 'setup' first."
-    local b="${BENCH:-1M}" out hr
-    log "Running 'xmrig --bench=$b' (this can take a minute or two)..."
-    out=$(_xmrig_bench "$bin" "$b" "$cfg")             # strips the API/pool/log-file and stops xmrig once done (#75)
-    hr=$(printf '%s' "$out" | _parse_hashrate) || true # empty when nothing hashed; handled below
-    # A healthy bench must (a) report a hashrate — proving the build ran, the config parsed and the
-    # RandomX dataset initialised — and (b) not have hit a fatal allocation/config error (XMRig's
-    # "MEMORY ALLOC FAILED" covers a failed dataset / HugePages / memlock allocation). On failure, echo
-    # the raw XMRig output so a broken build/config is diagnosable — this is what the release smoke
-    # check (tests/smoke.sh, #61) gates on.
-    if printf '%s' "$out" | grep -qiE 'MEMORY ALLOC FAILED|unable to (open|parse) config|error parsing config'; then
-        printf '%s\n' "$out" >&2
-        error "Benchmark hit a fatal memory/config error — see the XMRig output above."
-    fi
-    if [ -z "$hr" ]; then
-        printf '%s\n' "$out" >&2
-        error "Could not read a hashrate from the benchmark output — see the XMRig output above."
-    fi
-    log "Benchmark hashrate: $hr H/s"
 }
 
 # shellcheck source=util/doctor-report.sh
@@ -5450,9 +5346,9 @@ doctor() {
     fi
 
     if [ -f "$CONFIG_JSON" ]; then
-        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool
+        local pc_st="" pc_pool="" pc_n1="" pc_n2="" pool0 ph pp proxy daemon_pool pa
         pool0=$(jq -r '.pools[0].url // empty' "$CONFIG_JSON" 2>/dev/null || true)
-        # Advisory only: a listening TCP socket does not prove SOCKS/Tor or mining works.
+        _doctor_tor_socks5
         while IFS= read -r proxy; do
             (_validate_host_port "$proxy" "Pool socks5" 9050) >/dev/null 2>&1 || {
                 _ck_warn "configured SOCKS proxy has an invalid host:port — check pools[].socks5" socks-proxy
@@ -5465,6 +5361,8 @@ doctor() {
             _tcp_probe "$ph" "$pp" || _ck_warn "configured SOCKS proxy is unreachable (TCP connect failed) — check pools[].socks5 and install/start Tor if needed" socks-proxy
         done < <(jq -r '[.pools[]? | select(.enabled != false) | .socks5 | select(. != null and . != "")] | unique[] | if type == "string" and (test("[[:cntrl:]]") | not) then . else "invalid proxy" end' "$CONFIG_JSON" 2>/dev/null)
         if [ "$svc_up" = y ]; then
+            pa=$(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _read_api_summary | _pool_algorithm)
+            [ -n "$pa" ] && _ck_info "Algorithm: $pa" pool-algorithm
             if ! ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _check_donation; then
                 issues=$((issues + 1))
             fi
@@ -5506,6 +5404,7 @@ EOF
         fi
     fi
 
+    _check_randomx_memory "$svc_up" || issues=$((issues + 1))
     # HugePages reserved? (the single biggest lever; needs a reboot after setup)
     if [ "${SHARED_HOST:-false}" != true ]; then
         local hp
@@ -5519,7 +5418,9 @@ EOF
 
         local g=0
         [ -f "$HUGEPAGES_1G_NR" ] && g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || echo 0)
-        if [ "${g:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "${RX_MODE:-}" = light ]; then
+            _ck_info "1GB HugePages disabled in RandomX light mode" hugepages-1gb
+        elif [ "${g:-0}" -gt 0 ] 2>/dev/null; then
             _ck_ok "1GB HugePages reserved ($g)" hugepages-1gb
         else
             _ck_warn "1GB HugePages not reserved (optional; needs a pdpe1gb CPU + reboot)" hugepages-1gb
@@ -6081,7 +5982,7 @@ _bios_verify() { # <state_file>
     if [ -z "$kept" ]; then
         rm -f "$state"
         log "All BIOS items applied. Firmware is tuned for: $(_autotune_desc "$target")."
-        log "Next: 'sudo $0 tune --live' — the hardware envelope changed, so re-tune XMRig against it."
+        log "Next: 'sudo $0 stress' to confirm stability, then 'sudo $0 tune --live' to re-tune XMRig."
     else
         # Rewrite the state with only the still-pending items: re-detect filled the B_* globals, so
         # neutralize the ones that took and let the writer keep the rest.
@@ -6162,7 +6063,8 @@ Tuning:
              the whole machine — fastest/cleanest, but rx/0 only. '--confirm' A/B-checks the winner live
              before keeping it. '--efficiency' optimizes hashrate-per-watt (default '--perf' = raw H/s),
              '--history' shows the current tuning + recent runs, '--clear' resets
-  bench      run a one-off 'xmrig --bench' and report the hashrate
+  bench      verify a one-off XMRig benchmark; '--submit' publishes and verifies an ID, '--verify ID' checks one
+  stress     Linux stability check after BIOS changes; '--minutes N' (default 30), reports peak temperature
   autotune   alias of 'tune --now' (and the verb the scheduled timer runs); turn on the schedule with
              autotune:"performance"|"efficiency" in config.json
   watchdog   one health check: restart a wedged miner (alive but 0 H/s, two strikes), enforce
@@ -6206,7 +6108,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
     # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
     # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
     case "${1:-setup}" in
-    autotune | watchdog | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | bench | version | --version | -v | help | -h | --help)
+    autotune | watchdog | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | version | --version | -v | help | -h | --help)
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
@@ -6263,7 +6165,14 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         apply "$@"
         ;;
-    bench) bench ;;
+    bench)
+        shift
+        bench "$@"
+        ;;
+    stress)
+        shift
+        stress "$@"
+        ;;
     backup)
         shift
         backup "$@"

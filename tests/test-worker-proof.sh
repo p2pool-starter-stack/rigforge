@@ -140,7 +140,7 @@ run_case() {
         exit 1
     fi
     case "$fault" in
-    stale | dirty | untracked | git-failed | wrong-platform)
+    stale | dirty | untracked | git-failed | wrong-platform | refused)
         [ ! -e "$CASE_DIR/locked" ]
         [ "$(cat "$CASE_DIR/config")" = original ]
         ;;
@@ -175,4 +175,6 @@ run_case all unapproved-skip 1
 run_case network-sequence fatal 7
 run_case network-sequence signal 143
 for fault in stale dirty untracked git-failed wrong-platform; do run_case network-sequence "$fault" 2; done
+run_case shared-host refused 2
+grep -q 'shared-host is not a worker-proof group' "$TASK_TMP/shared-host-refused/output"
 printf 'worker proof integration: %s passed\n' "$checks"

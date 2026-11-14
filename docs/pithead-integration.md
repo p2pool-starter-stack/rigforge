@@ -113,6 +113,9 @@ pithead#235):
 Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
 show `rigforge.stamp` as the baked release provenance instead.
 
+Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
+show `rigforge.stamp` as the baked release provenance instead.
+
 When a token is set, `:8081` accepts either the exact bearer for existing clients or the
 lowercase hex HMAC-SHA256 derived with that token as the key and `rigforge:api-read:v1` as the
 message. The derived bearer grants reads only: `:8082` rejects it and continues to require an exact
@@ -295,7 +298,7 @@ autotune restart) can step on between your `POST` and your poll. To avoid that r
 outcome (for a config change: `applied`/`rejected`/`rolled_back`/`failed` +
 `reason`/`backup`/`changed_keys`/`warnings`), or `404` if it isn't among the last ~20 recorded. Same
 bearer auth as `/status`. The same endpoint serves remote-*upgrade* change ids with a richer
-vocabulary (non-terminal `started`, terminal `noop`/`throttled` alongside the above — #320); see
+vocabulary (non-terminal `started`, terminal `noop`/`throttled` alongside the above — #320; `busy` for a rig lent to a bench job, on `/apply` too — #670); see
 [Operations › Remote upgrade](operations.md#writable-control-path-opt-in).
 
 Between your `POST` and a terminal outcome, `?change_id` reads `status: "pending"` with an

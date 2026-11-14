@@ -74,36 +74,45 @@ not read by `parse_config` today, so it isn't in the table below.)
 | `hugepages_reserve_extra_mb` | `0` | MB of HugePages to leave for the **rest of the box** when RigForge sizes its reservation — for co-locating a miner on a busy host (e.g. a Pithead stack, whose 2MB pages come from the same kernel pool). RigForge stays the sole writer of the reservation; this key just declares how much of it isn't the miner's. Added to both the boot reservation and the runtime pool. When the box's existing reservation already covers stack + miner and its 2MB component respects any explicit `hugepages_pool_ceiling_mb`, RigForge changes nothing and needs no reboot. |
 | `hugepages_pool_ceiling_mb` | `0` *(no ceiling)* | A **hard cap**, in MB, on the 2MB HugePages pool RigForge will reserve — the opposite direction from `hugepages_reserve_extra_mb`, which *adds* to the computed requirement rather than bounding it. Set it on a RAM-constrained co-resident box: the runtime `vm.nr_hugepages` write is never grown past the ceiling, and neither is the `hugepages=` RigForge merges into the GRUB cmdline, so the pool does not come back up over the ceiling after a reboot (the grow-only runtime write could never bring it down again). An odd MB value floors to the 2MB page below (`5121` → 5120 MB effective) — a cap rounds toward less memory, never more. The **1GB** dataset reservation is a separate pool this key does not bound, so a ceiling below a box's 1GB reservation still leaves it holding more hugepage memory than the ceiling names. |
 | `threads` | `""` *(auto)* | A **ceiling** on the RandomX thread count — `min(auto-detected, threads)`, never a raise. A co-located miner sets it (e.g. `nproc-2`) to leave the stack its cores. Both the generated `cpu.rx` and the HugePages sizing honour it, so the reservation matches the threads actually run. |
-| `xmrig` | `{}` | Optional XMRig config overlay for keys RigForge does not model. It must be an object and is deep-merged after tuned overrides but before the `threads` cap. The root keys `pools`, `http`, `donate-level`, `donate-over-proxy`, `opencl`, and `cuda` are protected and refused even when their value is `null`, `false`, or empty. See [XMRig's config reference](https://xmrig.com/docs/miner/config). |
+| `xmrig` | `{}` | Optional XMRig config overlay for keys RigForge does not model. It must be an object and is deep-merged after tuned overrides but before the `threads` cap. The root keys `pools`, `http`, `donate-level`, `donate-over-proxy`, `opencl`, and `cuda` are protected and refused even when their value is `null`, `false`, or empty. `randomx`, when present, must be an object, and three of its keys are validated: `mode` accepts `"auto"`, `"fast"` (the default), or `"light"`; `init` accepts `-1` (automatic, the default) or an integer from 1 through 2147483647; `init-avx2` accepts `-1` (automatic, the default), `0` (off), or `1` (on, when the CPU supports AVX2). A smaller `init`, such as `2`, reduces dataset-initialization contention on a co-located stack and after thermal resume. Wrong types and out-of-range values for these three stop setup. See [RandomX mode and initialization](#randomx-mode-and-initialization) and [XMRig's config reference](https://xmrig.com/docs/miner/config). |
 | `shared_host` | `false` | Opt-in bounded coexistence profile. Set an object with `cpu_quota_percent` (1–10000, percentage of one CPU), `memory_max_mb` (3072–1048576 MiB), and optional `existing_host_tuning: "preserve"` for an explicit dedicated-to-shared transition. Requires Linux systemd with unified cgroup v2; it disables global tuning and uses ordinary pages. See [Shared-host profile](shared-host.md). |
+| `tor_socks5` | `null` *(direct)* | RigForge's **own** fetches through one SOCKS5 proxy at `host:port`, e.g. `"127.0.0.1:9050"` for a local Tor client: `upgrade --check` (the GitHub releases API), the pinned XMRig source clone in `setup` and `upgrade`, and the `git fetch` of the remote-upgrade oneshot (`control_upgrade`). Same address rules as a pool's `socks5` (host:port, not a URL; an empty string, a non-string or a bad port is refused by `parse_config`). Names resolve at the proxy (`socks5h` for git, curl's `--proxy socks5h://`), and with the key set these fetches fail closed: an unreachable proxy is an error, never a direct connection. They ignore `NO_PROXY`, `~/.curlrc`, and git's system and global config, git speaks only https (a non-https `origin` is refused by `control-upgrade`), and a `config.json` that cannot be read is refused rather than read as "no proxy". The oneshot reads the key from `config.json` itself, so nothing is exported to the unit and an edit takes effect on its next run. This is separate from a pool's `socks5`, which only carries stratum for the miner. It does **not** cover package-manager installs: `apt`, `dnf`, `pacman` and `brew` in `setup`, and the `jq` bootstrap that runs before `config.json` can be read, are the operator's to route (for example `Acquire::http::Proxy` for apt, or a Tor-fronted mirror). `doctor` reports whether the key is set and its port answers. RigForge does not install or run Tor. |
 | `add_to_path` | `false` | When `true`, setup installs a `rigforge` command on your PATH (a symlink in `/usr/local/bin`) so you can run `sudo rigforge <cmd>` from any directory. Off by default. `uninstall` removes it. |
 
 ---
 
 ## How the generated XMRig config is built
 
-RigForge generates XMRig's config in-script and writes it into the worker root as the live
-`config.json` the service runs from. There's no template file to keep in sync. Every run (re-runs
-included) rebuilds the config from five sources:
+RigForge generates the live XMRig `config.json` in the worker root. There is no template file;
+supported operator settings belong in your repo-root `config.json`. Every run (re-runs included)
+rebuilds the config from five sources:
 
-1. Your `config.json`: the `pools` array (with `user`/`pass`/`keepalive`/`tls` and failover
-   defaults filled in), the `donate-level`, and the `http` API block (bound to the LAN, read-only,
-   open by default; set `ACCESS_TOKEN` for a bearer token). These are the keys documented in the
-   [reference table](#configuration-reference).
+1. Your `config.json`: the `pools` array (with connection defaults filled in and supported optional
+   fields preserved), the `donate-level`, and the `http` API block (bound to the LAN, read-only, open
+   by default; set `ACCESS_TOKEN` for a bearer token). These are the keys documented in the [reference
+   table](#configuration-reference).
 2. Detected hardware: the per-CPU `cpu`/`randomx` tuning (thread count, `asm`, MSR, NUMA,
    HugePages). RigForge uses XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
 3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave`,
-   `randomx.mode: fast`, `randomx.init`, `opencl`/`cuda` off, and the `http` port `8080`.
-4. Tuned overrides *(if present)*: if you've run [`tune`](operations.md#tuning), its winning
-   knobs in `tune-overrides.json` are merged over the generated values.
+   `randomx.mode: fast`, `randomx.init: -1`, `randomx.init-avx2: -1`, `opencl`/`cuda` off, and the
+   `http` port `8080`.
+4. Tuned overrides *(if present)*: if you've run [`tune`](operations.md#tuning), its winning knobs in
+   `tune-overrides.json` are merged next, so tuning changes only the keys it measured and never edits
+   your `config.json`.
 5. Your `xmrig` overlay *(if non-empty)*: its nested objects are deep-merged over the generated and
-   tuned values. The `threads` cap is then applied last, so it remains a hard ceiling.
+   tuned values. Its validated `randomx.mode`, `randomx.init` and `randomx.init-avx2` (or their
+   defaults) are then applied, and in light mode RigForge forces `1gb-pages: false`, including over a
+   tuned or overlay value, because light mode has no dataset to put in 1 GB pages. The `threads` cap
+   is applied last, so it remains a hard ceiling.
 
-The effective order is **generated < tuned overrides < `xmrig` overlay < `threads` cap**. A knob set
-in `xmrig` is operator-owned: `tune` leaves it out of the trial grid and seeds, scheduled autotune
-does not change it, and `tune --history` identifies the excluded key. `doctor` reports the overlay's
-dotted key names so an operator can see what is pinned.
+The effective order is **generated < tuned overrides < `xmrig` overlay < `threads` cap**. If a step
+fails, for example because `tune-overrides.json` replaced `randomx` with a non-object, the render stops
+with a warning and the previous generated `config.json` stays in place; a `tune` candidate that cannot
+be rendered is skipped rather than benchmarked. A knob set in `xmrig` is operator-owned: `tune` leaves
+it out of the trial grid and seeds, scheduled autotune does not change it, and `tune --history`
+identifies the excluded key. `doctor` reports the overlay's dotted key names so an operator can see
+what is pinned.
 
 The overlay is an escape hatch to XMRig's own parser, not a second strict XMRig schema. RigForge warns
 with the names of keys absent from XMRig's published config reference, but still lets XMRig decide
@@ -136,6 +145,24 @@ parsing and generation, cannot establish a new stamp. Avoid editing sources duri
 changes that revert before the final fingerprint check are not detected. The API's writable-config
 revision and provenance remain separate.
 
+### RandomX mode and initialization
+
+`fast` remains the default and uses the full dataset for maximum hashrate. `light` uses one shared
+256 MiB cache and is intended for hosts that cannot spare the dataset memory; it is substantially
+slower. `auto` lets XMRig fall back to light if it cannot allocate the fast dataset, but RigForge still
+reserves HugePages for fast mode because allocation fallback does not make a safe smaller reservation.
+Choose `light` explicitly when the smaller reservation is required.
+
+Changing `xmrig.randomx.mode` and running `apply` immediately renders the new miner config. On Linux,
+re-run `setup` and reboot as well to resize the persistent HugePages reservation. Runtime reservation is
+grow-only, and the co-resident-host guard keeps an existing sufficient pool, so switching to light does
+not reclaim a larger live pool automatically.
+
+`doctor` reports the configured mode. With the service stopped, it also warns before a `fast` start
+when `MemAvailable` (or `MemFree` on older kernels) plus free HugePages is below the 2080 MiB dataset
+lower bound. This is an early dataset warning, not an estimate of whether the cache, per-thread
+scratchpads, or every NUMA replica will fit.
+
 > Don't put a wallet address in the worker `user` when using Pithead. The stack handles payouts
 > centrally; the pool `user` is just a rig label (it defaults to the hostname so you can tell workers
 > apart on the dashboard).
@@ -148,20 +175,37 @@ The pool target uses XMRig's native `pools` array with the supported fields belo
 Only `url` is required; every other field has a default, so you specify only what
 you care about:
 
-| Field | Default if blank/omitted |
+| Field | Default and meaning |
 |---|---|
 | `url` | *(required)* — `host:port` (e.g. `pool.supportxmr.com:443` or `your-stack:3333`). For an IPv6 literal, use the bracketed `[2001:db8::1]:3333` form. |
-| `user` | the machine hostname. For Pithead this is the rig's dashboard label; for a public pool set it to your Monero wallet address (see below). |
+| `user` | the machine hostname. This remains the pool login when `rig-id` is set. For Pithead this is the rig's dashboard label; for a public pool set it to your Monero wallet address (see below). |
 | `pass` | `"x"` — the stratum password / worker name. For an open Pithead stack the default works; if the operator enabled the stack's `p2pool.stratum_password`, set this to that secret or the proxy rejects the rig. See [Pithead Integration › Stratum authentication](pithead-integration.md#stratum-authentication-optional). |
-| `keepalive` | `true` |
+| `rig-id` | `null` (unset) — a separate worker label for pools that support XMRig's rig identifier. It accepts the same characters as `user` and may be empty. It coexists with `user`: `user` remains the pool login and keeps its hostname default. |
+| `nicehash` | `false` — enable the NiceHash Stratum protocol, where the pool assigns the nonce. Accepts only JSON `true` or `false`. |
+| `algo` | `null` (automatic) — pin a RandomX algorithm. Accepted values are `rx/0`, `rx/2`, `rx/wow`, `rx/arq`, `rx/graft`, `rx/sfx`, and `rx/yada`; any other value is rejected. |
+| `coin` | `null` (automatic) — let XMRig choose the algorithm for a RandomX coin by case-insensitive name or code: `monero`/`XMR`, `arqma`/`ARQ`, `graft`/`GRFT`, `wownero`/`WOW`, `zephyr`/`ZEPH`, `townforge`, or `yadacoin`/`YDA`. Unknown values and non-RandomX coins such as Sumokoin and Ravencoin are rejected. |
+| `keepalive` | `true` — send Stratum keepalive requests to prevent an idle connection timing out. |
 | `tls` | `false` — set `true` when you connect on the pool's TLS/SSL port. |
 | `tls-fingerprint` | `null` (no pin) — the pool cert's SHA-256 as 64 hex chars. XMRig does no CA validation on stratum TLS, so the pin is the only server authentication; without it, TLS encrypts but doesn't authenticate. Requires `"tls": true`. See [Pithead Integration › Stratum over TLS](pithead-integration.md#stratum-over-tls-optional). |
+| `sni` | `false` — send the pool hostname through TLS SNI for a name-based TLS endpoint. Accepts only JSON `true` or `false`; use it with `tls`. |
 | `socks5` | `null` (direct connection) — dial this pool through a SOCKS5 proxy at `host:port`, e.g. `"127.0.0.1:9050"` for a local Tor client. Same address rules as `url`. XMRig sends the pool's **hostname** to the proxy rather than resolving it first, so a v3 `.onion` stratum works with no extra setting. RigForge points the miner at a proxy; running one is yours to arrange. |
-| `enabled` | `true` |
+| `enabled` | `true` — allow XMRig to connect to this entry in the failover list. |
 | `daemon` | Omitted for Stratum; a strict boolean. Set `true` for solo mining. A `daemon+` URL implies `true`; explicit `false` with that scheme is refused. |
 | `daemon-poll-interval` | Omitted; XMRig defaults to 1000 milliseconds. A positive JSON integer no greater than 9007199254740991, only valid for a daemon pool. |
 | `daemon-job-timeout` | Omitted; XMRig defaults to 15000 milliseconds. A positive JSON integer no greater than 9007199254740991, only valid for a daemon pool. |
 | `daemon-zmq-port` | Omitted; optionally use the node's ZMQ notifications. An integer in 1–65535, only valid for a daemon pool. |
+
+Absent or `null` `rig-id`, `nicehash`, `algo`, `coin`, and `sni` values are omitted from the generated config.
+For `nicehash` and `sni`, an explicit `false` is preserved while `null` means unset. The algorithm and
+coin allowlists are pinned to XMRig v6.26.0's `src/base/crypto/Algorithm.cpp` and
+`src/base/crypto/Coin.cpp` at commit `b2ca72480c58d197e18c885d9fc1a0c8d517e60a`.
+
+XMRig defers to the pool when it supports algorithm negotiation, ignoring `algo` and `coin`.
+Avoid `coin` with NiceHash, where the pool controls which coin is mined.
+
+`status` and `doctor` report the live algorithm when it is not `rx/0`. HugePages sizing and the
+offline tune benchmark remain based on `rx/0`; RigForge makes no performance guarantee for another
+RandomX variant.
 
 Two common setups follow; pick the one that matches where you're mining.
 

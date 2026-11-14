@@ -80,6 +80,7 @@ systemctl() {
     esac
 }
 # Run the actual editor, phases and EXIT restoration without preflight or hardware.
+source "$ROOT/tests/e2e-hammer.sh"
 eval "$(sed -n '/^set_cfg()/,/^}/p; /^_cleanup()/,/^}/p; /^snapshot_config()/,/^}/p; /^phase_stratum_auth()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 eval "$(sed -n '/^_xmrig_diagnostics()/,/^}/p; /^_connect_bad()/,/^}/p' "$ROOT/tests/e2e-control-replay.sh")"
 source "$ROOT/tests/e2e-pithead-control.sh"

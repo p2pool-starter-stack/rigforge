@@ -19,8 +19,10 @@ are modest; most of the performance comes from tuning, which RigForge applies fo
 | OS | Ubuntu 22.04+ or Debian 12 | Ubuntu is the supported target. macOS is deprecated (unsupported, untested since 2026-09-14). |
 | Network | Reach your pool / stack host on its Stratum port (Pithead uses 3333) | A LAN pool needs no Tor. An `.onion` pool needs an operator-managed Tor SOCKS proxy. |
 
-> RandomX light mode needs only 256 MB of RAM but is far slower; fast mode (the default) is what you
-> want for real hashrate. These figures are from XMRig's own
+> RandomX light mode uses a shared 256 MiB cache instead of the fast dataset and is far slower; fast
+> mode (the default) is what you want for real hashrate. Select `xmrig.randomx.mode: "light"` explicitly
+> when the host needs the smaller HugePages reservation. `auto` may fall back inside XMRig, but RigForge
+> reserves for fast mode. These figures are from XMRig's own
 > [RandomX optimization guide](https://xmrig.com/docs/miner/randomx-optimization-guide).
 
 ### A note on L3 cache
@@ -58,9 +60,11 @@ adds a few defaults that make sense because the box is a dedicated miner:
 | `cpu.asm` | `auto` | XMRig picks the Ryzen / Intel / Bulldozer assembly path for the detected CPU. |
 | `randomx.wrmsr` | `true` | Auto-applies the correct per-family MSR preset (needs root + the `msr` module). |
 | `randomx.numa` | `true` | A no-op on single-NUMA machines; on multi-NUMA CPUs it gives each node its own dataset copy. Note a single-socket EPYC can still expose several NUMA nodes, so RigForge sizes the 1 GB HugePage reservation per NUMA node rather than per socket. |
+| `randomx.mode` | `fast` | `auto` lets XMRig fall back when the dataset cannot be allocated; explicit `light` uses the shared 256 MiB cache and the smaller 2 MB HugePages reservation. |
+| `randomx.init` / `randomx.init-avx2` | `-1` / `-1` (auto) | The `xmrig.randomx` settings can limit dataset-initialization threads and control AVX2 initialization; `init-avx2: 1` enables it only on supporting CPUs. A smaller thread count reduces startup and thermal-resume contention on a co-located host. |
 | `cpu.yield` | `false` | Busy-wait for maximum hashrate (we own the whole machine). |
 | `cpu.priority` | `2` | Wins scheduling vs. background daemons (XMRig warns >2 can hang a desktop). |
-| `cpu.huge-pages` / `randomx.1gb-pages` | `true` (Linux) | The single biggest lever; see below. |
+| `cpu.huge-pages` / `randomx.1gb-pages` | `true` (Linux) | The single biggest lever; light mode forces `1gb-pages` off because it has no dataset. |
 
 > Why not a per-model lookup table? XMRig's auto-config is cache-aware and updated every release, so it
 > gets thread placement right for CPUs a static table would miss or mishandle. Take dual-CCD X3D parts

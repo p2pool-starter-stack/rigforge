@@ -7,6 +7,7 @@ TASK_TMP=$(mktemp -d)
 trap 'rm -rf "$TASK_TMP"' EXIT
 source "$ROOT/tests/e2e-pithead-tokens.sh"
 source "$ROOT/tests/e2e-pithead-control.sh"
+source "$ROOT/tests/e2e-hammer.sh"
 for fn in _restore_xmrig _cleanup snapshot_config set_cfg; do
     eval "$(sed -n "/^$fn()/,/^}/p" "$ROOT/tests/e2e-pithead.sh")"
 done

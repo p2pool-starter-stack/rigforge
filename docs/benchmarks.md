@@ -133,3 +133,16 @@ needed for this evidence task.
    “No detected difference” does not establish “no overhead” without sufficient precision. Apply the
    same limits to README, website and organization copy: automated upstream XMRig tuning, package
    versus wall power, and historical versus current-candidate measurements must remain distinct.
+
+## Verifiable release benchmarks
+
+The live measurements above predate benchmark submission and have no submitted IDs.
+For a new release baseline, explicitly opt in with `bench --submit`, or use the release perf gate's
+`E2E_PERF_SUBMIT=1` option. Submission publishes hardware and performance information and is off by
+default. RigForge prints the ID only after a separate verification run succeeds.
+
+Record that returned ID here alongside the CPU, release tag, XMRig version and measured H/s when
+publishing a new benchmark. Anyone can check it with `bench --verify ID`. The release perf gate also
+stores `benchmark_id` in its baseline and history records; see
+[the baseline procedure](../tests/perf-baselines/README.md). No new hardware result or ID is claimed
+by adding this procedure.

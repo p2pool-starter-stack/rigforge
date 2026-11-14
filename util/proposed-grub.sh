@@ -59,6 +59,15 @@ if ! { [ -n "$NUMA_NODES" ] && [ "$NUMA_NODES" -gt 0 ]; } 2>/dev/null; then
     NUMA_NODES="$SOCKETS"
 fi
 
+RX_MODE="${RX_MODE:-fast}"
+case "$RX_MODE" in
+fast | auto | light) ;;
+*)
+    echo "Invalid RandomX mode: expected auto, fast or light" >&2
+    exit 1
+    ;;
+esac
+
 # --- 2. Resource Calculation ---
 
 # RandomX Requirement: 2MB L3 Cache per mining thread. Callers can override this estimate with RX_THREADS
@@ -99,6 +108,11 @@ TOTAL_2MB_PAGES=$((128 + THREADS + 10 + EXTRA_2MB_PAGES))
 # because, like the 1GB path, each NUMA node holds its own dataset copy.
 BASE_2MB_PAGES=1168
 TOTAL_2MB_FALLBACK=$(((BASE_2MB_PAGES * NUMA_NODES) + THREADS + 50 + EXTRA_2MB_PAGES))
+
+if [ "$RX_MODE" = light ]; then
+    TOTAL_GB_PAGES=0
+    TOTAL_2MB_FALLBACK=$TOTAL_2MB_PAGES
+fi
 
 if [ "$RUNTIME" -eq 1 ]; then
     # Check if 1GB pages are already allocated
@@ -154,7 +168,7 @@ _cap_2mb() { # <2MB pages> -> pages, clamped to CEILING_2MB_PAGES
 # --- 3. Configuration Generation ---
 
 # Check for 1GB HugePage support (pdpe1gb flag)
-if grep -q "pdpe1gb" "$CPUINFO" 2>/dev/null; then
+if [ "$RX_MODE" != light ] && grep -q "pdpe1gb" "$CPUINFO" 2>/dev/null; then
     # Strategy: Use 1GB pages for dataset, 2MB for JIT
     # SCOPE of the #410 clamp, deliberately the 2MB entry only: hugepages_pool_ceiling_mb has always
     # described the pool `vm.nr_hugepages` names — the 2MB pool — and that is the quantity
@@ -178,7 +192,8 @@ else
     echo "--- Hardware Analysis ---"
     echo "L3 Cache:      ${L3_MB} MB"
     echo "CPU Sockets:   $SOCKETS"
-    echo "NUMA Nodes:    $NUMA_NODES (1GB dataset reservation scales with this)"
+    echo "NUMA Nodes:    $NUMA_NODES"
+    echo "RandomX mode: $RX_MODE"
     echo "Max Threads:   $THREADS (Based on 2MB L3/thread)"
     echo "-------------------------"
     echo "Proposed GRUB Configuration:"

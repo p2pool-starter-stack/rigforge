@@ -75,7 +75,9 @@ auto-detection and adds dedicated-miner defaults:
   which stays correct for CPUs a model-name table would miss. See
   [Hardware › How RigForge tunes](hardware.md#how-rigforge-tunes).
 - Dedicated-miner defaults: `cpu.yield: false` (busy-wait for max hashrate) and `cpu.priority: 2`.
-- RandomX fast mode: the full 2 GB dataset in memory for maximum hashrate.
+- RandomX fast mode by default: the full 2 GB dataset in memory for maximum hashrate. The narrow
+  `xmrig.randomx` config can select `auto` or `light` and set the dataset initialization controls;
+  these explicit settings are applied after measured tune overrides.
 - Thread layout sized to L3. RandomX wants ~2 MB of L3 per thread, so XMRig sizes threads to the
   detected L3 rather than using every core.
 
@@ -179,6 +181,17 @@ sudo ./rigforge.sh tune                         # now <n> threads benchmarks wit
 `setup` also reads the tuned `cpu.rx` from `tune-overrides.json` automatically, so once you've tuned, a
 plain `sudo ./rigforge.sh setup` keeps the reservation matched to your winning thread count.
 
+Reservation sizing also follows `xmrig.randomx.mode`. `fast` and `auto` keep the existing
+topology-aware dataset reservation; XMRig may fall back from `auto` at allocation time, but that does
+not promise a smaller reservation. Explicit `light` disables 1 GB pages and reserves 2 MB pages for
+one shared 256 MiB cache, one page per mining thread, a 10-page buffer, and the configured extra
+headroom: `128 + threads + 10 + ceil(hugepages_reserve_extra_mb / 2)`. It does not replicate the cache
+per NUMA node. `hugepages_pool_ceiling_mb` still caps the persisted 2 MB pool.
+
+After a mode change, `apply` renders the miner config immediately; re-run `setup` and reboot to resize
+the persistent reservation. Runtime changes remain grow-only, and the co-resident-host guard retains an
+existing sufficient pool, so a previous larger reservation is not reclaimed automatically.
+
 For how to run `tune` (the command, `--live`, `--efficiency`, `--confirm`, `--history`, and `--clear`),
 see [Operations › Tuning](operations.md#tuning).
 
@@ -188,8 +201,9 @@ see [Operations › Tuning](operations.md#tuning).
 
 These are why a reboot is needed on Linux:
 
-- HugePages (1 GB + 2 MB). Backs the RandomX dataset with huge pages to cut TLB misses, the biggest
-  performance lever. Sizing is topology-aware (see `util/proposed-grub.sh`). Making it persistent edits
+- HugePages (1 GB + 2 MB in fast/auto; 2 MB only in light). Backs RandomX memory with huge pages to cut
+  TLB misses. Fast/auto sizing is topology-aware; light uses a single shared cache (see
+  `util/proposed-grub.sh`). Making it persistent edits
   GRUB, which takes effect on reboot. RigForge merges its parameters into the existing
   `GRUB_CMDLINE_LINUX_DEFAULT` instead of overwriting it, so other kernel params are preserved (a
   boot-safety fix).
