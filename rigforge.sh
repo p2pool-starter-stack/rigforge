@@ -2569,7 +2569,7 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     shift
     _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out" && _apply_randomx_config "$out" || return 1
     chmod 600 "$out"
-    _rx_clamp_candidate "$out" "$TUNE_BASE"
+    _rx_clamp_candidate "$out" "$TUNE_BASE" "$3"
 }
 
 # shellcheck source=util/benchmark.sh

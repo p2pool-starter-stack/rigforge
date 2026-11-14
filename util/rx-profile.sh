@@ -30,8 +30,8 @@ _rx_probe_reap() {
 
 _rx_probe_auto() {
     local bin sinkdir sink pid deadline arr="" oldtrap
-    bin="$PWD/xmrig"
-    [ -x "$bin" ] || bin="$WORKER_ROOT/xmrig/build/xmrig"
+    bin="$WORKER_ROOT/xmrig/build/xmrig"
+    case "$PWD" in "$WORKER_ROOT"/*) [ -f "$PWD/xmrig" ] && [ -x "$PWD/xmrig" ] && bin="$PWD/xmrig" ;; esac
     { [ "${OS_TYPE:-}" = Linux ] && [ -x "$bin" ] && command -v jq >/dev/null 2>&1; } || return 2
     sinkdir=$(mktemp -d) || return 1
     sink="$sinkdir/probe.json"
@@ -47,7 +47,7 @@ _rx_probe_auto() {
     pid=$!
     oldtrap=$(trap -p INT TERM HUP)
     # shellcheck disable=SC2064
-    trap "_rx_probe_reap $pid $sinkdir; exit 143" INT TERM HUP
+    trap "_rx_probe_reap $pid '$sinkdir'; exit 143" INT TERM HUP
     deadline=$((SECONDS + ${RX_PROBE_TIMEOUT:-10}))
     while [ "$SECONDS" -lt "$deadline" ]; do
         if jq -e '.cpu.rx | type == "array" and length >= 1' "$sink" >/dev/null 2>&1; then
@@ -66,14 +66,22 @@ _rx_probe_auto() {
 _rx_ensure_auto() {
     [ -n "${RX_AUTO_THREADS:-}" ] && return 0
     [ -n "${RX_AUTO_RC:-}" ] && return "$RX_AUTO_RC"
-    local arr rc=0
+    local arr rc=0 seen cache="${TUNE_TMP:+$TUNE_TMP/rxauto}"
+    if [ -n "$cache" ] && [ -s "$cache" ]; then
+        seen=$(<"$cache")
+        case "$seen" in
+        '' | *[!0-9]*) RX_AUTO_RC=1 ;;
+        *) RX_AUTO_THREADS="$seen" RX_AUTO_RC=0 ;;
+        esac
+        return "$RX_AUTO_RC"
+    fi
     arr=$(_rx_probe_auto "$1") || rc=$?
     if [ "$rc" = 0 ] && RX_AUTO_THREADS=$(jq -r 'length' <<<"$arr" 2>/dev/null) && [ "${RX_AUTO_THREADS:-0}" -ge 1 ]; then
-        RX_AUTO_RC=0
-        return 0
+        RX_AUTO_ARR="$arr" RX_AUTO_RC=0
+    else
+        RX_AUTO_THREADS="" RX_AUTO_RC=$((rc == 2 ? 2 : 1))
     fi
-    RX_AUTO_THREADS=""
-    RX_AUTO_RC=$((rc == 2 ? 2 : 1))
+    [ -z "$cache" ] || printf '%s' "${RX_AUTO_THREADS:-none}" >"$cache"
     return "$RX_AUTO_RC"
 }
 
@@ -112,7 +120,7 @@ _rx_finalize_cpu_rx() {
         return
     fi
     if [ -n "$auto" ] && [ "$eff" -ge "$auto" ]; then
-        out=$(jq --argjson n "$auto" '.cpu.rx = [range($n) | -1]' "$cfg" 2>/dev/null)
+        out=$(jq --argjson a "${RX_AUTO_ARR:-[]}" --argjson n "$auto" '.cpu.rx = (if ($a | length) == $n then $a else [range($n) | -1] end)' "$cfg" 2>/dev/null)
     else
         out=$(jq --argjson n "$eff" '.cpu.rx = {mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}' "$cfg" 2>/dev/null)
     fi
@@ -121,18 +129,17 @@ _rx_finalize_cpu_rx() {
 }
 
 _rx_clamp_candidate() {
-    local eff cap
-    eff=$(_rx_request_count "$1")
-    [ -z "$eff" ] && return 0
-    local cache="$2.rxauto" seen
-    if [ -s "$cache" ]; then
-        seen=$(<"$cache")
-        case "$seen" in '' | *[!0-9]*) RX_AUTO_RC=1 ;; *) RX_AUTO_THREADS="$seen" ;; esac
+    local out="$1" eff cap
+    if [ "$3" = "-1" ]; then
+        jq '.cpu.rx = {}' "$out" >"$out.rx$$" && cat "$out.rx$$" >"$out" && rm -f "$out.rx$$" || return 1
+        _rx_finalize_cpu_rx "$out"
+        return
     fi
+    eff=$(_rx_request_count "$out")
+    [ -z "$eff" ] && return 0
     _rx_ensure_auto "$2" || true
-    [ -s "$cache" ] || printf '%s' "${RX_AUTO_THREADS:-none}" >"$cache"
     cap=$(_rx_validate_cap)
     eff=$(_rx_min_count "$eff" "$cap" "${RX_AUTO_THREADS:-}")
-    jq --argjson n "$eff" '.cpu.rx = {mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}' "$1" >"$1.rx$$" &&
-        cat "$1.rx$$" >"$1" && rm -f "$1.rx$$"
+    jq --argjson n "$eff" '.cpu.rx = {mode: 0, threads: $n, max_threads_cnt: $n, intensity: 1, affinity: -1}' "$out" >"$out.rx$$" &&
+        cat "$out.rx$$" >"$out" && rm -f "$out.rx$$"
 }

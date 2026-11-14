@@ -40,7 +40,7 @@ def count(profile):
 
 
 class ThreadProfile(unittest.TestCase):
-    def generate(self, cap, tuned=None, candidate=False, shared=False, script=FAKE):
+    def generate(self, cap, tuned=None, candidate=False, cthreads=12, shared=False, script=FAKE):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             build = root / "xmrig/build"
@@ -51,7 +51,7 @@ class ThreadProfile(unittest.TestCase):
             binary.chmod(0o700)
             if tuned is not None:
                 (root / "tune-overrides.json").write_text(json.dumps({"cpu": {"rx": tuned}}))
-            env = dict(os.environ, SHARED_HOST="true" if shared else "false", PROFILE_ROOT=d, PROFILE_SCRIPT=str(SCRIPT), PROFILE_CAP=str(cap))
+            env = dict(os.environ, SHARED_HOST="true" if shared else "false", PROFILE_ROOT=d, PROFILE_SCRIPT=str(SCRIPT), PROFILE_CAP=str(cap), PROFILE_CT=str(cthreads))
             command = """
 source "$PROFILE_SCRIPT"
 lscpu() { printf 'Model name: Test CPU\\n'; }
@@ -71,7 +71,7 @@ generate_xmrig_config
                 command += """
 TUNE_BASE="$PWD/config.json"
 TUNE_BIN="$PWD/xmrig"
-_tune_config "$PWD/candidate.json" 1 false 12 false 2 false false false
+_tune_config "$PWD/candidate.json" 1 false $PROFILE_CT false 2 false false false
 """
             result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -109,6 +109,12 @@ _tune_config "$PWD/candidate.json" 1 false 12 false 2 false false false
 
     def test_uncapped_bench_candidate_uses_auto_ceiling(self):
         self.assertEqual(count(self.generate("", candidate=True)["cpu"]["rx"]), 8)
+
+    def test_auto_candidate_ignores_inherited_tuned_count(self):
+        self.assertEqual(self.generate("", 4, candidate=True, cthreads=-1)["cpu"]["rx"], {})
+
+    def test_auto_candidate_still_honours_cap(self):
+        self.assertEqual(count(self.generate(3, 4, candidate=True, cthreads=-1)["cpu"]["rx"]), 3)
 
     def test_shared_host_keeps_object_override_below_cap(self):
         self.assertEqual(count(self.generate(6, {"threads": 2, "intensity": 1, "affinity": -1}, shared=True)["cpu"]["rx"]), 2)
