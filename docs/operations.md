@@ -443,7 +443,7 @@ Everything else works anywhere: `setup`, `apply`, `bench`, the offline `tune`, `
 
 `./rigforge.sh support-bundle` (no root needed) collects what a maintainer needs — `doctor` output,
 version, both configs (structurally redacted: token and pool password removed, pool user/wallet
-masked to first-4…last-4), a 500-line miner-log tail, tuning files, unit files, hardware basics —
+masked to first-4…last-4), the five logging values in effect (`xmrig-logging.json`), a 500-line miner-log tail, tuning files, unit files, hardware basics —
 into a mode-600 tarball next to the script. It never collects the journal, shell history, or
 unredacted configs, and never uploads anything. Extract and review it before attaching to a
 public issue.
@@ -468,6 +468,13 @@ sudo journalctl -u xmrig -f     # live service logs
 - Log file: ordinary installs write `<WORKER_ROOT>/xmrig.log` (e.g. `data/worker/xmrig.log`) and
   automatically compress and retain seven archives. Appliance mode omits this persistent file and
   uses the image-capped systemd journal instead.
+- Logging keys: on Linux RigForge sets `colors: false`, so the log and journal carry no ANSI escapes,
+  and keeps XMRig's 60 s `print-time` and `health-print-time`. Set any of `colors`, `print-time`,
+  `health-print-time`, `verbose` and `syslog` in the [`xmrig` overlay](configuration.md) and run
+  `apply`; the value survives restarts. On the appliance, where the journal is size-capped, a longer
+  cadence such as `"xmrig": {"print-time": 900, "health-print-time": 900}` cuts journal churn (the
+  watchdog reads `/2/summary`, not the console report). To debug a pool handshake or TLS failure, apply
+  `"xmrig": {"verbose": 1}` and remove it afterwards. `0` disables a report line.
 - Build log: the XMRig compile output is captured to `<WORKER_ROOT>/build.log` (e.g.
   `data/worker/build.log`) during setup, so a failed build is diagnosable after the fact. On any
   unexpected failure the script also names the step that failed and prints the last lines of the build

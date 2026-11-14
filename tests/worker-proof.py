@@ -34,7 +34,7 @@ GROUPS = set(ALL_PHASES) | {
     "control-replay-pools",
 }
 PASS_COUNTS = {
-    "connect": 8,
+    "connect": 10,
     "worker-api": 10,
     "api-impact": 3,
     "network": 10,
@@ -43,8 +43,8 @@ PASS_COUNTS = {
     "dev-fee": 1,
     "control": 5,
     "access-tokens": 7,
-    "control-replay-thermal": 9,
-    "control-replay-pools": 9,
+    "control-replay-thermal": 11,
+    "control-replay-pools": 11,
 }
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
