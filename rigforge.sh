@@ -1136,9 +1136,7 @@ generate_xmrig_config() {
         --arg host "$HTTP_HOST" \
         --arg os "$OS_TYPE" \
         '{
-            autosave: true,
-            "print-time": 60,
-            "health-print-time": 60,
+            autosave: true, "print-time": 60, "health-print-time": 60,
             cpu: {
                 enabled: true,
                 "huge-pages": $huge_pages,
