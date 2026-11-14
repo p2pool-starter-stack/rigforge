@@ -65,6 +65,10 @@ _xmrig_unpinned() {
     jq --argjson overlay "$XMRIG_OVERLAY" 'delpaths([$overlay | paths as $p | select(getpath($p) | type != "object") | $p])'
 }
 
+_xmrig_logging_in_effect() {
+    jq '{colors: (if has("colors") then .colors else true end), "print-time": (."print-time" // 60), "health-print-time": (."health-print-time" // 60), verbose: (.verbose // 0), syslog: (.syslog // false)}'
+}
+
 _merge_xmrig_overlay() {
     local merged
     if [ "$XMRIG_OVERLAY" != '{}' ]; then

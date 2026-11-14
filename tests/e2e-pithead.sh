@@ -200,6 +200,12 @@ phase_connect() {
         _connect_bad "no accepted share within ${share_to}s"
     fi
     e2e_doctor_json
+    if [ -n "$GEN_CFG" ] && jq -e '.colors == false and .["print-time"] == 60 and .["health-print-time"] == 60' "$GEN_CFG" >/dev/null 2>&1; then
+        ok "generated config carries colors false and the 60 s report cadence (#530)"
+    else
+        bad "generated config lacks colors false / print-time 60 / health-print-time 60 (#530)"
+    fi
+    if [ -s "$WLOG" ] && ! grep -q $'\033' "$WLOG"; then ok "xmrig.log written by the live miner carries no ANSI escapes (#530)"; else bad "xmrig.log is empty or carries ANSI escapes after XMRig ran the rendered config (#530)"; fi
     # Discovery contract: the dashboard identifies workers by the stratum `user` label.
     local user
     user=$(jq -r '.pools[0].user' "$GEN_CFG" 2>/dev/null || true)
