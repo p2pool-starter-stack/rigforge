@@ -95,6 +95,7 @@ rebuilds the config from five sources:
    HugePages). RigForge uses XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
 3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave`,
+   `print-time: 60`, `health-print-time: 60`, `colors: false` (Linux only),
    `randomx.mode: fast`, `randomx.init: -1`, `randomx.init-avx2: -1`, `opencl`/`cuda` off, and the
    `http` port `8080`.
 4. Tuned overrides *(if present)*: if you've run [`tune`](operations.md#tuning), its winning knobs in

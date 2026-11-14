@@ -1134,8 +1134,11 @@ generate_xmrig_config() {
         --argjson restricted "$HTTP_RESTRICTED" \
         --argjson donation "$DONATION" \
         --arg host "$HTTP_HOST" \
+        --arg os "$OS_TYPE" \
         '{
             autosave: true,
+            "print-time": 60,
+            "health-print-time": 60,
             cpu: {
                 enabled: true,
                 "huge-pages": $huge_pages,
@@ -1169,7 +1172,7 @@ generate_xmrig_config() {
             },
             opencl: false,
             cuda: false
-        } + (if $log == "" then {} else {"log-file": $log} end)' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
+        } + (if $log == "" then {} else {"log-file": $log} end) + (if $os == "Linux" then {colors: false} else {} end)' >"$_new" || _config_render_fail "$_new" "Rendering the XMRig config failed" || return 1
 
     if [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
         _step=$(_shared_host_merge "$_new" "$WORKER_ROOT/tune-overrides.json") && printf '%s\n' "$_step" >"$_new" || _config_render_fail "$_new" "Applying $WORKER_ROOT/tune-overrides.json failed (fix or remove it)" || return 1
@@ -3738,6 +3741,9 @@ support_bundle() {
             rm -f "$STAGE_DIR/xmrig-config.redacted.json"
             _skip "xmrig-config.redacted.json(unparseable)"
         fi
+    fi
+    if [ -n "$wr" ] && [ -f "$wr/xmrig/build/config.json" ] && _xmrig_logging_in_effect <"$wr/xmrig/build/config.json" >"$STAGE_DIR/xmrig-logging.json" 2>/dev/null; then
+        _take xmrig-logging.json
     fi
     if [ -n "$wr" ] && [ -f "$wr/xmrig.log" ]; then
         tail -n 500 "$wr/xmrig.log" >"$STAGE_DIR/xmrig.log.tail" 2>/dev/null && _take xmrig.log.tail
