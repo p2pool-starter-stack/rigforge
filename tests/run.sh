@@ -42,7 +42,7 @@ trap 'rc=$?
 export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SANDBOX/revision-key"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for _t in xmrig-overlay xmrig-logging config-ownership; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
+for _t in xmrig-overlay xmrig-logging config-ownership feed-identity; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -7327,7 +7327,7 @@ run_refresh() { # [env pairs...]
     )
 }
 run_refresh # stub curl answers the xmrig probe
-assert_eq "refresh writes all three response files" "$(ls "$APIQ/data" | sort | tr '\n' ' ')" "health.json summary.json tune.json "
+assert_eq "refresh writes all four response files" "$(ls "$APIQ/data" | sort | tr '\n' ' ')" "health.json summary-authed.json summary.json tune.json "
 assert_eq "summary: xmrig fields pass through unchanged (superset rule)" "$(jq -r '.hashrate.total[0]' "$APIQ/data/summary.json")" "1234.5"
 assert_eq "summary: rigforge.version = the VERSION file" "$(jq -r '.rigforge.version' "$APIQ/data/summary.json")" "$(cat "$ROOT/VERSION")"
 assert_eq "summary: provenance carries the full pinned commit" "$(jq -r '.rigforge.xmrig_commit | length' "$APIQ/data/summary.json")" "40"
@@ -9515,7 +9515,7 @@ printf '%s' '{"status":"rolled_back","change_id":"7777777777777777","source":"co
 printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.lan:3333","uptime":93700,"failures":0,"accepted":42,"rejected":1},"uptime":93780,"hugepages":[1248,1248]}' >"$FEEDFX/xmrig-body.json"
 (
     source "$SCRIPT"
-    OS_TYPE=Linux RIGFORGE_APPLIANCE=1
+    OS_TYPE=Linux RIGFORGE_APPLIANCE=1 RIGFORGE_OS_VERSION_FILE="$FEEDFX/no-os-marker"
     SCRIPT_DIR="$FEEDFX"
     CONFIG_JSON="$FEEDFX/config.json"
     CONFIG_META_FILE="$FEEDFX/meta.json"

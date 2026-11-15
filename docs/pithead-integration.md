@@ -80,7 +80,10 @@ pithead#235):
   `rigforge` object: `version`/`xmrig_version`/`xmrig_commit` (provenance),
   `appliance` (boolean, true when the running setup uses appliance mode, re-read from the persisted
   setup marker unless `RIGFORGE_APPLIANCE` overrides it), `stamp` (the `RIGFORGE_REF` contents beside
-  the running script, `ref=<sha> version=<x.y.z>`; `null` when absent, unreadable or empty), `tune` (applied
+  the running script, `ref=<sha> version=<x.y.z>`; `null` when absent, unreadable or empty),
+  `os_version` (the appliance image's version marker — the Pithead OS version the rig boots;
+  `null` on standalone rigs and when the marker is absent or unreadable), `rig_id` (the `rig_id`
+  config key echoed verbatim; `null` when unset — RigForge never invents one), `tune` (applied
   overrides, last run's target/best/candidates, the autotune schedule), `power` (RAPL watts and
   hashrate-per-watt over a 1s window; `null` when unmeasurable), `health` (the doctor probes
   as JSON: HugePages, MSR state, governor, RAM channels/speeds, XMP and SMT state, throttling),
@@ -109,9 +112,13 @@ pithead#235):
 - Solo daemon connections carry `connection.mode: "daemon"`, inferred from the active configured
   pool when absent from XMRig's summary. Missing Stratum shares do not indicate a node outage.
   RigForge adds no mode field for Stratum connections.
-
-Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
-show `rigforge.stamp` as the baked release provenance instead.
+- The summary routes served **authenticated** (a bearer accepted while a token is set) carry one
+  extra key, `rigforge.identity`: display hints for telling cloned installs and moved hardware
+  apart — `mac` (first three octets of the NIC the default route uses), `board_uuid` (first 13
+  characters of the lowercased board UUID) and `cpu_model`. Each is `null` when its probe finds
+  nothing. Truncation is deliberate, and the object is **never served on an unauthenticated
+  route**: with no token set `:8081` is open, and the open feed never carries `identity`. None of
+  these values — nor `rig_id` — ever authenticates anything.
 
 Coordinators can use `rigforge.appliance` to hide git-based upgrade controls on appliance rigs and
 show `rigforge.stamp` as the baked release provenance instead.

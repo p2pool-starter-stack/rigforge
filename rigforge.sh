@@ -150,6 +150,8 @@ source "$(_script_dir)/util/shared-host.sh"
 source "$(_script_dir)/util/randomx.sh"
 # shellcheck source=util/control-guards.sh
 source "$(_script_dir)/util/control-guards.sh"
+# shellcheck source=util/feed-identity.sh
+source "$(_script_dir)/util/feed-identity.sh"
 
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
@@ -733,6 +735,7 @@ parse_config() {
     RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx must be an object whose mode is auto/fast/light, init is -1 or a positive integer, and init-avx2 is -1/0/1."
     RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
     export RX_MODE
+    RIG_ID=$(jq -r '.rig_id | if type == "string" and test("\\S") then . else empty end' "$CONFIG_JSON")
 
     _shared_host_parse
     _warn_unknown_config_keys
@@ -745,7 +748,7 @@ parse_config() {
 # `_` are the comment convention (config.reference.json's own _docs); RIG_NAME is reserved for the
 # #1 image seed. Warn NAMES only, never values — a fat-fingered token must not land in a log.
 _warn_unknown_config_keys() {
-    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade tor_socks5 hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host xmrig"
+    local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade tor_socks5 hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host xmrig rig_id"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 rig-id nicehash algo coin sni daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
     local k lk m lm hit hint unknown_seen=0
     while IFS= read -r k; do
@@ -5202,7 +5205,7 @@ _api_control_json() {
 }
 _api_control_history_json() { for f in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/changes"/*.json; do [ -f "$f" ] && jq -c '{change_id, status, reason}' "$f" 2>/dev/null; done | jq -cs '.' || true; } # #519: per-file so one malformed entry drops only itself; || true as the loop's rc leaks through pipefail
 _api_rigforge_block() {                                                                                                                                                                                            # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$(cat "$SCRIPT_DIR/RIGFORGE_REF" 2>/dev/null || echo '')" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
+    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$(cat "$SCRIPT_DIR/RIGFORGE_REF" 2>/dev/null || echo '')" --arg os "$(_feed_os_version)" --arg rid "${RIG_ID:-}" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), os_version: (if $os == "" then null else $os end), rig_id: (if $rid == "" then null else $rid end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
 }
 # Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {
@@ -5217,7 +5220,7 @@ api_refresh() {
     rf=$(_api_rigforge_block "$hr")
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
-    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json"
+    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json"
     printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
     printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
 }

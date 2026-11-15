@@ -26,7 +26,7 @@ refresh_profile_event() {
         "$$" "$1" "$2" "$3" "$4" "$5" >&2
 }
 # No arguments, config values or payloads in diagnostics. Begin events identify an unfinished probe.
-for probe in api_refresh parse_config _read_api_summary _api_rigforge_block _api_tune_json _api_power_json _health_json _cpu_eff_khz _mem_summary _msr_log_status _dmi _watchdog_json _api_config_json _api_config_meta_json _api_control_json _api_control_history_json; do
+for probe in api_refresh parse_config _read_api_summary _api_rigforge_block _api_tune_json _api_power_json _health_json _cpu_eff_khz _mem_summary _msr_log_status _dmi _watchdog_json _api_config_json _api_config_meta_json _api_control_json _api_control_history_json _api_identity_json; do
     declare -f "$probe" >/dev/null
     eval "$(declare -f "$probe" | sed "1s/$probe/${probe}_profile_original/")"
     eval "$probe() {

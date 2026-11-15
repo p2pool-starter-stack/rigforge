@@ -670,7 +670,13 @@ Python entrypoints and config as private credentials before dropping to DynamicU
 beneath a `0750` home works without relaxing home permissions. Setup and apply fail if the enabled
 sister API cannot be installed, primed, or confirmed active and listening. The listener check accepts
 a warming-up 503 or authentication-required 401; it does not require a live miner. Apply completes
-its other reconciles before returning the sister-API failure.
+its other reconciles before returning the sister-API failure. The feed additionally carries
+`rigforge.os_version` (the appliance image's version; `null` on standalone rigs) and
+`rigforge.rig_id` (the `rig_id` config label; `null` when unset, never invented), and
+authenticated reads additionally carry `rigforge.identity` — display hints (`mac` and
+`board_uuid` truncated, `cpu_model` verbatim) for telling clones and moved hardware apart —
+which an unauthenticated route never serves and which never authenticates anything
+(`rig_id` included). See [Pithead integration](pithead-integration.md).
 
 ## Writable control path (opt-in)
 
