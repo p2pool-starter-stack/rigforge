@@ -166,6 +166,9 @@ else
     eq "authed API: /health keeps its own body" "$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOK" "http://127.0.0.1:$GPORT/health" 2>/dev/null | jq -r '.service_active')" "true"
     rm -f "$SRV/summary-authed.json"
     eq "authed API: missing identity file falls back to the public payload" "$(curl -fsS --max-time 5 -H "Authorization: Bearer $TOK" "http://127.0.0.1:$GPORT/1/summary" 2>/dev/null | jq -c '.rigforge | has("identity")')" "false"
+    mv "$SRV/summary.json" "$SRV/summary.saved"
+    eq "authed API: both summary files gone -> 503 warming up" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $TOK" "http://127.0.0.1:$GPORT/1/summary")" "503"
+    mv "$SRV/summary.saved" "$SRV/summary.json"
     printf '%s' '{"hashrate":{"total":[1.0]},"rigforge":{"stamp":null,"identity":{"mac":"aa:bb:cc"}}}' >"$SRV/summary-authed.json"
     kill "$GPID" 2>/dev/null || true
     wait "$GPID" 2>/dev/null || true
