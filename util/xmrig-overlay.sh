@@ -77,14 +77,6 @@ _merge_xmrig_overlay() {
     fi
 }
 
-_cap_xmrig_threads() {
-    local capped
-    if [ -n "${THREADS_CAP:-}" ]; then
-        capped=$(jq --argjson cap "$THREADS_CAP" '.cpu = (if (.cpu | type) == "object" then .cpu else {} end) | .cpu.rx = (if (.cpu.rx | type) == "number" and .cpu.rx >= 1 and .cpu.rx <= $cap then .cpu.rx else $cap end)' "$1") || return 1
-        printf '%s\n' "$capped" >"$1"
-    fi
-}
-
 _validate_xmrig_config() {
     local bin="$1" config="$2" validation="$3" output
     jq -e 'any(.pools[]; .enabled == true)' "$config" >/dev/null || {

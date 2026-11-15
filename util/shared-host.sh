@@ -26,7 +26,7 @@ _shared_host_config() {
         .randomx.cache_qos = false | .randomx.numa = false | .randomx.init = ($cap // 1) |
         .opencl = false | .cuda = false |
         if $cap != null then
-            .cpu.rx as $rx |
+            (.cpu.rx | if type == "object" then .threads else . end) as $rx |
             .cpu |= with_entries(select((.value | type) != "array" and (.value | type) != "object")) |
             .cpu.rx = (if ($rx | type) == "array" and ($rx | length) > 0 and all($rx[]; type == "number" and floor == . and . >= -1)
                 then $rx[:$cap]

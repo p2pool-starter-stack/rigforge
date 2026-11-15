@@ -52,7 +52,7 @@ printf '{not json\n' >"$W/tune-overrides.json"
 check "unreadable tune overlay returns failure" "$(render "$W" "$D")" 1
 check "last good config.json survives a bad overlay" "$("$REAL_JQ" -r '._orig' "$W/config.json")" true
 
-for mode in "--argjson cap:clamp" "-e:validation"; do
+for mode in "--argjson n:clamp" "-e:validation"; do
     W="$D/${mode#*:}"
     mkdir "$W"
     printf '{"_orig":true}\n' >"$W/config.json"
@@ -119,7 +119,7 @@ mkdir "$W"
 printf '{"_orig":true}\n' >"$W/config.json"
 inode_before="$(ls -i "$W/config.json" | awk '{print $1}')"
 check "successful render returns success" "$(render "$W" "$D" 4)" 0
-check "successful render replaces the config" "$("$REAL_JQ" -r '.cpu.rx' "$W/config.json")" 4
+check "successful render replaces the config" "$("$REAL_JQ" -r '.cpu.rx.threads' "$W/config.json")" 4
 check "successful render is owner-only" "$(stat -c '%a' "$W/config.json" 2>/dev/null || stat -f '%Lp' "$W/config.json")" 600
 
 check "successful render keeps the live file's inode" "$(ls -i "$W/config.json" | awk '{print $1}')" "$inode_before"

@@ -344,12 +344,12 @@ cfg=""
 for a in "$@"; do case "$a" in --config=*) cfg="${a#--config=}" ;; esac; done
 m=$(jq -r '.randomx.scratchpad_prefetch_mode' "$cfg" 2>/dev/null)
 y=$(jq -r '.cpu.yield' "$cfg" 2>/dev/null)
-t=$(jq -r '.cpu.rx' "$cfg" 2>/dev/null)
+t=$(jq -r 'if (.cpu.rx | type) == "object" then .cpu.rx.threads elif (.cpu.rx | type) == "array" then (.cpu.rx | length) else .cpu.rx end' "$cfg" 2>/dev/null)
 base=5000
 case "$m" in 2) base=6000 ;; 1) base=5500 ;; 0) base=5000 ;; *) base=5200 ;; esac
 [ "$y" = false ] && base=$((base + 50))
 tt="$t"
-[ "$tt" = "-1" ] && tt=6
+case "$tt" in -1 | null | '') tt=6 ;; esac
 pen=$(((tt > 8 ? tt - 8 : 8 - tt) * 100))
 base=$((base - pen))
 printf 'bench benchmark finished in 1.000 seconds (%s h/s) hash sum = \033[1;32m898B6E0431C28A6B\033[0m\n' "$base.0"
@@ -364,14 +364,14 @@ assert_rc "tune exits 0" "$trc" "0"
 assert_contains "tune finds the global optimum" "$tout" "Best: prefetch_mode=2 yield=false threads=8"
 assert_eq "tune wrote overrides" "$([ -f "$OVR" ] && echo y || echo n)" "y"
 assert_eq "overrides: winning prefetch" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$OVR" 2>/dev/null)" "2"
-assert_eq "overrides: winning thread count" "$(jq -r '.cpu.rx' "$OVR" 2>/dev/null)" "8"
+assert_eq "overrides: winning thread count" "$(jq -r '.cpu.rx.threads' "$OVR" 2>/dev/null)" "8"
 assert_eq "tune log is valid JSON" "$(jq -e . "$TLOG" >/dev/null 2>&1 && echo y || echo n)" "y"
 assert_eq "tune log best threads" "$(jq -r '.best.threads' "$TLOG" 2>/dev/null)" "8"
 assert_eq "tune left config.json untouched" "$([ -f ./config.json ] && echo y || echo n)" "y"
 # apply merges the tuned overrides into the generated config.
 ./rigforge.sh apply </dev/null >/dev/null 2>&1
 assert_eq "apply merged tuned prefetch" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$BUILD/config.json" 2>/dev/null)" "2"
-assert_eq "apply merged tuned thread count" "$(jq -r '.cpu.rx' "$BUILD/config.json" 2>/dev/null)" "8"
+assert_eq "apply merged tuned thread count" "$(jq -r '.cpu.rx.threads' "$BUILD/config.json" 2>/dev/null)" "8"
 # tune --clear resets the tuning state.
 ./rigforge.sh tune --clear </dev/null >/dev/null 2>&1
 assert_eq "tune --clear removed overrides" "$([ -f "$OVR" ] && echo y || echo n)" "n"
