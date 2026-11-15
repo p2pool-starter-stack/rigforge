@@ -89,7 +89,7 @@ cd "$WORK" || {
     echo "cannot enter $WORK"
     exit 1
 }
-
+bash tests/test-config-ownership.sh || exit 1
 # 3. Seed the system files the deploy expects to edit (base images ship none of these).
 mkdir -p /etc/modules-load.d /etc/default /etc/systemd/system
 : >/etc/fstab
@@ -250,7 +250,7 @@ assert_eq "deploy: donate-level = 7" "$(jq -r '.["donate-level"]' "$BUILD/config
 # in the container, that the result is valid JSON and carries the static defaults that used to live in
 # the template file (so a missing/empty template can never silently drop them again).
 assert_eq "deploy: config.json is valid JSON" "$(jq -e . "$BUILD/config.json" >/dev/null 2>&1 && echo y || echo n)" "y"
-assert_eq "in-script default: autosave on" "$(jq -r '.autosave' "$BUILD/config.json" 2>/dev/null)" "true"
+assert_eq "in-script defaults: autosave and watch off" "$(jq -c '[.autosave, .watch]' "$BUILD/config.json" 2>/dev/null)" '[false,false]'
 assert_eq "in-script: no dead cpu.hwloc key" "$(jq -r '.cpu.hwloc' "$BUILD/config.json" 2>/dev/null)" "null"
 assert_eq "in-script: huge-pages-jit off (XMRig default)" "$(jq -r '.cpu."huge-pages-jit"' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "in-script default: randomx.mode fast" "$(jq -r '.randomx.mode' "$BUILD/config.json" 2>/dev/null)" "fast"

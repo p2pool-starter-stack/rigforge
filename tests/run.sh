@@ -43,8 +43,7 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-bash "$ROOT/tests/test-xmrig-overlay.sh" "$SCRIPT" || FAIL=$((FAIL + 1))
-bash "$ROOT/tests/test-xmrig-logging.sh" "$SCRIPT" || FAIL=$((FAIL + 1))
+for _t in xmrig-overlay xmrig-logging config-ownership; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -6657,7 +6656,7 @@ assert_contains "plan: GRUB skip arm (#797)" "$apdr_out" "skipping GRUB updates 
 assert_contains "plan: runtime-only msr arm (#797)" "$apdr_out" "modprobe msr at runtime only (appliance: no modules-load drop-in)"
 assert_contains "plan: runtime mounts, no fstab/limits writes (#797)" "$apdr_out" "appliance mode: mount hugetlbfs at runtime"
 assert_contains "plan: unit goes to /run with --runtime (#797)" "$apdr_out" "/run/systemd/system/xmrig.service"
-assert_contains "plan: enable --runtime wording (#797)" "$apdr_out" "enable --runtime --now"
+assert_contains "plan: runtime enable and conditional restart (#797/#529)" "$apdr_out" "enable --runtime; restart if binary/config changed, otherwise start (deferred if reboot required)"
 assert_contains "plan: grow-only preview still renders (#797/#328)" "$apdr_out" "grow the pool so 200 2MB HugePages are available"
 for mut in apt-get modprobe tee mount sysctl update-grub; do
     assert_absent "appliance dry-run never invokes $mut (#797/#146)" "$(cat "$APDR/calls.log" 2>/dev/null)" "[$mut]"

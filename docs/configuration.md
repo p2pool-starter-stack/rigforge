@@ -94,7 +94,7 @@ rebuilds the config from five sources:
 2. Detected hardware: the per-CPU `cpu`/`randomx` tuning (thread count, `asm`, MSR, NUMA,
    HugePages). RigForge uses XMRig's own cache-aware auto-detection rather than a CPU-model table,
    so it stays correct for CPUs it's never seen. See [Hardware Requirements](hardware.md).
-3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave`,
+3. Static defaults: the fixed knobs every worker shares, emitted directly: `autosave: false`, `watch: false`,
    `print-time: 60`, `health-print-time: 60`, `colors: false` (Linux only),
    `randomx.mode: fast`, `randomx.init: -1`, `randomx.init-avx2: -1`, `opencl`/`cuda` off, and the
    `http` port `8080`.
@@ -128,16 +128,18 @@ validation copy disables background, log writers, and the CPU memory pool so pre
 logs or reserve HugePages. At least one pool must be enabled: XMRig otherwise falls back to another
 config instead of validating the candidate.
 
-Because the config is rebuilt from these sources every time, editing the generated `config.json` by
-hand has no effect. Change your repo-root `config.json` (including its `xmrig` object) or run `tune`,
-then re-run instead.
+RigForge owns the generated config: XMRig neither saves its auto-detected settings back into it nor
+hot-reloads hand edits. Edit your repo-root `config.json` (including its `xmrig` object, or use `tune`)
+and run `apply` to regenerate the file and restart the miner. A direct restart can load a hand edit,
+but the next regeneration overwrites it. On Linux, XMRig resolves the automatic thread profile again
+at each start.
 
 Each generation records SHA-256 fingerprints of the source `config.json` and the presence and
 contents of `tune-overrides.json`, plus a UTC timestamp, in `xmrig/build/.rigforge-apply.json` under
 the worker root. `doctor` and `status` compare those fingerprints with the current sources: a match
 is OK, a change warns with `sudo ./rigforge.sh apply`, and a missing or unreadable stamp is
 informational. Older installs gain a stamp on their next generation. Restarting the service alone
-does not regenerate its config or refresh this stamp; XMRig autosaves do not affect the comparison.
+does not regenerate its config or refresh this stamp.
 
 This is a conservative source-file check: whitespace edits and changes to settings outside XMRig
 (including restart-free watchdog updates) also warn. It does not prove which config a running
@@ -333,10 +335,12 @@ regenerates the config and you restart the miner yourself; see
 [Operations › Running on macOS](operations.md#running-on-macos).)
 
 You can also re-run full setup (`sudo ./rigforge.sh`), but that re-provisions the whole worker
-(dependencies, build, kernel tuning, service). To avoid interrupting a running miner, a setup re-run on
-an already-built worker regenerates the config without restarting, so the new config only takes effect
-on the next restart. To apply an edit, use `apply`; it does the restart for you. Both are idempotent and
-skip the recompile when the pinned XMRig is already built.
+(dependencies, build, kernel tuning, service). On Linux, setup restarts the service when the binary
+was rebuilt or the generated config changed, including on an already-built appliance worker.
+An unchanged setup re-run ensures the service is started without restarting a running miner.
+If kernel tuning requires a reboot, setup only enables the service for the next boot.
+Use `apply` for config edits without re-provisioning. Both commands skip the recompile when the
+pinned XMRig is already built.
 
 `DONATION` defaults to zero when omitted. Set it to a nonzero percentage to support the XMRig
 developers. Upgrade an existing build once to install the compiled minimum of zero; the build marker
