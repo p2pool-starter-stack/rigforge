@@ -936,13 +936,10 @@ install_dependencies() {
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
         if command -v brew &>/dev/null; then
-            # shellcheck disable=SC2046  # the substitution yields validated env assignments, split is intended
-            if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-                # Drop privileges for Homebrew if running as root
-                sudo -u "$REAL_USER" $(_tor_proxy_env) brew install cmake libuv openssl hwloc
-            else
-                $(_tor_proxy_env) brew install cmake libuv openssl hwloc
-            fi
+            local brew_prefix=""
+            [ "${EUID:-$(id -u)}" -eq 0 ] && brew_prefix="sudo -u $REAL_USER"
+            # shellcheck disable=SC2046,SC2086  # the substitutions yield validated words; split is intended
+            $brew_prefix $(_tor_proxy_env) brew install cmake libuv openssl hwloc
         else
             error "Homebrew not found."
         fi

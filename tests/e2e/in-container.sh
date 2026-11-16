@@ -141,7 +141,7 @@ export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit000000000000000000000000000
 # 5. Seed config.json (writable HOME_DIR; DONATION 7). Use an explicit (dotted) host so this doesn't
 #    depend on the .local/mDNS appending that PR #15 removes.
 cat >"$WORK/config.json" <<EOF
-{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "add_to_path": true, "api": "enabled", "api_allow_from": "10.20.30.40", "miner_user": "rf-miner", "pools": [{"url": "poolbox.lan:3333"}] }
+{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "tor_socks5": null, "add_to_path": true, "api": "enabled", "api_allow_from": "10.20.30.40", "miner_user": "rf-miner", "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
 
 BUILD="$WORK/data-home/worker/xmrig/build"
