@@ -25,6 +25,10 @@ ROUTES = {
     "/health": "health.json",
     "/tune": "tune.json",
 }
+AUTHED_ROUTES = {
+    "/1/summary": "summary-authed.json",
+    "/2/summary": "summary-authed.json",
+}
 READ_SCOPE = b"rigforge:api-read:v1"
 
 
@@ -79,13 +83,19 @@ class Handler(BaseHTTPRequestHandler):
             read_ok = any(hmac.compare_digest(auth.encode(), ("Bearer " + t).encode()) for t in READ_TOKENS)
             if not (raw_ok or read_ok):
                 return self._send(401, "Unauthorized", b'{"error":"unauthorized"}')
-        name = ROUTES.get(self.path.split("?", 1)[0])
+        path = self.path.split("?", 1)[0]
+        name = ROUTES.get(path)
         if name is None:
             return self._send(404, "Not Found", b'{"error":"not found"}')
-        try:
-            with open(os.path.join(DATA_DIR, name), "rb") as f:
-                body = f.read()
-        except OSError:
+        authed = AUTHED_ROUTES.get(path) if TOKENS else None
+        for cand in (authed, name) if authed else (name,):
+            try:
+                with open(os.path.join(DATA_DIR, cand), "rb") as f:
+                    body = f.read()
+                break
+            except OSError:
+                continue
+        else:
             return self._send(503, "Service Unavailable", b'{"error":"warming up - first refresh pending"}')
         self._send(200, "OK", body)
 
