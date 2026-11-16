@@ -29,6 +29,34 @@ WATCHDOG_OFF = {"disabled", "false", "off", "none", ""}
 TEMP_MIN, TEMP_MAX = 40, 110
 
 
+CFG_PATH = ""
+
+
+def tor_effective(cfg_path):
+    with open(cfg_path) as f:
+        tor = json.load(f).get("tor_socks5")
+    return isinstance(tor, str) and tor != ""
+
+
+def donation_tor_reasons(change):
+    if "DONATION" not in change or not CFG_PATH:
+        return []
+    try:
+        tor = tor_effective(CFG_PATH)
+    except (OSError, ValueError):
+        return ["config.json is unreadable, so the rig cannot confirm tor_socks5 posture before a DONATION write — refused"]
+    if not tor:
+        return []
+    d = change["DONATION"]
+    if d is None:
+        return []
+    if isinstance(d, bool) or not (isinstance(d, int) or (isinstance(d, str) and d.strip().isdigit())):
+        return ["DONATION must be a whole number 0-100"]
+    if int(str(d).strip()) != 0:
+        return ["DONATION above 0 is refused while tor_socks5 is set (a donation pool would dial direct; set DONATION to 0 or remove tor_socks5)"]
+    return []
+
+
 def unsafe_reasons(change):
     """Safety-critical values the remote control path must refuse (#257). Empty list = OK to stage."""
     out = []
@@ -340,6 +368,9 @@ class Handler(BaseHTTPRequestHandler):
         unsafe = unsafe_reasons(change)
         if unsafe:
             return self._send(400, "Bad Request", {"error": "safety-critical change refused via the remote control path: %s; change it locally on the rig with rigforge.sh if intended" % "; ".join(unsafe)})
+        tor_unsafe = donation_tor_reasons(change)
+        if tor_unsafe:
+            return self._send(400, "Bad Request", {"error": "refused via the remote control path: %s; change it locally on the rig with rigforge.sh if intended" % "; ".join(tor_unsafe)})
         # Re-serialize exactly the accepted keys (defence-in-depth: never stage a raw body) and hand off.
         staged = json.dumps({k: change[k] for k in change}).encode()
         warning = None
@@ -375,6 +406,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 5:
         sys.exit("usage: control-server.py <bind> <port> <state-dir> <config.json>")
     bind, port, STATE_DIR, cfg = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+    CFG_PATH = cfg
     TOKENS = load_tokens(cfg)
     UPGRADE_ENABLED = load_upgrade_enabled(cfg)
     os.makedirs(os.path.join(STATE_DIR, "spool"), exist_ok=True)

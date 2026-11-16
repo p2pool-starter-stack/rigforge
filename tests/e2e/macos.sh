@@ -73,7 +73,7 @@ export PATH="$STUBS:$PATH"
 export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
 
 cat >"$WORK/config.json" <<EOF
-{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "pools": [{"url": "poolbox.lan:3333"}] }
+{ "HOME_DIR": "$WORK/data-home", "DONATION": 7, "tor_socks5": null, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
 
 BUILD="$WORK/data-home/worker/xmrig/build"

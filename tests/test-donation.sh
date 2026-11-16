@@ -107,4 +107,28 @@ for summary in '' '{}' 'invalid' '{"donate_level":"untrusted"}'; do
     [[ "$out" == *'donation level unavailable'* ]]
 done
 printf 'donation doctor and defaults: PASS\n'
+CONFIG_JSON="$D/config-don-tor.json"
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":5}' >"$CONFIG_JSON"
+RIGFORGE_APPLIANCE=0
+if (
+    set +eu
+    parse_config
+) >/dev/null 2>"$D/parse-tor.err"; then exit 1; fi
+grep -q 'DONATION must be 0 while tor_socks5 is set' "$D/parse-tor.err"
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":0}' >"$CONFIG_JSON"
+(
+    set +eu
+    parse_config
+) >/dev/null
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":5}' >"$CONFIG_JSON"
+if [ "$RIGFORGE_APPLIANCE" = 1 ]; then exit 1; fi
+RIGFORGE_APPLIANCE=1
+if (
+    set +eu
+    parse_config
+) >/dev/null 2>"$D/parse-don.err"; then exit 1; fi
+grep -q 'DONATION must be 0 while tor_socks5 is set' "$D/parse-don.err"
+RIGFORGE_APPLIANCE=0
+printf '{}' >"$CONFIG_JSON"
+printf 'DONATION refuses non-zero while tor_socks5 is set: PASS\n'
 bash "$(dirname "$SCRIPT")/tests/test-e2e-donation.sh"
