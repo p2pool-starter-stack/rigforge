@@ -438,6 +438,7 @@ parse_config() {
     if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
+    [ "$DONATION" = 0 ] || [ -z "$(_tor_socks5)" ] || error "DONATION must be 0 while tor_socks5 is set: a non-zero donation makes XMRig dial its donation pool directly, off the proxy. Set DONATION to 0, or remove tor_socks5 to take this rig off Tor."
     # Pool(s). The pool target is XMRig's native `pools` array — the same structure XMRig uses
     # ({"url","user","pass","keepalive","tls",...}). Each entry needs a `url` of the form `host:port`;
     # every other field falls back to a Pithead-friendly default. List multiple entries for failover.
@@ -873,15 +874,15 @@ _detect_pkg_manager() {
         fi
         # DPkg::Lock::Timeout waits for the apt/dpkg lock instead of failing — fresh boots often have
         # unattended-upgrades holding it for a minute or two (#74).
-        DEP_INSTALL="sudo apt-get update -qq -o DPkg::Lock::Timeout=300 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300 -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
+        DEP_INSTALL="sudo apt-get update -qq -o DPkg::Lock::Timeout=300$(_tor_apt_proxy_opts) && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300$(_tor_apt_proxy_opts) -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
         DEP_CHECK="dpkg -s"
     elif command -v dnf &>/dev/null; then
         DEP_LIST="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel msr-tools"
-        DEP_INSTALL="sudo dnf install -y"
+        DEP_INSTALL="sudo dnf install -y$(_tor_dnf_proxy_opt)"
         DEP_CHECK="rpm -q"
     elif command -v pacman &>/dev/null; then
         DEP_LIST="git cmake libuv openssl hwloc gettext base-devel"
-        DEP_INSTALL="sudo pacman -Sy --noconfirm --needed"
+        DEP_INSTALL="sudo $(_tor_proxy_env) pacman -Sy --noconfirm --needed"
         DEP_CHECK="pacman -Qi"
     else
         return 1
@@ -935,12 +936,10 @@ install_dependencies() {
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
         if command -v brew &>/dev/null; then
-            if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-                # Drop privileges for Homebrew if running as root
-                sudo -u "$REAL_USER" brew install cmake libuv openssl hwloc
-            else
-                brew install cmake libuv openssl hwloc
-            fi
+            local brew_prefix=""
+            [ "${EUID:-$(id -u)}" -eq 0 ] && brew_prefix="sudo -u $REAL_USER"
+            # shellcheck disable=SC2046,SC2086  # the substitutions yield validated words; split is intended
+            $brew_prefix $(_tor_proxy_env) brew install cmake libuv openssl hwloc
         else
             error "Homebrew not found."
         fi
@@ -1994,6 +1993,7 @@ main() {
     check_prerequisites
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
+    _seed_appliance_tor_default
     CURRENT_STEP="parsing config"
     parse_config
     _shared_host_prepare
@@ -4269,6 +4269,7 @@ _control_commit() { # <staged.json> <backups-dir>
             return 1
         fi
     fi
+    _tor_staged_donation_conflict "$change" && return 1
     # #415: resolve masked pool secrets before jq's array-replacing overlay. Match a stored pool by
     # (url,user), keep only a real stored secret, and reject any sentinel left unresolved. The raw
     # config view matters: normalized POOLS_JSON invents pass="x" for an absent password (#429).

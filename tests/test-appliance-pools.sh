@@ -19,9 +19,9 @@ for change in '{"pools":[{"url":"other.example:3333"}]}' '{"pools":null}' '{"poo
     cmp -s "$CONFIG_JSON" "$D/before.json"
     [ ! -e "$D/backups" ]
 done
-printf '{"DONATION":2}' >"$D/staged.json"
+printf '{"DONATION":0}' >"$D/staged.json"
 _control_commit "$D/staged.json" "$D/backups" >/dev/null
-[ "$(jq -r .DONATION "$CONFIG_JSON")" = 2 ]
+[ "$(jq -r .DONATION "$CONFIG_JSON")" = 0 ]
 RIGFORGE_APPLIANCE=0
 printf '{"pools":[{"url":"other.example:3333"}]}' >"$D/staged.json"
 _control_commit "$D/staged.json" "$D/backups" >/dev/null

@@ -101,7 +101,7 @@ if [ "${1:-}" = --case ]; then
     }
     phase_control() {
         phase control
-        passes 4
+        passes 7
         (ok subprocess-assertion)
     }
     phase_access_tokens() {

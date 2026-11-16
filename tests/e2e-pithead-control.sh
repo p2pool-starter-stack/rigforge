@@ -68,6 +68,7 @@ phase_control() {
     [ "$(jq -r '.DONATION' "$CFG")" = "$new" ] &&
         ok "config.json carries DONATION=$new (control-apply persisted it)" ||
         bad "config.json DONATION is '$(jq -r '.DONATION' "$CFG")', expected $new"
+    tor_donation_refusal "$tok" "$port"
     appliance_pool_refusal "$tok" "$port"
     refresh_profile_start || bad "could not instrument timer-driven refreshes"
     sleep 20 # allow a natural timer dispatch before thermal apply
@@ -103,6 +104,40 @@ phase_control() {
     # state from the snapshot, and blanking ACCESS_TOKEN while control is enabled is #514's own
     # fail-closed abort (rigforge.sh refuses that apply) — the bug this phase must not re-enact.
 }
+
+tor_donation_refusal() (
+    local tok="$1" port="$2" tresp code cid st waited=0 before
+    tresp=$(mktemp) || bad "could not allocate the donation-tor response file"
+    trap 'rm -f "$tresp"' EXIT
+    set_cfg '.DONATION = 0 | .tor_socks5 = "127.0.0.1:9050"' soft ||
+        bad "could not put the rig into the tor-on DONATION-0 posture"
+    before=$(sha256sum "$CFG")
+    code=$(_control_curl "$tok" -s -o "$tresp" -w '%{http_code}' --max-time 10 \
+        -H 'Content-Type: application/json' -d '{"DONATION":2}' "http://127.0.0.1:$port/apply" 2>/dev/null || true)
+    [ "$code" = 400 ] &&
+        jq -e '.error | contains("DONATION above 0 is refused while tor_socks5 is set")' "$tresp" >/dev/null &&
+        [ "$before" = "$(sha256sum "$CFG")" ] ||
+        bad "remote DONATION 2 was not refused while tor_socks5 is set (HTTP $code)"
+    ok "remote DONATION above 0 refused at the receiver while tor_socks5 is set, config untouched (#696)"
+    code=$(_control_curl "$tok" -s -o "$tresp" -w '%{http_code}' --max-time 10 \
+        -H 'Content-Type: application/json' -d '{"DONATION":0}' "http://127.0.0.1:$port/apply" 2>/dev/null || true)
+    cid=$(jq -r '.change_id // empty' "$tresp" 2>/dev/null || true)
+    if [ "$code" = 202 ] && [[ "$cid" =~ ^[0-9a-f]{16}$ ]]; then
+        ok "remote DONATION 0 accepted while tor_socks5 is set (#696)"
+    else
+        bad "remote DONATION 0 was not accepted while tor_socks5 is set (HTTP $code)"
+    fi
+    while [ "$waited" -lt 300 ]; do
+        st=$(_control_curl "$tok" -fsS --max-time 5 "http://127.0.0.1:$port/status?change_id=$cid" 2>/dev/null |
+            jq -r '.status // empty' 2>/dev/null || true)
+        case "$st" in applied | rejected | rolled_back | failed) break ;; esac
+        sleep 5
+        waited=$((waited + 5))
+    done
+    [ "$st" = applied ] && [ "$(jq -r '.DONATION' "$CFG")" = 0 ] ||
+        bad "remote DONATION 0 did not reach 'applied' while tor_socks5 is set (last status: ${st:-unreachable})"
+    ok "remote DONATION 0 applied through the control path while tor_socks5 is set (#696)"
+)
 
 appliance_pool_refusal() (
     local tok="$1" port="$2" dropin response request code cid body st waited=0 before

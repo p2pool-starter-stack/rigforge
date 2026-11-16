@@ -123,8 +123,9 @@ reported exit remain zero.
 
 Check IDs are stable for automation, but row availability depends on the worker's configuration and
 available probes. An ID may repeat: `socks-proxy`, for example, can produce one row for each configured
-proxy. `tor-socks5` is one row: `info` when `tor_socks5` is unset, `ok` when its port accepts a TCP
-connection, `warn` when it does not or the value is invalid. Messages are operator-facing text and are not a stable interface. Consumers should therefore
+proxy. `tor-socks5` is one row: `info` when `tor_socks5` is unset on a plain host, `ok` when its port (or the
+appliance-rig local Tor default the key defaults to) accepts a TCP connection, `warn` when it does not or
+the value is invalid. Messages are operator-facing text and are not a stable interface. Consumers should therefore
 select rows by `id` and `status`, allow repeats, and use the summary and `exit` fields for the overall
 result.
 

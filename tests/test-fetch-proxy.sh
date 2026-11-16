@@ -229,3 +229,188 @@ assert_contains "doctor reports the key unset" "$(fp_doctor '{"pools":[]}' yes)"
 assert_contains "doctor reports a reachable proxy" "$(fp_doctor "{\"tor_socks5\":\"$FP_PROXY\"}" yes)" "accepts TCP connections"
 assert_contains "doctor warns about an unreachable proxy" "$(fp_doctor "{\"tor_socks5\":\"$FP_PROXY\"}" no)" "unreachable (TCP connect failed)"
 assert_contains "doctor warns about an invalid key" "$(fp_doctor '{"tor_socks5":"nope"}' yes)" "is invalid"
+
+echo "== unit: appliance rigs default tor_socks5 to the local Tor client (#696) =="
+fp_app_tor() { # <config> [appliance]
+    fp_cfg "$1"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_APPLIANCE="${2:-0}"
+        set +e
+        _tor_socks5
+    ) 2>&1
+    echo "rc=$?"
+}
+assert_eq "appliance rig with the key unset defaults to the local Tor client" "$(fp_app_tor '{"pools":[{"url":"h:3333"}]}' 1)" "$(printf '127.0.0.1:9050\nrc=0')"
+assert_eq "appliance rig with an explicit null opts out to direct" "$(fp_app_tor '{"tor_socks5":null}' 1)" "rc=0"
+assert_eq "appliance rig honours its own proxy" "$(fp_app_tor '{"tor_socks5":"127.0.0.1:9150"}' 1)" "$(printf '127.0.0.1:9150\nrc=0')"
+assert_eq "plain host with the key unset stays direct (unchanged)" "$(fp_app_tor '{"pools":[{"url":"h:3333"}]}' 0)" "rc=0"
+
+fp_seed() { # <appliance> <config> -> config after
+    fp_cfg "$2"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_APPLIANCE="$1"
+        set +e
+        _seed_appliance_tor_default >/dev/null 2>&1
+    )
+    if jq -e . "$FP/config.json" >/dev/null 2>&1; then jq -cS . "$FP/config.json"; else cat "$FP/config.json"; fi
+}
+assert_eq "appliance setup writes the Tor default into config.json" "$(fp_seed 1 '{"pools":[{"url":"h:3333"}]}')" "$(printf '%s\n' '{"pools":[{"url":"h:3333"}],"tor_socks5":"127.0.0.1:9050"}' | jq -cS .)"
+assert_eq "an explicit null survives the seed (the opt-out sticks)" "$(fp_seed 1 '{"tor_socks5":null}')" "$(printf '%s\n' '{"tor_socks5":null}' | jq -cS .)"
+assert_eq "an operator-set proxy survives the seed" "$(fp_seed 1 '{"tor_socks5":"127.0.0.1:9150"}')" "$(printf '%s\n' '{"tor_socks5":"127.0.0.1:9150"}' | jq -cS .)"
+assert_eq "a plain host is never seeded" "$(fp_seed 0 '{"pools":[{"url":"h:3333"}]}')" "$(printf '%s\n' '{"pools":[{"url":"h:3333"}]}' | jq -cS .)"
+assert_eq "an unparseable config is left for parse_config to report" "$(fp_seed 1 '{bad')" "{bad"
+
+fp_check_app() { # <config> [down] <appliance>
+    fp_cfg "$1"
+    : >"$FP/log"
+    printf '1.4.0\n' >"$FP/VERSION"
+    env -i PATH="$FP/bin:$STUBS:$PATH" FP_LOG="$FP/log" RIGFORGE_APPLIANCE="$3" ${2:+FP_PROXY_DOWN=1} \
+        bash -c 'S=$1; D=$2; C=$3; set --; source "$S"; SCRIPT_DIR="$D"; CONFIG_JSON="$C"; set +e; _upgrade_check 2>&1; echo "rc=$?"' fp-shell "$SCRIPT" "$FP" "$FP/config.json"
+}
+out="$(fp_check_app '{"pools":[{"url":"h:3333"}]}' "" 1)"
+assert_contains "appliance default upgrade --check routes the default proxy and reports the release" "$(cat "$FP/log")" "--proxy socks5h://127.0.0.1:9050"
+assert_absent "appliance default upgrade --check never goes direct" "$out" "DIRECT"
+out="$(fp_check_app '{"pools":[{"url":"h:3333"}]}' down 1)"
+assert_contains "appliance default upgrade --check with Tor down fails closed" "$out" "through tor_socks5 (no direct fallback)"
+assert_absent "appliance default upgrade --check with Tor down never dials direct" "$(cat "$FP/log")" "DIRECT"
+out="$(fp_check_app '{"pools":[{"url":"h:3333"}]}' "" 0)"
+assert_absent "plain host upgrade --check is unchanged (no proxy flag)" "$(grep -c -- '--proxy' "$FP/log")" "1"
+
+fp_cu_app() { # <config> <origin> <reachable yes|no>
+    fp_cfg "$(printf '%s' "$1" | jq -c '. + {pools: [{url: "h:3333"}]}')"
+    : >"$FP/log"
+    local d
+    d="$(mktemp -d "$SANDBOX/fpua.XXXXXX")"
+    mkdir -p "$d/state/spool"
+    mkdir -m 700 "$d/upgrade-state" "$d/processing"
+    printf '1.0.0' >"$d/VERSION"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$d/rigforge.sh"
+    chmod +x "$d/rigforge.sh"
+    printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
+    (
+        env -i PATH="$FP/bin:$STUBS:$PATH" RIGFORGE_OPERATOR=nobody RIGFORGE_APPLIANCE=1 RIGFORGE_CONTROL_PROCESSING="$d/processing" RIGFORGE_CONTROL_LOCK="$d/control.lock" \
+            FP_LOG="$FP/log" FP_STUB_GIT="$STUBS/git" FP_ORIGIN="$2" \
+            bash -c '
+                S=$1
+                D=$2
+                C=$3
+                R=$4
+                set --
+                source "$S"
+                OS_TYPE=Linux
+                SCRIPT_DIR="$D"
+                CONFIG_JSON="$C"
+                RIGFORGE_CONTROL_STATE="$D/state"
+                RIGFORGE_CONTROL_UPGRADE_STATE="$D/upgrade-state"
+                CONTROL_UPGRADE_MIN_INTERVAL=0
+                if [ "$R" = yes ]; then _tcp_probe() { return 0; }; else _tcp_probe() { return 1; }; fi
+                _wait_miner_live() { return 0; }
+                set +e
+                control_upgrade >"$D/out.log" 2>&1
+            ' fp-shell "$SCRIPT" "$d" "$FP/config.json" "$3"
+    )
+    cat "$d/state/status.json" 2>/dev/null || cat "$d/out.log" >&2
+}
+s="$(fp_cu_app '{}' "https://github.com/p2pool-starter-stack/rigforge.git" yes)"
+assert_eq "appliance-default control-upgrade applies through the default proxy" "$(printf '%s' "$s" | jq -r .status)" "applied"
+assert_contains "appliance-default control-upgrade fetch carries the default proxy" "$(grep ' fetch ' "$FP/log")" "http.proxy=socks5h://127.0.0.1:9050"
+assert_absent "appliance-default control-upgrade never goes direct" "$(cat "$FP/log")" "DIRECT"
+s="$(fp_cu_app '{}' "https://github.com/p2pool-starter-stack/rigforge.git" no)"
+assert_eq "appliance-default control-upgrade with Tor down fails closed" "$(printf '%s' "$s" | jq -r .status)" "failed"
+assert_contains "appliance-default control-upgrade with Tor down names the fallback rule" "$s" "unreachable — refusing to fetch (no direct fallback)"
+assert_eq "appliance-default control-upgrade with Tor down fetches nothing" "$(grep -c ' fetch ' "$FP/log")" "0"
+
+fp_doctor_app() {
+    fp_cfg "$1"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_APPLIANCE=1
+        if [ "$2" = yes ]; then _tcp_probe() { return 0; }; else _tcp_probe() { return 1; }; fi
+        set +e
+        _doctor_tor_socks5 2>&1
+    )
+}
+assert_contains "doctor reports the appliance default as ok when Tor answers" "$(fp_doctor_app '{"pools":[]}' yes)" "127.0.0.1:9050 accepts TCP connections"
+assert_contains "doctor warns when the appliance default proxy is down" "$(fp_doctor_app '{"pools":[]}' no)" "unreachable (TCP connect failed)"
+assert_contains "doctor on an appliance never claims unset" "$(fp_doctor_app '{"pools":[]}' yes)" "accepts TCP"
+
+fp_don() { # <config> [appliance]
+    fp_cfg "$1"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_APPLIANCE="${2:-0}"
+        OS_TYPE=Linux
+        set +e
+        parse_config
+    ) 2>&1
+    echo "rc=$?"
+}
+out="$(fp_don '{"pools":[{"url":"h:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":5}')"
+assert_contains "setup/apply/upgrade refuse DONATION above 0 while tor_socks5 is set" "$out" "DONATION must be 0 while tor_socks5 is set"
+assert_contains "the refusal names both settings and exits non-zero" "$out" "rc=1"
+out="$(fp_don '{"pools":[{"url":"h:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":0}')"
+assert_contains "DONATION 0 with the key set parses fine" "$out" "rc=0"
+out="$(fp_don '{"pools":[{"url":"h:3333"}],"DONATION":5}')"
+assert_contains "a plain host keeps its donation (unchanged)" "$out" "rc=0"
+out="$(fp_don '{"pools":[{"url":"h:3333"}],"DONATION":5}' 1)"
+assert_contains "the appliance default counts for the donation guard too" "$out" "DONATION must be 0 while tor_socks5 is set"
+out="$(fp_don '{"pools":[{"url":"h:3333"}],"tor_socks5":null,"DONATION":5}' 1)"
+assert_contains "the explicit appliance opt-out keeps its donation" "$out" "rc=0"
+
+fp_opts() { # <config> <appliance> <fn>
+    fp_cfg "$1"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_APPLIANCE="$2"
+        set +e
+        "$3"
+    ) 2>/dev/null
+}
+assert_contains "tor-routed apt routes http through the proxy" "$(fp_opts "{\"tor_socks5\":\"$FP_PROXY\"}" 0 _tor_apt_proxy_opts)" "-o Acquire::http::Proxy=socks5h://$FP_PROXY"
+assert_contains "tor-routed apt routes https through the proxy" "$(fp_opts "{\"tor_socks5\":\"$FP_PROXY\"}" 0 _tor_apt_proxy_opts)" "-o Acquire::https::Proxy=socks5h://$FP_PROXY"
+assert_eq "unset key adds no apt proxy options on a plain host" "$(fp_opts '{"pools":[]}' 0 _tor_apt_proxy_opts)" ""
+assert_contains "the appliance default routes apt too" "$(fp_opts '{"pools":[]}' 1 _tor_apt_proxy_opts)" "-o Acquire::http::Proxy=socks5h://127.0.0.1:9050"
+assert_contains "tor-routed dnf sets its proxy option" "$(fp_opts "{\"tor_socks5\":\"$FP_PROXY\"}" 0 _tor_dnf_proxy_opt)" "--setopt=proxy=socks5h://$FP_PROXY"
+assert_contains "tor-routed pacman and brew get ALL_PROXY" "$(fp_opts "{\"tor_socks5\":\"$FP_PROXY\"}" 0 _tor_proxy_env)" "env ALL_PROXY=socks5h://$FP_PROXY"
+
+fp_conflict() { # <config> <staged-json> [appliance]
+    fp_cfg "$1"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_APPLIANCE="${3:-0}"
+        set +e
+        _tor_staged_donation_conflict "$2"
+    ) 2>&1
+}
+assert_contains "the applier backstop rejects a staged donation above zero while the key is set" "$(fp_conflict "{\"tor_socks5\":\"$FP_PROXY\"}" '{"DONATION":5}')" "rejected donation-nonzero-while-tor_socks5-set"
+assert_eq "the applier backstop allows a staged zero donation" "$(fp_conflict "{\"tor_socks5\":\"$FP_PROXY\"}" '{"DONATION":0}')" ""
+assert_eq "the applier backstop leaves plain-host donations alone" "$(fp_conflict '{"pools":[{"url":"h:3333"}]}' '{"DONATION":5}')" ""
+assert_contains "the appliance default counts for the staged guard too" "$(fp_conflict '{"pools":[{"url":"h:3333"}]}' '{"DONATION":5}' 1)" "rejected donation-nonzero-while-tor_socks5-set"
+fp_commit_reject() { # <appliance> <staged-json> <config>
+    fp_cfg "$3"
+    local d
+    d="$(mktemp -d "$SANDBOX/fpcmt.XXXXXX")"
+    printf '%s' "$2" >"$d/staged.json"
+    (
+        source "$SCRIPT"
+        CONFIG_JSON="$FP/config.json"
+        RIGFORGE_APPLIANCE="$1"
+        set +e
+        _control_commit "$d/staged.json" "$d/backups" 2>&1
+        echo "rc=$?"
+    )
+    rm -rf "$d"
+}
+out="$(fp_commit_reject 0 '{"DONATION":5}' "{\"tor_socks5\":\"$FP_PROXY\",\"pools\":[{\"url\":\"h:3333\"}]}")"
+assert_contains "control-apply refuses a staged DONATION above 0 while tor_socks5 is set" "$out" "rejected donation-nonzero-while-tor_socks5-set"
+assert_contains "control-apply refusal ends non-zero" "$out" "rc=1"
+out="$(fp_commit_reject 1 '{"DONATION":5}' '{"pools":[{"url":"h:3333"}]}')"
+assert_contains "control-apply refuses it on the appliance default as well" "$out" "rejected donation-nonzero-while-tor_socks5-set"

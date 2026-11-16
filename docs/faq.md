@@ -118,10 +118,13 @@ Tor yourself, then set the pool’s `socks5` address. First-run setup offers `12
 onion pool and lets you override it. RigForge does not install, start, or supervise Tor.
 
 To keep RigForge's own fetches off the clearnet as well, set the top-level `tor_socks5` key (host:port,
-for example `127.0.0.1:9050`). It covers `upgrade --check`, the pinned XMRig clone and the remote-upgrade
-oneshot's `git fetch`, with remote DNS and no direct fallback. It does not cover package-manager
-installs (`apt`, `dnf`, `pacman`, `brew`, or the `jq` bootstrap): those are yours to route, for example
-with `Acquire::http::Proxy` for apt. See [Configuration](configuration.md#configuration-reference).
+for example `127.0.0.1:9050`). It covers `upgrade --check`, the pinned XMRig clone, the remote-upgrade
+oneshot's `git fetch`, and `setup`'s package-manager installs (`apt`, `dnf`, `pacman`, `brew`), with
+remote DNS and no direct fallback. Only the `jq` bootstrap — which runs before `config.json` can be
+read — stays yours to route, for example with `Acquire::http::Proxy` for apt. An appliance rig already
+defaults the key to `127.0.0.1:9050` at first `setup` and never runs a package manager; there, `DONATION`
+must stay `0`, because the donation pool would dial direct. RigForge does not install or run Tor.
+See [Configuration](configuration.md#configuration-reference).
 
 ---
 

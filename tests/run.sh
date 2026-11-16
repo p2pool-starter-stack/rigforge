@@ -4034,7 +4034,7 @@ e2e_setup() { # echoes the work dir
     # Use an explicit (dotted) host so this E2E doesn't depend on the .local/mDNS appending that
     # Host is used verbatim (#15 removed the .local appending); the url is host:port.
     cat >"$W/config.json" <<EOF
-{ "HOME_DIR": "$W/home", "DONATION": 7, "pools": [{"url": "poolbox.lan:3333"}] }
+{ "HOME_DIR": "$W/home", "DONATION": 7, "tor_socks5": null, "pools": [{"url": "poolbox.lan:3333"}] }
 EOF
     echo "$W"
 }
@@ -6706,7 +6706,7 @@ assert_eq "legacy upgrade removes the persistent XMRig log (#477)" "$([ -e "$APW
 assert_contains "legacy upgrade reinstalls appliance control posture (#477/#479)" "$(cat "$APW/systemd-clean/rigforge-control-apply.service")" "RIGFORGE_APPLIANCE=1"
 assert_contains "legacy upgrade reinstalls the root-only consumer runtime (#479)" "$(cat "$APW/systemd-clean/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
 assert_eq "legacy upgrade reconciles every optional service (#477)" "$([ -f "$APW/systemd-clean/rigforge-autotune.service" ] && [ -f "$APW/systemd-clean/rigforge-watchdog.service" ] && [ -f "$APW/systemd-clean/rigforge-api.service" ] && echo yes)" "yes"
-printf '{"DONATION":2}' >"$APW/control/spool/pending-0123456789abcdef.json"
+printf '{"DONATION":0}' >"$APW/control/spool/pending-0123456789abcdef.json"
 apc_out="$( (cd "$APW" && unset RIGFORGE_APPLIANCE && PATH="$STUBS:$PATH" STUB_UNAME_S=Linux SYSTEMD_DIR="$APW/systemd-clean" LOGROTATE_DIR="$APW/logrotate-clean" APPLY_POOL_TRIES=1 APPLY_POOL_IVL=0 RIGFORGE_CONTROL_STATE="$APW/control" RIGFORGE_HOME="$APW" bash "$SCRIPT" control-apply </dev/null) 2>&1)"
 assert_rc "clean-environment appliance control-apply succeeds (#477)" "$?" "0"
 assert_eq "post-upgrade control request reaches applied (#477/#479)" "$(jq -r .status "$APW/control/status.json")" "applied"
