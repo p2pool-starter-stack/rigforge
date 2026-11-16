@@ -440,6 +440,7 @@ parse_config() {
     if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
+    [ "$DONATION" = 0 ] || [ -z "$(_tor_socks5)" ] || error "DONATION must be 0 while tor_socks5 is set: a non-zero donation makes XMRig dial its donation pool directly, off the proxy. Set DONATION to 0, or remove tor_socks5 to take this rig off Tor."
     # Pool(s). The pool target is XMRig's native `pools` array — the same structure XMRig uses
     # ({"url","user","pass","keepalive","tls",...}). Each entry needs a `url` of the form `host:port`;
     # every other field falls back to a Pithead-friendly default. List multiple entries for failover.
@@ -876,15 +877,15 @@ _detect_pkg_manager() {
         fi
         # DPkg::Lock::Timeout waits for the apt/dpkg lock instead of failing — fresh boots often have
         # unattended-upgrades holding it for a minute or two (#74).
-        DEP_INSTALL="sudo apt-get update -qq -o DPkg::Lock::Timeout=300 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300 -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
+        DEP_INSTALL="sudo apt-get update -qq -o DPkg::Lock::Timeout=300$(_tor_apt_proxy_opts) && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=300$(_tor_apt_proxy_opts) -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
         DEP_CHECK="dpkg -s"
     elif command -v dnf &>/dev/null; then
         DEP_LIST="git cmake libuv-devel openssl-devel hwloc-devel gettext gcc gcc-c++ make automake kernel-devel msr-tools"
-        DEP_INSTALL="sudo dnf install -y"
+        DEP_INSTALL="sudo dnf install -y$(_tor_dnf_proxy_opt)"
         DEP_CHECK="rpm -q"
     elif command -v pacman &>/dev/null; then
         DEP_LIST="git cmake libuv openssl hwloc gettext base-devel"
-        DEP_INSTALL="sudo pacman -Sy --noconfirm --needed"
+        DEP_INSTALL="sudo $(_tor_proxy_env) pacman -Sy --noconfirm --needed"
         DEP_CHECK="pacman -Qi"
     else
         return 1
@@ -938,12 +939,10 @@ install_dependencies() {
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
         if command -v brew &>/dev/null; then
-            if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-                # Drop privileges for Homebrew if running as root
-                sudo -u "$REAL_USER" brew install cmake libuv openssl hwloc
-            else
-                brew install cmake libuv openssl hwloc
-            fi
+            local brew_prefix=""
+            [ "${EUID:-$(id -u)}" -eq 0 ] && brew_prefix="sudo -u $REAL_USER"
+            # shellcheck disable=SC2046,SC2086  # the substitutions yield validated words; split is intended
+            $brew_prefix $(_tor_proxy_env) brew install cmake libuv openssl hwloc
         else
             error "Homebrew not found."
         fi
@@ -1044,6 +1043,8 @@ _config_install() {
     fi
 }
 
+# shellcheck source=util/rx-profile.sh
+source "$(_script_dir)/util/rx-profile.sh"
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
     _config_apply_begin "${1:-}"
@@ -1181,7 +1182,7 @@ generate_xmrig_config() {
 
     _merge_xmrig_overlay "$_new" || _config_render_fail "$_new" "Merging the XMRig overlay failed" || return 1
     _apply_randomx_config "$_new" || _config_render_fail "$_new" "Applying the xmrig.randomx settings failed" || return 1
-    _cap_xmrig_threads "$_new" || _config_render_fail "$_new" "Clamping cpu.rx to the thread cap failed" || return 1
+    _rx_finalize_cpu_rx "$_new" || _config_render_fail "$_new" "Applying the cpu.rx thread profile failed" || return 1
 
     _shared_host_config "$_new" || _config_render_fail "$_new" "Applying the shared-host XMRig safeguards failed" || return 1
     _config_install "$_new" "${1:-}" || return 1
@@ -1497,12 +1498,12 @@ _rx_setup_threads() {
     RX_SETUP_THREADS=""
     if [ -n "${RIGFORGE_THREADS:-}" ]; then
         RX_SETUP_THREADS="$RIGFORGE_THREADS"
-    elif RX_SETUP_THREADS=$(jq -er '.cpu.rx | numbers' <<<"$XMRIG_OVERLAY" 2>/dev/null); then
+    elif RX_SETUP_THREADS=$(jq -er '.cpu.rx | if type == "object" then .threads else . end | numbers' <<<"$XMRIG_OVERLAY" 2>/dev/null); then
         :
     elif [ -f "$WORKER_ROOT/tune-overrides.json" ]; then
-        RX_SETUP_THREADS=$(jq -r '.cpu.rx // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
+        RX_SETUP_THREADS=$(jq -r '(.cpu.rx | if type == "object" then .threads elif type == "array" then length else . end) // empty' "$WORKER_ROOT/tune-overrides.json" 2>/dev/null) || RX_SETUP_THREADS=""
     fi
-    case "$RX_SETUP_THREADS" in -1 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
+    case "$RX_SETUP_THREADS" in -1 | 0 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
 }
 
 # Read-only GRUB computation shared by tune_kernel (the mutation half) and the setup --dry-run plan
@@ -1995,6 +1996,7 @@ main() {
     check_prerequisites
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
+    _seed_appliance_tor_default
     CURRENT_STEP="parsing config"
     parse_config
     _shared_host_prepare
@@ -2560,11 +2562,12 @@ _now_s() { date +%s.%N 2>/dev/null; }
 # --- Auto-tuning: config build & H/s measurement ---
 
 _tune_knobs_json() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
-    jq -cn --argjson p "$1" --argjson y "$2" --argjson t "$3" --argjson g "$4" --argjson pr "$5" \
+    local rx='{}'
+    [ "$3" != "-1" ] && { [[ "$3" =~ ^[0-9]+$ ]] && rx="{\"rx\": $(_rx_object "$3")}" || rx="{\"rx\": $3}"; }
+    jq -cn --argjson p "$1" --argjson y "$2" --argjson rx "$rx" --argjson g "$4" --argjson pr "$5" \
         --argjson hj "$6" --argjson cq "$7" --argjson wr "$8" '
         { randomx: { scratchpad_prefetch_mode: $p, "1gb-pages": $g, cache_qos: $cq, wrmsr: $wr },
-          cpu: { yield: $y, priority: $pr, "huge-pages-jit": $hj,
-                 rx: $t } }' | _xmrig_unpinned
+          cpu: ({ yield: $y, priority: $pr, "huge-pages-jit": $hj } + $rx) }' | _xmrig_unpinned
 }
 
 _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
@@ -2573,7 +2576,8 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
     _tune_knobs_json "$@" | jq -s '.[0] * .[1]' "$TUNE_BASE" - >"$out" || return 1
     _merge_xmrig_overlay "$out" || return 1
     _apply_randomx_config "$out" || return 1
-    _cap_xmrig_threads "$out"
+    chmod 600 "$out"
+    _rx_clamp_candidate "$out" "$TUNE_BASE" "$3"
 }
 
 # shellcheck source=util/benchmark.sh
@@ -2964,7 +2968,7 @@ _tune_history() { # <overrides_file> <log_file>
     echo ""
     if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then
         echo "  Winning tune options (applied — $ovr):"
-        jq -r '[(.randomx.scratchpad_prefetch_mode|select(.!=null)|"prefetch_mode=\(.)"),(.cpu.rx|select(.!=null)|"threads=\(.)"),(.cpu.yield|select(.!=null)|"yield=\(.)"),(.randomx."1gb-pages"|select(.!=null)|"1gb-pages=\(.)"),(.cpu.priority|select(.!=null)|"priority=\(.)"),(.cpu."huge-pages-jit"|select(.!=null)|"huge-pages-jit=\(.)"),(.randomx.cache_qos|select(.!=null)|"cache_qos=\(.)"),(.randomx.wrmsr|select(.!=null)|"wrmsr=\(.)")]|.[]|"    • "+.' "$ovr" 2>/dev/null || true
+        jq -r '[(.randomx.scratchpad_prefetch_mode|select(.!=null)|"prefetch_mode=\(.)"),(.cpu.rx|if type=="object" then .threads elif type=="array" then length else . end|select(.!=null)|"threads=\(.)"),(.cpu.yield|select(.!=null)|"yield=\(.)"),(.randomx."1gb-pages"|select(.!=null)|"1gb-pages=\(.)"),(.cpu.priority|select(.!=null)|"priority=\(.)"),(.cpu."huge-pages-jit"|select(.!=null)|"huge-pages-jit=\(.)"),(.randomx.cache_qos|select(.!=null)|"cache_qos=\(.)"),(.randomx.wrmsr|select(.!=null)|"wrmsr=\(.)")]|.[]|"    • "+.' "$ovr" 2>/dev/null || true
         echo "    -> merged into the generated config; the miner is using these now."
     else
         echo "  Winning tune options: none yet — running XMRig's auto defaults."
@@ -3253,7 +3257,7 @@ tune() {
     # we never freeze a knob the search didn't explore.
     local ovr
     ovr=$(jq -n --argjson p "$G_p" --argjson y "$G_y" '{randomx:{scratchpad_prefetch_mode:$p}, cpu:{yield:$y}}')
-    [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = $t')
+    [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = (if ($t | type) == "number" then {mode: 0, threads: $t, max_threads_cnt: $t, intensity: 1, affinity: -1} else $t end)')
     case " $ACTIVE_KNOBS " in *" priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
     case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
     case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
@@ -4268,6 +4272,7 @@ _control_commit() { # <staged.json> <backups-dir>
             return 1
         fi
     fi
+    _tor_staged_donation_conflict "$change" && return 1
     # #415: resolve masked pool secrets before jq's array-replacing overlay. Match a stored pool by
     # (url,user), keep only a real stored secret, and reject any sentinel left unresolved. The raw
     # config view matters: normalized POOLS_JSON invents pass="x" for an absent password (#429).

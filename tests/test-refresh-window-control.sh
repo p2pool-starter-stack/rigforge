@@ -85,8 +85,10 @@ control_test_apply() {
     cmp -s "$SAVED_CFG" "$CFG" && return 0 # restoration applies the saved config
     [ "$mode" != setup-apply-failed ] || return 1
     jq -e '
+        (if has("tor_socks5") then .DONATION == 0 and .tor_socks5 == "127.0.0.1:9050"
+         else .DONATION == 1 end) and
         .ACCESS_TOKEN == ("0" * 64) and .api == "enabled" and .control == "enabled" and
-        .watchdog == "enabled" and .max_temp_c == 100 and .DONATION == 1 and
+        .watchdog == "enabled" and .max_temp_c == 100 and
         .api_allow_from == "127.0.0.1/32"' "$CFG" >/dev/null
 }
 xxd() {
@@ -140,7 +142,15 @@ curl() {
     fi
     if [ -n "$output" ]; then
         if [[ "$data" == *DONATION* ]]; then
-            jq '.DONATION=2' "$CFG" >"$CFG.tmp"
+            local dval tor
+            dval=$(printf '%s' "$data" | jq -r '.DONATION')
+            tor=$(jq -r '.tor_socks5 // ""' "$CFG")
+            if [ -n "$tor" ] && [ "$dval" != 0 ]; then
+                printf '{"error":"refused via the remote control path: DONATION above 0 is refused while tor_socks5 is set (a donation pool would dial direct; set DONATION to 0 or remove tor_socks5); change it locally on the rig with rigforge.sh if intended"}' >"$output"
+                printf 400
+                return
+            fi
+            jq --argjson d "$dval" '.DONATION = $d' "$CFG" >"$CFG.tmp"
             mv "$CFG.tmp" "$CFG"
         else
             printf 'POST thermal=%s\n' "$(printf '%s' "$data" | jq -r '.max_temp_c')" >>"$TEST_WINDOW_DIR/$mode-posts"
@@ -150,7 +160,7 @@ curl() {
                 return 0
             fi
         fi
-        printf '{"change_id":"fixture"}' >"$output"
+        printf '{"change_id":"0123456789abcdef"}' >"$output"
         if [ "$mode" = substituted ] && [[ "$data" != *DONATION* ]]; then
             LC_ALL=C ls -ld "$output" | cut -c1-10 >"$TEST_WINDOW_DIR/$mode-response-mode"
         fi
@@ -188,15 +198,12 @@ if [ "$mode" = substituted ]; then
     }
 elif [ "$mode" = allocation-failed ]; then
     mktemp() {
-        # The first allocation belongs to set_cfg; fail the later thermal response.
-        if [ ! -e "$TEST_WINDOW_DIR/$mode-setup" ]; then
-            : >"$TEST_WINDOW_DIR/$mode-setup"
-            command mktemp "$@"
-            return
-        fi
-        [ ! -e "$TEST_WINDOW_DIR/$mode-allocated" ] || return 1
-        : >"$TEST_WINDOW_DIR/$mode-allocated"
-        command mktemp "$@"
+        local n=0
+        [ ! -e "$TEST_WINDOW_DIR/$mode-n" ] || n=$(cat "$TEST_WINDOW_DIR/$mode-n")
+        n=$((n + 1))
+        printf '%s' "$n" >"$TEST_WINDOW_DIR/$mode-n"
+        [ "$n" -lt 5 ] && command mktemp "$@"
+        [ "$n" -lt 5 ]
     }
 fi
 phase_control

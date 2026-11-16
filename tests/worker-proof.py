@@ -41,7 +41,7 @@ PASS_COUNTS = {
     "stratum-auth": 4,
     "dashboard": 2,
     "dev-fee": 1,
-    "control": 5,
+    "control": 8,
     "access-tokens": 7,
     "control-replay-thermal": 11,
     "control-replay-pools": 11,

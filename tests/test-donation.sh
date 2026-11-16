@@ -107,4 +107,62 @@ for summary in '' '{}' 'invalid' '{"donate_level":"untrusted"}'; do
     [[ "$out" == *'donation level unavailable'* ]]
 done
 printf 'donation doctor and defaults: PASS\n'
+CONFIG_JSON="$D/config-don-tor.json"
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":5}' >"$CONFIG_JSON"
+RIGFORGE_APPLIANCE=0
+if (
+    set +eu
+    parse_config
+) >/dev/null 2>"$D/parse-tor.err"; then exit 1; fi
+grep -q 'DONATION must be 0 while tor_socks5 is set' "$D/parse-tor.err"
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":0}' >"$CONFIG_JSON"
+(
+    set +eu
+    parse_config
+) >/dev/null
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":5}' >"$CONFIG_JSON"
+if [ "$RIGFORGE_APPLIANCE" = 1 ]; then exit 1; fi
+RIGFORGE_APPLIANCE=1
+if (
+    set +eu
+    parse_config
+) >/dev/null 2>"$D/parse-don.err"; then exit 1; fi
+grep -q 'DONATION must be 0 while tor_socks5 is set' "$D/parse-don.err"
+RIGFORGE_APPLIANCE=0
+printf '{}' >"$CONFIG_JSON"
+printf 'DONATION refuses non-zero while tor_socks5 is set: PASS\n'
+DEPSD="$D/deps-brew"
+mkdir -p "$DEPSD"
+cat >"$DEPSD/sudo" <<'EOF'
+#!/bin/sh
+[ "$1" = -u ] && shift 2
+exec "$@"
+EOF
+cat >"$DEPSD/env" <<'EOF'
+#!/bin/sh
+while [ "${1#*=}" != "$1" ]; do export "$1"; shift; done
+exec "$@"
+EOF
+cat >"$DEPSD/brew" <<'EOF'
+#!/bin/sh
+echo "ALL_PROXY=${ALL_PROXY:-none} brew $*" >>"$DEPS_LOG"
+EOF
+chmod +x "$DEPSD"/*
+brew_deps_run() {
+    : >"$DEPS_LOG"
+    (
+        set +eu
+        unset -f sudo brew
+        export REAL_USER=test OS_TYPE=Darwin DEPS_LOG
+        PATH="$DEPSD:$PATH" install_dependencies </dev/null
+    ) >/dev/null 2>&1
+    cat "$DEPS_LOG"
+}
+DEPS_LOG="$D/deps-brew.log"
+CONFIG_JSON="$D/config-brew-tor.json"
+printf '{"tor_socks5":"127.0.0.1:9050"}' >"$CONFIG_JSON"
+grep -q 'ALL_PROXY=socks5h://127.0.0.1:9050 brew install cmake libuv openssl hwloc' <(brew_deps_run)
+printf '{"tor_socks5":null}' >"$CONFIG_JSON"
+grep -q 'ALL_PROXY=none brew install cmake libuv openssl hwloc' <(brew_deps_run)
+printf 'Darwin brew installs route through tor_socks5: PASS\n'
 bash "$(dirname "$SCRIPT")/tests/test-e2e-donation.sh"
