@@ -94,7 +94,7 @@ class DurabilityUncertain(OSError):
         self.cid = cid
 def load_tokens(cfg_path):
     """The master ACCESS_TOKEN plus every named ACCESS_TOKENS entry (#516): one token per consuming
-    Pithead stack, so a bench borrow never needs prod's credential. Every entry authenticates the
+    Pithead stack, so no stack needs another stack's credential. Every entry authenticates the
     writable control path identically (raw match only — no derived read-only bearer here)."""
     if not os.path.exists(cfg_path):
         return set()

@@ -34,7 +34,7 @@ READ_SCOPE = b"rigforge:api-read:v1"
 
 def load_tokens(cfg_path):
     """The master ACCESS_TOKEN plus every named ACCESS_TOKENS entry (#516): one token per consuming
-    Pithead stack, so a bench borrow never needs prod's credential. All of them authenticate here
+    Pithead stack, so no stack needs another stack's credential. All of them authenticate here
     identically — only xmrig's own :8080 API is master-only."""
     if not os.path.exists(cfg_path):
         return set()
