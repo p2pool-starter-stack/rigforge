@@ -15,16 +15,22 @@ for eco in github-actions pre-commit pip npm docker; do
         fail "dependabot.yml has no $eco entry"
 done
 
-entries=$(grep -c 'package-ecosystem:' "$dependabot")
-[ "$(grep -c -- '- "infra"' "$dependabot")" -eq "$entries" ] ||
-    fail "every dependabot entry must keep the infra label"
-[ "$(grep -c -- '- "dependencies"' "$dependabot")" -eq "$entries" ] ||
-    fail "every dependabot entry must carry the dependencies label"
+awk '
+    /^  - package-ecosystem:/ { n++ }
+    n && /- "infra"/ { hasinfra[n] = 1 }
+    n && /- "dependencies"/ { hasdeps[n] = 1 }
+    END {
+        if (n < 5) { exit 1 }
+        for (i = 1; i <= n; i++) {
+            if (!hasinfra[i] || !hasdeps[i]) { exit 1 }
+        }
+    }' "$dependabot" ||
+    fail "every dependabot entry must carry the infra and dependencies labels"
 
 awk '/package-ecosystem: "github-actions"/ { ga = 1; next }
     ga && /^[[:space:]]+groups:/ { found = 1 }
     END { exit !found }' "$dependabot" ||
-    fail "github-actions updates must arrive as one group"
+    fail "github-actions updates must be one nested group over all actions"
 
 for pin in diff-cover yamllint zizmor; do
     grep -q "^${pin}==" tools/requirements-ci.txt ||
@@ -56,7 +62,10 @@ for d in tests/e2e tests/coverage tests/docker; do
     grep -q "\"/$d\"" "$dependabot" ||
         fail "dependabot.yml has no docker entry for /$d"
 done
-stray=$(grep -rEn --include='*.yml' --include='*.sh' '@sha256:[0-9a-f]{64}' .github/workflows tests || true)
+rc=0
+stray=$(git ls-files -z -- '*.yml' '*.yaml' '*.sh' '*.py' Makefile |
+    xargs -0 grep -l '@sha256:[0-9a-f]\{64\}' 2>/dev/null) || rc=$?
+[ "$rc" -le 1 ] || fail "stray image-digest scan could not run (grep exit $rc)"
 [ -z "$stray" ] || fail "image digests belong only in the tests Dockerfile pins: $stray"
 
 if grep -qE 'check (diff-cover|zizmor|markdownlint-cli2|kcov)' .github/workflows/tool-bump.yml; then
