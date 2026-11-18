@@ -172,6 +172,12 @@ if [ "$(id -u)" -ne 0 ]; then
     _shared_host_status_report >"$D/report"
     grep -q 'Resource profile: unknown; config.json is not readable by this user' "$D/report" ||
         fail 'an unreadable config.json loses its status reason (#744)'
+    (
+        OS_TYPE=Linux
+        svc_status >"$D/report" 2>&1
+    )
+    grep -q 'Resource profile: unknown; config.json is not readable by this user' "$D/report" ||
+        fail 'svc_status hides the unreadable config.json reason (#744)'
     chmod 644 "$CONFIG_JSON"
 fi
 (
