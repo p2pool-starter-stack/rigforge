@@ -107,7 +107,6 @@ _restore_xmrig() {
 }
 _cleanup() {
     local cleanup_ok=1 threads_ok=1
-    rm -f "${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" 2>/dev/null || true
     refresh_profile_finish || cleanup_ok=0
     if [ -n "${THREAD_PROFILE_SAVED:-}" ]; then thread_profile_restore || threads_ok=0; fi
     hammer_stop

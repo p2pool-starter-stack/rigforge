@@ -582,8 +582,8 @@ parse_config() {
         error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
     fi
 
-    # ACCESS_TOKENS (#516): an OPTIONAL name -> token map, one per consuming Pithead stack, so a bench
-    # borrow never needs prod's ACCESS_TOKEN. Every entry authenticates :8081/:8082 like it does; only xmrig's :8080 stays master-only.
+    # ACCESS_TOKENS (#516): an OPTIONAL name -> token map, one per consuming Pithead stack, so no stack
+    # needs another stack's ACCESS_TOKEN. Every entry authenticates :8081/:8082 like it does; only xmrig's :8080 stays master-only.
     ACCESS_TOKENS_JSON=$(jq -c '.ACCESS_TOKENS // {}' "$CONFIG_JSON" 2>/dev/null)
     jq -e 'type == "object" and all(.[]; type == "string")' <<<"$ACCESS_TOKENS_JSON" >/dev/null 2>&1 || error "ACCESS_TOKENS in $CONFIG_JSON must be a JSON object mapping names to string tokens."
     while IFS=$'\t' read -r _atn _att; do
@@ -4577,12 +4577,6 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
-    if _rig_lent_to_bench; then
-        rm -f "$staged"
-        _control_status "$status" busy "$cid" "$change_keys" "rig is lent to a bench job; retry after it is returned" ""
-        warn "control-apply: rig is lent to a bench job — change $cid refused."
-        return 0
-    fi
     # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
@@ -4736,11 +4730,6 @@ control_upgrade() {
             warn "control-upgrade: $target <= installed v$installed — refused (anti-rollback)."
             return 0
         fi
-    fi
-    if _rig_lent_to_bench; then
-        _control_status "$status" busy "$cid" version "rig is lent to a bench job; retry after it is returned" ""
-        warn "control-upgrade: rig is lent to a bench job — refused."
-        return 0
     fi
     _fetch_preflight -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" || {
         _control_status "$status" failed "$cid" version "$FETCH_PREFLIGHT_REASON" ""
