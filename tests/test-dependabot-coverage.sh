@@ -27,7 +27,9 @@ awk '
     }' "$dependabot" ||
     fail "every dependabot entry must carry the infra and dependencies labels"
 
-awk '/package-ecosystem: "github-actions"/ { ga = 1; next }
+awk '
+    /^  - package-ecosystem:/ { ga = 0 }
+    /package-ecosystem: "github-actions"/ { ga = 1; next }
     ga && /^[[:space:]]+groups:/ { found = 1 }
     END { exit !found }' "$dependabot" ||
     fail "github-actions updates must carry a nested groups block"
