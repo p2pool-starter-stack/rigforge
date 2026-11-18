@@ -63,8 +63,7 @@ for d in tests/e2e tests/coverage tests/docker; do
         fail "dependabot.yml has no docker entry for /$d"
 done
 rc=0
-stray=$(git ls-files -z -- '*.yml' '*.yaml' '*.sh' '*.py' Makefile |
-    xargs -0 grep -l '@sha256:[0-9a-f]\{64\}' 2>/dev/null) || rc=$?
+stray=$(grep -rEl --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=graphify-out --include='*.yml' --include='*.yaml' --include='*.sh' --include='*.py' --include='Makefile' '@sha256:[0-9a-f]{64}' .) || rc=$?
 [ "$rc" -le 1 ] || fail "stray image-digest scan could not run (grep exit $rc)"
 [ -z "$stray" ] || fail "image digests belong only in the tests Dockerfile pins: $stray"
 
