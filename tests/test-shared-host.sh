@@ -150,6 +150,14 @@ grep -q 'Resource profile: shared host' "$D/report" || fail 'status omits the se
 grep -q 'effective CPU quota 75000/100000 us; memory 4294967296 bytes; swap 0; CPU weight 10' "$D/report" ||
     fail 'status omits the effective limits (#744)'
 grep -q 'Miner is stopped' "$D/report" || fail 'status omits the stopped miner state'
+printf '1\n' >"$RIGFORGE_CGROUP_ROOT/rigforge.slice/memory.swap.max"
+_shared_host_status_report >"$D/report"
+grep -q 'Not enforced: shared_host memory ceiling or zero-swap control is unavailable; run apply' "$D/report" ||
+    fail 'status omits the not-enforced reason (#744)'
+grep -q 'effective CPU quota' "$D/report" && fail 'status reports effective limits that are not in force (#744)'
+printf '0\n' >"$RIGFORGE_CGROUP_ROOT/rigforge.slice/memory.swap.max"
+_shared_host_status_report >"$D/report"
+grep -q 'effective CPU quota 75000/100000 us' "$D/report" || fail 'status lost the effective limits after restoration'
 mv "$CONFIG_JSON" "$D/config.saved"
 _shared_host_status_report >"$D/report"
 [ ! -s "$D/report" ] || fail 'status reported a profile without config.json'
