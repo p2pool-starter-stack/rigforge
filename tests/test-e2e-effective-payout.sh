@@ -17,12 +17,20 @@ bad() {
     printf 'bad %s\n' "$1" >>"$D/rows"
     return 1
 }
+skip() { printf 'skip %s\n' "$1" >>"$D/rows"; }
 conn="" uptime=0 failures=0
 miner_load() {
     local url
     url=$(jq -r '.pools[0].url' "$GEN_CFG")
-    if [ "$url" = "127.0.0.1:1" ]; then
-        conn="" uptime=0 failures=1
+    if [ "$mode" = wrong-pool ]; then
+        conn="elsewhere:3333" uptime=60 failures=0
+    elif [ "$url" = "127.0.0.1:1" ]; then
+        conn="" uptime=0
+        if [ "$mode" = no-attempt ]; then
+            failures=0
+        else
+            failures=1
+        fi
     else
         conn="$url" uptime=60 failures=0
     fi
@@ -67,6 +75,9 @@ api8080() {
 }
 systemctl() { cat "$D/pid"; }
 sleep() {
+    if [ "$mode" = pid-walk ]; then
+        printf '%s' "$(($(cat "$D/pid") + 1))" >"$D/pid"
+    fi
     if [ "$mode" = hot-always ]; then
         miner_load
     elif [ "$mode" != no-hot ] && [ "$(jq -r '.watch' "$GEN_CFG")" = true ]; then
@@ -79,10 +90,18 @@ run_case() {
     mode=$1
     rm -rf "$D/build" "$D/rows"
     mkdir -p "$D/build"
-    printf '{"pools":[{"url":"pool:3333","user":"rig.1"}],"DONATION":1}' >"$CFG"
+    if [ "$mode" = watchdog-on ]; then
+        printf '{"pools":[{"url":"pool:3333","user":"rig.1"}],"DONATION":1,"watchdog":"enabled"}' >"$CFG"
+    else
+        printf '{"pools":[{"url":"pool:3333","user":"rig.1"}],"DONATION":1}' >"$CFG"
+    fi
     printf '41' >"$D/pid"
     rfstub apply
-    conn=$(jq -r '.pools[0].url' "$GEN_CFG") uptime=60 failures=0
+    if [ "$mode" = stale-apply ]; then
+        conn=$(jq -r '.pools[0].url' "$GEN_CFG") uptime=60 failures=0
+    else
+        miner_load
+    fi
     phase_effective_payout
 }
 
@@ -121,6 +140,15 @@ expect no-hot ok 'did not reach the running miner'
 expect no-hot bad 'was not hot-reloaded into'
 run_case apidown
 expect apidown bad 'cannot be observed'
+run_case wrong-pool
+expect wrong-pool bad 'cannot be observed'
+run_case no-attempt
+expect no-attempt bad 'file and miner diverged'
+run_case pid-walk
+expect pid-walk bad 'moved off the payout pool from a file edit alone'
+expect pid-walk bad 'reached the miner only after a restart'
+run_case watchdog-on
+expect watchdog-on skip 'watchdog is enabled on this rig'
 
 printf 'e2e effective-payout phase tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
