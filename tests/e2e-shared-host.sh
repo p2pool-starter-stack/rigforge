@@ -69,7 +69,7 @@ phase_shared_host() {
         bad "generated XMRig config kept dedicated tuning"
     fi
     st="$("$RIGFORGE" status 2>&1 || true)"
-    if printf '%s\n' "$st" | grep -q 'effective CPU quota 200000/100000 us'; then
+    if [[ "$st" == *'effective CPU quota 200000/100000 us'* ]]; then
         ok "status reports the shared profile's effective limits"
     else
         printf '%s\n' "$st" | sed 's/^/shared-host: status reported /'

@@ -167,11 +167,18 @@ _shared_host_status_report >"$D/report"
 grep -q 'Unsupported: shared_host cannot account for RAM and existing HugeTLB reservations' "$D/report" ||
     fail 'status report drops the unsupported reason (#744)'
 mv "$D/meminfo.saved" "$MEMINFO"
-(
-    _shared_host_report() { return 1; }
+if [ "$(id -u)" -ne 0 ]; then
+    chmod 000 "$CONFIG_JSON"
     _shared_host_status_report >"$D/report"
+    grep -q 'Resource profile: unknown; config.json is not readable by this user' "$D/report" ||
+        fail 'an unreadable config.json loses its status reason (#744)'
+    chmod 644 "$CONFIG_JSON"
+fi
+(
+    OS_TYPE=Linux
+    svc_status >"$D/report" 2>&1
 )
-grep -q 'Resource profile: unknown' "$D/report" || fail 'status can stay silent about the profile (#744)'
+grep -q 'effective CPU quota 75000/100000 us' "$D/report" || fail 'svc_status omits the shared-host limits (#744)'
 
 unit=$(printf 'ExecStartPre=+-cpupower frequency-set -g performance\n' | _shared_host_unit)
 [[ "$unit" != *frequency-set* ]] || fail 'shared unit still changes CPU governor'

@@ -297,11 +297,11 @@ _shared_host_report() {
 
 _shared_host_status_report() {
     [ -f "$CONFIG_JSON" ] || return 0
+    if [ ! -r "$CONFIG_JSON" ]; then
+        echo 'Resource profile: unknown; config.json is not readable by this user; run sudo rigforge.sh status'
+        return 0
+    fi
     local out
-    out=$(
-        set +e
-        _shared_host_report 2>&1
-    ) || true
-    [ -n "$out" ] || out='Resource profile: unknown; run rigforge.sh doctor for the reason'
-    printf '%s\n' "$out"
+    out=$(_shared_host_report 2>&1) || true
+    if [ -n "$out" ]; then printf '%s\n' "$out"; fi
 }
