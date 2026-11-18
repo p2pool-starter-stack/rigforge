@@ -46,7 +46,7 @@ rm "$T586/nft-present"
 
 jq -n --arg url "$POOL_HOST:$POOL_PORT" '{HOME_DIR:"DYNAMIC_HOME",pools:[{url:$url}]}' >"$T586/clone/config.json"
 cat >"$T586/nft-chain.json" <<NFTCHAIN
-{"nftables":[{"rule":{"family":"inet","table":"rigforge","chain":"api","expr":[{"match":{"left":{"payload":{"protocol":"tcp","field":"dport"}},"right":@PORT@}},{"counter":{"packets":@DROPPED@}},{"drop"}]}}]}
+{"nftables":[{"rule":{"family":"inet","table":"rigforge","chain":"api","expr":[{"match":{"left":{"payload":{"protocol":"tcp","field":"dport"}},"right":@PORT@}},{"counter":{"packets":@DROPPED@}},{"drop":null}]}}]}
 NFTCHAIN
 jq -n --arg url "$POOL_HOST:$POOL_PORT" --arg host "$API_BIND" --argjson port "$API_PORT" '{pools:[{url:$url,enabled:true}],"donate-level":0,"donate-over-proxy":0,http:{host:$host,port:$port,restricted:true,"access-token":null}}' >"$T586/clone/data/worker/xmrig/build/config.json"
 
@@ -60,7 +60,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
     'show) printf "%s\n" "${FAKE_FRAGMENT:-/etc/systemd/system/xmrig.service}" ;;' \
     'esac' >"$T586/bin/systemctl"
 printf '%s\n' '#!/usr/bin/env bash' '[ "${FAKE_PROCESSES:-}" = present ] && echo "123 xmrig"; exit 0' >"$T586/bin/pgrep"
-printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *rev-parse*) printf "%s\n" "${FAKE_HEAD:-$(printf a%.0s 1 40)}" ;; *) exit 0 ;; esac' >"$T586/bin/git"
+printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *rev-parse*) printf "%s\n" "${FAKE_HEAD:-$(printf a%.0s {1..40})}" ;; *) exit 0 ;; esac' >"$T586/bin/git"
 printf '%s\n' '#!/usr/bin/env bash' \
     '[ "${FAKE_SS_FAIL:-0}" = 1 ] && exit 2' \
     'case "$1" in' \
@@ -70,7 +70,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
     'exit 0' >"$T586/bin/ss"
 printf '%s\n' '#!/usr/bin/env bash' \
     '[ "${FAKE_NFT_MODE:-}" = fail ] && exit 2' \
-    'if [ "$1" = -j ] && [ "$3" = chain ]; then dropped=0; [ -f "$FAKE_DROP_FILE" ] && dropped=$(cat "$FAKE_DROP_FILE"); sed "s/@PORT@/$FAKE_API_PORT/;s/@DROPPED@/$dropped/" "$FAKE_NFT_CHAIN_TEMPLATE"; exit 0; fi' \
+    'if [ "$1" = -j ] && [ "$3" = chain ]; then dropped=0; [ -s "$FAKE_DROP_FILE" ] && dropped=$(cat "$FAKE_DROP_FILE"); sed "s/@PORT@/$FAKE_API_PORT/;s/@DROPPED@/$dropped/" "$FAKE_NFT_CHAIN_TEMPLATE"; exit 0; fi' \
     'if [ -f "$FAKE_NFT_FILE" ]; then printf '\''{"nftables":[{"table":{"family":"inet","name":"rigforge"}}]}\n'\''; else printf '\''{"nftables":[]}\n'\''; fi' >"$T586/bin/nft"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s STREAM fixture\n" "$FAKE_RESOLVED_ADDRESS"' >"$T586/bin/getent"
 printf '%s\n' '#!/usr/bin/env bash' \
@@ -83,13 +83,12 @@ printf '%s\n' '#!/usr/bin/env bash' \
     'exit 0' >"$T586/bin/ip"
 printf '%s\n' '#!/usr/bin/env bash' 'if [ "${FAKE_MOUNT:-ok}" = ok ]; then echo "hugetlbfs on /dev/hugepages type hugetlbfs (rw)"; else echo "proc on /proc type proc"; fi' >"$T586/bin/mount"
 printf '%s\n' '#!/usr/bin/env bash' \
-printf '%s\n' '#!/usr/bin/env bash' \
     'for a in "$@"; do if [ "$a" = --config ]; then cfg=$(cat); case "$cfg" in' \
     '*/status*) printf "{\"status\":\"%s\"}" "${FAKE_CONTROL_STATUS:-applied}"; exit 0 ;;' \
     '*/apply*|*/upgrade*) printf "{\"status\":\"accepted\",\"change_id\":\"0123456789abcdef\"}"; exit 0 ;;' \
     'esac; exit 7; fi; done' \
     'case "$*" in' \
-    '*--interface*169.254.241.2*) if [ "${FAKE_REFUSE_MODE:-drop}" = pass ]; then printf 200; exit 0; fi; if [ "${FAKE_REFUSE_MODE:-drop}" = drop ]; then n=0; [ -f "$FAKE_DROP_FILE" ] && n=$(cat "$FAKE_DROP_FILE"); n=$((n + 1)); printf "%s" "$n" >"$FAKE_DROP_FILE"; fi; exit 7 ;;' \
+    '*--interface*169.254.241.2*) if [ "${FAKE_REFUSE_MODE:-drop}" = pass ]; then printf 200; exit 0; fi; if [ "${FAKE_REFUSE_MODE:-drop}" = drop ]; then n=0; [ -s "$FAKE_DROP_FILE" ] && n=$(cat "$FAKE_DROP_FILE"); n=$((n + 1)); printf "%s" "$n" >"$FAKE_DROP_FILE"; fi; exit 7 ;;' \
     '*--interface*169.254.241.3*) printf "%s" "${FAKE_ACCEPT_CODE:-200}"; exit 0 ;;' \
     '*-X?PUT*) [ "${FAKE_CURL_MODE:-}" = transport ] && exit 7; [ "${FAKE_CURL_MODE:-}" = write200 ] && printf 200 || printf 403 ;;' \
     '*) n=0; [ -f "$FAKE_CURL_COUNT" ] && n=$(cat "$FAKE_CURL_COUNT"); n=$((n + 1)); printf "%s" "$n" >"$FAKE_CURL_COUNT"; printf "{\"donate_level\":%s,\"hashrate\":{\"total\":[1]},\"connection\":{\"accepted\":%s,\"rejected\":0}}\n" "${FAKE_DONATE_LEVEL:-0}" "$n" ;;' \
@@ -214,16 +213,16 @@ assert_contains "missing throttle stamp is explicit" "$no_stamp" "no throttle st
 
 : >"$T586/curl-count"
 : >"$T586/nft-present"
-bad_head="$(CASE_PHASE=upgraded guest586 FAKE_INSTALLED=1 FAKE_PEER=present E2E_EXPECTED_HEAD="$(printf 'b%.0s' 1 40)" 2>&1)"
+bad_head="$(CASE_PHASE=upgraded guest586 FAKE_INSTALLED=1 FAKE_PEER=present E2E_EXPECTED_HEAD="$(printf 'b%.0s' {1..40})" 2>&1)"
 assert_rc "upgraded verifier fails when the checkout is not the candidate" "$?" 1
 assert_contains "candidate mismatch is explicit" "$bad_head" "not at the candidate commit"
-CASE_PHASE=upgraded guest586 FAKE_INSTALLED=1 FAKE_PEER=present E2E_EXPECTED_HEAD="$(printf 'a%.0s' 1 40)"
+CASE_PHASE=upgraded guest586 FAKE_INSTALLED=1 FAKE_PEER=present E2E_EXPECTED_HEAD="$(printf 'a%.0s' {1..40})"
 assert_rc "upgraded verifier proves the candidate commit keeps shares landing at donation zero" "$?" 0
 
-digest="$( { sha256sum "$T586/clone/config.json" || shasum -a 256 "$T586/clone/config.json"; } 2>/dev/null | awk '{print $1}')"
+digest="$({ sha256sum "$T586/clone/config.json" || shasum -a 256 "$T586/clone/config.json"; } 2>/dev/null | awk '{print $1}')"
 CASE_PHASE=restored guest586 E2E_RESTORED_CONFIG_SHA256="$digest"
 assert_rc "restored verifier proves the backup round-trip digest" "$?" 0
-stale="$(CASE_PHASE=restored guest586 E2E_RESTORED_CONFIG_SHA256="$(printf '0%.0s' 1 64)" 2>&1)"
+stale="$(CASE_PHASE=restored guest586 E2E_RESTORED_CONFIG_SHA256="$(printf '0%.0s' {1..64})" 2>&1)"
 assert_rc "restored verifier fails a digest mismatch" "$?" 1
 assert_contains "digest mismatch is explicit" "$stale" "differs from the backup"
 mv "$T586/clone/backups/rigforge-backup-20261117-000000.tar.gz" "$T586/archive.hold"
