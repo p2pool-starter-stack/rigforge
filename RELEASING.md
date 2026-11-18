@@ -43,6 +43,15 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
 
+   The steps that need a fresh host or a reboot no longer rest on this gate alone: the
+   bench's `rigforge`/`tier4-kvm` job runs `make e2e-docs-replay` on a fresh Ubuntu 24.04
+   guest (tests/README.md › Documentation replay) — documented install, reboot-persistent
+   autostart, the API allowlist from a second source, control apply/revert, the
+   remote-upgrade chain onto the candidate, backup/restore, the uninstall revert and
+   appliance mode — and its green job is the gate evidence for those steps. What stays on
+   real hardware is what no guest can prove: real hashrate, tuning, MSR read-back, RAPL
+   and thermal-sensor checks — the `verify`, `watchdog` and `perf` phases above.
+
    When a live Pithead stack is reachable, also run the worker↔stack contract gate (stack on its
    latest release tag — record `pithead version` in the run log). It asserts the mining round-trip,
    the `:8080` API contract, stratum auth (pass `E2E_STRATUM_PASS` if the stack uses one), dashboard
