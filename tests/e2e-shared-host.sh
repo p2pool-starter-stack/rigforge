@@ -27,7 +27,7 @@ _shared_host_wait_share() {
 
 phase_shared_host() {
     phase "shared-host — bounded miner in rigforge.slice, unrelated host settings unchanged (#577)"
-    local before during after total huge mem pid cg worker marker_owned=0 peak init
+    local before during after total huge mem pid cg worker marker_owned=0 peak init status_out
     worker=$(dirname "$(dirname "$(dirname "$GEN_CFG")")")
     [ -e "$worker/.rigforge-shared-host" ] || marker_owned=1
     before=$(_shared_host_state)
@@ -68,7 +68,7 @@ phase_shared_host() {
     else
         bad "generated XMRig config kept dedicated tuning"
     fi
-    status_out=$("$RIGFORGE" status 2>&1)
+    status_out=$("$RIGFORGE" status 2>&1) || true
     if grep -q 'effective CPU quota 200000/100000 us' <<<"$status_out"; then ok "status reports the shared profile's effective limits"; else
         printf 'shared-host: status output:\n%s\nshared-host: rigforge.slice cpu.weight=%s\n' "$(grep -i -E 'profile|shared|enforced|unsupported|effective|quota|weight' <<<"$status_out" | head -20)" "$(cat "$cg/cpu.weight" 2>/dev/null)"
         bad "status does not report the effective shared limits"
