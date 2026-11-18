@@ -17,8 +17,6 @@ bad() {
     printf 'bad %s\n' "$1" >>"$D/rows"
     return 1
 }
-skip() { printf 'skip %s\n' "$1" >>"$D/rows"; }
-
 conn="" uptime=0 failures=0
 miner_load() {
     local url
@@ -49,7 +47,7 @@ rfstub() {
     esac
 }
 set_cfg() {
-    local tmp err rc=0
+    local tmp rc=0
     tmp=$(mktemp)
     if jq "${@:3}" "$1" "$CFG" >"$tmp" && [ -s "$tmp" ] && mv "$tmp" "$CFG"; then
         rfstub apply || rc=$?
