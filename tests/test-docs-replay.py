@@ -3,10 +3,13 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from docs_replay import Guest, PlatformError, ReplayError, block, check_config, recipes, replay
+import docs_replay
+from docs_replay import (Guest, PlatformError, ReplayError, block, candidate,
+                         check_config, recipes, replay)
 
 
 class Markers(unittest.TestCase):
@@ -60,6 +63,30 @@ class Configuration(unittest.TestCase):
             with self.assertRaises(ReplayError):
                 check_config(json.dumps(data))
 
+    def test_allowlist_accepts_the_lane_comma_list_and_rejects_invalid_members(self):
+        data = self.config()
+        data["api_allow_from"] = f"{data['api_allow_from']}, ::1/128"
+        check_config(json.dumps(data))
+        for value in ("127.0.0.1/32, not-a-network", "127.0.0.1/32,", " "):
+            data = self.config()
+            data["api_allow_from"] = value
+            with self.subTest(value=value), self.assertRaises(ReplayError):
+                check_config(json.dumps(data))
+
+
+class Candidate(unittest.TestCase):
+    def test_driver_checkout_head_is_the_candidate(self):
+        completed = Mock(return_value=Mock(returncode=0, stdout="ab" * 20 + "\n"))
+        with patch.object(docs_replay.subprocess, "run", completed):
+            self.assertEqual(candidate(Path("/fixture")), "ab" * 20)
+
+    def test_missing_or_malformed_head_is_refused(self):
+        for result in (Mock(returncode=128, stdout=""), Mock(returncode=0, stdout="main\n")):
+            with self.subTest(returncode=result.returncode), \
+                    patch.object(docs_replay.subprocess, "run", Mock(return_value=result)), \
+                    self.assertRaises(ReplayError):
+                candidate(Path("/fixture"))
+
 
 class Agent(unittest.TestCase):
     def setUp(self):
@@ -112,52 +139,85 @@ class Agent(unittest.TestCase):
 
 
 class Sequence(unittest.TestCase):
+    CANDIDATE = "cd" * 20
+
     def setUp(self):
         self.root = Path(__file__).resolve().parent.parent
         self.guest = Mock()
         self.guest.virsh.side_effect = ["Persistent: no\n", "running\n", "<domain type='kvm' />"]
-        self.guest.run.side_effect = ["/var/tmp/rigforge-docs.TEST\n"] + [""] * 9
+        self.guest.run.side_effect = (["/var/tmp/rigforge-docs.TEST\n"] + [""] * 19 +
+                                      ["a" * 64 + "\n", "backups/rigforge-backup-20261117-010203.tar.gz\n"] +
+                                      [""] * 9)
+        self.config = json.dumps({
+            "pools": [{"url": f"fixture-{os.getpid()}:12345", "user": "docs-replay", "pass": "x"}],
+            "DONATION": 0, "api_allow_from": "127.0.0.1/32, ::1/128"}).encode()
+        patcher = patch.object(docs_replay, "candidate", return_value=self.CANDIDATE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def test_documents_drive_commands_across_both_reboots(self):
+    def test_full_battery_drives_both_reboots_in_order(self):
         with patch("builtins.print"):
-            replay(self.root, self.guest, b"{}")
+            replay(self.root, self.guest, self.config)
         commands = recipes(self.root)
         scripts = [call.args[0] for call in self.guest.run.call_args_list]
+        self.assertEqual(len(scripts), 31)
         self.assertTrue(scripts[1].endswith(commands["clone"]))
         self.assertIn("config.json", scripts[2])
-        self.assertIn(" baseline ", scripts[3])
-        self.assertTrue(scripts[4].endswith(commands["dry-run"]))
-        self.assertIn(" dry-run-check ", scripts[5])
-        self.assertTrue(scripts[6].endswith(commands["setup"]))
-        self.assertIn(" installed ", scripts[7])
-        self.assertIn("uninstall --yes", scripts[8])
-        self.assertIn(" removed ", scripts[9])
+        for index, marker in ((3, " baseline "), (4, commands["dry-run"]), (5, " dry-run-check "),
+                              (6, commands["setup"]), (7, " installed "),
+                              (8, " allowlist-refuse "), (9, "169.254.241.3"),
+                              (10, " allowlist-accept "), (12, '.control = "enabled"'),
+                              (13, " control-apply "), (14, " control-revert "),
+                              (15, "git tag v99.99.99"), (16, "E2E_UPGRADE_LEG=noop"),
+                              (17, "E2E_UPGRADE_LEG=refused"),
+                              (18, f"git fetch --quiet origin {self.CANDIDATE}"),
+                              (19, f"E2E_EXPECTED_HEAD={self.CANDIDATE}"), (19, "check.sh upgraded"),
+                              (20, "sha256sum config.json"), (21, "backup --yes"),
+                              (23, "restore --yes backups/rigforge-backup-20261117-010203.tar.gz"),
+                              (24, "E2E_RESTORED_CONFIG_SHA256=" + "a" * 64),
+                              (25, "uninstall --yes"), (26, " removed "),
+                              (28, "RIGFORGE_APPLIANCE=1 LC_ALL=C ./rigforge.sh"), (29, " appliance ")):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, scripts[index])
         self.assertEqual([call.args[0] for call in self.guest.reboot.call_args_list],
                          [commands["reboot"], commands["reboot"]])
+
+    def test_bad_digest_or_archive_path_stops_before_restore(self):
+        for digest, archive, stop in (
+                ("not-a-digest", "backups/rigforge-backup-20261117-010203.tar.gz", 21),
+                ("a" * 64, "backups/untrusted.tar.gz", 22)):
+            with self.subTest(archive=archive):
+                self.guest.reset_mock()
+                self.guest.virsh.side_effect = ["Persistent: no\n", "running\n", "<domain type='kvm' />"]
+                self.guest.run.side_effect = (["/var/tmp/rigforge-docs.TEST\n"] + [""] * 19 +
+                                              [digest + "\n", archive + "\n"])
+                with patch("builtins.print"), self.assertRaisesRegex(ReplayError, "digest|archive"):
+                    replay(self.root, self.guest, self.config)
+                self.assertEqual(self.guest.run.call_count, stop)
 
     def test_persistent_domain_is_refused_before_mutation(self):
         self.guest.virsh.side_effect = None
         self.guest.virsh.return_value = "Persistent: yes\n"
         with self.assertRaisesRegex(ReplayError, "transient"):
-            replay(self.root, self.guest, b"{}")
+            replay(self.root, self.guest, self.config)
         self.guest.run.assert_not_called()
 
     def test_stopped_domain_is_refused_before_mutation(self):
         self.guest.virsh.side_effect = ["Persistent: no\n", "shut off\n"]
         with self.assertRaisesRegex(PlatformError, "not running"):
-            replay(self.root, self.guest, b"{}")
+            replay(self.root, self.guest, self.config)
         self.guest.run.assert_not_called()
 
     def test_emulated_domain_is_refused_before_mutation(self):
         self.guest.virsh.side_effect = ["Persistent: no\n", "running\n", "<domain type='qemu' />"]
         with self.assertRaisesRegex(PlatformError, "KVM"):
-            replay(self.root, self.guest, b"{}")
+            replay(self.root, self.guest, self.config)
         self.guest.run.assert_not_called()
 
     def test_failed_dry_run_check_prevents_setup(self):
         self.guest.run.side_effect = ["/var/tmp/rigforge-docs.TEST\n"] + [""] * 4 + [ReplayError("changed")]
         with self.assertRaisesRegex(ReplayError, "changed"):
-            replay(self.root, self.guest, b"{}")
+            replay(self.root, self.guest, self.config)
         self.guest.reboot.assert_not_called()
         self.assertEqual(self.guest.run.call_count, 6)
 
