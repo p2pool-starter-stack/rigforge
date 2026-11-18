@@ -19,8 +19,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # --- Pinned, reproducible toolchain (no apt) ---------------------------------
-# kcov v42 (linux/amd64), pinned by digest like the e2e image.
-KCOV_IMAGE="kcov/kcov@sha256:30c442617f3d8e040bf0ec2cba19cc2ee517b668f3a3d50b2d3de1c435138a8a"
+KCOV_IMAGE="$(sed -n 's/^FROM //p' "$ROOT/tests/coverage/Dockerfile")"
+[ -n "$KCOV_IMAGE" ] || {
+    echo "coverage: cannot read the pinned kcov image from tests/coverage/Dockerfile." >&2
+    exit 2
+}
 # Static jq for use INSIDE the kcov (Debian) container — the suite needs it and the image lacks it.
 JQ_URL="https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64"
 JQ_SHA256="b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
