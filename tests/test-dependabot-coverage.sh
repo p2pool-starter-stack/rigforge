@@ -30,7 +30,7 @@ awk '
 awk '/package-ecosystem: "github-actions"/ { ga = 1; next }
     ga && /^[[:space:]]+groups:/ { found = 1 }
     END { exit !found }' "$dependabot" ||
-    fail "github-actions updates must be one nested group over all actions"
+    fail "github-actions updates must carry a nested groups block"
 
 for pin in diff-cover yamllint zizmor; do
     grep -q "^${pin}==" tools/requirements-ci.txt ||
@@ -51,6 +51,7 @@ grep -q '"node_modules/markdownlint-cli2"' package-lock.json ||
 grep -q "\"markdownlint-cli2\": \"$want\"" package-lock.json ||
     fail "package-lock.json does not pin the package.json version ($want)"
 grep -q 'npm ci' Makefile || fail "make lint-md must install from the lockfile (npm ci)"
+grep -q 'npm ci || echo' Makefile || fail "dev-setup must reach pre-commit install even when npm ci cannot"
 grep -q 'npx markdownlint-cli2' Makefile || fail "make lint-md must run the local markdownlint-cli2"
 if grep -q 'MARKDOWNLINT_VERSION' Makefile; then
     fail "the Makefile must not hand-pin markdownlint-cli2 outside package.json"

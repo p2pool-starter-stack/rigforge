@@ -80,7 +80,7 @@ dev-setup: ## One-time local toolchain: linters + git hooks (brew or apt; versio
 	@if command -v brew >/dev/null 2>&1; then brew install shellcheck shfmt jq yamllint actionlint pre-commit; \
 	elif command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y shellcheck jq yamllint && echo "apt shfmt/actionlint lag — install those two per their READMEs"; \
 	else echo "no brew/apt found — install shellcheck, shfmt, jq, yamllint, actionlint, pre-commit manually"; fi
-	@if command -v npm >/dev/null 2>&1; then npm ci; else echo "no npm found — make lint-md (markdownlint) needs Node 22+"; fi
+	@if command -v npm >/dev/null 2>&1; then npm ci || echo "npm ci failed — make lint-md needs a network or a warm npm cache"; else echo "no npm found — make lint-md (markdownlint) needs Node 22+"; fi
 	pre-commit install
 	@echo "Hooks installed. CI-pinned versions to match (source of truth per tool):"
 	@echo "  curl binaries in ci.yml/security.yml · Python tools in tools/requirements-ci.txt · markdownlint-cli2 in package.json"
