@@ -294,3 +294,14 @@ _shared_host_report() {
     fi
     echo 'HugePages, MSR/cache tuning and governor changes are disabled; host settings are preserved'
 }
+
+_shared_host_status_report() {
+    [ -f "$CONFIG_JSON" ] || return 0
+    local out
+    out=$(
+        set +e
+        _shared_host_report 2>&1
+    ) || true
+    [ -n "$out" ] || out='Resource profile: unknown; run rigforge.sh doctor for the reason'
+    printf '%s\n' "$out"
+}

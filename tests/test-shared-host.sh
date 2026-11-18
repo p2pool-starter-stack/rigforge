@@ -145,6 +145,26 @@ systemctl() {
     esac
 }
 
+_shared_host_status_report >"$D/report"
+grep -q 'Resource profile: shared host' "$D/report" || fail 'status omits the selected profile'
+grep -q 'effective CPU quota 75000/100000 us; memory 4294967296 bytes; swap 0; CPU weight 10' "$D/report" ||
+    fail 'status omits the effective limits (#744)'
+grep -q 'Miner is stopped' "$D/report" || fail 'status omits the stopped miner state'
+mv "$CONFIG_JSON" "$D/config.saved"
+_shared_host_status_report >"$D/report"
+[ ! -s "$D/report" ] || fail 'status reported a profile without config.json'
+mv "$D/config.saved" "$CONFIG_JSON"
+mv "$MEMINFO" "$D/meminfo.saved"
+_shared_host_status_report >"$D/report"
+grep -q 'Unsupported: shared_host cannot account for RAM and existing HugeTLB reservations' "$D/report" ||
+    fail 'status report drops the unsupported reason (#744)'
+mv "$D/meminfo.saved" "$MEMINFO"
+(
+    _shared_host_report() { return 1; }
+    _shared_host_status_report >"$D/report"
+)
+grep -q 'Resource profile: unknown' "$D/report" || fail 'status can stay silent about the profile (#744)'
+
 unit=$(printf 'ExecStartPre=+-cpupower frequency-set -g performance\n' | _shared_host_unit)
 [[ "$unit" != *frequency-set* ]] || fail 'shared unit still changes CPU governor'
 [[ "$unit" == *'Slice=rigforge.slice'* ]] || fail 'shared unit lacks bounded slice'

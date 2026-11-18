@@ -28,8 +28,10 @@ activates them and refuses miner activation when the effective values cannot be 
 loaded unit is out of profile, every start or restart is refused until `apply` runs again — including
 the watchdog's thermal-hold lift and its wedge restart — while the watchdog's thermal stop stays
 effective, so a hot miner is stopped regardless. `status`
-and `doctor` report the selected profile, requested limits, effective limits, and unsupported or
-stopped states.
+and `doctor` report the selected profile, requested limits, effective limits, and unsupported,
+not-enforced or stopped states. It never stays silent about the profile: when the profile or a
+control cannot be read it names what it found (`Unsupported`, `Not enforced` or `unknown`) where the
+effective limits line would otherwise be.
 
 Shared-host operation uses ordinary pages. It does not create or expand persistent HugePages,
 change the CPU governor, apply MSR or cache tuning, enable NUMA, or rewrite pre-existing host

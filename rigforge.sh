@@ -3959,7 +3959,7 @@ _render_duration() {
 }
 
 svc_status() {
-    [ ! -f "$CONFIG_JSON" ] || (_shared_host_report) || true
+    _shared_host_status_report
     _config_apply_check
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
