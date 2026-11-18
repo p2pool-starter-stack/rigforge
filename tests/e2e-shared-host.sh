@@ -68,7 +68,11 @@ phase_shared_host() {
     else
         bad "generated XMRig config kept dedicated tuning"
     fi
-    if "$RIGFORGE" status 2>&1 | grep -q 'effective CPU quota 200000/100000 us'; then ok "status reports the shared profile's effective limits"; else bad "status does not report the effective shared limits"; fi
+    status_out=$("$RIGFORGE" status 2>&1)
+    if grep -q 'effective CPU quota 200000/100000 us' <<<"$status_out"; then ok "status reports the shared profile's effective limits"; else
+        printf 'shared-host: status output:\n%s\nshared-host: rigforge.slice cpu.weight=%s\n' "$(grep -i -E 'profile|shared|enforced|unsupported|effective|quota|weight' <<<"$status_out" | head -20)" "$(cat "$cg/cpu.weight" 2>/dev/null)"
+        bad "status does not report the effective shared limits"
+    fi
     if wait_for_job 120; then ok "shared-host miner received a stratum job"; else
         _shared_host_diagnose
         bad "no stratum job within 120s under shared_host"
