@@ -47,6 +47,7 @@ ALLOW_TARGET="${E2E_ALLOWLIST_TARGET:-169.254.241.1}"
 ALLOW_REFUSED_SOURCE="${E2E_ALLOWLIST_REFUSED_SOURCE:-169.254.241.2}"
 ALLOW_ALLOWED_SOURCE="${E2E_ALLOWLIST_ALLOWED_SOURCE:-169.254.241.3}"
 ALLOW_NET="${E2E_ALLOWLIST_NET:-169.254.241.0/29}"
+SYSTEMD_SYSTEM_DIR="${E2E_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 
 read_file() {
     [ -f "$1" ] && cat "$1" || printf '<absent>\n'
@@ -301,8 +302,12 @@ _assert_accepted_shares() {
 
 _assert_read_only_api() {
     local code
-    code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 5 -H 'Content-Type: application/json' -X PUT --data '{}' "$API_URL/1/config")" || fail "base API write probe transport failed"
-    [ "$code" = 403 ] || fail "base API write probe did not return HTTP 403"
+    if [ -n "$CONTROL_TOKEN" ]; then
+        code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 5 -H 'Content-Type: application/json' -H "Authorization: Bearer $CONTROL_TOKEN" -X PUT --data '{}' "$API_URL/1/config")" || fail "base API write probe transport failed"
+    else
+        code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 5 -H 'Content-Type: application/json' -X PUT --data '{}' "$API_URL/1/config")" || fail "base API write probe transport failed"
+    fi
+    [ "$code" = 403 ] || fail "base API write probe did not return HTTP 403 (got $code)"
 }
 
 phase_installed() {
@@ -415,6 +420,7 @@ _drop_counter() {
     nft -j list chain inet rigforge api 2>/dev/null | jq -r --argjson port "$1" '
         [.nftables[].rule
             | select(.family == "inet" and .table == "rigforge" and .chain == "api")
+            | select(any(.expr[]?; has("match") and .match?.right == $port))
             | select(any(.expr[]?; has("drop")))
             | [.expr[]? | .counter?.packets // empty]
             | select(length == 1) | .[0]]
@@ -497,7 +503,7 @@ phase_appliance() {
     /run/systemd/system/*) ;;
     *) fail "xmrig is not a runtime unit" ;;
     esac
-    persistent="$(find /etc/systemd/system -maxdepth 1 \( -name 'xmrig-*' -o -name 'rigforge-*' \) -print -quit 2>/dev/null || true)"
+    persistent="$(find "$SYSTEMD_SYSTEM_DIR" -maxdepth 1 \( -name 'xmrig-*' -o -name 'rigforge-*' \) -print -quit 2>/dev/null || true)"
     [ -z "$persistent" ] || fail "appliance mode wrote persistent units"
     cmp -s "$BASELINE/fstab" <(read_file "$FSTAB_FILE") || fail "appliance mode changed fstab"
     cmp -s "$BASELINE/limits" <(read_file "$LIMITS_FILE") || fail "appliance mode changed limits"

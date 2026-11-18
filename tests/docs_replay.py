@@ -150,7 +150,7 @@ def replay(root, guest, config):
     print("PASS: reboot autostart, donation, pool, shares and read-only API", flush=True)
     guest.run(f"E2E_ALLOWLIST_ALLOWED_SOURCE={ALLOWED_SECOND_SOURCE} {check} allowlist-refuse {args}\n", timeout=300)
     guest.run("cd " + clone + "\njq --arg source " + shlex.quote(ALLOWED_SECOND_SOURCE) +
-              " '.api_allow_from += \", \" + $source' config.json >config.tmp && mv config.tmp config.json\n"
+              " '.api_allow_from = $source' config.json >config.tmp && mv config.tmp config.json\n"
               "sudo ./rigforge.sh apply\n", timeout=300)
     guest.run(f"E2E_ALLOWLIST_ALLOWED_SOURCE={ALLOWED_SECOND_SOURCE} {check} allowlist-accept {args}\n", timeout=180)
     guest.run("cd " + clone + "\njq --arg original " + shlex.quote(allow_from) +
@@ -175,7 +175,7 @@ def replay(root, guest, config):
     guest.run(f"cd {quoted}/rigforge\ngit fetch --quiet --tags origin\n"
               f"git fetch --quiet origin {commit}\ngit checkout --quiet --force FETCH_HEAD\n"
               "sudo ./rigforge.sh upgrade\n", timeout=2400)
-    guest.run(f"E2E_EXPECTED_HEAD={commit} {check} upgraded {args}\n", timeout=900)
+    guest.run(f"E2E_CONTROL_TOKEN={token} E2E_EXPECTED_HEAD={commit} {check} upgraded {args}\n", timeout=900)
     print("PASS: remote upgrade from the previous release to the candidate kept shares landing", flush=True)
     digest = guest.run(f"cd {quoted}/rigforge\nsha256sum config.json | awk '{{print $1}}'\n").strip()
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -200,14 +200,6 @@ def replay(root, guest, config):
     guest.run(f"cd {quoted}/rigforge\nsudo env RIGFORGE_APPLIANCE=1 ./rigforge.sh uninstall --yes\n", timeout=120)
 
 
-def _network_invalid(entry):
-    try:
-        ipaddress.ip_network(entry.strip(), strict=False)
-    except ValueError:
-        return True
-    return False
-
-
 def check_config(config):
     data = json.loads(config)
     allowed = {"pools", "DONATION", "api_allow_from", "HOME_DIR", "threads"}
@@ -225,9 +217,10 @@ def check_config(config):
             or pools[0].get("user", "docs-replay") != "docs-replay"
             or pools[0].get("pass", "x") not in ("", "x")):
         raise ReplayError("prepared config needs one throwaway pool, donation zero and an API allowlist")
-    if any(not part.strip() for part in data["api_allow_from"].split(",")) or any(
-            _network_invalid(part) for part in data["api_allow_from"].split(",")):
-        raise ReplayError("prepared config API allowlist entries must be valid networks")
+    try:
+        ipaddress.ip_network(data["api_allow_from"], strict=False)
+    except ValueError:
+        raise ReplayError("prepared config api_allow_from must be one valid address or network") from None
     endpoint = urlsplit("//" + pools[0]["url"])
     if (not endpoint.hostname or not endpoint.port or endpoint.username is not None
             or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment

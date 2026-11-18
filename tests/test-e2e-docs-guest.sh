@@ -90,7 +90,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
     'case "$*" in' \
     '*--interface*169.254.241.2*) if [ "${FAKE_REFUSE_MODE:-drop}" = pass ]; then printf 200; exit 0; fi; if [ "${FAKE_REFUSE_MODE:-drop}" = drop ]; then n=0; [ -s "$FAKE_DROP_FILE" ] && n=$(cat "$FAKE_DROP_FILE"); n=$((n + 1)); printf "%s" "$n" >"$FAKE_DROP_FILE"; fi; exit 7 ;;' \
     '*--interface*169.254.241.3*) printf "%s" "${FAKE_ACCEPT_CODE:-200}"; exit 0 ;;' \
-    '*-X?PUT*) [ "${FAKE_CURL_MODE:-}" = transport ] && exit 7; [ "${FAKE_CURL_MODE:-}" = write200 ] && printf 200 || printf 403 ;;' \
+    '*-X?PUT*) [ "${FAKE_CURL_MODE:-}" = transport ] && exit 7; [ "${FAKE_CURL_MODE:-}" = write200 ] && { printf 200; exit 0; }; case "$*" in *Bearer*) printf 403 ;; *) [ "${FAKE_TOKEN_SET:-0}" = 1 ] && printf 401 || printf 403 ;; esac ;;' \
     '*) n=0; [ -f "$FAKE_CURL_COUNT" ] && n=$(cat "$FAKE_CURL_COUNT"); n=$((n + 1)); printf "%s" "$n" >"$FAKE_CURL_COUNT"; printf "{\"donate_level\":%s,\"hashrate\":{\"total\":[1]},\"connection\":{\"accepted\":%s,\"rejected\":0}}\n" "${FAKE_DONATE_LEVEL:-0}" "$n" ;;' \
     'esac' >"$T586/bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' ':' >"$T586/bin/sleep"
@@ -106,7 +106,8 @@ guest586() {
         E2E_SHARE_TIMEOUT=1 E2E_SHARE_INTERVAL=1 E2E_ACTIVE_TIMEOUT=1 FAKE_NFT_FILE="$T586/nft-present" \
         FAKE_POOL_ADDRESS="$POOL_ADDRESS" FAKE_RESOLVED_ADDRESS="$POOL_ADDRESS" FAKE_POOL_PORT="$POOL_PORT" FAKE_API_PORT="$API_PORT" \
         FAKE_LOOPBACK_ADDRESS="$LOOPBACK_ADDRESS" FAKE_CURL_COUNT="$T586/curl-count" \
-        FAKE_DROP_FILE="$T586/drop-count" FAKE_NFT_CHAIN_TEMPLATE="$T586/nft-chain.json" E2E_CONTROL_STATE_DIR="$T586/ctrlstate" "$@" \
+        FAKE_DROP_FILE="$T586/drop-count" FAKE_NFT_CHAIN_TEMPLATE="$T586/nft-chain.json" E2E_CONTROL_STATE_DIR="$T586/ctrlstate" \
+        E2E_SYSTEMD_SYSTEM_DIR="$T586/units" "$@" \
         bash "$ROOT/tests/e2e-docs-guest.sh" "${CASE_PHASE:?}" "$T586/clone" "$T586/state"
 }
 
@@ -167,8 +168,8 @@ for failure in "FAKE_NFT_MODE=fail:nft" "FAKE_SS_FAIL=1:socket" "FAKE_SYSTEMCTL_
 done
 
 printf '1.18.1\n' >"$T586/clone/VERSION"
-mkdir -p "$T586/ctrlstate" "$T586/ctrlstate-empty" "$T586/clone/backups"
-touch "$T586/ctrlstate/last" "$T586/clone/backups/rigforge-backup-20261117-000000.tar.gz"
+mkdir -p "$T586/ctrlstate" "$T586/ctrlstate-empty" "$T586/clone/backups" "$T586/units" "$T586/units-persistent"
+touch "$T586/ctrlstate/last" "$T586/clone/backups/rigforge-backup-20261117-000000.tar.gz" "$T586/units-persistent/xmrig-evil.service"
 
 : >"$T586/drop-count"
 CASE_PHASE=allowlist-refuse guest586
@@ -218,6 +219,11 @@ assert_rc "upgraded verifier fails when the checkout is not the candidate" "$?" 
 assert_contains "candidate mismatch is explicit" "$bad_head" "not at the candidate commit"
 CASE_PHASE=upgraded guest586 FAKE_INSTALLED=1 FAKE_PEER=present E2E_EXPECTED_HEAD="$(printf 'a%.0s' {1..40})"
 assert_rc "upgraded verifier proves the candidate commit keeps shares landing at donation zero" "$?" 0
+CASE_PHASE=upgraded guest586 FAKE_INSTALLED=1 FAKE_PEER=present FAKE_TOKEN_SET=1 E2E_CONTROL_TOKEN=fixturetoken E2E_EXPECTED_HEAD="$(printf 'a%.0s' {1..40})"
+assert_rc "upgraded verifier proves the base-API write stays refused with the control token" "$?" 0
+token401="$(CASE_PHASE=upgraded guest586 FAKE_INSTALLED=1 FAKE_PEER=present FAKE_TOKEN_SET=1 E2E_EXPECTED_HEAD="$(printf 'a%.0s' {1..40})" 2>&1)"
+assert_rc "upgraded verifier fails when the bearer-less write probe is required" "$?" 1
+assert_contains "tokenized 401 is explicit" "$token401" "did not return HTTP 403 (got 401)"
 
 digest="$({ sha256sum "$T586/clone/config.json" || shasum -a 256 "$T586/clone/config.json"; } 2>/dev/null | awk '{print $1}')"
 CASE_PHASE=restored guest586 E2E_RESTORED_CONFIG_SHA256="$digest"
@@ -237,6 +243,9 @@ assert_contains "persistent fragment is explicit" "$frag_err" "not a runtime uni
 mount_err="$(CASE_PHASE=appliance guest586 FAKE_INSTALLED=1 FAKE_FRAGMENT=/run/systemd/system/xmrig.service FAKE_MOUNT=none 2>&1)"
 assert_rc "appliance verifier fails without the runtime hugetlbfs mount" "$?" 1
 assert_contains "missing hugetlbfs is explicit" "$mount_err" "hugetlbfs is not mounted"
+planted="$(CASE_PHASE=appliance guest586 FAKE_INSTALLED=1 FAKE_FRAGMENT=/run/systemd/system/xmrig.service E2E_SYSTEMD_SYSTEM_DIR="$T586/units-persistent" 2>&1)"
+assert_rc "appliance verifier fails when a persistent unit exists" "$?" 1
+assert_contains "planted persistent unit is explicit" "$planted" "wrote persistent units"
 CASE_PHASE=appliance guest586 FAKE_INSTALLED=1 FAKE_FRAGMENT=/run/systemd/system/xmrig.service
 assert_rc "appliance verifier proves runtime-only units with the baseline files intact" "$?" 0
 

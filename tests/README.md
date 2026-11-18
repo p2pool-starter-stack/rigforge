@@ -201,8 +201,10 @@ The job snapshots the system changes before dry run, checks autostart after a ne
 boot ID, donation zero, the configured pool as the only miner peer, increasing
 accepted shares with no rejects, and a refused base-API write. From a second source
 in a temporary netns the API must be refused while the nft drop counter rises, and
-only after widening `api_allow_from` and applying may that source be accepted with
-HTTP 200 while loopback keeps working; the allowlist is then restored. The control
+after `api_allow_from` is replaced with that source (the product grammar is one
+address or CIDR) and applied, only it and loopback may reach the API — the source
+gets HTTP 200 while loopback keeps working through the always-present `iifname lo`
+rule; the allowlist is then restored. The control
 path applies one change and reverts another, with the generated config and the
 running miner following both. The remote-upgrade chain runs a noop leg and a
 forged-tag leg that must roll back leaving the checkout, VERSION and throttle stamp

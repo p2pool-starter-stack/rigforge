@@ -63,11 +63,13 @@ class Configuration(unittest.TestCase):
             with self.assertRaises(ReplayError):
                 check_config(json.dumps(data))
 
-    def test_allowlist_accepts_the_lane_comma_list_and_rejects_invalid_members(self):
-        data = self.config()
-        data["api_allow_from"] = f"{data['api_allow_from']}, ::1/128"
-        check_config(json.dumps(data))
-        for value in ("127.0.0.1/32, not-a-network", "127.0.0.1/32,", " "):
+    def test_allowlist_matches_the_products_single_address_or_network_grammar(self):
+        for value in ("::1/128", "192.168.7.0/24"):
+            data = self.config()
+            data["api_allow_from"] = value
+            with self.subTest(value=value):
+                check_config(json.dumps(data))
+        for value in ("127.0.0.1/32, ::1/128", "127.0.0.1/33", "not-a-network", " "):
             data = self.config()
             data["api_allow_from"] = value
             with self.subTest(value=value), self.assertRaises(ReplayError):
@@ -150,7 +152,7 @@ class Sequence(unittest.TestCase):
                                       [""] * 9)
         self.config = json.dumps({
             "pools": [{"url": f"fixture-{os.getpid()}:12345", "user": "docs-replay", "pass": "x"}],
-            "DONATION": 0, "api_allow_from": "127.0.0.1/32, ::1/128"}).encode()
+            "DONATION": 0, "api_allow_from": "127.0.0.1/32"}).encode()
         patcher = patch.object(docs_replay, "candidate", return_value=self.CANDIDATE)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -166,12 +168,14 @@ class Sequence(unittest.TestCase):
         for index, marker in ((3, " baseline "), (4, commands["dry-run"]), (5, " dry-run-check "),
                               (6, commands["setup"]), (7, " installed "),
                               (8, " allowlist-refuse "), (9, "169.254.241.3"),
+                              (9, "'.api_allow_from = $source'"),
                               (10, " allowlist-accept "), (12, '.control = "enabled"'),
                               (13, " control-apply "), (14, " control-revert "),
                               (15, "git tag v99.99.99"), (16, "E2E_UPGRADE_LEG=noop"),
                               (17, "E2E_UPGRADE_LEG=refused"),
                               (18, f"git fetch --quiet origin {self.CANDIDATE}"),
                               (19, f"E2E_EXPECTED_HEAD={self.CANDIDATE}"), (19, "check.sh upgraded"),
+                              (19, "E2E_CONTROL_TOKEN="),
                               (20, "sha256sum config.json"), (21, "backup --yes"),
                               (23, "restore --yes backups/rigforge-backup-20261117-010203.tar.gz"),
                               (24, "E2E_RESTORED_CONFIG_SHA256=" + "a" * 64),
