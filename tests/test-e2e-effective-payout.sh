@@ -17,7 +17,6 @@ bad() {
     printf 'bad %s\n' "$1" >>"$D/rows"
     return 1
 }
-skip() { printf 'skip %s\n' "$1" >>"$D/rows"; }
 conn="" uptime=0 failures=0
 miner_load() {
     local url
@@ -124,6 +123,8 @@ expect pass ok 'did not reach the running miner'
 expect pass ok 'the restart, not the file edit, delivered'
 expect pass ok 'edit hot-reloaded into'
 expect pass ok 'overwrote the hand-enabled watcher'
+expect pass ok 'reconciles the miner watchdog off'
+[ "$(jq -r '.watchdog' "$CFG")" = disabled ] && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
 [ "$(grep -c '^bad' "$D/rows")" = 0 ] && PASS=$((PASS + 1)) || {
     FAIL=$((FAIL + 1))
     cat "$D/rows" >&2
@@ -148,7 +149,9 @@ run_case pid-walk
 expect pid-walk bad 'moved off the payout pool from a file edit alone'
 expect pid-walk bad 'reached the miner only after a restart'
 run_case watchdog-on
-expect watchdog-on skip 'watchdog is enabled on this rig'
+expect watchdog-on ok 'reconciles the miner watchdog off'
+expect watchdog-on ok 'overwrote the hand-enabled watcher'
+[ "$(jq -r '.watchdog' "$CFG")" = disabled ] && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
 
 printf 'e2e effective-payout phase tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

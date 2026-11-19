@@ -35,11 +35,12 @@ _ep_edit_gen() { # <jq program> [jq options...] — options land before the prog
 phase_effective_payout() {
     phase "effective-payout — the miner's own summary testifies which payout pool is live, watcher off and on (#656)"
     local want pid
-    if [ "$(jq -r '.watchdog // "disabled"' "$CFG" 2>/dev/null)" = enabled ]; then
-        skip "the miner watchdog is enabled on this rig — its zero-hashrate restart races this phase's deliberate 0 H/s windows (#656)"
-        return 0
+    set_cfg '.watchdog = "disabled"'
+    if [ "$(jq -r '.watchdog // "disabled"' "$CFG")" = disabled ]; then
+        ok "the phase reconciles the miner watchdog off so its zero-hashrate restart cannot race the deliberate 0 H/s windows (#656)"
+    else
+        bad "the miner watchdog could not be reconciled off; its zero-hashrate restart can race this phase (#656)" || true
     fi
-    set_cfg '.'
     if jq -e '.watch == false' "$GEN_CFG" >/dev/null 2>&1; then
         ok "generated config carries the explicit watch=false (#656)"
     else
