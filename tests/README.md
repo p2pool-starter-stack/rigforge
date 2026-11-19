@@ -51,6 +51,7 @@ CI median/p90, failures and occupied hours; missing evidence leaves rollout acce
 | **Unit + black-box suite** | [`run.sh`](run.sh) + [`test-contract-credentials.sh`](test-contract-credentials.sh) | Any host (macOS/Linux), no Docker; credential regression needs Python 3. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `make test-suite` |
 | **Linux container e2e** | [`e2e/linux.sh`](e2e/linux.sh) → [`e2e/in-container.sh`](e2e/in-container.sh) | Disposable Ubuntu container, **needs Docker**. **In CI.** | The genuine Linux deploy path against a real (throwaway) `/etc` with real GNU tools (`sed -i`, `tee`, `envsubst`) + idempotency on re-run. Only the heavy/privileged bits (compile, package install, `systemctl`/`mount`) are stubbed. A second pass re-runs the container with `RIGFORGE_APPLIANCE=1` (#348) and proves the appliance contracts on that real `/etc`: units land in `/run/systemd/system`, no package installs, no fstab/limits.conf/logrotate writes, every enable carries `--runtime`. A third script, [`e2e/isolation.sh`](e2e/isolation.sh) (#668), puts the rig on a Docker `--internal` network whose only reachable peer is a SOCKS5 proxy fronting a stand-in GitHub (a TLS git smart-HTTP server plus the releases API). With `tor_socks5` set it runs `upgrade --check`, `setup`, a local `upgrade` with an XMRig pin change and the `control-upgrade` oneshot in its own empty environment, and proves from the proxy's log that every connection named a hostname. It also proves the block is real (a direct connection and a keyless `upgrade --check` fail), that an unreachable proxy fails closed without reaching the upstream, and that the live build survives the failed upgrade. | `make test-e2e` |
 | **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is deprecated, #493). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
+| **Docs-replay guest battery** | [`docs_replay.py`](docs_replay.py) + [`e2e-docs-guest.sh`](e2e-docs-guest.sh) | Transient Ubuntu 24.04 KVM guest on the bench's `rigforge`/`tier4-kvm` lane, **In CI via bench-ci**; by hand with `virsh`. | The install-to-uninstall battery on a fresh host: the documented install verbatim with a dry run that changes nothing, reboot-persistent autostart, accepted shares at donation zero on a throwaway endpoint, allowlist enforcement from a second source (refused, then accepted), one applied and one reverted control change, the remote-upgrade chain on real git onto the exact candidate commit, backup/restore, the uninstall revert across a reboot, and appliance mode with runtime-only units. Real hashrate, tuning, MSR read-back, RAPL and thermal checks stay with `e2e-real.sh`. | `make e2e-docs-replay` |
 | **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` and its shell helpers by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
 | **Release smoke (quick)** | [`smoke.sh`](smoke.sh) | Real Linux rig, **manual**. Not in CI. | The compiled binary actually starts and hashes (`xmrig --bench`, fully offline). Fast pre-tag confidence that the worker we ship runs. | `make smoke` |
 | **Release e2e (full)** | [`e2e-real.sh`](e2e-real.sh) | Real Linux rig, **manual, root**. Not in CI. | The real thing end to end: build + tune + kernel tuning + service + a real hash, the writable control path (#236) against real systemd (`control` phase), the remote-upgrade chain with real git as the root oneshot (`upgrade` phase, #322), then a clean uninstall. **The release gate.** | `make e2e-real` (see [`RELEASING.md`](../RELEASING.md)) |
@@ -156,13 +157,17 @@ snapshots remain on disk when cleanup cannot prove the original config bytes and
 
 ### Documentation replay on a disposable VM
 
-`make e2e-docs-replay` is the VM job entry point for the documented installation and
-uninstall lifecycle. Run it on a Linux KVM controller with Python 3 and `virsh` access to
-the local system libvirt instance. The job requires these environment variables:
+`make e2e-docs-replay` is the VM job entry point for the install-to-uninstall
+battery: the documented install, reboot-persistent autostart, allowlist enforcement
+from a second source, one applied and one reverted control change, the remote-upgrade
+chain onto the exact candidate commit, backup/restore, the uninstall revert and
+appliance mode. It runs as the `rigforge`/`tier4-kvm` bench-ci job, and it can also be
+driven by hand on a Linux KVM controller with Python 3 and `virsh` access to the
+local system libvirt instance. The job requires these environment variables:
 
 | Variable | Required value |
 |---|---|
-| `E2E_DOCS_DISPOSABLE` | `1`, acknowledging that setup, uninstall and two reboots will mutate the guest. |
+| `E2E_DOCS_DISPOSABLE` | `1`, acknowledging that setup, uninstall, the appliance re-setup and two reboots will mutate the guest. |
 | `E2E_DOCS_VM_UUID` | UUID of a running, transient, disposable Ubuntu cloud VM with AVX2 exposed. Persistent domains are refused. |
 | `E2E_DOCS_CONFIG` | Path to the prepared configuration for this run, kept outside the checkout. |
 
@@ -178,25 +183,43 @@ do not supply a wallet, production endpoint or credential. Leave `ACCESS_TOKEN`
 and control disabled and use the default worker location. Only `pools`, `DONATION`,
 `api_allow_from`, `HOME_DIR` and optional `threads` are accepted; pool objects accept
 only `url`, `user` and `pass`. The guest must be able
-to download the documented release and its build dependencies.
+to download the documented release and its build dependencies, and the candidate
+commit must already be pushed, because the forward-upgrade leg fetches it from the
+documented clone's origin.
 
 The driver extracts the marked Bash blocks from the README and walkthrough,
 checks their quick-start commands agree, and executes them unchanged through the
 guest agent. It inserts the prepared config before the documented dry run and
-setup. This deliberately tests the release pinned by the documentation; it does
-not silently replace that release with the candidate branch. Marker and command
+setup. The battery installs the release pinned by the documentation first — the
+documented install itself is never swapped for the candidate — then moves the
+guest's checkout to the exact candidate commit with `git fetch`, `git checkout`
+and `rigforge.sh upgrade`, and runs the remaining legs there. Marker and command
 agreement lint runs in `tests/run.sh` without Python. The host-driver regression
 and guest-check negative controls run under `make test-suite`.
 
 The job snapshots the system changes before dry run, checks autostart after a new
 boot ID, donation zero, the configured pool as the only miner peer, increasing
-accepted shares with no rejects, and a refused base-API write. After uninstall and
-a second new boot ID it checks units, processes, listeners, pool sockets, the nft
-table, 2 MiB HugePages and GRUB restoration. A stopped or unreachable guest after
-reboot is a platform failure (exit 2), never an autostart failure. Other failed
-assertions exit 1. The controller emits only fixed progress messages; raw guest
-output stays out of public evidence. Always discard the fixture after success,
-failure or timeout; the driver never deletes a caller-owned VM.
+accepted shares with no rejects, and a refused base-API write. From a second source
+in a temporary netns the API must be refused while the nft drop counter rises, and
+after `api_allow_from` is replaced with that source (the product grammar is one
+address or CIDR) and applied, only it and loopback may reach the API — the source
+gets HTTP 200 while loopback keeps working through the always-present `iifname lo`
+rule; the allowlist is then restored. The control
+path applies one change and reverts another, with the generated config and the
+running miner following both. The remote-upgrade chain runs a noop leg and a
+forged-tag leg that must roll back leaving the checkout, VERSION and throttle stamp
+intact, and the forward leg upgrades to the candidate commit and re-proves mining.
+A backup, a deliberate config edit and a restore must return the pre-backup config
+digest. After uninstall and a second new boot ID it checks units, processes,
+listeners, pool sockets, the nft table, 2 MiB HugePages and GRUB restoration. A
+fresh `RIGFORGE_APPLIANCE=1` setup on the same stock guest must prove appliance
+mode: runtime-only units only, GRUB, fstab, limits, modules and the kernel command
+line byte-identical to the fresh baseline, hugetlbfs mounted at runtime and mining
+at donation zero. A stopped or unreachable guest after reboot is a platform failure
+(exit 2), never an autostart failure. Other failed assertions exit 1. The
+controller emits only fixed progress messages; raw guest output stays out of public
+evidence. Always discard the fixture after success, failure or timeout; the driver
+never deletes a caller-owned VM.
 
 The existing worker-to-stack `network` phase also makes a bounded request from a
 temporary network namespace, bracketed by successful requests from the allowed
