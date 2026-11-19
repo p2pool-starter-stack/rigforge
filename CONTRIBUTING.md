@@ -28,7 +28,7 @@ break them gratuitously:
   make lint    # or: make test  (lint + the full dependency-free suite)
   ```
 
-  CI runs the same checks with pinned tools (shfmt 3.14.1, diff-cover 10.6.0 for patch coverage,
+  CI runs the same checks with pinned tools (shfmt 3.14.1, diff-cover 11.0.2 for patch coverage,
   and zizmor 1.32.0 for workflow security), so use matching versions when reproducing a CI finding.
   (`make fmt` auto-applies the `shfmt` formatting.) `make lint` also runs the topology gate and the **file budget gate** below.
 - Update the README or other docs when you change behavior or add options.
