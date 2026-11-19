@@ -21,6 +21,8 @@ EOF
     export PATH="$STUBS:$PATH"
 fi
 cp "$ROOT/tests/coverage.sh" "$PROJECT/tests/coverage.sh"
+mkdir -p "$PROJECT/tests/coverage"
+cp "$ROOT/tests/coverage/Dockerfile" "$PROJECT/tests/coverage/Dockerfile"
 printf '90\n' >"$PROJECT/tests/coverage-floor.txt"
 printf '#!/usr/bin/env bash\nprintf candidate-one\\n\n' >"$PROJECT/rigforge.sh"
 printf '#!/usr/bin/env bash\n:\n' >"$PROJECT/util/proposed-grub.sh"

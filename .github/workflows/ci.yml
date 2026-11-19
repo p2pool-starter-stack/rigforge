@@ -20,10 +20,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # zizmor: artipacked
-      # pipx is preinstalled on ubuntu-24.04 (same path as diff-cover/zizmor); pin the version so the
-      # ruleset can't drift with the runner image.
-      - name: Install pinned yamllint
-        run: pipx install "yamllint==1.38.0"
+      - name: Install pinned Python CI tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/ci-python-tools"
+          "$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt
+          echo "$RUNNER_TEMP/ci-python-tools/bin" >>"$GITHUB_PATH"
       # Via `make lint-yaml` so the file set + .yamllint config live in one place and can't drift from local.
       - name: Run yamllint (make lint-yaml)
         run: make lint-yaml
@@ -168,18 +170,15 @@ jobs:
       # /run/systemd/system, no package installs, no fstab/limits/logrotate writes, --runtime enables.
       - name: Run end-to-end suite
         run: make test-e2e
+      - name: Build the API allowlist kernel test image
+        run: docker build -q -t rigforge-allowlist tests/docker
       - name: Run API allowlist kernel test
-        run: >-
-          docker run --rm --privileged -v "$PWD:/src:ro"
-          alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
-          sh -c 'apk add --no-cache bash iproute2 nftables curl jq python3 >/dev/null && bash /src/tests/test-api-allowlist-linux.sh'
+        run: docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh
 
   coverage:
     name: Coverage (kcov + diff-cover)
     runs-on: ubuntu-24.04
     env:
-      # Pin diff-cover (the patch-coverage gate); kcov + jq are pinned inside tests/coverage.sh.
-      DIFF_COVER_VERSION: "10.6.0"
       PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
       # Diff the PR against the branch it targets (develop or main). On a push, github.base_ref is empty,
       # so fall back to the pushed branch itself — that's an empty diff that trivially passes.
@@ -195,7 +194,11 @@ jobs:
         run: make coverage
       # Patch coverage is the real lever: it requires NEW/CHANGED lines to be tested, which is what keeps
       # coverage from rotting. Self-contained (no Codecov) — reads the Cobertura report from kcov.
-      - name: Install pinned diff-cover
-        run: pipx install "diff-cover==${DIFF_COVER_VERSION}"
+      - name: Install pinned Python CI tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/ci-python-tools"
+          "$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt
+          echo "$RUNNER_TEMP/ci-python-tools/bin" >>"$GITHUB_PATH"
       - name: Enforce patch coverage on changed lines
         run: diff-cover coverage/cobertura.xml --compare-branch="origin/$BASE_REF" --fail-under="${PATCH_COVERAGE_MIN}"

@@ -22,6 +22,7 @@ jobs:
       contents: write
       pull-requests: write
       actions: write
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,7 +109,7 @@ jobs:
             printf 'Deploys via the normal path after merge: upgrade rebuilds only where the pin changed.\n'
             printf 'Changelog gets its line at release curation, like every pin bump.\n'
           } >/tmp/pr-body.md
-          gh pr create --base develop --head "$branch" \
+          gh pr create --base develop --head "$branch" --label dependencies \
             --title "chore: bump the XMRig pin to ${TAG} (bot, build-verified)" \
             --body-file /tmp/pr-body.md
           # A token-created PR does not trigger `on: pull_request` — dispatch the two required
