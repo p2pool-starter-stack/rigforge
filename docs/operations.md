@@ -386,6 +386,8 @@ from source, and writes a tuned `config.json`. What it doesn't do is the Linux-o
   `restart` / `status` / `logs` verbs work on macOS too (see below); on macOS they manage XMRig as a
   background process tracked by a PID file under the worker root, instead of via systemd.
 
+
+If `config.json` holds a combination RigForge refuses, `DONATION` above 0 while Tor is in effect, the watchdog still runs its thermal stop and wedge recovery against the miner as it stands. It logs the conflict on every tick, and the sister feed shows it as `health.config_conflict`. `setup`, `upgrade` and `apply` refuse until `DONATION` is `0` (#762).
 ### Run the miner
 
 `setup` doesn't start the miner on macOS, so launch it yourself when ready, with the same command you'd

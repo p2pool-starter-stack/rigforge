@@ -2759,6 +2759,58 @@ assert_eq "strike file reset after restart" "$([ -f "$WDR/watchdog.fails" ] && e
 out="$(run_watchdog 'echo 60' 'echo 0' '')"
 out="$(run_watchdog 'echo 60' 'echo 9999' '')"
 assert_eq "healthy check resets the strike counter" "$([ -f "$WDR/watchdog.fails" ] && echo y || echo n)" "n"
+# #762: a DONATION/Tor conflict must not stop the watchdog's thermal cutoff.
+run_watchdog_conflict() {
+    (
+        source "$SCRIPT"
+        parse_config() {
+            [ "${RIGFORGE_TOLERATE_DONATION_TOR:-0}" = 1 ] || {
+                echo "parse_config refused the conflict"
+                exit 1
+            }
+            DONATION=5
+            DONATION_TOR_CONFLICT=1
+        }
+        OS_TYPE=Linux
+        WORKER_ROOT="$WDR"
+        SERVICE_NAME=xmrig
+        MAX_TEMP_C=85
+        sudo() { "$@"; }
+        systemctl() {
+            echo "[systemctl] $*" >>"$WDR/calls.log"
+            return 0
+        }
+        set +e
+        TUNE_TEMP_CMD='echo 92.5' API_CMD='echo 12345' watchdog 2>&1
+        echo "rc=$?"
+    )
+}
+: >"$WDR/calls.log"
+rm -f "$WDR/watchdog.thermal-hold"
+out="$(run_watchdog_conflict)"
+assert_contains "watchdog tolerates a DONATION/Tor conflict (#762)" "$out" "the thermal stop and wedge recovery still run"
+assert_absent "watchdog never hits the parse refusal (#762)" "$out" "parse_config refused the conflict"
+assert_eq "watchdog thermal stop still fires under the conflict (#762)" "$(wd_calls 'stop xmrig')" "1"
+rm -f "$WDR/watchdog.thermal-hold" "$WDR/watchdog.fails"
+msr_conflict_out="$( (
+    source "$SCRIPT"
+    parse_config() {
+        [ "${RIGFORGE_TOLERATE_DONATION_TOR:-0}" = 1 ] || {
+            echo "parse_config refused the conflict"
+            exit 1
+        }
+        DONATION_TOR_CONFLICT=1
+        SHARED_HOST=false
+    }
+    OS_TYPE=Linux
+    id() { echo 0; }
+    _msr_detect_preset() { :; }
+    set +e
+    msr_apply 2>&1
+    echo "rc=$?"
+) 2>&1)"
+assert_contains "msr-apply tolerates a DONATION/Tor conflict so a miner_user unit still starts (#762)" "$msr_conflict_out" "rc=0"
+assert_absent "msr-apply never hits the parse refusal (#762)" "$msr_conflict_out" "parse_config refused the conflict"
 # Thermal cutoff: above max_temp_c -> stop + marker, even with a healthy hashrate.
 : >"$WDR/calls.log"
 out="$(run_watchdog 'echo 92.5' 'echo 12345' '85')"
@@ -3358,6 +3410,15 @@ assert_contains "status: platform block still follows (#143)" "$(cat "$ST/calls.
 out="$(run_status fail)"
 assert_contains "status: unreachable API -> one explanatory line (#143)" "$out" "worker API not reachable at 127.0.0.1:8080"
 assert_contains "status: platform block untouched when API is down (#143)" "$(cat "$ST/calls.log")" "[systemctl] status xmrig"
+cat >"$ST/config.json" <<EOF
+{ "HOME_DIR": "$ST/home", "pools": [{"url": "h:3333"}], "tor_socks5": "127.0.0.1:9050", "DONATION": 5 }
+EOF
+: >"$ST/calls.log"
+out="$(run_status ok)"
+assert_contains "status: live summary survives a DONATION/Tor conflict (#762)" "$out" "Hashrate:  1234.5 H/s"
+cat >"$ST/config.json" <<EOF
+{ "HOME_DIR": "$ST/home", "pools": [{"url": "h:3333"}] }
+EOF
 
 # #364: the same unreachable API through the REAL dispatch, where errexit and the ERR trap are live.
 # `run_status fail` above cannot catch this — shadowing curl inside a `set +e` subshell disarms the
@@ -6704,6 +6765,7 @@ assert_eq "legacy upgrade persists appliance identity (#477)" "$([ -d "$APW/.rig
 assert_eq "legacy upgrade keeps XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
 assert_eq "legacy upgrade removes the persistent XMRig log (#477)" "$([ -e "$APW/home/worker/xmrig.log" ] && echo present || echo absent)" "absent"
 assert_contains "legacy upgrade reinstalls appliance control posture (#477/#479)" "$(cat "$APW/systemd-clean/rigforge-control-apply.service")" "RIGFORGE_APPLIANCE=1"
+assert_contains "legacy upgrade gives the control receiver the appliance posture (#762)" "$(cat "$APW/systemd-clean/rigforge-control.service")" "Environment=RIGFORGE_APPLIANCE=1"
 assert_contains "legacy upgrade reinstalls the root-only consumer runtime (#479)" "$(cat "$APW/systemd-clean/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
 assert_eq "legacy upgrade reconciles every optional service (#477)" "$([ -f "$APW/systemd-clean/rigforge-autotune.service" ] && [ -f "$APW/systemd-clean/rigforge-watchdog.service" ] && [ -f "$APW/systemd-clean/rigforge-api.service" ] && echo yes)" "yes"
 printf '{"DONATION":0}' >"$APW/control/spool/pending-0123456789abcdef.json"

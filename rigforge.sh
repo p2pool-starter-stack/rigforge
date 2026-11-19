@@ -440,7 +440,11 @@ parse_config() {
     if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
-    [ "$DONATION" = 0 ] || [ -z "$(_tor_socks5)" ] || error "DONATION must be 0 while tor_socks5 is set: a non-zero donation makes XMRig dial its donation pool directly, off the proxy. Set DONATION to 0, or remove tor_socks5 to take this rig off Tor."
+    DONATION_TOR_CONFLICT=0
+    if [ "$DONATION" != 0 ] && [ -n "$(_tor_socks5)" ]; then
+        DONATION_TOR_CONFLICT=1
+        [ "${RIGFORGE_TOLERATE_DONATION_TOR:-0}" = 1 ] || error "DONATION must be 0 while tor_socks5 is set: a non-zero donation makes XMRig dial its donation pool directly, off the proxy. Set DONATION to 0, or remove tor_socks5 to take this rig off Tor."
+    fi
     # Pool(s). The pool target is XMRig's native `pools` array — the same structure XMRig uses
     # ({"url","user","pass","keepalive","tls",...}). Each entry needs a `url` of the form `host:port`;
     # every other field falls back to a Pithead-friendly default. List multiple entries for failover.
@@ -1461,8 +1465,8 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH' \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
         <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
@@ -3963,10 +3967,10 @@ svc_status() {
     _config_apply_check
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
-        (parse_config >/dev/null 2>&1 && _status_api_summary) || true
+        (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
-    (parse_config >/dev/null 2>&1 && _status_api_summary) || true
+    (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
     # Read-only: `systemctl status` is world-readable, so no sudo (don't prompt for a password to look).
     systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
 }
@@ -4778,7 +4782,10 @@ watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
     fi
-    parse_config
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config
+    if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
+        warn "watchdog: DONATION is $DONATION while Tor is in effect, so setup, upgrade and apply refuse this config until DONATION is 0; the thermal stop and wedge recovery still run."
+    fi
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
     if [ -f "$hold_f" ]; then
@@ -4964,7 +4971,7 @@ _msr_detect_preset() { # -> preset name, or "" for unknown
 msr_apply() {
     [ "$OS_TYPE" = Linux ] || error "msr-apply writes Linux MSRs and is only supported on Linux."
     [ "$(id -u)" -eq 0 ] || error "msr-apply needs root (it writes /dev/cpu/*/msr) — it is normally run by the systemd unit."
-    parse_config >/dev/null
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null
     [ "${SHARED_HOST:-false}" != true ] || error "MSR tuning is disabled in shared_host."
     local preset regs reg val mask cpu old new
     preset=$(_msr_detect_preset)
@@ -5174,7 +5181,7 @@ _stamp_config_meta() { # <source> [change_id] — record provenance IFF the writ
     # Self-sufficient + error-isolated: parse the current config.json in a subshell, so this is safe to
     # call from restore/apply/control regardless of whether the caller has parsed (and a bad config
     # can't abort the caller).
-    newrev=$( (parse_config >/dev/null 2>&1 && _writable_config_hash) 2>/dev/null) || newrev=""
+    newrev=$( (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _writable_config_hash) 2>/dev/null) || newrev=""
     [ -n "$newrev" ] || return 0
     oldrev=$(jq -r '.revision // ""' "$CONFIG_META_FILE" 2>/dev/null || echo "")
     [ "$newrev" = "$oldrev" ] && return 0
@@ -5204,7 +5211,7 @@ _api_rigforge_block() {                                                         
 # Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
-    parse_config >/dev/null
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null
     local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at
     mkdir -p "$dir"
     generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -5212,6 +5219,9 @@ api_refresh() {
     printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
     hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
     rf=$(_api_rigforge_block "$hr")
+    if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
+        rf=$(jq -c '.health.config_conflict = "DONATION above 0 while Tor is in effect; setup, upgrade and apply refuse this config until DONATION is 0"' <<<"$rf")
+    fi
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
     printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json"

@@ -131,6 +131,20 @@ grep -q 'DONATION must be 0 while tor_socks5 is set' "$D/parse-don.err"
 RIGFORGE_APPLIANCE=0
 printf '{}' >"$CONFIG_JSON"
 printf 'DONATION refuses non-zero while tor_socks5 is set: PASS\n'
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":5}' >"$CONFIG_JSON"
+(
+    set +eu
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1
+    [ "$DONATION_TOR_CONFLICT" = 1 ]
+)
+printf '{"pools":[{"url":"pool.example:3333"}],"tor_socks5":"127.0.0.1:9050","DONATION":0}' >"$CONFIG_JSON"
+(
+    set +eu
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1
+    [ "$DONATION_TOR_CONFLICT" = 0 ]
+)
+printf '{}' >"$CONFIG_JSON"
+printf 'DONATION/Tor conflict is tolerated only when the caller asks (#762): PASS\n'
 DEPSD="$D/deps-brew"
 mkdir -p "$DEPSD"
 cat >"$DEPSD/sudo" <<'EOF'
