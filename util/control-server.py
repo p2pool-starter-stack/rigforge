@@ -34,10 +34,7 @@ CFG_PATH = ""
 
 def tor_effective(cfg_path):
     with open(cfg_path) as f:
-        cfg = json.load(f)
-    if "tor_socks5" not in cfg:
-        return os.environ.get("RIGFORGE_APPLIANCE") == "1"
-    tor = cfg["tor_socks5"]
+        tor = json.load(f).get("tor_socks5", "appliance-default" if os.environ.get("RIGFORGE_APPLIANCE") == "1" else None)
     return isinstance(tor, str) and tor != ""
 
 
