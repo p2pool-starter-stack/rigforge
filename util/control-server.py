@@ -34,7 +34,7 @@ CFG_PATH = ""
 
 def tor_effective(cfg_path):
     with open(cfg_path) as f:
-        tor = json.load(f).get("tor_socks5")
+        tor = json.load(f).get("tor_socks5", "appliance-default" if os.environ.get("RIGFORGE_APPLIANCE") == "1" else None)
     return isinstance(tor, str) and tor != ""
 
 
@@ -53,7 +53,7 @@ def donation_tor_reasons(change):
     if isinstance(d, bool) or not (isinstance(d, int) or (isinstance(d, str) and d.strip().isdigit())):
         return ["DONATION must be a whole number 0-100"]
     if int(str(d).strip()) != 0:
-        return ["DONATION above 0 is refused while tor_socks5 is set (a donation pool would dial direct; set DONATION to 0 or remove tor_socks5)"]
+        return ["DONATION above 0 is refused while Tor is in effect (tor_socks5 is set, or unset on an appliance rig; a donation pool would dial direct; set DONATION to 0 or set tor_socks5 to null)"]
     return []
 
 

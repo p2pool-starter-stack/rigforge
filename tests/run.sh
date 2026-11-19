@@ -6704,6 +6704,7 @@ assert_eq "legacy upgrade persists appliance identity (#477)" "$([ -d "$APW/.rig
 assert_eq "legacy upgrade keeps XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
 assert_eq "legacy upgrade removes the persistent XMRig log (#477)" "$([ -e "$APW/home/worker/xmrig.log" ] && echo present || echo absent)" "absent"
 assert_contains "legacy upgrade reinstalls appliance control posture (#477/#479)" "$(cat "$APW/systemd-clean/rigforge-control-apply.service")" "RIGFORGE_APPLIANCE=1"
+source "$ROOT/tests/test-donation-tor.sh"
 assert_contains "legacy upgrade reinstalls the root-only consumer runtime (#479)" "$(cat "$APW/systemd-clean/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
 assert_eq "legacy upgrade reconciles every optional service (#477)" "$([ -f "$APW/systemd-clean/rigforge-autotune.service" ] && [ -f "$APW/systemd-clean/rigforge-watchdog.service" ] && [ -f "$APW/systemd-clean/rigforge-api.service" ] && echo yes)" "yes"
 printf '{"DONATION":0}' >"$APW/control/spool/pending-0123456789abcdef.json"

@@ -344,6 +344,8 @@ watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
 Disable it with `"watchdog": "disabled"` (or removing the key) + `apply`; the units are removed
 cleanly. `uninstall` removes them too.
 
+If `config.json` holds a combination RigForge refuses, `DONATION` above 0 while Tor is in effect, the watchdog still runs its thermal stop and wedge recovery against the miner as it stands. It logs the conflict on every tick, and the sister feed shows it as `health.config_conflict`. `setup`, `upgrade` and `apply` refuse until `DONATION` is `0` (#762).
+
 ---
 
 ## Service management (Linux)

@@ -261,3 +261,34 @@ assert_rc "thermal refresh-window regression suite (#546)" "$?" "0"
 
 bash "$ROOT/tests/test-control-replay.sh"
 assert_rc "queued control replay regression suite (#540)" "$?" "0"
+ARC="$(mktemp -d "$SANDBOX/refresh-conflict.XXXXXX")"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    RIGFORGE_API_DATA="$ARC"
+    parse_config() {
+        [ "${RIGFORGE_TOLERATE_DONATION_TOR:-0}" = 1 ] || exit 1
+        DONATION_TOR_CONFLICT=1
+    }
+    _read_api_summary() { echo '{"hashrate":{"total":[100]}}'; }
+    _api_rigforge_block() { echo '{"health":{"service_active":true},"watchdog":{},"tune":{}}'; }
+    _active_daemon_pool() { return 1; }
+    _api_identity_json() { echo '{}'; }
+    api_refresh
+) >/dev/null 2>&1
+assert_contains "api-refresh still publishes under a DONATION/Tor conflict (#762)" "$(cat "$ARC/health.json" 2>/dev/null)" "config_conflict"
+assert_contains "api-refresh keeps the summary under the conflict (#762)" "$(cat "$ARC/summary.json" 2>/dev/null)" "hashrate"
+ARN="$(mktemp -d "$SANDBOX/refresh-noconflict.XXXXXX")"
+(
+    source "$SCRIPT"
+    OS_TYPE=Linux
+    RIGFORGE_API_DATA="$ARN"
+    parse_config() { DONATION_TOR_CONFLICT=0; }
+    _read_api_summary() { echo '{"hashrate":{"total":[100]}}'; }
+    _api_rigforge_block() { echo '{"health":{"service_active":true},"watchdog":{},"tune":{}}'; }
+    _active_daemon_pool() { return 1; }
+    _api_identity_json() { echo '{}'; }
+    api_refresh
+) >/dev/null 2>&1
+assert_contains "api-refresh publishes health without a conflict (#762)" "$(cat "$ARN/health.json" 2>/dev/null)" "service_active"
+assert_absent "api-refresh adds no config_conflict when the config is consistent (#762)" "$(cat "$ARN/health.json" 2>/dev/null)" "config_conflict"
