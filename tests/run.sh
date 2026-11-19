@@ -2811,6 +2811,20 @@ msr_conflict_out="$( (
 ) 2>&1)"
 assert_contains "msr-apply tolerates a DONATION/Tor conflict so a miner_user unit still starts (#762)" "$msr_conflict_out" "rc=0"
 assert_absent "msr-apply never hits the parse refusal (#762)" "$msr_conflict_out" "parse_config refused the conflict"
+msr_shared_out="$( (
+    source "$SCRIPT"
+    parse_config() {
+        [ "${RIGFORGE_TOLERATE_DONATION_TOR:-0}" = 1 ] || exit 1
+        DONATION_TOR_CONFLICT=1
+        SHARED_HOST=true
+    }
+    OS_TYPE=Linux
+    id() { echo 0; }
+    set +e
+    msr_apply 2>&1
+    echo "rc=$?"
+) 2>&1)"
+assert_contains "msr-apply still refuses shared_host under the conflict (#762)" "$msr_shared_out" "MSR tuning is disabled in shared_host"
 # Thermal cutoff: above max_temp_c -> stop + marker, even with a healthy hashrate.
 : >"$WDR/calls.log"
 out="$(run_watchdog 'echo 92.5' 'echo 12345' '85')"
