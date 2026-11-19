@@ -7,6 +7,89 @@ All notable changes to RigForge are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-19
+
+### Added
+
+- **Validated XMRig configuration overlay (#526, #604).**
+  A top-level `xmrig` object in `config.json` sets XMRig keys RigForge does not model. It is deep-merged after tuned overrides and before the `threads` cap. `apply` and `apply --dry-run` now validate a staged copy with `xmrig --dry-run` before anything is installed, so they need the built XMRig executable and at least one enabled pool. A parser failure leaves the live config and service untouched. `pools`, `http`, `donate-level`, `donate-over-proxy`, `opencl` and `cuda` are protected and refused. An undocumented key warns but is passed through. A knob set in `xmrig` is operator-owned, so `tune` leaves it alone, and a `tune` candidate that cannot be rendered with the overlay is skipped. `doctor` and `status` report the pinned dotted key names. The sister feed's `config` block carries the overlay as read-only context when it is non-empty; writes to it through the control path are still refused.
+
+- **RandomX mode and initialization are configurable (#532, #605).**
+  `xmrig.randomx.mode` (`fast` by default, `auto` or `light`), `init` and `init-avx2` are now settable instead of hard-coded. An explicit `light` reserves 2MB HugePages only, so a host with little free memory can mine; `auto` can fall back inside XMRig but still reserves for `fast`. `apply` renders the config. To resize the persistent reservation, re-run `setup` and reboot; the reservation never shrinks automatically. `doctor` and `status` report the configured mode and the live algorithm when it is not `rx/0`, and `doctor` warns before a `fast` start when available memory plus free HugePages is below about 2080 MiB.
+
+- **Solo mining against a node, with node health reported (#528, #645).**
+  A pool entry accepts a `daemon+http://` or `daemon+https://` URL, or `"daemon": true` on a bare host and port, plus `daemon-poll-interval`, `daemon-job-timeout` and `daemon-zmq-port`. A scheme URL implies `daemon: true`, and an explicit `false` with it is refused. `socks5` and `tls-fingerprint` are refused on a daemon pool because the pinned miner ignores them, and `self-select`, `submit-to-origin` and `spend-secret-key` warn and are dropped. Daemon HTTPS encrypts but does not authenticate the peer, and `doctor`'s HTTPS RPC check uses curl CA verification, so it can warn while the miner connects. The sister feed labels these connections `connection.mode: "daemon"`, inferred from the active configured pool when XMRig's summary lacks it, and `doctor` and `apply` warn on node problems instead of treating missing Stratum shares as an outage.
+
+- **Opt-in shared-host resource profile (#577, #611).**
+  `shared_host` (`cpu_quota_percent` 1 to 10000, `memory_max_mb` 3072 to 1048576, and `existing_host_tuning: "preserve"`) runs the miner and RigForge's own compile and tune helpers inside an owned `rigforge.slice` on a Linux systemd host with cgroup v2 and no swap, leaving at least 1024 MiB outside the ceiling. `existing_host_tuning: "preserve"` is required when converting an already installed dedicated unit, which also means stopping the miner first. RigForge verifies the effective limits after systemd activates them and refuses to start the miner if they cannot be read back. The unit has no auto-restart, so a failed budget check leaves the miner stopped; after a failed `setup` or `upgrade` that stopped it, run `start`. While a loaded unit is out of profile, starts and restarts are refused until `apply` runs, but the watchdog thermal stop still works. The profile uses ordinary pages and leaves existing host settings alone; full `tune` and `bench` are refused. Setup and `upgrade` size the rebuild to `memory_max_mb` and stop a running miner first. Disabling the profile stops the slice once it is empty. See [Shared-host profile](docs/shared-host.md).
+
+- **JSON health reports (#440, #606).**
+  `doctor --json` writes one JSON object to stdout (`version`, `exit`, `summary` and `checks` with `id`, `status` and `message`) with stable check IDs, and the human report goes to stderr. Automation should use `exit` rather than row statuses: a critical finding has status `warn`, and `fail` is reserved. On non-Linux hosts the Linux-only check is skipped and `checks` is empty.
+
+- **A warning when the source configuration changes after generation (#445, #609).**
+  `doctor` and `status` report whether `config.json` and the tune overlay still match the last generated miner config, and point at `apply` when they differ. The record is written only when the staged config is published, never for a refused or dry-run `apply`.
+
+- **Benchmark verification and a bounded stress test (#533, #610).**
+  `bench` now runs XMRig's offline benchmark with its known seed and reference hash and reports H/s only for a verified result. Offline `tune` rejects a whole candidate if any iteration fails hash verification. `bench --submit` explicitly publishes the result to the upstream benchmark service, which receives hardware and performance information, and verifies it online; `bench --verify ID` repeats that check. Benchmark state is saved to `rigforge-bench.json` and included in `support-bundle`. `stress [--minutes N]` (default 30, range 1 to 1440) is a Linux offline load test that reports pass or fail and peak temperature, re-runs under sudo like `tune` and `bios`, and has a shell completion entry. On normal completion, error or interrupt it restores the prior miner state, timers included; an over-temperature failure instead leaves the miner stopped under a thermal hold that the watchdog lifts after cooling. Plain `bench`, offline `tune` and `stress` submit nothing.
+
+- **The sister feed identifies the rig (#452, #637, #680, #694).**
+  `rigforge.appliance`, `rigforge.stamp` (the baked `RIGFORGE_REF` provenance), `rigforge.os_version` (the appliance image marker, `null` on standalone rigs) and `rigforge.rig_id` (echoed from the new optional top-level `rig_id` config key, empty by default and never invented) are added. Authenticated summary reads also carry `rigforge.identity` (a truncated MAC prefix, a truncated board UUID and the CPU model). The unauthenticated feed never carries `identity`, and none of these values authenticates anything. Additive: existing consumers are unaffected.
+
+- **RigForge's own fetches can go through a SOCKS5 proxy (#668, #674).**
+  `tor_socks5` (`host:port`) routes `upgrade --check`, the pinned XMRig clone in `setup` and `upgrade`, and the remote-upgrade `git fetch` through one proxy with remote DNS and no direct fallback. The proxy is checked before an upgrade starts, an unreadable config is refused, and `NO_PROXY`, curlrc and git system or global config cannot bypass it. `doctor` gains a `tor-socks5` row. RigForge does not install or run Tor.
+
+### Changed
+
+- **Appliance rigs default to Tor and refuse a non-zero DONATION (#696, #697).**
+  On an appliance rig, `setup` writes `tor_socks5: "127.0.0.1:9050"` into `config.json` once when the key is absent; `upgrade`, `apply` and the control path treat an unset key as that local default. An explicit `null` is the direct opt-out, and plain hosts keep their current behavior. Because the donation pool would dial direct, `DONATION` must be `0` while `tor_socks5` is set: config parsing (so `setup`, `upgrade` and `apply`), the control receiver (HTTP 400, and an unreadable config is refused too) and the control applier all refuse a higher value. An appliance rig that carries a non-zero `DONATION` stops applying until it is set to `0` or the proxy is opted out. With `tor_socks5` set, `setup`'s package-manager installs (`apt`, `dnf`, `pacman`, `brew`) also go through the proxy; only the `jq` bootstrap, which runs before the config can be read, stays yours to route.
+
+- **XMRig logging defaults to plain output (#530, #693).**
+  Linux rigs now get `colors: false`, so the log and journal carry no ANSI escapes, and the 60 second report cadence is pinned explicitly. `verbose`, `syslog`, `print-time` and `health-print-time` are set through the `xmrig` overlay. The support bundle records the five logging values in effect (`xmrig-logging.json`). The change reaches a running miner at the next `apply`.
+
+- **RigForge owns the generated XMRig config (#529, #608).**
+  The generated `config.json` now sets `autosave: false` and `watch: false`, so XMRig no longer rewrites it or hot-reloads a hand edit. Edit the repo-root `config.json` and run `apply`; a hand edit to the generated file is overwritten at the next regeneration. On Linux, `setup` now restarts the miner when the generated config changed or XMRig was rebuilt; an unchanged `setup` re-run still leaves a running miner alone. A missing `config.json` after generation no longer aborts `setup`.
+
+- **Pool fields are preserved (#527, #607).**
+  Optional pool keys that RigForge used to drop, including `rig-id`, `nicehash`, `algo`, `coin` and `sni`, now pass through to the generated config, and an invalid `algo` or `coin` is rejected.
+
+- **Stratum password guidance points at the Pithead dashboard (#661).**
+  The setup prompt and the integration guide send you to the **Connect a miner** block for the shared secret, and note that `pithead setup`, `up`, `apply` and `status` say whether authentication is on but never print it.
+
+- **Benchmark claims are qualified (#580, #639).**
+  The README and benchmark report present the Ryzen results as historical, CPU-package (RAPL) power only, add a candidate comparison protocol, and state that the existing numbers carry no submitted benchmark IDs.
+
+- **`rigforge.sh` must stay beside its bundled `util/` directory.**
+  The new helper scripts are sourced from there, so copying the script alone no longer works.
+
+### Fixed
+
+- **The `threads` cap is honored (#588, #632, #601).**
+  XMRig 6.26.0 ignores a bare integer `cpu.rx`, so the setup cap was silently dropped and the miner used every core. `cpu.rx` is now written only in forms XMRig honors: an empty profile object `{}` for auto (it was `-1`), a profile object when a count is requested, or the observed auto array. On Linux, a bounded probe finds the profile XMRig picks on the host, and every requested count, the setup cap and each tune candidate, is clamped to it, so a cap can never raise the thread count. Rigs that set `threads` mined on every core before this fix and will drop to the capped count after `apply`, with a corresponding hashrate change.
+
+- **A failed shared-host safeguard render no longer leaks a secret-bearing temp config (#666, #673).**
+  A failing `jq` exited before the temporary `config.json` (pool passwords, `ACCESS_TOKEN`) was removed, and each retry left another copy in the build directory. The render now returns an error, reports through the normal render-failure path and cleans up.
+
+- **A failed, unloaded control receiver no longer blocks later runs (#659, #675).**
+  After control was disabled, `setup`, `upgrade` and `apply` failed on a receiver that was already stopped. It is now treated as stopped.
+
+- **Upgrade hands the rebuilt tree to `miner_user` before restarting the miner (#660, #676).**
+  A `miner_user` rig used to restart its miner before it owned the rebuilt XMRig tree.
+
+- **The shared-host start guard no longer blocks the watchdog's stop path (#665, #677).**
+  A `shared_host` rig whose loaded unit was out of profile exited every watchdog tick at the guard, so a miner above `max_temp_c` was never stopped and wedge recovery did nothing. The guard now runs only before the two start actions, the thermal-hold lift and the wedge restart.
+
+- **`status` names the shared-host profile instead of staying silent (#744, #745).**
+  `status` always prints the profile block: the effective limits when enforced, the reason when not enforced, or `Resource profile: unknown` with the reason when the profile cannot be read. It still exits 0.
+
+- **Tests and tooling.**
+  - Load requests started by the `api-impact` phase no longer outlive it while holding the rig lock and failing later phases (#653, #671).
+  - The API allowlist's accept rule is proven from a non-loopback source, and `shared-host` is refused as a worker-proof group (#667, #679).
+  - Docs replay, API allowlist and uninstall checks are automated (#586, #617).
+
+### Known issues
+
+- On a host that restricts `xmrig.service` to fewer CPUs than the host has (an `AllowedCPUs=` drop-in or a cpuset), the `threads` cap is compared with an auto-selection measured outside that restriction, so a cap above the allowed CPU count can oversubscribe them. Hosts without such a restriction are unaffected (#746).
+
 ## [1.18.1] - 2026-11-08
 
 ### Changed

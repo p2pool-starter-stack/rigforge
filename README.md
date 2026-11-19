@@ -95,7 +95,7 @@ On the machine you want to turn into a miner:
 <!-- docs-replay:quick-start:begin -->
 
 ```bash
-git clone --branch v1.18.1 https://github.com/p2pool-starter-stack/rigforge.git
+git clone --branch v1.19.0 https://github.com/p2pool-starter-stack/rigforge.git
 cd rigforge
 chmod +x rigforge.sh
 sudo ./rigforge.sh
