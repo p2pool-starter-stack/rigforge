@@ -20,6 +20,7 @@ open)
     else
         labels=(--label security)
         for l in "$@"; do labels+=(--label "$l"); done
+        for l in security "$@"; do "$GH" label create "$l" >/dev/null 2>&1 || true; done
         "$GH" issue create --title "$title" "${labels[@]}" --body-file "$body"
     fi
     ;;

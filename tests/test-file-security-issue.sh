@@ -27,6 +27,7 @@ run() {
 echo '[]' >"$LIST"
 run open "$t" "$SCRATCH/body.md" security-baseline
 grep -qx "issue create --title $t --label security --label security-baseline --body-file $SCRATCH/body.md" "$LOG" || fail "no create call"
+grep -qx 'label create security-baseline' "$LOG" || fail "label not ensured"
 printf 'PASS: opens one labelled issue\n'
 
 echo "[{\"number\":4,\"title\":\"$t\"}]" >"$LIST"
