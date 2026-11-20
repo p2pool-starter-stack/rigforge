@@ -3546,9 +3546,9 @@ _bearer_curl() { # <token> <curl args...>
     printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl --config - "$@"
 }
 _read_api_summary() {
-    local url="http://127.0.0.1:8080/2/summary"
+    local url="http://127.0.0.1:8080/2/${1:-summary}"
     if [ -n "${API_CMD:-}" ]; then
-        eval "$API_CMD" || true # the override stands in for the API — a failing one means "unreachable", not "crash"
+        eval "$API_CMD" || true
         return
     fi
     command -v curl >/dev/null 2>&1 || return 0
@@ -5413,7 +5413,6 @@ EOF
 
     _doctor_placement "$svc_up"
     _check_randomx_memory "$svc_up" || issues=$((issues + 1))
-    # HugePages reserved? (the single biggest lever; needs a reboot after setup)
     if [ "${SHARED_HOST:-false}" != true ]; then
         local hp
         hp=$(awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null)

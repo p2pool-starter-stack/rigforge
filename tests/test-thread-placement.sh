@@ -152,7 +152,7 @@ doc_out() {
     (
         source "$SCRIPT"
         CONFIG_JSON="$TMP/doc-config.json"
-        API_BACKENDS_CMD="$2"
+        API_CMD="$2"
         _doctor_placement "$1"
     ) 2>&1
 }
@@ -179,17 +179,23 @@ chmod +x "$wr/xmrig/build/xmrig"
 out="$(topo)"
 eq 'a miner without the flag is not collected' "$?" 1
 eq 'a miner without the flag is named' "$out" export-topology-unsupported
-printf '#!/bin/sh\n[ "$1" = --help ] && echo "  --export-topology" && exit 0\nexit 0\n' >"$wr/xmrig/build/xmrig"
+printf '#!/bin/sh\n[ "$1" = --help ] && echo "  --export-topology" && exit 0\necho "failed to export hwloc topology."\n' >"$wr/xmrig/build/xmrig"
 out="$(topo)"
 eq 'a miner that exports nothing is not collected' "$?" 1
-eq 'a miner that exports nothing is named' "$out" no-hwloc-topology
-printf '#!/bin/sh\n[ "$1" = --help ] && echo "  --export-topology" && exit 0\necho "<topology/>" >topology.xml\n' >"$wr/xmrig/build/xmrig"
-topo >/dev/null
-eq 'a topology file is collected' "$?" 0
-eq 'the collected topology is the miner export' "$(cat "$TMP/topology.xml")" '<topology/>'
-printf '#!/bin/sh\n[ "$1" = --help ] && echo "  --export-topology" && exit 0\necho "<topology version=\\"2\\"/>"\n' >"$wr/xmrig/build/xmrig"
-topo >/dev/null
-eq 'a topology on stdout is collected' "$?" 0
+eq 'a miner that exports nothing is named' "$out" export-failed
+cat >"$wr/xmrig/build/xmrig" <<'XMRIG'
+#!/bin/sh
+[ "$1" = --help ] && echo "  --export-topology" && exit 0
+out="$(cd "$(dirname "$0")" && pwd)/topology.xml"
+echo "<topology/>" >"$out"
+echo "hwloc topology successfully exported to \"$out\""
+XMRIG
+echo '<stale/>' >"$wr/xmrig/build/topology.xml"
+rm -f "$TMP/topology.xml"
+out="$(cd "$TMP" && topo)"
+eq 'a topology written next to the miner is collected' "$?" 0
+eq 'the collected topology is the fresh export, not a stale file' "$(cat "$TMP/topology.xml")" '<topology/>'
+if [ ! -e "$wr/xmrig/build/topology.xml" ]; then ok 'the export leaves no file in the build tree'; else bad 'the export leaves no file in the build tree' 'topology.xml remains'; fi
 
 printf 'thread placement regressions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

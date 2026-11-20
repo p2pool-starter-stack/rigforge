@@ -12,26 +12,13 @@ _ck_ok() { _dr_record ok "$1" "${2:-}" && echo -e "  ${C_GREEN}✓${C_RESET} $1"
 _ck_warn() { _dr_record warn "$1" "${2:-}" && echo -e "  ${C_YELLOW}!${C_RESET} $1"; }
 _ck_info() { _dr_record info "$1" "${2:-}" && echo -e "  ${C_BLUE}∙${C_RESET} $1"; }
 
-_read_api_backends() {
-    if [ -n "${API_BACKENDS_CMD:-}" ]; then
-        eval "$API_BACKENDS_CMD" || true
-        return 0
-    fi
-    command -v curl >/dev/null 2>&1 || return 0
-    if [ -n "${ACCESS_TOKEN:-}" ]; then
-        _bearer_curl "$ACCESS_TOKEN" -fsS --max-time 5 "http://127.0.0.1:8080/2/backends" 2>/dev/null || true
-    else
-        curl -fsS --max-time 5 "http://127.0.0.1:8080/2/backends" 2>/dev/null || true
-    fi
-}
-
 _doctor_placement() {
     local body cores
     if [ "$1" != y ]; then
         _ck_info "thread placement unavailable: the miner is not running" thread-placement
         return 0
     fi
-    body=$(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _read_api_backends)
+    body=$(ACCESS_TOKEN="$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)" _read_api_summary backends)
     if [ -z "$body" ]; then
         _ck_info "thread placement unavailable: /2/backends is not reachable" thread-placement
         return 0
@@ -45,22 +32,16 @@ _doctor_placement() {
 }
 
 _bundle_topology() {
-    local bin="$1/xmrig/build/xmrig" work rc=0
+    local bin="$1/xmrig/build/xmrig" out="$1/xmrig/build/topology.xml"
     [ -x "$bin" ] || { echo "miner-not-built" && return 1; }
     "$bin" --help 2>&1 </dev/null | grep -q -- '--export-topology' || { echo "export-topology-unsupported" && return 1; }
     command -v timeout >/dev/null 2>&1 || { echo "no-timeout-binary" && return 1; }
-    work=$(mktemp -d) || { echo "no-temp-dir" && return 1; }
-    (cd "$work" && timeout 20 "$bin" --export-topology >stdout.xml 2>/dev/null </dev/null) || true
-    if [ -s "$work/topology.xml" ]; then
-        cp "$work/topology.xml" "$2" || { echo "copy-failed" && rc=1; }
-    elif grep -q '<topology' "$work/stdout.xml" 2>/dev/null; then
-        cp "$work/stdout.xml" "$2" || { echo "copy-failed" && rc=1; }
-    else
-        echo "no-hwloc-topology"
-        rc=1
-    fi
-    rm -rf "$work"
-    return "$rc"
+    rm -f "$out" 2>/dev/null
+    [ ! -e "$out" ] || { echo "stale-export-not-removable" && return 1; }
+    timeout 20 "$bin" --export-topology >/dev/null 2>&1 </dev/null || true
+    [ -s "$out" ] || { echo "export-failed" && return 1; }
+    cp "$out" "$2" || { rm -f "$out" && echo "copy-failed" && return 1; }
+    rm -f "$out"
 }
 
 doctor_json() (

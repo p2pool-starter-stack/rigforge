@@ -447,7 +447,7 @@ Everything else works anywhere: `setup`, `apply`, `bench`, the offline `tune`, `
 `./rigforge.sh support-bundle` (no root needed) collects what a maintainer needs — `doctor` output,
 version, both configs (structurally redacted: token and pool password removed, pool user/wallet
 masked to first-4…last-4), the five logging values in effect (`xmrig-logging.json`), a 500-line miner-log tail, tuning files, unit files, hardware basics, and
-XMRig's hwloc topology (`xmrig --export-topology`; when the miner is not built, the flag is missing or hwloc is absent, the reason is listed under `not_collected` in `manifest.json`) —
+XMRig's hwloc topology (`xmrig-topology.xml`, from `xmrig --export-topology`, which XMRig writes next to its binary; RigForge moves it into the bundle and leaves nothing in the build directory. When the miner is not built, the flag is missing or the export fails, for example without hwloc or without write access to the build directory, the reason is listed under `not_collected` in `manifest.json`) —
 into a mode-600 tarball next to the script. It never collects the journal, shell history, or
 unredacted configs, and never uploads anything. Extract and review it before attaching to a
 public issue.
