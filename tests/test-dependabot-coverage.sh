@@ -52,7 +52,7 @@ grep -q '"node_modules/markdownlint-cli2"' package-lock.json ||
     fail "package-lock.json does not install markdownlint-cli2"
 grep -q "\"markdownlint-cli2\": \"$want\"" package-lock.json ||
     fail "package-lock.json does not pin the package.json version ($want)"
-grep -q '"katex": "0.18.2"' package.json ||
+grep -A1 '"overrides"' package.json | grep -q '"katex": "0.18.2"' ||
     fail "package.json must override katex to the patched 0.18.2 (GHSA-238p-pmpm-9mq7)"
 awk '/"node_modules\/katex": \{/{f=1} f&&/"version"/{print; exit}' package-lock.json | grep -q '"0.18.2"' ||
     fail "package-lock.json must install katex 0.18.2"
