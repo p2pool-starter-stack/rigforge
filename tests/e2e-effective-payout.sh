@@ -65,10 +65,12 @@ phase_effective_payout() {
     EP_AWAY_URL="${E2E_ALT_POOL_URL:-127.0.0.1:1}"
     EP_AWAY_PASS="${E2E_ALT_POOL_PASS:-}"
     EP_AWAY_PROG='.pools = [(.pools[0] | {user}) + {url: $u} + (if $w == "" then {} else {pass: $w} end)]'
+    ORIG_POOLS="" GEN_POOLS=""
     set_cfg '.watchdog = "disabled"'
     if [ "$(jq -r '.watchdog // "disabled"' "$CFG")" = disabled ] && ! _ep_watchdog_active; then
         ok "the phase reconciles the miner watchdog off and its timer is inactive, so a zero-hashrate restart cannot race the deliberate 0 H/s windows (#656)"
         _ep_body
+        rm -f "$ORIG_POOLS" "$GEN_POOLS"
     else
         bad "the miner watchdog could not be reconciled off or its timer is still active; its zero-hashrate restart can race this phase (#656)" || true
     fi
@@ -93,6 +95,10 @@ _ep_body() {
         return 0
     fi
     EP_PAYOUT="$want"
+    if [ -z "$(_ep_pid)" ] || [ "$(_ep_pid)" = 0 ]; then
+        bad "the miner's main PID cannot be read from systemd, so the PID-stability checks would pass vacuously (#656)" || true
+        return 0
+    fi
     if [ -n "${E2E_ALT_POOL_URL:-}" ] && ! _ep_hashing; then
         bad "miner is not hashing on the payout pool before the switch (#656)" || true
     fi
@@ -109,14 +115,12 @@ _ep_body() {
     else
         bad "miner still reports the payout pool after apply moved the config off it — file and miner diverged unreported; miner summary: $(_ep_conn | tr '\t' ' ') (#656)" || true
         _ep_restore_pools
-        rm -f "$ORIG_POOLS" "$GEN_POOLS"
         return 0
     fi
     if _ep_restore_pools && _ep_state "$want"; then
         ok "apply of the original pool brought the miner's live connection back (#656)"
     else
         bad "apply of the original pool did not return the miner's live connection (#656)" || true
-        rm -f "$ORIG_POOLS" "$GEN_POOLS"
         return 0
     fi
     pid=$(_ep_pid)
@@ -135,14 +139,16 @@ _ep_body() {
     else
         bad "the restart after the hand-edit did not deliver the generated pool change (#656)" || true
     fi
-    _ep_edit_gen '.watch = true'
-    if ! "$RIGFORGE" restart >/dev/null 2>&1 || ! _ep_away_state 90; then
+    if ! _ep_edit_gen '.watch = true' || ! "$RIGFORGE" restart >/dev/null 2>&1 || ! _ep_away_state 90; then
         bad "watcher-on fixture never put the miner on the replacement pool — the hot-reload case cannot run (#656)" || true
     else
         pid=$(_ep_pid)
         if _ep_edit_gen '.pools = $p[0]' --slurpfile p "$GEN_POOLS" && jq -e --arg u "$EP_AWAY_URL" '.pools[0].url != $u' "$GEN_CFG" >/dev/null 2>&1 &&
             _ep_state "$want" 60 && [ "$(_ep_pid)" = "$pid" ]; then
             ok "watcher enabled: the pool edit hot-reloaded into the miner's connection without a restart (#656)"
+            if [ -n "${E2E_ALT_POOL_URL:-}" ] && ! _ep_hashing; then
+                bad "miner is not hashing after the hot reload back to the payout pool (#656)" || true
+            fi
         elif _ep_state "$want" 0; then
             bad "watcher enabled: the pool edit reached the miner only after a restart (#656)" || true
         else
@@ -154,7 +160,6 @@ _ep_body() {
     else
         bad "restore apply left the watcher enabled or the miner off the payout pool (#656)" || true
     fi
-    rm -f "$ORIG_POOLS" "$GEN_POOLS"
 }
 
 _ep_restore_pools() {

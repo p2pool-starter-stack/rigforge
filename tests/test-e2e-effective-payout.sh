@@ -25,6 +25,8 @@ miner_load() {
         conn="elsewhere:3333" uptime=60 failures=0
     elif [ "$mode" = alt-never-live ] && [ "$url" = "${E2E_ALT_POOL_URL:-}" ]; then
         conn="" uptime=0 failures=1
+    elif [ "$mode" = away-elsewhere ] && [ "$url" = "127.0.0.1:1" ]; then
+        conn="elsewhere:3333" uptime=60 failures=0
     elif [ "$url" = "127.0.0.1:1" ]; then
         conn="" uptime=0 failures=0
     else
@@ -72,12 +74,12 @@ set_cfg() {
 }
 api8080() {
     [ "$mode" = apidown ] && return 1
-    printf '{"connection":{"pool":"%s","uptime":%s,"failures":%s},"hashrate":{"total":[%s,0,0]}}' "$conn" "$uptime" "$failures" "$([ "$uptime" -gt 0 ] && echo 100 || echo 0)"
+    printf '{"connection":{"pool":"%s","uptime":%s,"failures":%s},"hashrate":{"total":[%s,0,0]}}' "$conn" "$uptime" "$failures" "$([ "$uptime" -gt 0 ] && [ "$mode" != alt-no-hash ] && echo 100 || echo 0)"
 }
 systemctl() {
     case "$*" in
     *is-active*) [ "$(cat "$D/wd")" = 1 ] ;;
-    *) cat "$D/pid" ;;
+    *) [ "$mode" = pid-blind ] || cat "$D/pid" ;;
     esac
 }
 sleep() {
@@ -176,9 +178,15 @@ expect alt ok 'did not reach the running miner'
     cat "$D/rows" >&2
 }
 run_case alt-never-live
-expect alt-never-live bad 'file and miner diverged'
+expect alt-never-live bad 'file and miner diverged.*summary: ? 0 1'
 run_case alt-stale
-expect alt-stale bad 'file and miner diverged'
+expect alt-stale bad 'file and miner diverged.*summary: pool:3333 60 0'
+run_case alt-no-hash
+expect alt-no-hash bad 'not hashing on the payout pool'
+run_case pid-blind
+expect pid-blind bad 'PID cannot be read from systemd'
+run_case away-elsewhere
+expect away-elsewhere ok 'moved the miner off the payout pool'
 
 printf 'e2e effective-payout phase tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
