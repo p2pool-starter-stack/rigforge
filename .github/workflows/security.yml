@@ -54,6 +54,31 @@ jobs:
       - name: Scan git history for secrets
         run: gitleaks git . --redact --no-banner --verbose
 
+  backlog-expiry:
+    name: Security backlog expiry
+    if: github.event_name == 'pull_request' && (github.base_ref == 'develop' || startsWith(github.base_ref, 'develop-v'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      # Warn-only until this date (14 days after the check first ran); after it the job fails.
+      ENFORCE_FROM: "2026-12-04"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Check the security backlog expiry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: TODAY=$(date -u +%F) bash scripts/security-backlog-expiry.sh
+
   zizmor:
     name: Workflow audit (zizmor)
     runs-on: ubuntu-24.04
