@@ -67,6 +67,7 @@ def receiver_verdict(change, cfg_path):
     return "reject" if cs.donation_tor_reasons(change) else "allow"
 
 
+ambient_appliance = os.environ.pop("RIGFORGE_APPLIANCE", None)
 with tempfile.TemporaryDirectory() as work2:
     cfg_tor = Path(work2) / "tor.json"
     cfg_tor.write_text('{"pools":[{"url":"h:3333"}],"tor_socks5":"127.0.0.1:9050"}')
@@ -88,6 +89,20 @@ with tempfile.TemporaryDirectory() as work2:
     for cfg, change, want in parity:
         got = receiver_verdict(json.loads(change), cfg)
         assert got == want, f"receiver {change} on {cfg.name}: want {want}, got {got}"
+    os.environ["RIGFORGE_APPLIANCE"] = "1"
+    try:
+        for cfg, change, want in [
+            (cfg_plain, '{"DONATION":5}', "reject"),
+            (cfg_plain, '{"DONATION":0}', "allow"),
+            (cfg_null, '{"DONATION":5}', "allow"),
+            (cfg_tor, '{"DONATION":5}', "reject"),
+        ]:
+            got = receiver_verdict(json.loads(change), cfg)
+            assert got == want, f"appliance receiver {change} on {cfg.name}: want {want}, got {got}"
+    finally:
+        os.environ.pop("RIGFORGE_APPLIANCE", None)
+        if ambient_appliance is not None:
+            os.environ["RIGFORGE_APPLIANCE"] = ambient_appliance
     unreadable = Path(work2) / "broken.json"
     unreadable.write_text("invalid")
     assert receiver_verdict({"DONATION": 5}, unreadable) == "reject", "DONATION must fail closed on an unreadable config"

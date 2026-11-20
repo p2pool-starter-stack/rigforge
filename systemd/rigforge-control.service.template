@@ -11,6 +11,7 @@ ExecStart=/usr/bin/python3 ${CREDENTIALS_DIRECTORY}/server $CONTROL_BIND $CONTRO
 LoadCredential=config:$SCRIPT_DIR/config.json
 LoadCredential=server:$SCRIPT_DIR/util/control-server.py
 Environment=RIGFORGE_API_PORT=$API_PORT
+Environment=RIGFORGE_APPLIANCE=$RIGFORGE_APPLIANCE
 Restart=always
 RestartSec=5
 DynamicUser=yes

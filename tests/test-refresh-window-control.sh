@@ -146,7 +146,7 @@ curl() {
             dval=$(printf '%s' "$data" | jq -r '.DONATION')
             tor=$(jq -r '.tor_socks5 // ""' "$CFG")
             if [ -n "$tor" ] && [ "$dval" != 0 ]; then
-                printf '{"error":"refused via the remote control path: DONATION above 0 is refused while tor_socks5 is set (a donation pool would dial direct; set DONATION to 0 or remove tor_socks5); change it locally on the rig with rigforge.sh if intended"}' >"$output"
+                printf '{"error":"refused via the remote control path: DONATION above 0 is refused while Tor is in effect (tor_socks5 is set, or unset on an appliance rig; a donation pool would dial direct; set DONATION to 0 or set tor_socks5 to null); change it locally on the rig with rigforge.sh if intended"}' >"$output"
                 printf 400
                 return
             fi

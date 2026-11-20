@@ -26,10 +26,11 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-# Pinned by digest for a reproducible base image (supply-chain hardening, cf. issue #2). This is the
-# multi-arch index digest; --platform below selects linux/amd64 from it. Refresh with:
-#   docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manifest.Digest}}'
-IMAGE="ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54"
+IMAGE="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e/Dockerfile")"
+[ -n "$IMAGE" ] || {
+    echo "FATAL: cannot read the pinned base image from tests/e2e/Dockerfile" >&2
+    exit 1
+}
 
 run_pass() { # <label> [docker env args...] — one disposable container per pass
     local label="$1"

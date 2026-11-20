@@ -145,6 +145,47 @@ systemctl() {
     esac
 }
 
+_shared_host_status_report >"$D/report"
+grep -q 'Resource profile: shared host' "$D/report" || fail 'status omits the selected profile'
+grep -q 'effective CPU quota 75000/100000 us; memory 4294967296 bytes; swap 0; CPU weight 10' "$D/report" ||
+    fail 'status omits the effective limits (#744)'
+grep -q 'Miner is stopped' "$D/report" || fail 'status omits the stopped miner state'
+printf '1\n' >"$RIGFORGE_CGROUP_ROOT/rigforge.slice/memory.swap.max"
+_shared_host_status_report >"$D/report"
+grep -q 'Not enforced: shared_host memory ceiling or zero-swap control is unavailable; run apply' "$D/report" ||
+    fail 'status omits the not-enforced reason (#744)'
+grep -q 'effective CPU quota' "$D/report" && fail 'status reports effective limits that are not in force (#744)'
+printf '0\n' >"$RIGFORGE_CGROUP_ROOT/rigforge.slice/memory.swap.max"
+_shared_host_status_report >"$D/report"
+grep -q 'effective CPU quota 75000/100000 us' "$D/report" || fail 'status lost the effective limits after restoration'
+mv "$CONFIG_JSON" "$D/config.saved"
+_shared_host_status_report >"$D/report"
+[ ! -s "$D/report" ] || fail 'status reported a profile without config.json'
+mv "$D/config.saved" "$CONFIG_JSON"
+mv "$MEMINFO" "$D/meminfo.saved"
+_shared_host_status_report >"$D/report"
+grep -q 'Unsupported: shared_host cannot account for RAM and existing HugeTLB reservations' "$D/report" ||
+    fail 'status report drops the unsupported reason (#744)'
+mv "$D/meminfo.saved" "$MEMINFO"
+if [ "$(id -u)" -ne 0 ]; then
+    chmod 000 "$CONFIG_JSON"
+    _shared_host_status_report >"$D/report"
+    grep -q 'Resource profile: unknown; config.json is not readable by this user' "$D/report" ||
+        fail 'an unreadable config.json loses its status reason (#744)'
+    (
+        OS_TYPE=Linux
+        svc_status >"$D/report" 2>&1
+    )
+    grep -q 'Resource profile: unknown; config.json is not readable by this user' "$D/report" ||
+        fail 'svc_status hides the unreadable config.json reason (#744)'
+    chmod 644 "$CONFIG_JSON"
+fi
+(
+    OS_TYPE=Linux
+    svc_status >"$D/report" 2>&1
+)
+grep -q 'effective CPU quota 75000/100000 us' "$D/report" || fail 'svc_status omits the shared-host limits (#744)'
+
 unit=$(printf 'ExecStartPre=+-cpupower frequency-set -g performance\n' | _shared_host_unit)
 [[ "$unit" != *frequency-set* ]] || fail 'shared unit still changes CPU governor'
 [[ "$unit" == *'Slice=rigforge.slice'* ]] || fail 'shared unit lacks bounded slice'

@@ -57,15 +57,16 @@ jobs:
   zizmor:
     name: Workflow audit (zizmor)
     runs-on: ubuntu-24.04
-    env:
-      ZIZMOR_VERSION: "1.30.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # zizmor: artipacked
-      # pipx is preinstalled on ubuntu-24.04; same install path as diff-cover in ci.yml's coverage job.
-      - name: Install pinned zizmor
-        run: pipx install "zizmor==${ZIZMOR_VERSION}"
+      - name: Install pinned Python CI tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/ci-python-tools"
+          "$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt
+          echo "$RUNNER_TEMP/ci-python-tools/bin" >>"$GITHUB_PATH"
       # Online audits ON (zizmor's default): GH_TOKEN lets the `known-vulnerable-actions` audit query
       # the GitHub Advisory Database, so a CVE disclosed against an action we pin fails the gate. The
       # built-in token (read-only here) is enough — advisory data is public; it's only for API access.

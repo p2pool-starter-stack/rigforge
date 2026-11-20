@@ -5,7 +5,6 @@ SHELL_FILES = $(shell git ls-files '*.sh')
 
 YAML_FILES = $(shell git ls-files '*.yml' '*.yaml')
 MD_FILES = $(shell git ls-files '*.md')
-MARKDOWNLINT_VERSION = 0.23.3
 
 .DEFAULT_GOAL := test
 
@@ -21,6 +20,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-access-token-readiness.sh
 	bash tests/test-docs-clone-pin.sh
 	bash tests/test-staged-rebuild.sh
+	bash tests/test-dependabot-coverage.sh
 	bash tests/test-tool-pin-watch.sh
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/test-docs-replay.py
 	bash tests/test-api-allowlist-probe.sh
@@ -70,8 +70,9 @@ fmt: ## auto-format all shell scripts with shfmt (resolves shfmt lint failures)
 lint-yaml: ## yamllint the YAML (workflows, dependabot, configs) — uses .yamllint, strict
 	yamllint --strict $(YAML_FILES)
 
-lint-md: ## markdownlint the docs — uses .markdownlint-cli2.yaml (needs node/npx)
-	npx --yes markdownlint-cli2@$(MARKDOWNLINT_VERSION) $(MD_FILES)
+lint-md: ## markdownlint the docs — uses .markdownlint-cli2.yaml + package-lock.json (needs Node 22+)
+	npm ci --silent
+	npx markdownlint-cli2 $(MD_FILES)
 
 lint-actions: ## actionlint the GitHub workflows for correctness (zizmor covers security; make dev-setup installs it)
 	actionlint
@@ -80,9 +81,10 @@ dev-setup: ## One-time local toolchain: linters + git hooks (brew or apt; versio
 	@if command -v brew >/dev/null 2>&1; then brew install shellcheck shfmt jq yamllint actionlint pre-commit; \
 	elif command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y shellcheck jq yamllint && echo "apt shfmt/actionlint lag — install those two per their READMEs"; \
 	else echo "no brew/apt found — install shellcheck, shfmt, jq, yamllint, actionlint, pre-commit manually"; fi
+	@if command -v npm >/dev/null 2>&1; then npm ci || echo "npm ci failed — make lint-md needs a network or a warm npm cache"; else echo "no npm found — make lint-md (markdownlint) needs Node 22+"; fi
 	pre-commit install
-	@echo "Hooks installed. CI-pinned versions to match (ci.yml/security.yml are the source of truth):"
-	@echo "  shellcheck 0.11.0 · yamllint 1.38.0 · actionlint 1.7.12 · markdownlint-cli2 $(MARKDOWNLINT_VERSION) · gitleaks 8.30.1"
+	@echo "Hooks installed. CI-pinned versions to match (source of truth per tool):"
+	@echo "  curl binaries in ci.yml/security.yml · Python tools in tools/requirements-ci.txt · markdownlint-cli2 in package.json"
 
 ci: lint-all test-suite ## Everything CI runs that can run locally (adds the container e2e when Docker is up)
 	@if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then $(MAKE) test-e2e; else echo "docker unavailable — skipped the container e2e (CI runs it)"; fi

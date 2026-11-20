@@ -1,7 +1,6 @@
 # shellcheck shell=bash
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-refresh-window.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-rig-owner.sh"
 
 _control_curl() {
     local token="$1"
@@ -43,7 +42,6 @@ phase_control() {
         _control_startup_diagnostics
         return 1
     }
-    _rig_owner_mark
     resp="$(mktemp)"
     code=$(_control_curl "$tok" -s -o "$resp" -w '%{http_code}' --max-time 10 \
         -H "Content-Type: application/json" -d "{\"DONATION\": $new}" "http://127.0.0.1:$port/apply" 2>/dev/null || true)
@@ -95,7 +93,6 @@ phase_control() {
         sleep 5
     done
     refresh_profile_finish || bad "timer profiling or restoration failed"
-    _rig_owner_clear
     waited=$((observed - 1))
     [ "$observed" -gt 0 ] &&
         ok "applied max_temp_c reaches a new direct sister-API summary within ${waited}s (#540)" ||
@@ -115,7 +112,7 @@ tor_donation_refusal() (
     code=$(_control_curl "$tok" -s -o "$tresp" -w '%{http_code}' --max-time 10 \
         -H 'Content-Type: application/json' -d '{"DONATION":2}' "http://127.0.0.1:$port/apply" 2>/dev/null || true)
     [ "$code" = 400 ] &&
-        jq -e '.error | contains("DONATION above 0 is refused while tor_socks5 is set")' "$tresp" >/dev/null &&
+        jq -e '.error | contains("DONATION above 0 is refused while Tor is in effect")' "$tresp" >/dev/null &&
         [ "$before" = "$(sha256sum "$CFG")" ] ||
         bad "remote DONATION 2 was not refused while tor_socks5 is set (HTTP $code)"
     ok "remote DONATION above 0 refused at the receiver while tor_socks5 is set, config untouched (#696)"

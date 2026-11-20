@@ -43,7 +43,7 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for _t in xmrig-overlay xmrig-logging config-ownership feed-identity; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
+for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -6704,6 +6704,7 @@ assert_eq "legacy upgrade persists appliance identity (#477)" "$([ -d "$APW/.rig
 assert_eq "legacy upgrade keeps XMRig journal-only (#477)" "$(jq -r 'has("log-file")' "$APW/home/worker/xmrig/build/config.json")" "false"
 assert_eq "legacy upgrade removes the persistent XMRig log (#477)" "$([ -e "$APW/home/worker/xmrig.log" ] && echo present || echo absent)" "absent"
 assert_contains "legacy upgrade reinstalls appliance control posture (#477/#479)" "$(cat "$APW/systemd-clean/rigforge-control-apply.service")" "RIGFORGE_APPLIANCE=1"
+source "$ROOT/tests/test-donation-tor.sh"
 assert_contains "legacy upgrade reinstalls the root-only consumer runtime (#479)" "$(cat "$APW/systemd-clean/rigforge-control-upgrade.service")" "RuntimeDirectoryMode=0700"
 assert_eq "legacy upgrade reconciles every optional service (#477)" "$([ -f "$APW/systemd-clean/rigforge-autotune.service" ] && [ -f "$APW/systemd-clean/rigforge-watchdog.service" ] && [ -f "$APW/systemd-clean/rigforge-api.service" ] && echo yes)" "yes"
 printf '{"DONATION":0}' >"$APW/control/spool/pending-0123456789abcdef.json"
@@ -9494,13 +9495,12 @@ else
         --argjson started "$(mk_status_record started 1111111111111111 version '' '')" \
         --argjson applied "$(mk_status_record applied 2222222222222222 version 'upgraded to v9.9.9' '')" \
         --argjson noop "$(mk_status_record noop 3333333333333333 version 'already on v9.9.9 — nothing to upgrade' '')" \
-        --argjson busy "$(mk_status_record busy 8888888888888888 version 'rig is lent to a bench job; retry after it is returned' '')" \
         --argjson throttled "$(mk_status_record throttled 4444444444444444 version 'throttled — too soon since the last upgrade attempt' '')" \
         --argjson failed "$(mk_status_record failed 5555555555555555 version 'staged upgrade target malformed (want vX.Y.Z)' '')" \
         --argjson rejected "$(mk_status_record rejected 6666666666666666 DONATION 'rejected merge-failed' '')" \
         --argjson rolled_back "$(mk_status_record rolled_back 7777777777777777 watchdog,DONATION 'miner did not return to a live hashrate; rolled back and live' /b)" \
         --argjson pending "$live_pending" \
-        '{applied: $applied, busy: $busy, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
+        '{applied: $applied, failed: $failed, noop: $noop, pending: $pending, rejected: $rejected, rolled_back: $rolled_back, started: $started, throttled: $throttled}')"
     fixture_examples="$(jq -S '.examples' "$CONTRACT_DIR/control-status.json")"
     assert_eq "control status record shape matches the fixture (#351)" "$live_examples" "$fixture_examples"
 fi
