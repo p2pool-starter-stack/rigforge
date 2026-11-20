@@ -140,11 +140,12 @@ knob="$(
 )"
 eq 'an array pin leaves tune a single thread candidate' "$knob" '[0,2]'
 
-eq 'tune-overrides cannot override an array pin' "$(printf '{"cpu":{"rx":[0,2],"yield":true}}' | (
+unpinned="$(
     source "$SCRIPT"
     XMRIG_OVERLAY='{"cpu":{"rx":[0,2]}}'
-    _xmrig_unpinned | jq -c '.cpu'
-) )" '{"yield":true}'
+    printf '{"cpu":{"rx":[0,2],"yield":true}}' | _xmrig_unpinned | jq -c '.cpu'
+)"
+eq 'tune-overrides cannot override an array pin' "$unpinned" '{"yield":true}'
 
 echo '== thread placement: doctor and bundle evidence =='
 doc_out() {
