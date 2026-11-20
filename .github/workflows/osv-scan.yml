@@ -4,8 +4,6 @@ name: OSV dependency sweep
 # ref and never runs on pull requests, so it cannot fail a PR. Details: docs/dev/security-scans.md.
 
 on:
-  push:
-    branches: [rf-sweeps]
   schedule:
     - cron: "0 5 * * *"
   workflow_dispatch:
