@@ -3721,19 +3721,15 @@ support_bundle() {
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to collect. Run 'setup' first."
 
-    local wr collected="" skipped="" f
+    local wr collected="" skipped="" f topo_why=""
     wr=$(_worker_root_from_config)
     STAGE_DIR=$(mktemp -d)
-    # Cleanup is armed the moment the temp dir exists — a set -e abort anywhere below must not leak
-    # this secret-bearing staging content. Same EXIT-trap treatment tune() got in #135. (#353)
     trap 'rm -rf "$STAGE_DIR"' EXIT
     _take() { collected="$collected $1"; }
     _skip() { skipped="$skipped $1"; }
 
     cmd_version >"$STAGE_DIR/version.txt" && _take version.txt
-    # Subprocess, not a function call: doctor's error-exits can't kill the bundle. Strip ANSI codes.
     ("$0" doctor </dev/null 2>&1 || true) | sed -e $'s/\x1b\[[0-9;]*m//g' >"$STAGE_DIR/doctor.txt" && _take doctor.txt
-    # Fail closed: if jq can't redact a file, the file stays OUT of the bundle — never the original.
     if _redact_config <"$CONFIG_JSON" >"$STAGE_DIR/config.redacted.json" 2>/dev/null; then
         _take config.redacted.json
     else
@@ -3766,6 +3762,7 @@ support_bundle() {
     for f in "$SERVICE_NAME.service" rigforge-autotune.service rigforge-autotune.timer; do
         [ -f "$SYSTEMD_DIR/$f" ] && cp "$SYSTEMD_DIR/$f" "$STAGE_DIR/$f" 2>/dev/null && _take "$f"
     done
+    { [ -n "$wr" ] && topo_why=$(_bundle_topology "$wr" "$STAGE_DIR/xmrig-topology.xml") && _take xmrig-topology.xml; } || _skip "xmrig-topology.xml(${topo_why:-no-worker-root})"
     {
         uname -a
         if [ "$OS_TYPE" = Linux ]; then
@@ -5414,6 +5411,7 @@ EOF
         fi
     fi
 
+    _doctor_placement "$svc_up"
     _check_randomx_memory "$svc_up" || issues=$((issues + 1))
     # HugePages reserved? (the single biggest lever; needs a reboot after setup)
     if [ "${SHARED_HOST:-false}" != true ]; then

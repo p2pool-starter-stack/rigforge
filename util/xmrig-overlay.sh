@@ -7,12 +7,42 @@ _parse_xmrig_overlay() {
     XMRIG_OVERLAY=$(jq -c 'if has("xmrig") then .xmrig else {} end' "$CONFIG_JSON")
     jq -e 'type == "object"' <<<"$XMRIG_OVERLAY" >/dev/null || error "xmrig must be a JSON object."
     local key
+    _validate_overlay_cpu_rx
     while IFS= read -r key; do
         error "xmrig overlay cannot set protected key: $key"
     done < <(jq -r 'keys[] | select(. == "pools" or . == "http" or . == "donate-level" or . == "donate-over-proxy" or . == "opencl" or . == "cuda")' <<<"$XMRIG_OVERLAY")
     while IFS= read -r key; do
         warn "xmrig overlay: undocumented key $key; XMRig may ignore it."
     done < <(jq -rf "$(_script_dir)/util/xmrig-overlay-keys.jq" <<<"$XMRIG_OVERLAY")
+}
+
+_placement_cpus() {
+    local n
+    n=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+}
+
+_validate_overlay_cpu_rx() {
+    local msg
+    while IFS= read -r msg; do
+        error "xmrig.cpu.rx: $msg"
+    done < <(jq -r --argjson n "$(_placement_cpus)" '
+        def int: type == "number" and . == floor;
+        def core: int and . >= -1 and ($n == 0 or . < $n);
+        def mask: int and . >= -1 and (. < 0 or $n == 0 or $n > 52 or . < pow(2; $n));
+        (.cpu | if type == "object" and has("rx") then .rx else empty end) as $r |
+        if $r == false then empty
+        elif ($r | type) == "number" then (if ($r | int) and $r >= 1 then empty else "a number must be a positive integer" end)
+        elif ($r | type) == "array" then
+            if ($r | length) == 0 then "an array needs at least one thread entry"
+            else $r | to_entries[] | .key as $i | .value as $e |
+                if ($e | core) or (($e | type) == "array" and ($e | length) == 2 and ($e[0] | int) and $e[0] >= 1 and ($e[1] | core)) then empty
+                else "entry \($i) must be -1, a core index below \(if $n == 0 then "the host logical CPU count" else $n end), or an [intensity, affinity] pair" end
+            end
+        elif ($r | type) == "object" then
+            (if ($r | has("threads")) and (($r.threads | int | not) or $r.threads < 0) then "threads must be a non-negative integer" else empty end),
+            (if ($r | has("affinity")) and (($r.affinity | mask) | not) then "affinity must be -1 or a core mask within the host logical CPUs" else empty end)
+        else "must be an array, an object, a positive integer or false" end' <<<"$XMRIG_OVERLAY")
 }
 
 _xmrig_overlay_pins() {
