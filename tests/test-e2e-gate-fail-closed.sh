@@ -122,7 +122,6 @@ assert_rc "successful cleanup preserves the triggering failure status" "$?" "1"
 assert_eq "pithead cleanup fails and retains recovery snapshot when apply fails" "$(pit_cleanup_case 1)" "1:original:kept"
 
 PIT_BAD="$(sed -n '/^bad()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
-PIT_DASH="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 printf '#!/usr/bin/env bash\ncase "$1" in apply) : ;; start) printf active >"$SERVICE_STATE" ;; stop) printf stopped >"$SERVICE_STATE" ;; *) exit 1 ;; esac\n' >"$T491/dash-rigforge"
 chmod +x "$T491/dash-rigforge"
 pit_dashboard_failure_case() { # <active|stopped> -> rc:final-state:snapshot
@@ -135,13 +134,14 @@ pit_dashboard_failure_case() { # <active|stopped> -> rc:final-state:snapshot
         set -Eeuo pipefail
         eval "$PIT_CLEAN"
         eval "$PIT_RESTORE"
-        eval "$PIT_DASH"
+        source "$ROOT/tests/e2e-pithead-dashboard.sh"
+        set_cfg() { :; }
         eval "$PIT_BAD"
         CFG="$d/config" SAVED_CFG="$d/saved" SAVED_XMRIG_ACTIVE=0 HAMMER_PIDS=""
         [ "$1" = active ] && SAVED_XMRIG_ACTIVE=1
         RIGFORGE="$T491/dash-rigforge" SERVICE_STATE="$d/service"
         export SERVICE_STATE
-        RIG_LOCK_HOLDER="$d/holder" E2E_DASH_URL=http://stack E2E_DROPOFF_TIMEOUT=1 E2E_EXIT_RC=0 FAIL=0
+        RIG_LOCK_HOLDER="$d/holder" PITHEAD_URL=stack:3333 E2E_DASH_URL=http://stack E2E_DROPOFF_TIMEOUT=1 E2E_EXIT_RC=0 FAIL=0
         systemctl() { [ "$1" = is-active ] && [ "$(cat "$SERVICE_STATE")" = active ]; }
         sleep() { :; }
         phase() { :; }
