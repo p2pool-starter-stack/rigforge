@@ -102,8 +102,8 @@ needed for this evidence task.
    desktop and one server/NUMA
    system if making claims about both; publish each separately. Record actual sockets, CPU, RAM,
    firmware, kernel, thread allocation, ambient and thermal conditions, and measurement scope.
-2. **Reserve and predeclare.** Use separate, uncontended hardware through the approved bench-ci
-   reservation/restoration workflow; leave the active RC/soak host untouched. Before reading results,
+2. **Reserve and predeclare.** Use separate, uncontended hardware through your own
+   reservation and restoration process; leave the active RC/soak host untouched. Before reading results,
    declare stabilization, measurement duration, repeat count, exclusions and the smallest effect of
    interest. Freeze each arm's selected configuration after tuning and keep search windows out of
    evaluation. A short pilot may size the run: 4–6 hours per host plus restores can be a starting point

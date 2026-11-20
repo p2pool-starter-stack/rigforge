@@ -129,8 +129,15 @@ _rx_clamp_rx_object() {
     printf '%s\n' "$out" >"$cfg"
 }
 
+_rx_cut_array() {
+    local out
+    [ -n "$2" ] || return 0
+    out=$(jq --argjson n "$2" 'if (.cpu.rx | type) == "array" and (.cpu.rx | length) > $n then .cpu.rx |= .[:$n] else . end' "$1" 2>/dev/null) || return 1
+    printf '%s\n' "$out" >"$1"
+}
+
 _rx_finalize_cpu_rx() {
-    local cfg="$1" rx req="" auto="" cap="" eff out len rc
+    local cfg="$1" rx req="" auto="" cap="" eff out rc
     rx=$(jq -c '.cpu.rx' "$cfg" 2>/dev/null) || return 1
     if [ -n "${THREADS_CAP:-}" ] && [ -z "$(_rx_validate_cap)" ]; then
         warn "THREADS_CAP='${THREADS_CAP}' is not a valid positive integer — ignoring it (thread cap NOT applied)."
@@ -152,8 +159,8 @@ _rx_finalize_cpu_rx() {
         return
     fi
     if [ "${rx:0:1}" = "[" ]; then
-        len=$(jq '.cpu.rx | length' "$cfg" 2>/dev/null)
-        { [ -n "$eff" ] && [ "$eff" -lt "$len" ]; } || return 0
+        _rx_cut_array "$cfg" "$eff"
+        return
     fi
     if [ -z "$eff" ]; then
         out=$(jq '.cpu.rx = {}' "$cfg" 2>/dev/null) || return 1
@@ -183,6 +190,10 @@ _rx_clamp_candidate() {
     cap=$(_rx_validate_cap)
     eff=$(_rx_min_count "$eff" "$cap" "${RX_AUTO_THREADS:-}")
     rx=$(jq -c '.cpu.rx' "$out" 2>/dev/null) || return 1
+    if [ "${rx:0:1}" = "[" ]; then
+        _rx_cut_array "$out" "$eff"
+        return
+    fi
     if [ "${rx:0:1}" = "{" ] && [ "$rx" != "{}" ]; then
         [ "$eff" -lt "$req" ] || return 0
         jq --argjson n "$eff" '.cpu.rx = (.cpu.rx | .threads = $n | .max_threads_cnt = $n)' "$out" >"$out.rx$$" &&
