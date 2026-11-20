@@ -112,7 +112,7 @@ tor_donation_refusal() (
     code=$(_control_curl "$tok" -s -o "$tresp" -w '%{http_code}' --max-time 10 \
         -H 'Content-Type: application/json' -d '{"DONATION":2}' "http://127.0.0.1:$port/apply" 2>/dev/null || true)
     [ "$code" = 400 ] &&
-        jq -e '.error | contains("DONATION above 0 is refused while tor_socks5 is set")' "$tresp" >/dev/null &&
+        jq -e '.error | contains("DONATION above 0 is refused while Tor is in effect")' "$tresp" >/dev/null &&
         [ "$before" = "$(sha256sum "$CFG")" ] ||
         bad "remote DONATION 2 was not refused while tor_socks5 is set (HTTP $code)"
     ok "remote DONATION above 0 refused at the receiver while tor_socks5 is set, config untouched (#696)"
