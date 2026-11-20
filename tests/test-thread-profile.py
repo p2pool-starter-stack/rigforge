@@ -117,6 +117,16 @@ _tune_config "$PWD/candidate.json" 1 false $PROFILE_CT false 2 false false false
         c = self.generate(len(allowed) + 2, script=AFFINITY_FAKE, service_cpus=str(allowed[0]), prop="AllowedCPUs")
         self.assertEqual(count(c["cpu"]["rx"]), 1)
 
+    @unittest.skipUnless(shutil.which("taskset") and hasattr(os, "sched_getaffinity"), "needs Linux taskset")
+    def test_space_separated_service_cpu_set_pins_probe(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        if len(allowed) < 4:
+            self.skipTest("needs at least four CPUs")
+        n = len(allowed) // 2
+        cpus = " ".join(map(str, allowed[:n]))
+        c = self.generate(n + 2, script=AFFINITY_FAKE, service_cpus=cpus, prop="CPUAffinity")
+        self.assertEqual(count(c["cpu"]["rx"]), n)
+
     def test_cap_below_auto(self):
         self.assertEqual(count(self.generate(1)["cpu"]["rx"]), 1)
 

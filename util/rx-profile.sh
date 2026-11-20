@@ -33,6 +33,10 @@ _rx_service_cpus() {
     command -v systemctl >/dev/null 2>&1 && command -v taskset >/dev/null 2>&1 || return 0
     for prop in EffectiveCPUs AllowedCPUs CPUAffinity; do
         v=$(systemctl show "${SERVICE_NAME:-xmrig}.service" -p "$prop" --value 2>/dev/null) || continue
+        v=${v//[[:space:]]/,}
+        while [[ $v == *,,* ]]; do v=${v//,,/,}; done
+        v=${v#,}
+        v=${v%,}
         case "$v" in '' | *[!0-9,-]*) continue ;; esac
         taskset -c "$v" true 2>/dev/null || continue
         printf '%s' "$v"
