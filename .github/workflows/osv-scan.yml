@@ -112,7 +112,7 @@ jobs:
       - name: File, update or close one issue per ref
         env:
           GH_TOKEN: ${{ github.token }}
-          OSV_FLOOR: ${{ inputs.floor || '0' }}
+          OSV_FLOOR: ${{ inputs.floor || '7.0' }}
           SCAN_RESULT: ${{ needs.scan.result }}
         run: |
           set -Eeuo pipefail
