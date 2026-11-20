@@ -5,7 +5,7 @@ real, from a dependency-free suite that runs anywhere up to a real-hardware gate
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
 `make test-suite` requires the suite-liveness regression, the Bash suite and the Python-dependent
 contract credential regression, plus access-token readiness, release clone-pin and Dependabot
-pin-coverage regressions. The Bash suite also runs the Python thread-profile regression for supported
+pin-coverage and CodeQL workflow regressions. The Bash suite also runs the Python thread-profile regression for supported
 XMRig profiles, caps on both sides of auto-selection, higher tuned values and failed-snapshot recovery.
 The Bash suite exits nonzero if it aborts before its final
 `rigforge tests: ... passed, ... failed` summary, even when the shell would otherwise return zero.
