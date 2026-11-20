@@ -48,19 +48,13 @@ _bundle_topology() {
     local bin="$1/xmrig/build/xmrig" work rc=0
     [ -x "$bin" ] || { echo "miner-not-built" && return 1; }
     "$bin" --help 2>&1 </dev/null | grep -q -- '--export-topology' || { echo "export-topology-unsupported" && return 1; }
+    command -v timeout >/dev/null 2>&1 || { echo "no-timeout-binary" && return 1; }
     work=$(mktemp -d) || { echo "no-temp-dir" && return 1; }
-    (
-        cd "$work" || exit 1
-        if command -v timeout >/dev/null 2>&1; then
-            timeout 20 "$bin" --export-topology >stdout.xml 2>/dev/null </dev/null
-        else
-            "$bin" --export-topology >stdout.xml 2>/dev/null </dev/null
-        fi
-    ) || true
+    (cd "$work" && timeout 20 "$bin" --export-topology >stdout.xml 2>/dev/null </dev/null) || true
     if [ -s "$work/topology.xml" ]; then
-        cp "$work/topology.xml" "$2" || rc=1
+        cp "$work/topology.xml" "$2" || { echo "copy-failed" && rc=1; }
     elif grep -q '<topology' "$work/stdout.xml" 2>/dev/null; then
-        cp "$work/stdout.xml" "$2" || rc=1
+        cp "$work/stdout.xml" "$2" || { echo "copy-failed" && rc=1; }
     else
         echo "no-hwloc-topology"
         rc=1

@@ -69,8 +69,8 @@ generate_case() {
 
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
-printf '#!/bin/sh\necho 8\n' >"$STUBS/nproc"
-chmod +x "$STUBS/nproc"
+printf '#!/bin/sh\necho 8\n' >"$STUBS/getconf"
+chmod +x "$STUBS/getconf"
 export PATH="$STUBS:$PATH"
 
 echo '== thread placement: overlay pin validation =='
@@ -139,6 +139,12 @@ knob="$(
     _knob_values threads
 )"
 eq 'an array pin leaves tune a single thread candidate' "$knob" '[0,2]'
+
+eq 'tune-overrides cannot override an array pin' "$(printf '{"cpu":{"rx":[0,2],"yield":true}}' | (
+    source "$SCRIPT"
+    XMRIG_OVERLAY='{"cpu":{"rx":[0,2]}}'
+    _xmrig_unpinned | jq -c '.cpu'
+) )" '{"yield":true}'
 
 echo '== thread placement: doctor and bundle evidence =='
 doc_out() {

@@ -18,7 +18,7 @@ _parse_xmrig_overlay() {
 
 _placement_cpus() {
     local n
-    n=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+    n=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || true)
     [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
 }
 
