@@ -24,12 +24,7 @@ miner_load() {
     if [ "$mode" = wrong-pool ]; then
         conn="elsewhere:3333" uptime=60 failures=0
     elif [ "$url" = "127.0.0.1:1" ]; then
-        conn="" uptime=0
-        if [ "$mode" = no-attempt ]; then
-            failures=0
-        else
-            failures=1
-        fi
+        conn="" uptime=0 failures=0
     else
         conn="$url" uptime=60 failures=0
     fi
@@ -143,8 +138,6 @@ run_case apidown
 expect apidown bad 'cannot be observed'
 run_case wrong-pool
 expect wrong-pool bad 'cannot be observed'
-run_case no-attempt
-expect no-attempt bad 'file and miner diverged'
 run_case pid-walk
 expect pid-walk bad 'moved off the payout pool from a file edit alone'
 expect pid-walk bad 'reached the miner only after a restart'

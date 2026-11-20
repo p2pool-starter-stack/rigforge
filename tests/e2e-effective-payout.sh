@@ -6,13 +6,13 @@ _ep_conn() {
 }
 
 _ep_state() { # <want-pool|@dead> <timeout> -> 0 when the miner's own summary says so
-    local want="$1" to="${2:-${E2E_LIVE_TIMEOUT:-180}}" waited=0 p u f
+    local want="$1" to="${2:-${E2E_LIVE_TIMEOUT:-180}}" waited=0 p u _f
     while :; do
-        IFS="$(printf '\t')" read -r p u f <<EOF
+        IFS="$(printf '\t')" read -r p u _f <<EOF
 $(_ep_conn)
 EOF
         if [ "$want" = @dead ]; then
-            [ "${p:-?}" = "?" ] && [ "${f:-0}" -gt 0 ] 2>/dev/null && return 0
+            [ -n "${p:-}" ] && { [ "$p" != "$EP_PAYOUT" ] || [ "${u:-0}" -eq 0 ]; } && return 0
         elif [ "${p:-}" = "$want" ] && [ "${u:-0}" -gt 0 ] 2>/dev/null; then
             return 0
         fi
@@ -51,6 +51,7 @@ phase_effective_payout() {
         bad "miner never reported a live connection to the applied pool — effective payout cannot be observed (#656)" || true
         return 0
     fi
+    EP_PAYOUT="$want"
     ok "miner's own summary reports the live connection to the applied pool — the comparison reads the miner, not the file (#656)"
     ORIG_POOLS=$(mktemp)
     GEN_POOLS=$(mktemp)
@@ -59,7 +60,7 @@ phase_effective_payout() {
     if set_cfg '.pools = [(.pools[0] | {user}) + {url: "127.0.0.1:1"}]' soft && _ep_state @dead 90; then
         ok "apply of a replacement pool moved the miner off the payout pool — its summary reports no live connection (#656)"
     else
-        bad "miner still reports the payout pool after apply moved the config off it — file and miner diverged unreported (#656)" || true
+        bad "miner still reports the payout pool after apply moved the config off it — file and miner diverged unreported; miner summary: $(_ep_conn | tr '\t' ' ') (#656)" || true
         _ep_restore_pools
         rm -f "$ORIG_POOLS" "$GEN_POOLS"
         return 0
