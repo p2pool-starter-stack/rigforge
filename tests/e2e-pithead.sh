@@ -513,7 +513,7 @@ phase_dashboard() {
     "$RIGFORGE" start >/dev/null 2>&1
 }
 
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-config-ownership.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-selftest.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-shared-host.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-config-ownership.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-effective-payout.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-selftest.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-shared-host.sh"
 
 summary() {
     printf '\ne2e-pithead: \033[1;32m%d ok\033[0m, ' "$PASS"
@@ -528,7 +528,7 @@ proof_preflight "${1:-all}"
 require_preflight "$@"
 # Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
 # #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
-[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|config-ownership|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|shared-host|selftest|all)"
+[ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|config-ownership|effective-payout|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|shared-host|selftest|all)"
 replay_lock "${1:-all}"
 
 snapshot_config
@@ -541,7 +541,7 @@ network) phase_network ;;
 network-sequence) phase_network_sequence ;;
 stratum-auth) phase_stratum_auth required ;;
 dashboard) phase_dashboard ;;
-dev-fee | selftest) "phase_${1//-/_}" ;;
+dev-fee | selftest | effective-payout) "phase_${1//-/_}" ;;
 config-ownership) phase_config_ownership ;;
 control) phase_control ;;
 control-replay-thermal | control-replay-pools) phase_control_replay "${1##*-}" ;;
@@ -554,7 +554,7 @@ all)
         [ "$FAIL" -eq 0 ] || break
     done
     ;;
-*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|config-ownership|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|shared-host|selftest|all)" ;;
+*) die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|config-ownership|effective-payout|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|shared-host|selftest|all)" ;;
 esac
 _cleanup || bad "pre-test config/runtime restoration failed; snapshot retained at $SAVED_CFG"
 trap - EXIT
