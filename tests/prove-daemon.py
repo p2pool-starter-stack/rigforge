@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import argparse, hashlib, json, os, signal, shlex, socket
+import argparse, json, os, signal, shlex, socket
 import subprocess, sys, tempfile, threading, time
 import http.client
 from pathlib import Path
@@ -27,72 +27,11 @@ BLOCK_TEMPLATE_BLOB = (
 HEIGHT = 2286447
 PREVIOUS_HASH = "ecdc1aab3033cf1716c52f13f9d8ae0051615a2453643de94643b550d543becd"
 SEED_HASH = "d432f499205150873b2572b5f033c9c6e4b7c6f3394bd2dd93822cd7085e7307"
-BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-BASE58_SIZES = (0, 2, 3, 5, 6, 7, 9, 10, 11)
-
-
-def keccak(data):
-    rotation = (
-        (0, 36, 3, 41, 18),
-        (1, 44, 10, 45, 2),
-        (62, 6, 43, 15, 61),
-        (28, 55, 25, 21, 56),
-        (27, 20, 39, 8, 14),
-    )
-    constants = (
-        0x0000000000000001, 0x0000000000008082, 0x800000000000808A,
-        0x8000000080008000, 0x000000000000808B, 0x0000000080000001,
-        0x8000000080008081, 0x8000000000008009, 0x000000000000008A,
-        0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
-        0x000000008000808B, 0x800000000000008B, 0x8000000000008089,
-        0x8000000000008003, 0x8000000000008002, 0x8000000000000080,
-        0x000000000000800A, 0x800000008000000A, 0x8000000080008081,
-        0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
-    )
-    rate = 136
-    padded = bytearray(data)
-    padded.append(1)
-    padded.extend(b"\0" * ((rate - len(padded) % rate - 1) % rate))
-    padded.append(128)
-    state = [0] * 25
-    mask = (1 << 64) - 1
-    for offset in range(0, len(padded), rate):
-        block = padded[offset:offset + rate]
-        for index in range(rate // 8):
-            state[index] ^= int.from_bytes(block[index * 8:index * 8 + 8], "little")
-        for constant in constants:
-            column = [state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20] for x in range(5)]
-            delta = [column[(x - 1) % 5] ^ ((column[(x + 1) % 5] << 1 | column[(x + 1) % 5] >> 63) & mask) for x in range(5)]
-            for x in range(5):
-                for y in range(5):
-                    state[x + 5 * y] ^= delta[x]
-            moved = [0] * 25
-            for x in range(5):
-                for y in range(5):
-                    value = state[x + 5 * y]
-                    shift = rotation[x][y]
-                    moved[y + 5 * ((2 * x + 3 * y) % 5)] = ((value << shift) | (value >> ((64 - shift) % 64))) & mask
-            for x in range(5):
-                for y in range(5):
-                    state[x + 5 * y] = moved[x + 5 * y] ^ ((~moved[(x + 1) % 5 + 5 * y]) & moved[(x + 2) % 5 + 5 * y])
-            state[0] ^= constant
-    return b"".join(value.to_bytes(8, "little") for value in state)[:32]
-
-def encode_block(block):
-    size = BASE58_SIZES[len(block)]
-    value = int.from_bytes(block, "big")
-    output = [BASE58[0]] * size
-    for index in range(size - 1, -1, -1):
-        value, digit = divmod(value, 58)
-        output[index] = BASE58[digit]
-    return "".join(output)
+DONATION_ADDRESS = "486aGn4qhH1MkaASjnEWMDN7stD1SVtPF5fvihmjffeBE5ACL1u1jU95KxiqmoiaPZMexi4R4W11MLXut66XWVVF8wjAE5R"
 
 
 def synthetic_address():
-    identity = hashlib.sha512(b"rigforge daemon proof identity").digest()
-    raw = bytes((18,)) + identity
-    raw += keccak(raw)[:4]
-    return "".join(encode_block(raw[index:index + 8]) for index in range(0, len(raw), 8))
+    return DONATION_ADDRESS
 
 
 class StubHandler(BaseHTTPRequestHandler):
