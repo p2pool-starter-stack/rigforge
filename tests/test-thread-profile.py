@@ -230,6 +230,49 @@ _cleanup
             self.assertTrue(saved.exists())
             self.assertEqual(config.read_bytes(), saved.read_bytes())
 
+    def test_restriction_dropin_is_removed_on_restore(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            unit_dir = root / "system" / "xmrig.service.d"
+            unit_dir.mkdir(parents=True)
+            dropin = unit_dir / "e2e-thread-profile.conf"
+            dropin.write_text("[Service]\nAllowedCPUs=0-1\n")
+            (root / "rigforge-stub").write_text("#!/bin/sh\nexit 0\n")
+            (root / "rigforge-stub").chmod(0o700)
+            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_HELPER=str(ROOT / "tests/e2e-thread-profile.sh"))
+            command = """
+source "$PROFILE_HELPER"
+systemctl() { return 0; }
+RIGFORGE="$PROFILE_ROOT/rigforge-stub"
+THREAD_PROFILE_DROPIN="$PROFILE_ROOT/system/xmrig.service.d/e2e-thread-profile.conf"
+thread_profile_restore
+"""
+            result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(dropin.exists())
+            self.assertFalse(unit_dir.exists())
+
+    def test_restriction_restore_fails_when_daemon_reload_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            unit_dir = root / "system" / "xmrig.service.d"
+            unit_dir.mkdir(parents=True)
+            dropin = unit_dir / "e2e-thread-profile.conf"
+            dropin.write_text("[Service]\nAllowedCPUs=0-1\n")
+            (root / "rigforge-stub").write_text("#!/bin/sh\nexit 0\n")
+            (root / "rigforge-stub").chmod(0o700)
+            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_HELPER=str(ROOT / "tests/e2e-thread-profile.sh"))
+            command = """
+source "$PROFILE_HELPER"
+systemctl() { return 1; }
+RIGFORGE="$PROFILE_ROOT/rigforge-stub"
+THREAD_PROFILE_DROPIN="$PROFILE_ROOT/system/xmrig.service.d/e2e-thread-profile.conf"
+thread_profile_restore
+"""
+            result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(dropin.exists())
+
     def test_snapshot_cleanup_failure_does_not_fail_restoration(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

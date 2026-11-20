@@ -37,8 +37,11 @@ _rx_service_cpus() {
         while [[ $v == *,,* ]]; do v=${v//,,/,}; done
         v=${v#,}
         v=${v%,}
-        case "$v" in '' | *[!0-9,-]*) continue ;; esac
-        taskset -c "$v" true 2>/dev/null || continue
+        [ -n "$v" ] || continue
+        if ! taskset -c "$v" true 2>/dev/null; then
+            warn "Ignoring $prop='$v' reported for ${SERVICE_NAME:-xmrig}.service: not a usable CPU list; the thread probe stays unpinned."
+            continue
+        fi
         printf '%s' "$v"
         return 0
     done

@@ -10,16 +10,16 @@ thread_profile_restrict_off() {
     }
     rmdir "${THREAD_PROFILE_DROPIN%/*}" 2>/dev/null || true
     THREAD_PROFILE_DROPIN=""
-    systemctl daemon-reload
-    "$RIGFORGE" restart >/dev/null 2>&1
+    systemctl daemon-reload || return 1
+    "$RIGFORGE" restart >/dev/null 2>&1 || return 1
 }
 
 thread_profile_restore() {
-    local dropin_ok=1
+    local dropin_fail=0
     if [ -n "$THREAD_PROFILE_DROPIN" ]; then
-        thread_profile_restrict_off || dropin_ok=0
+        thread_profile_restrict_off || dropin_fail=1
     fi
-    [ -n "$THREAD_PROFILE_SAVED" ] || return "$dropin_ok"
+    [ -n "$THREAD_PROFILE_SAVED" ] || return "$dropin_fail"
     if [ "$THREAD_PROFILE_EXISTED" = 1 ]; then
         cp -p "$THREAD_PROFILE_SAVED/overrides.json" "$THREAD_PROFILE_OVERRIDES" || {
             printf 'thread-profile: tuning restoration failed; snapshot retained at %s\n' "$THREAD_PROFILE_SAVED" >&2
@@ -32,7 +32,7 @@ thread_profile_restore() {
         printf 'thread-profile: tuning restored; temporary snapshot retained at %s\n' "$THREAD_PROFILE_SAVED" >&2
     fi
     THREAD_PROFILE_SAVED=""
-    [ "$dropin_ok" = 1 ]
+    return "$dropin_fail"
 }
 
 thread_profile_count() {
@@ -64,7 +64,7 @@ thread_profile_check() {
 }
 
 thread_profile_restricted_service() {
-    local unit="$1" systemd_dir="$2" total n dropin restricted
+    local unit="$1" systemd_dir="$2" total n dropin restricted effective
     total=$(nproc 2>/dev/null) || {
         skip "restricted service cap: nproc is unavailable on this host"
         return 0
@@ -77,14 +77,15 @@ thread_profile_restricted_service() {
     dropin="$systemd_dir/${unit}.service.d/e2e-thread-profile.conf"
     [ ! -e "$dropin" ] || die "thread-profile refuses an existing $dropin"
     mkdir -p "${dropin%/*}" || die "cannot create ${dropin%/*}"
-    printf '[Service]\nAllowedCPUs=0-%d\n' "$((n - 1))" >"$dropin" || die "cannot write $dropin"
     THREAD_PROFILE_DROPIN="$dropin"
+    printf '[Service]\nAllowedCPUs=0-%d\n' "$((n - 1))" >"$dropin" || die "cannot write $dropin"
     systemctl daemon-reload || die "systemd daemon-reload failed"
     set_cfg '.threads = ""'
     "$RIGFORGE" restart >/dev/null 2>&1 || die "cannot restart ${unit}.service with the restricted CPU set"
     restricted=$(systemctl show "${unit}.service" -p AllowedCPUs --value 2>/dev/null) || restricted=""
-    if [ -z "$restricted" ]; then
-        skip "restricted service cap: systemd reports no AllowedCPUs for ${unit}.service"
+    effective=$(systemctl show "${unit}.service" -p EffectiveCPUs --value 2>/dev/null) || effective=""
+    if [ -z "$restricted" ] || [ -z "$effective" ]; then
+        skip "restricted service cap: systemd reports no effective CPU set for ${unit}.service"
         thread_profile_restrict_off
         return 0
     fi
