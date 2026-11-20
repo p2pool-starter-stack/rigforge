@@ -1,9 +1,25 @@
 #!/usr/bin/env bash
 
-THREAD_PROFILE_SAVED="" THREAD_PROFILE_OVERRIDES="" THREAD_PROFILE_EXISTED=0
+THREAD_PROFILE_SAVED="" THREAD_PROFILE_OVERRIDES="" THREAD_PROFILE_EXISTED=0 THREAD_PROFILE_DROPIN=""
+
+thread_profile_restrict_off() {
+    [ -n "$THREAD_PROFILE_DROPIN" ] || return 0
+    rm -f "$THREAD_PROFILE_DROPIN" || {
+        printf 'thread-profile: restricted CPU drop-in retained at %s\n' "$THREAD_PROFILE_DROPIN" >&2
+        return 1
+    }
+    rmdir "${THREAD_PROFILE_DROPIN%/*}" 2>/dev/null || true
+    THREAD_PROFILE_DROPIN=""
+    systemctl daemon-reload || return 1
+    "$RIGFORGE" restart >/dev/null 2>&1 || return 1
+}
 
 thread_profile_restore() {
-    [ -n "$THREAD_PROFILE_SAVED" ] || return 0
+    local dropin_fail=0
+    if [ -n "$THREAD_PROFILE_DROPIN" ]; then
+        thread_profile_restrict_off || dropin_fail=1
+    fi
+    [ -n "$THREAD_PROFILE_SAVED" ] || return "$dropin_fail"
     if [ "$THREAD_PROFILE_EXISTED" = 1 ]; then
         cp -p "$THREAD_PROFILE_SAVED/overrides.json" "$THREAD_PROFILE_OVERRIDES" || {
             printf 'thread-profile: tuning restoration failed; snapshot retained at %s\n' "$THREAD_PROFILE_SAVED" >&2
@@ -16,6 +32,7 @@ thread_profile_restore() {
         printf 'thread-profile: tuning restored; temporary snapshot retained at %s\n' "$THREAD_PROFILE_SAVED" >&2
     fi
     THREAD_PROFILE_SAVED=""
+    return "$dropin_fail"
 }
 
 thread_profile_count() {
@@ -46,15 +63,51 @@ thread_profile_check() {
     fi
 }
 
+thread_profile_restricted_service() {
+    local unit="$1" systemd_dir="$2" total n dropin restricted effective
+    total=$(nproc 2>/dev/null) || {
+        skip "restricted service cap: nproc is unavailable on this host"
+        return 0
+    }
+    n=$((total / 2))
+    if [ "$n" -lt 2 ]; then
+        skip "restricted service cap: host has $total CPU(s), restricting needs at least 4"
+        return 0
+    fi
+    dropin="$systemd_dir/${unit}.service.d/e2e-thread-profile.conf"
+    [ ! -e "$dropin" ] || die "thread-profile refuses an existing $dropin"
+    mkdir -p "${dropin%/*}" || die "cannot create ${dropin%/*}"
+    THREAD_PROFILE_DROPIN="$dropin"
+    printf '[Service]\nAllowedCPUs=0-%d\n' "$((n - 1))" >"$dropin" || die "cannot write $dropin"
+    systemctl daemon-reload || die "systemd daemon-reload failed"
+    set_cfg '.threads = ""'
+    "$RIGFORGE" restart >/dev/null 2>&1 || die "cannot restart ${unit}.service with the restricted CPU set"
+    restricted=$(systemctl show "${unit}.service" -p AllowedCPUs --value 2>/dev/null) || restricted=""
+    effective=$(systemctl show "${unit}.service" -p EffectiveCPUs --value 2>/dev/null) || effective=""
+    if [ -z "$restricted" ] || [ -z "$effective" ]; then
+        skip "restricted service cap: systemd reports no effective CPU set for ${unit}.service"
+        thread_profile_restrict_off
+        return 0
+    fi
+    thread_profile_check "restricted service auto-selection" "$n"
+    set_cfg ".threads = $((n + 2))"
+    thread_profile_check "cap above auto-selection (restricted service)" "$n"
+    thread_profile_restrict_off
+}
+
 phase_thread_profile() {
     phase "thread-profile — XMRig enforces auto-selection and the configured ceiling"
-    local root auto high tmp
-    root=$(
+    local root unit systemd_dir auto high tmp
+    {
+        read -r root
+        read -r unit
+        read -r systemd_dir
+    } < <(
         # shellcheck disable=SC1090
         source "$RIGFORGE"
         export CONFIG_JSON="$CFG"
         parse_config >/dev/null
-        printf '%s' "$WORKER_ROOT"
+        printf '%s\n%s\n%s\n' "$WORKER_ROOT" "${SERVICE_NAME:-xmrig}" "${SYSTEMD_DIR:-/etc/systemd/system}"
     ) || die "cannot resolve configured worker root"
     THREAD_PROFILE_OVERRIDES="$root/tune-overrides.json"
     [ ! -L "$THREAD_PROFILE_OVERRIDES" ] || die "thread-profile refuses symlinked tuning overrides"
@@ -89,4 +142,5 @@ phase_thread_profile() {
     chmod 600 "$THREAD_PROFILE_OVERRIDES"
     set_cfg ".threads = $high"
     thread_profile_check "tuned count below auto-selection" 1
+    thread_profile_restricted_service "$unit" "$systemd_dir"
 }

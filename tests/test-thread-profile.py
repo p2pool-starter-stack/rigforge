@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -31,6 +32,16 @@ p.write_text(json.dumps(c))
 """
 
 
+AFFINITY_FAKE = """#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+p = Path(sys.argv[sys.argv.index("--config") + 1])
+c = json.loads(p.read_text())
+c["cpu"]["rx"] = list(range(len(os.sched_getaffinity(0))))
+p.write_text(json.dumps(c))
+"""
+
+
 def count(profile):
     if isinstance(profile, list):
         return len(profile)
@@ -40,7 +51,7 @@ def count(profile):
 
 
 class ThreadProfile(unittest.TestCase):
-    def generate(self, cap, tuned=None, candidate=False, cthreads=12, shared=False, script=FAKE):
+    def generate(self, cap, tuned=None, candidate=False, cthreads=12, shared=False, script=FAKE, service_cpus=None, prop="EffectiveCPUs"):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             build = root / "xmrig/build"
@@ -51,7 +62,15 @@ class ThreadProfile(unittest.TestCase):
             binary.chmod(0o700)
             if tuned is not None:
                 (root / "tune-overrides.json").write_text(json.dumps({"cpu": {"rx": tuned}}))
+            if service_cpus is not None:
+                stubs = root / "stubs"
+                stubs.mkdir()
+                stub = stubs / "systemctl"
+                stub.write_text('#!/bin/sh\ncase "$*" in *%s*) echo "%s" ;; esac\n' % (prop, service_cpus))
+                stub.chmod(0o700)
             env = dict(os.environ, SHARED_HOST="true" if shared else "false", PROFILE_ROOT=d, PROFILE_SCRIPT=str(SCRIPT), PROFILE_CAP=str(cap), PROFILE_CT=str(cthreads))
+            if service_cpus is not None:
+                env["PATH"] = str(root / "stubs") + os.pathsep + env["PATH"]
             command = """
 source "$PROFILE_SCRIPT"
 lscpu() { printf 'Model name: Test CPU\\n'; }
@@ -79,6 +98,34 @@ _tune_config "$PWD/candidate.json" 1 false $PROFILE_CT false 2 false false false
             p = build / ("candidate.json" if candidate else "config.json")
             self.assertEqual(p.stat().st_mode & 0o777, 0o600)
             return json.loads(p.read_text())
+
+    @unittest.skipUnless(shutil.which("taskset") and hasattr(os, "sched_getaffinity"), "needs Linux taskset")
+    def test_cap_above_service_cpu_set(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        if len(allowed) < 2:
+            self.skipTest("needs at least two CPUs")
+        n = len(allowed) // 2
+        cpus = ",".join(map(str, allowed[:n]))
+        c = self.generate(n + 2, script=AFFINITY_FAKE, service_cpus=cpus)
+        self.assertEqual(count(c["cpu"]["rx"]), n)
+
+    @unittest.skipUnless(shutil.which("taskset") and hasattr(os, "sched_getaffinity"), "needs Linux taskset")
+    def test_allowed_cpus_fallback_pins_probe(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        if len(allowed) < 2:
+            self.skipTest("needs at least two CPUs")
+        c = self.generate(len(allowed) + 2, script=AFFINITY_FAKE, service_cpus=str(allowed[0]), prop="AllowedCPUs")
+        self.assertEqual(count(c["cpu"]["rx"]), 1)
+
+    @unittest.skipUnless(shutil.which("taskset") and hasattr(os, "sched_getaffinity"), "needs Linux taskset")
+    def test_space_separated_service_cpu_set_pins_probe(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        if len(allowed) < 4:
+            self.skipTest("needs at least four CPUs")
+        n = len(allowed) // 2
+        cpus = " ".join(map(str, allowed[:n]))
+        c = self.generate(n + 2, script=AFFINITY_FAKE, service_cpus=cpus, prop="CPUAffinity")
+        self.assertEqual(count(c["cpu"]["rx"]), n)
 
     def test_cap_below_auto(self):
         self.assertEqual(count(self.generate(1)["cpu"]["rx"]), 1)
@@ -182,6 +229,49 @@ _cleanup
             self.assertFalse(marker.exists())
             self.assertTrue(saved.exists())
             self.assertEqual(config.read_bytes(), saved.read_bytes())
+
+    def test_restriction_dropin_is_removed_on_restore(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            unit_dir = root / "system" / "xmrig.service.d"
+            unit_dir.mkdir(parents=True)
+            dropin = unit_dir / "e2e-thread-profile.conf"
+            dropin.write_text("[Service]\nAllowedCPUs=0-1\n")
+            (root / "rigforge-stub").write_text("#!/bin/sh\nexit 0\n")
+            (root / "rigforge-stub").chmod(0o700)
+            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_HELPER=str(ROOT / "tests/e2e-thread-profile.sh"))
+            command = """
+source "$PROFILE_HELPER"
+systemctl() { return 0; }
+RIGFORGE="$PROFILE_ROOT/rigforge-stub"
+THREAD_PROFILE_DROPIN="$PROFILE_ROOT/system/xmrig.service.d/e2e-thread-profile.conf"
+thread_profile_restore
+"""
+            result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(dropin.exists())
+            self.assertFalse(unit_dir.exists())
+
+    def test_restriction_restore_fails_when_daemon_reload_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            unit_dir = root / "system" / "xmrig.service.d"
+            unit_dir.mkdir(parents=True)
+            dropin = unit_dir / "e2e-thread-profile.conf"
+            dropin.write_text("[Service]\nAllowedCPUs=0-1\n")
+            (root / "rigforge-stub").write_text("#!/bin/sh\nexit 0\n")
+            (root / "rigforge-stub").chmod(0o700)
+            env = dict(os.environ, PROFILE_ROOT=d, PROFILE_HELPER=str(ROOT / "tests/e2e-thread-profile.sh"))
+            command = """
+source "$PROFILE_HELPER"
+systemctl() { return 1; }
+RIGFORGE="$PROFILE_ROOT/rigforge-stub"
+THREAD_PROFILE_DROPIN="$PROFILE_ROOT/system/xmrig.service.d/e2e-thread-profile.conf"
+thread_profile_restore
+"""
+            result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(dropin.exists())
 
     def test_snapshot_cleanup_failure_does_not_fail_restoration(self):
         with tempfile.TemporaryDirectory() as d:
