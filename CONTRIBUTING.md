@@ -104,6 +104,16 @@ shellcheck, shfmt, actionlint, gitleaks, lychee and jq, installed by curl with a
 watched by the weekly `tool-bump.yml` watcher. It reports stale pins without changing them; failed
 or malformed upstream responses remain unchecked and fail the watcher.
 
+Dependabot checks GitHub Actions, pip and npm daily and the test images weekly. Pip, npm and docker
+group minor and patch version updates into one PR each; security updates stay one PR per package, and
+the three-day cooldown on pip and npm never delays them.
+
+The `Security backlog expiry` check in `security.yml` lists open issues labelled `security-baseline` and
+`branch:<base>` whose `expires: YYYY-MM-DD` line has passed, on PRs into `develop` and `develop-v*`.
+Issues carrying only `review:` never count. Dependabot and `bot/xmrig-*` PRs, PRs labelled `security`
+and PRs that close the issue are exempt. It only warns until the `ENFORCE_FROM` date in the job, then
+fails; extend an expiry by editing the date in the issue.
+
 An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final
 newline) so most editors match these checks automatically.
 
