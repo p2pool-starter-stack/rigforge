@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -31,6 +32,16 @@ p.write_text(json.dumps(c))
 """
 
 
+AFFINITY_FAKE = """#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+p = Path(sys.argv[sys.argv.index("--config") + 1])
+c = json.loads(p.read_text())
+c["cpu"]["rx"] = list(range(len(os.sched_getaffinity(0))))
+p.write_text(json.dumps(c))
+"""
+
+
 def count(profile):
     if isinstance(profile, list):
         return len(profile)
@@ -40,7 +51,7 @@ def count(profile):
 
 
 class ThreadProfile(unittest.TestCase):
-    def generate(self, cap, tuned=None, candidate=False, cthreads=12, shared=False, script=FAKE):
+    def generate(self, cap, tuned=None, candidate=False, cthreads=12, shared=False, script=FAKE, service_cpus=None):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             build = root / "xmrig/build"
@@ -51,7 +62,15 @@ class ThreadProfile(unittest.TestCase):
             binary.chmod(0o700)
             if tuned is not None:
                 (root / "tune-overrides.json").write_text(json.dumps({"cpu": {"rx": tuned}}))
+            if service_cpus is not None:
+                stubs = root / "stubs"
+                stubs.mkdir()
+                stub = stubs / "systemctl"
+                stub.write_text('#!/bin/sh\ncase "$*" in *EffectiveCPUs*) echo "%s" ;; esac\n' % service_cpus)
+                stub.chmod(0o700)
             env = dict(os.environ, SHARED_HOST="true" if shared else "false", PROFILE_ROOT=d, PROFILE_SCRIPT=str(SCRIPT), PROFILE_CAP=str(cap), PROFILE_CT=str(cthreads))
+            if service_cpus is not None:
+                env["PATH"] = str(root / "stubs") + os.pathsep + env["PATH"]
             command = """
 source "$PROFILE_SCRIPT"
 lscpu() { printf 'Model name: Test CPU\\n'; }
@@ -79,6 +98,16 @@ _tune_config "$PWD/candidate.json" 1 false $PROFILE_CT false 2 false false false
             p = build / ("candidate.json" if candidate else "config.json")
             self.assertEqual(p.stat().st_mode & 0o777, 0o600)
             return json.loads(p.read_text())
+
+    @unittest.skipUnless(shutil.which("taskset") and hasattr(os, "sched_getaffinity"), "needs Linux taskset")
+    def test_cap_above_service_cpu_set(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        if len(allowed) < 2:
+            self.skipTest("needs at least two CPUs")
+        n = len(allowed) // 2
+        cpus = ",".join(map(str, allowed[:n]))
+        c = self.generate(n + 2, script=AFFINITY_FAKE, service_cpus=cpus)
+        self.assertEqual(count(c["cpu"]["rx"]), n)
 
     def test_cap_below_auto(self):
         self.assertEqual(count(self.generate(1)["cpu"]["rx"]), 1)
