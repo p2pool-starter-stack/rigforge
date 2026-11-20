@@ -51,7 +51,7 @@ def count(profile):
 
 
 class ThreadProfile(unittest.TestCase):
-    def generate(self, cap, tuned=None, candidate=False, cthreads=12, shared=False, script=FAKE, service_cpus=None):
+    def generate(self, cap, tuned=None, candidate=False, cthreads=12, shared=False, script=FAKE, service_cpus=None, prop="EffectiveCPUs"):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             build = root / "xmrig/build"
@@ -66,7 +66,7 @@ class ThreadProfile(unittest.TestCase):
                 stubs = root / "stubs"
                 stubs.mkdir()
                 stub = stubs / "systemctl"
-                stub.write_text('#!/bin/sh\ncase "$*" in *EffectiveCPUs*) echo "%s" ;; esac\n' % service_cpus)
+                stub.write_text('#!/bin/sh\ncase "$*" in *%s*) echo "%s" ;; esac\n' % (prop, service_cpus))
                 stub.chmod(0o700)
             env = dict(os.environ, SHARED_HOST="true" if shared else "false", PROFILE_ROOT=d, PROFILE_SCRIPT=str(SCRIPT), PROFILE_CAP=str(cap), PROFILE_CT=str(cthreads))
             if service_cpus is not None:
@@ -108,6 +108,14 @@ _tune_config "$PWD/candidate.json" 1 false $PROFILE_CT false 2 false false false
         cpus = ",".join(map(str, allowed[:n]))
         c = self.generate(n + 2, script=AFFINITY_FAKE, service_cpus=cpus)
         self.assertEqual(count(c["cpu"]["rx"]), n)
+
+    @unittest.skipUnless(shutil.which("taskset") and hasattr(os, "sched_getaffinity"), "needs Linux taskset")
+    def test_allowed_cpus_fallback_pins_probe(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        if len(allowed) < 2:
+            self.skipTest("needs at least two CPUs")
+        c = self.generate(len(allowed) + 2, script=AFFINITY_FAKE, service_cpus=str(allowed[0]), prop="AllowedCPUs")
+        self.assertEqual(count(c["cpu"]["rx"]), 1)
 
     def test_cap_below_auto(self):
         self.assertEqual(count(self.generate(1)["cpu"]["rx"]), 1)
