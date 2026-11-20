@@ -63,8 +63,14 @@ raise SystemExit(1)
         # shellcheck disable=SC2329
         cleanup_api_probe() {
             local cleanup_rc=0
-            [ "$link_created" = 0 ] || ip link del "$host_if" >/dev/null 2>&1 || { printf 'api allowlist probe: cleanup could not delete link %s\n' "$host_if" >&2; cleanup_rc=1; }
-            [ "$ns_created" = 0 ] || ip netns del "$ns" >/dev/null 2>&1 || { printf 'api allowlist probe: cleanup could not delete namespace %s\n' "$ns" >&2; cleanup_rc=1; }
+            [ "$link_created" = 0 ] || ip link del "$host_if" >/dev/null 2>&1 || {
+                printf 'api allowlist probe: cleanup could not delete link %s\n' "$host_if" >&2
+                cleanup_rc=1
+            }
+            [ "$ns_created" = 0 ] || ip netns del "$ns" >/dev/null 2>&1 || {
+                printf 'api allowlist probe: cleanup could not delete namespace %s\n' "$ns" >&2
+                cleanup_rc=1
+            }
             return "$cleanup_rc"
         }
         trap 'probe_rc=$?; trap - EXIT; cleanup_api_probe || [ "$probe_rc" -ne 0 ] || probe_rc=2; exit "$probe_rc"' EXIT
