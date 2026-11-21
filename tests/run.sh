@@ -9163,53 +9163,7 @@ EOF
     assert_contains "a fully-traversable path returns cleanly (#362)" "$out2" "rc=0"
 fi
 source "$ROOT/tests/test-e2e-apt-prereqs.sh"
-echo "== unit: e2e-pithead dashboard leg — hardened curl + no vacuous offline pass (#390/#466) =="
-DC_SRC="$(sed -n '/^dash_curl()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
-PD_SRC="$(sed -n '/^phase_dashboard()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
-DDIR="$(mktemp -d "$SANDBOX/dash390.XXXXXX")"
-mkdir -p "$DDIR/bin"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$DC_ARGS"\n' >"$DDIR/bin/curl"
-chmod +x "$DDIR/bin/curl"
-out="$( (
-    eval "$DC_SRC"
-    export DC_ARGS="$DDIR/args.with"
-    E2E_DASH_URL="http://stack-host/api/state" E2E_DASH_AUTH="probe:pw" PATH="$DDIR/bin:$PATH" dash_curl >/dev/null
-    export DC_ARGS="$DDIR/args.without"
-    E2E_DASH_URL="http://stack-host/api/state" E2E_DASH_AUTH="" PATH="$DDIR/bin:$PATH" dash_curl >/dev/null
-) 2>&1)"
-assert_contains "dash_curl follows redirects + accepts the stack cert (#390)" "$(cat "$DDIR/args.with")" "-kLfsS"
-assert_contains "dash_curl presents basic-auth creds when E2E_DASH_AUTH is set (#390)" "$(cat "$DDIR/args.with")" "probe:pw"
-assert_absent "dash_curl sends no -u when E2E_DASH_AUTH is empty (#390)" "$(cat "$DDIR/args.without")" "probe:pw"
-pd_run() { # <dash_curl-body> -> phase_dashboard transcript with stubbed collaborators
-    (
-        eval "$PD_SRC"
-        eval "dash_curl() { $1; }"
-        phase() { :; }
-        skip() { printf 'SKIP %s\n' "$1"; }
-        ok() { printf 'OK %s\n' "$1"; }
-        bad() { printf 'BAD %s\n' "$1"; }
-        sleep() { :; }
-        RIGFORGE=true E2E_DASH_URL="http://stack-host/api/state" E2E_DROPOFF_TIMEOUT=1 phase_dashboard
-    ) 2>&1
-}
-out="$(pd_run 'printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"')"
-assert_contains "never-visible worker reads as a failure (#390)" "$out" "BAD worker"
-assert_contains "offline check is skipped when visibility never held (#390)" "$out" "SKIP offline check skipped"
-assert_absent "no vacuous offline pass on a never-visible worker (#390)" "$out" "became offline within"
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/seen" ]; then touch "'"$DDIR"'/seen"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[{"name":"%s","status":"offline"}],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)" "$(hostname)"; fi')"
-assert_contains "visible worker passes the visibility check (#390)" "$out" "OK worker"
-assert_contains "stopped worker measured offline before expiry (#466)" "$out" "OK stopped worker became offline"
-for invalid in '' '{' '{}' '{"workers":"bad"}' '{"workers":[null]}' '{"workers":[42]}' '{"workers":[{}]}' '{"workers":[{"name":"x"}]}' '{"workers":[{"name":42,"status":"online"}]}' '{"workers":[{"name":"x","status":42}]}' '{"workers":[{"name":"x","status":"paused"}]}'; do
-    out="$(pd_run "printf '%s' '$invalid'")"
-    assert_contains "invalid dashboard payload fails closed (#464)" "$out" "BAD dashboard returned no valid workers array"
-    assert_absent "invalid dashboard payload never proves offline (#466)" "$out" "OK stopped worker became offline"
-done
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-absent" ]; then touch "'"$DDIR"'/valid-then-absent"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[],"energy":{"per_worker":[{"name":"%s"}]}}'\'' "$(hostname)"; fi')"
-assert_contains "historical-only worker cannot impersonate offline (#466)" "$out" "BAD worker did not become offline"
-assert_absent "historical-only worker never proves offline (#466)" "$out" "OK stopped worker became offline"
-out="$(pd_run 'if [ ! -f "'"$DDIR"'/valid-then-malformed" ]; then touch "'"$DDIR"'/valid-then-malformed"; printf '\''{"workers":[{"name":"%s","status":"online"}]}'\'' "$(hostname)"; else printf '\''{"workers":[null,{"name":"%s","status":"offline"}]}'\'' "$(hostname)"; fi')"
-assert_contains "malformed member blocks exact-target offline (#466)" "$out" "BAD worker did not become offline"
-assert_absent "malformed transition never proves offline (#466)" "$out" "OK stopped worker became offline"
+source "$ROOT/tests/test-e2e-dashboard.sh"
 source "$ROOT/tests/test-e2e-gate-fail-closed.sh"
 source "$ROOT/tests/test-e2e-hammer.sh"
 echo "== unit: rig_lock — the shared-rig flock (#183) =="

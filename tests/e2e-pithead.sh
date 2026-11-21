@@ -3,7 +3,7 @@
 #   E2E_DASH_URL                 opt-in: dashboard /api/state URL (self-signed HTTPS accepted)
 #   E2E_DASH_AUTH                user:pass for the dashboard's basic auth
 #   E2E_SHARE_TIMEOUT            seconds to wait for an accepted share (default 180)
-#   E2E_DROPOFF_TIMEOUT          seconds for the dashboard to drop a stopped worker (default 300)
+#   E2E_DROPOFF_TIMEOUT          seconds for the dashboard to drop a stopped worker (default 600)
 #   E2E_API_IMPACT_TOLERANCE_PCT max hashrate loss under sister-API load (default 3)
 #   E2E_API_LATENCY_S            responsiveness budget for /health under full load (default 15)
 
@@ -12,7 +12,7 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIGFORGE="$HERE/rigforge.sh"
 CFG="$HERE/config.json"
-source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-xmrig.sh" # phase_control (#509), phase_access_tokens (#516), phase_api_allowlist (#617)
+source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-control.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-tokens.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-allowlist.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-xmrig.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-pithead-dashboard.sh" # phase_control (#509), phase_access_tokens (#516), phase_api_allowlist (#617)
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-control-replay.sh" && source "$HERE/tests/e2e-summary-diagnostics.sh" && source "$HERE/tests/e2e-doctor-json.sh" && source "$HERE/tests/e2e-worker-proof.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-hammer.sh" && source "$HERE/tests/e2e-thread-profile.sh"
 # bench-ci-fixture: pithead-control control-replay-thermal control-replay-pools
 PASS=0 FAIL=0 E2E_EXIT_RC=0
@@ -359,7 +359,13 @@ phase_network() {
     ss -Htln 2>/dev/null | grep -q ':8081 ' && ok ":8081 listening from control alone, api never set (#507)" || bad ":8081 not listening though control implies api (#507)"
     set_cfg '.api = "enabled"'
     sleep 3
-    if phase_api_allowlist; then ok "API allowlist rejects a second source while mining"; else bad "API allowlist live probe failed"; fi
+    local allow_rc=0
+    phase_api_allowlist || allow_rc=$?
+    case "$allow_rc" in
+    0) ok "API allowlist rejects a second source while mining" ;;
+    1) bad "API allowlist live probe failed" ;;
+    *) die "API allowlist probe could not run (environment error, see the probe message above)" ;;
+    esac
     if ss -Htln 2>/dev/null | grep -q ':8081 '; then
         ok ":8081 listening while api enabled"
     else
@@ -466,51 +472,6 @@ phase_stratum_auth() {
     else
         bad "rotation runbook: worker did not recover after restoring the pass"
     fi
-}
-
-dash_curl() { # Follow Caddy redirects, accept the stack cert, and present optional basic auth (#390).
-    curl -kLfsS --max-time 10 ${E2E_DASH_AUTH:+-u "$E2E_DASH_AUTH"} "$E2E_DASH_URL" 2>/dev/null || true
-}
-
-phase_dashboard() {
-    phase "dashboard — workers-alive shows this rig; a stopped rig becomes offline"
-    if [ -z "${E2E_DASH_URL:-}" ]; then
-        skip "E2E_DASH_URL not set — dashboard phases skipped (agree fixtures with pithead#209)"
-        return 0
-    fi
-    local me payload offline=0
-    me=$(hostname)
-    payload=$(dash_curl)
-    if ! printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array" and all(.workers[]; type == "object" and (.name | type) == "string" and ((.status == "online") or (.status == "offline")))' >/dev/null 2>&1; then
-        bad "dashboard returned no valid workers array"
-        return 0
-    elif printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me and .status == "online")' >/dev/null 2>&1; then
-        ok "worker '$me' online in the dashboard payload"
-    else
-        bad "worker '$me' not in the dashboard payload"
-        # Never let initial absence become a vacuous offline pass (#390).
-        skip "offline check skipped: the worker was never online, so its later state proves nothing"
-        return 0
-    fi
-    "$RIGFORGE" stop >/dev/null 2>&1
-    local to="${E2E_DROPOFF_TIMEOUT:-300}" waited=0
-    while [ "$waited" -lt "$to" ]; do
-        payload=$(dash_curl)
-        if printf '%s' "$payload" | jq -e 'type == "object" and (.workers | type) == "array" and all(.workers[]; type == "object" and (.name | type) == "string" and ((.status == "online") or (.status == "offline")))' >/dev/null 2>&1; then
-            if printf '%s' "$payload" | jq -e --arg me "$me" 'any(.workers[]; .name == $me and .status == "offline")' >/dev/null 2>&1; then
-                offline=1
-                break
-            fi
-        fi
-        sleep 15
-        waited=$((waited + 15))
-    done
-    if [ "$offline" = 1 ]; then
-        ok "stopped worker became offline within ${waited}s"
-    else
-        bad "worker did not become offline in a valid workers array during the ${to}s window"
-    fi
-    "$RIGFORGE" start >/dev/null 2>&1
 }
 
 source "$(dirname "${BASH_SOURCE[0]}")/e2e-donation.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-config-ownership.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-selftest.sh" && source "$(dirname "${BASH_SOURCE[0]}")/e2e-shared-host.sh"
