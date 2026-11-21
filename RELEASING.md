@@ -241,6 +241,40 @@ To verify a downloaded bundle: `sha256sum -c SHA256SUMS` (see
 > The release is created as a draft so a human reviews it before it goes public, a deliberate gate
 > for a tool that installs a root miner. Drop `--draft` from `release.yml` to auto-publish on tag instead.
 
+## The APT feed
+
+Publishing a stable release triggers `Publish APT feed` (`apt-feed.yml`), which builds, signs and
+deploys the signed flat apt feed to Pages. Prerelease and draft releases never trigger it, it
+checks the tag equals `v$(VERSION)` and sits on `main`, and it runs in the protected
+`github-pages` environment, so nothing is signed until the owner approves the run. The trust
+anchor is the fingerprint and public key under `packaging/apt/` on `main`; a feed signed by any
+other key fails the job closed. See [SECURITY.md › The apt feed is signed](./SECURITY.md#the-apt-feed-is-signed)
+for the trust model, custody, rotation and recovery.
+
+Owner-only steps before the first feed (one time, in order):
+
+1. Generate the signing key offline on the owner's machine (RSA 3072+, sign-only, never a
+   networked box), and store two passphrase-protected backups offline: one on the owner's machine
+   and one on the project NAS. Keep a revocation certificate with the backups.
+2. Commit the armored public key to `packaging/apt/rigforge.asc` and the 40-hex fingerprint to
+   `packaging/apt/fingerprint` on `main` (replacing the `pending-key-generation` placeholder).
+3. Add the repository secret `APT_SIGNING_KEY` (the armored private key) scoped to the
+   `github-pages` environment, and the repository variable `APT_SIGNING_FINGERPRINT` with the
+   same fingerprint. The armored copy that goes into the secret must carry no passphrase (CI
+   cannot unlock one); the passphrase-protected exports stay offline as the backups.
+4. Protect the `github-pages` environment with the owner as required reviewer — this approval is
+   the gate that keeps a leaked token from signing a feed.
+5. Enable Pages for the repository with **GitHub Actions** as the source.
+6. Add a tag ruleset (or branch-protection tag pattern) for `v[0-9]*` so only the release
+   operator can create release tags.
+
+Until those steps exist the feed job is skipped or fails closed, and nothing is signed.
+
+Rollback: the feed deploys as `apt/` (the flat feed every apt source points at) plus an archived
+`apt/<version>/` per release. To restore the previous feed, re-run `Publish APT feed` with
+**Run workflow** and that release's tag — the job re-verifies the tag against `main` and
+republishes. Every archived `.deb` also stays on its GitHub release forever.
+
 ## Notes
 
 - Keep `VERSION` and the latest `CHANGELOG.md` heading in lock-step; the test suite checks `VERSION`

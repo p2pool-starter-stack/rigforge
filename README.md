@@ -127,6 +127,30 @@ sha256sum -c SHA256SUMS --ignore-missing
 See [SECURITY.md › Release integrity](SECURITY.md#release-integrity) for what this does and
 doesn't prove — deploying from a git checkout at the release tag is the stronger anchor.
 
+**Prefer `apt`?** Debian and Ubuntu installs can track releases through the project's signed apt
+repository. Install the signing key and check its printed fingerprint against
+[`packaging/apt/fingerprint`](packaging/apt/fingerprint) in this repository:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://p2pool-starter-stack.github.io/rigforge/apt/rigforge.asc |
+  sudo tee /etc/apt/keyrings/rigforge.asc >/dev/null
+gpg --show-keys --with-colons /etc/apt/keyrings/rigforge.asc | awk -F: '/^fpr/{print $10; exit}'
+```
+
+The printed fingerprint must match the pinned one. Then add the Deb822 source and install:
+
+```bash
+printf 'Types: deb\nURIs: https://p2pool-starter-stack.github.io/rigforge/apt/\nSuites: ./\nSigned-By: /etc/apt/keyrings/rigforge.asc\n' |
+  sudo tee /etc/apt/sources.list.d/rigforge.sources >/dev/null
+sudo apt update && sudo apt install rigforge
+```
+
+`sudo apt upgrade rigforge` keeps the worker current and first-run setup is unchanged
+(`rigforge --version` confirms the install). What the signature proves, and how the key is held,
+is in [SECURITY.md › Release integrity](SECURITY.md#release-integrity). Until the first signed
+release is published the feed URL is not live and the pinned fingerprint file is a placeholder.
+
 ---
 
 ## 📚 Documentation

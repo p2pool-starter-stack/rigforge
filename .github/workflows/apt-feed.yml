@@ -73,8 +73,8 @@ jobs:
           GNUPGHOME: ${{ runner.temp }}/gnupg
         run: |
           set -euo pipefail
-          pinned=$(cat "$RUNNER_TEMP/pinned/fingerprint")
-          test "$pinned" = "$APT_SIGNING_FINGERPRINT"
+          pinned=$(cat "$RUNNER_TEMP/pinned/fingerprint" | tr '[:lower:]' '[:upper:]')
+          test "$pinned" = "$(printf '%s' "$APT_SIGNING_FINGERPRINT" | tr '[:lower:]' '[:upper:]')"
           mkdir release
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release \
             --pattern 'rigforge_*_all.deb' --pattern SHA256SUMS
