@@ -440,7 +440,11 @@ parse_config() {
     if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
-    [ "$DONATION" = 0 ] || [ -z "$(_tor_socks5)" ] || error "DONATION must be 0 while tor_socks5 is set: a non-zero donation makes XMRig dial its donation pool directly, off the proxy. Set DONATION to 0, or remove tor_socks5 to take this rig off Tor."
+    DONATION_TOR_CONFLICT=0
+    if [ "$DONATION" != 0 ] && [ -n "$(_tor_socks5)" ]; then
+        DONATION_TOR_CONFLICT=1
+        [ "${RIGFORGE_TOLERATE_DONATION_TOR:-0}" = 1 ] || error "DONATION must be 0 while tor_socks5 is set: a non-zero donation makes XMRig dial its donation pool directly, off the proxy. Set DONATION to 0, or remove tor_socks5 to take this rig off Tor."
+    fi
     # Pool(s). The pool target is XMRig's native `pools` array — the same structure XMRig uses
     # ({"url","user","pass","keepalive","tls",...}). Each entry needs a `url` of the form `host:port`;
     # every other field falls back to a Pithead-friendly default. List multiple entries for failover.
@@ -582,8 +586,8 @@ parse_config() {
         error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
     fi
 
-    # ACCESS_TOKENS (#516): an OPTIONAL name -> token map, one per consuming Pithead stack, so a bench
-    # borrow never needs prod's ACCESS_TOKEN. Every entry authenticates :8081/:8082 like it does; only xmrig's :8080 stays master-only.
+    # ACCESS_TOKENS (#516): an OPTIONAL name -> token map, one per consuming Pithead stack, so no stack
+    # needs another stack's ACCESS_TOKEN. Every entry authenticates :8081/:8082 like it does; only xmrig's :8080 stays master-only.
     ACCESS_TOKENS_JSON=$(jq -c '.ACCESS_TOKENS // {}' "$CONFIG_JSON" 2>/dev/null)
     jq -e 'type == "object" and all(.[]; type == "string")' <<<"$ACCESS_TOKENS_JSON" >/dev/null 2>&1 || error "ACCESS_TOKENS in $CONFIG_JSON must be a JSON object mapping names to string tokens."
     while IFS=$'\t' read -r _atn _att; do
@@ -1461,8 +1465,8 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH' \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
         <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
@@ -3542,9 +3546,9 @@ _bearer_curl() { # <token> <curl args...>
     printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" | curl --config - "$@"
 }
 _read_api_summary() {
-    local url="http://127.0.0.1:8080/2/summary"
+    local url="http://127.0.0.1:8080/2/${1:-summary}"
     if [ -n "${API_CMD:-}" ]; then
-        eval "$API_CMD" || true # the override stands in for the API — a failing one means "unreachable", not "crash"
+        eval "$API_CMD" || true
         return
     fi
     command -v curl >/dev/null 2>&1 || return 0
@@ -3717,19 +3721,15 @@ support_bundle() {
     done
     [ -f "$CONFIG_JSON" ] || error "No config.json to collect. Run 'setup' first."
 
-    local wr collected="" skipped="" f
+    local wr collected="" skipped="" f topo_why=""
     wr=$(_worker_root_from_config)
     STAGE_DIR=$(mktemp -d)
-    # Cleanup is armed the moment the temp dir exists — a set -e abort anywhere below must not leak
-    # this secret-bearing staging content. Same EXIT-trap treatment tune() got in #135. (#353)
     trap 'rm -rf "$STAGE_DIR"' EXIT
     _take() { collected="$collected $1"; }
     _skip() { skipped="$skipped $1"; }
 
     cmd_version >"$STAGE_DIR/version.txt" && _take version.txt
-    # Subprocess, not a function call: doctor's error-exits can't kill the bundle. Strip ANSI codes.
     ("$0" doctor </dev/null 2>&1 || true) | sed -e $'s/\x1b\[[0-9;]*m//g' >"$STAGE_DIR/doctor.txt" && _take doctor.txt
-    # Fail closed: if jq can't redact a file, the file stays OUT of the bundle — never the original.
     if _redact_config <"$CONFIG_JSON" >"$STAGE_DIR/config.redacted.json" 2>/dev/null; then
         _take config.redacted.json
     else
@@ -3762,6 +3762,7 @@ support_bundle() {
     for f in "$SERVICE_NAME.service" rigforge-autotune.service rigforge-autotune.timer; do
         [ -f "$SYSTEMD_DIR/$f" ] && cp "$SYSTEMD_DIR/$f" "$STAGE_DIR/$f" 2>/dev/null && _take "$f"
     done
+    { [ -n "$wr" ] && topo_why=$(_bundle_topology "$wr" "$STAGE_DIR/xmrig-topology.xml") && _take xmrig-topology.xml; } || _skip "xmrig-topology.xml(${topo_why:-no-worker-root})"
     {
         uname -a
         if [ "$OS_TYPE" = Linux ]; then
@@ -3959,14 +3960,14 @@ _render_duration() {
 }
 
 svc_status() {
-    [ ! -f "$CONFIG_JSON" ] || (_shared_host_report) || true
+    _shared_host_status_report
     _config_apply_check
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
-        (parse_config >/dev/null 2>&1 && _status_api_summary) || true
+        (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
-    (parse_config >/dev/null 2>&1 && _status_api_summary) || true
+    (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
     # Read-only: `systemctl status` is world-readable, so no sudo (don't prompt for a password to look).
     systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
 }
@@ -4577,12 +4578,6 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
-    if _rig_lent_to_bench; then
-        rm -f "$staged"
-        _control_status "$status" busy "$cid" "$change_keys" "rig is lent to a bench job; retry after it is returned" ""
-        warn "control-apply: rig is lent to a bench job — change $cid refused."
-        return 0
-    fi
     # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
@@ -4737,11 +4732,6 @@ control_upgrade() {
             return 0
         fi
     fi
-    if _rig_lent_to_bench; then
-        _control_status "$status" busy "$cid" version "rig is lent to a bench job; retry after it is returned" ""
-        warn "control-upgrade: rig is lent to a bench job — refused."
-        return 0
-    fi
     _fetch_preflight -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" || {
         _control_status "$status" failed "$cid" version "$FETCH_PREFLIGHT_REASON" ""
         warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
@@ -4789,7 +4779,10 @@ watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
     fi
-    parse_config
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config
+    if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
+        warn "watchdog: DONATION is $DONATION while Tor is in effect, so setup, upgrade and apply refuse this config until DONATION is 0; the thermal stop and wedge recovery still run."
+    fi
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
     if [ -f "$hold_f" ]; then
@@ -4975,7 +4968,7 @@ _msr_detect_preset() { # -> preset name, or "" for unknown
 msr_apply() {
     [ "$OS_TYPE" = Linux ] || error "msr-apply writes Linux MSRs and is only supported on Linux."
     [ "$(id -u)" -eq 0 ] || error "msr-apply needs root (it writes /dev/cpu/*/msr) — it is normally run by the systemd unit."
-    parse_config >/dev/null
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null
     [ "${SHARED_HOST:-false}" != true ] || error "MSR tuning is disabled in shared_host."
     local preset regs reg val mask cpu old new
     preset=$(_msr_detect_preset)
@@ -5185,7 +5178,7 @@ _stamp_config_meta() { # <source> [change_id] — record provenance IFF the writ
     # Self-sufficient + error-isolated: parse the current config.json in a subshell, so this is safe to
     # call from restore/apply/control regardless of whether the caller has parsed (and a bad config
     # can't abort the caller).
-    newrev=$( (parse_config >/dev/null 2>&1 && _writable_config_hash) 2>/dev/null) || newrev=""
+    newrev=$( (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _writable_config_hash) 2>/dev/null) || newrev=""
     [ -n "$newrev" ] || return 0
     oldrev=$(jq -r '.revision // ""' "$CONFIG_META_FILE" 2>/dev/null || echo "")
     [ "$newrev" = "$oldrev" ] && return 0
@@ -5215,7 +5208,7 @@ _api_rigforge_block() {                                                         
 # Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
-    parse_config >/dev/null
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null
     local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at
     mkdir -p "$dir"
     generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -5223,6 +5216,9 @@ api_refresh() {
     printf '%s' "$sum" | jq -e . >/dev/null 2>&1 || sum=""
     hr=$(printf '%s' "$sum" | jq -r '.hashrate.total[0] // empty' 2>/dev/null || true)
     rf=$(_api_rigforge_block "$hr")
+    if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
+        rf=$(jq -c '.health.config_conflict = "DONATION above 0 while Tor is in effect; setup, upgrade and apply refuse this config until DONATION is 0"' <<<"$rf")
+    fi
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
     printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json"
@@ -5415,8 +5411,8 @@ EOF
         fi
     fi
 
+    _doctor_placement "$svc_up"
     _check_randomx_memory "$svc_up" || issues=$((issues + 1))
-    # HugePages reserved? (the single biggest lever; needs a reboot after setup)
     if [ "${SHARED_HOST:-false}" != true ]; then
         local hp
         hp=$(awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null)

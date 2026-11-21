@@ -1,16 +1,4 @@
 # shellcheck shell=bash
-_rig_lent_to_bench() (
-    local lock="${RIGFORGE_RIG_LOCK:-/var/lock/rig-e2e.lock}"
-    local marker="${RIGFORGE_RIG_OWNER_MARKER:-/run/rigforge-rig-owner}" owner
-    [ -f "$lock" ] || return 1
-    if [ -f "$marker" ] && [ ! -L "$marker" ] && [ -O "$marker" ]; then
-        owner=$(tr -d '[:space:]' <"$marker" 2>/dev/null)
-        case "$owner" in '' | *[!0-9]*) ;; *) ! kill -0 "$owner" 2>/dev/null || return 1 ;; esac
-    fi
-    exec 7<"$lock" 2>/dev/null || return 0
-    ! flock -n -x 7 2>/dev/null
-)
-
 _control_upgrade_throttle_ok() (
     local dir="$1" lock="$1/.upgrade-throttle.lock" stamp="$1/upgrade-last" now tmp min="${CONTROL_UPGRADE_MIN_INTERVAL:-21600}" last=0
     [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(stat -c '%u:%g:%a' "$dir" 2>/dev/null)" = "0:0:700" ] || return 2

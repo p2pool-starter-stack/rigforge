@@ -30,6 +30,9 @@ config.json
 # Persisted Pithead appliance posture (runtime state)
 .rigforge-appliance/
 
+# node_modules from `npm ci` (make lint-md's pinned markdownlint-cli2).
+node_modules/
+
 # Python bytecode from util/*.py (the suite imports them; never a tracked artifact).
 __pycache__/
 *.pyc

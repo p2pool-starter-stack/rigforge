@@ -4,8 +4,8 @@ RigForge has a Bash entrypoint and bundled helpers; its tests are layered by how
 real, from a dependency-free suite that runs anywhere up to a real-hardware gate that actually
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
 `make test-suite` requires the suite-liveness regression, the Bash suite and the Python-dependent
-contract credential regression, plus access-token readiness, release clone-pin and offline tool-pin
-watcher regressions. The Bash suite also runs the Python thread-profile regression for supported
+contract credential regression, plus access-token readiness, release clone-pin and Dependabot
+pin-coverage and CodeQL workflow regressions. The Bash suite also runs the Python thread-profile regression for supported
 XMRig profiles, caps on both sides of auto-selection, higher tuned values and failed-snapshot recovery.
 The Bash suite exits nonzero if it aborts before its final
 `rigforge tests: ... passed, ... failed` summary, even when the shell would otherwise return zero.
@@ -235,10 +235,12 @@ cleanup, including the admitted-source and unchanged-counter negative controls. 
 `e2e` CI job runs it with:
 
 ```bash
-docker run --rm --privileged -v "$PWD:/src:ro" \
-  alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
-  sh -c 'apk add --no-cache bash iproute2 nftables curl jq python3 >/dev/null && bash /src/tests/test-api-allowlist-linux.sh'
+docker build -q -t rigforge-allowlist tests/docker
+docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh
 ```
+
+The image — alpine pinned by tag and digest, with the nftables probe's packages baked in — lives in
+[`docker/Dockerfile`](docker/Dockerfile); Dependabot bumps the pin.
 
 ### The shared rig (miner-0)
 

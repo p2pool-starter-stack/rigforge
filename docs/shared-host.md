@@ -28,8 +28,10 @@ activates them and refuses miner activation when the effective values cannot be 
 loaded unit is out of profile, every start or restart is refused until `apply` runs again — including
 the watchdog's thermal-hold lift and its wedge restart — while the watchdog's thermal stop stays
 effective, so a hot miner is stopped regardless. `status`
-and `doctor` report the selected profile, requested limits, effective limits, and unsupported or
-stopped states.
+and `doctor` report the selected profile, requested limits, effective limits, and unsupported,
+not-enforced or stopped states. Because it never prompts for a password, `status` prints
+`Resource profile: unknown` with the reason when its caller cannot read `config.json`, rather than
+omitting the profile block.
 
 Shared-host operation uses ordinary pages. It does not create or expand persistent HugePages,
 change the CPU governor, apply MSR or cache tuning, enable NUMA, or rewrite pre-existing host
@@ -64,7 +66,7 @@ tuning, even after disabling the profile, because ownership of inherited setting
 Apply the profile with `sudo ./rigforge.sh apply` after editing `config.json`. Repeated setup, apply,
 upgrade, and reboot preserve the selected profile.
 
-The opt-in `shared-host` phase of `tests/e2e-pithead.sh` (bench `tier4-e2e`, not part of `all`)
+The opt-in `shared-host` phase of `tests/e2e-pithead.sh` (not part of `all`)
 switches a provisioned rig to the profile, checks the effective slice limits, the miner's cgroup,
 the generated XMRig settings, `status`, and an accepted share, then restores the dedicated
 configuration. It compares HugePages, governors, the MSR module, the kernel command line and the

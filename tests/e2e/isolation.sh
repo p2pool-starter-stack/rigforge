@@ -12,9 +12,9 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-IMAGE="$(sed -n 's/^IMAGE="\(.*\)"$/\1/p' "$ROOT/tests/e2e/linux.sh")"
+IMAGE="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e/Dockerfile")"
 [ -n "$IMAGE" ] || {
-    echo "FATAL: cannot read the pinned IMAGE from tests/e2e/linux.sh"
+    echo "FATAL: cannot read the pinned IMAGE from tests/e2e/Dockerfile"
     exit 1
 }
 

@@ -109,6 +109,12 @@ RigForge is built to be reproducible and tamper-evident:
 - Workflow auditing. [zizmor](https://github.com/zizmorcore/zizmor) static-audits the CI workflows
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
+- Static analysis. [CodeQL](https://codeql.github.com/) analyzes the Python servers
+  (`util/control-server.py`, `util/api-server.py`) and the workflows (`Analyze (python)`,
+  `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly. Shell has no
+  CodeQL support, so `rigforge.sh` and the other Bash files stay ShellCheck-only. The repository
+  ruleset's `code_scanning` rule is a GitHub setting an owner enables once both analyses have
+  reported.
 
 Bug reports: `rigforge.sh support-bundle` produces a redacted tarball (token and pool password
 structurally removed via jq, wallet masked). Redaction covers RigForge's own fields — review the
@@ -136,6 +142,15 @@ protection only materializes for users who pin the public key somewhere outside 
 the key-custody burden wasn't worth it for this project's users, who deploy from git tags. If
 that trade ever changes (a real download-based user base), the signing machinery lives in the
 git history of `.github/workflows/release.yml` (#137, #205).
+
+That no-signing posture governs the git route and the checksums-only release assets. It is
+qualified by [ADR 0003](docs/adr/0003-package-ownership-upgrade-authority-and-key-custody.md):
+the apt feed added by the DIY install-routes epic (#778) is the one place this project does
+sign — every feed publish is signed with a dedicated OpenPGP key whose 40-hex fingerprint is
+pinned in this repo, because an apt feed is fetched automatically by every `apt upgrade`.
+Until that feed ships (the owner steps are recorded in the ADR), nothing is signed yet.
+Tarballs and `SHA256SUMS` stay checksums-only, and the remote-upgrade git path below stays
+unsigned by the same ADR.
 
 The same trust boundary governs the remote-upgrade path (`control-upgrade`, #308 — opt-in, off by
 default, [ADR 0002](docs/adr/0002-remote-worker-upgrade.md)). There a rig fetches a release and runs
