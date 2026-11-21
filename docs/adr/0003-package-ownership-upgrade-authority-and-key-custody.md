@@ -9,7 +9,7 @@
 RigForge installs by git clone or release tarball and upgrades by git checkout at the release tag (ADR 0002). On 2026-11-17 the owner ruled that DIY installs get an apt route (Ubuntu 24.04 first) and a Homebrew route (macOS best effort), and that every upgrade path must be able to run behind Tor; the epic #778 refines #731 (.deb and APT feed) and #732 (Homebrew formula). Three decisions had no home, and the packaging stories would otherwise pick incompatible answers:
 
 1. **Upgrade authority.** A git self-upgrade (`control_upgrade`, tag checkout) and a package manager cannot both own one tree. Nothing said who upgrades a package-installed RigForge.
-2. **Signing-key custody.** SECURITY.md records "no release signing": minisign was removed on 2026-07-11 (#205/#229) and ADR 0002 D5 accepts GitHub as the trust root for the git path. A signed apt feed is the first signing since. pithead #3459 (2026-11-01) ruled the key offline and never a CI secret; #731 assumed a CI secret. Both channels needed one ruling before any key exists.
+2. **Signing-key custody.** SECURITY.md records the removal of release signing: minisign was removed on 2026-07-11 (#205/#229) and ADR 0002 D5 accepts GitHub as the trust root for the git path; the signed apt feed will be the project's first signing since. pithead #3459 (2026-11-01) ruled the key offline and never a CI secret; #731 assumed a CI secret. Both channels needed one ruling before any key exists.
 3. **Code/state split.** `rigforge.sh` writes `config.json`, its `.rigforge-*` markers, `config-backups/`, `backups/`, support tarballs and the default worker root beside itself, so the code dir doubles as the state dir. A root-owned, read-only package tree cannot hold those files; the code/state and code/lookup splits (#780, #781) must land before any package exists.
 
 ## Decision
@@ -26,20 +26,20 @@ Git-clone and appliance installs keep today's behaviour unchanged, with no marke
 
 ### D2. Upgrade and purge behaviour
 
-- An apt upgrade of an already-configured host queues the real upgrade **outside dpkg**: postinst writes an upgrade-pending marker under `/var/lib/rigforge` and starts a one-shot `rigforge upgrade` with `--no-block` (#785). A first install (no config) is inert.
+- An apt upgrade of an already-configured host queues the real upgrade **outside dpkg**: postinst writes an upgrade-pending marker under `/var/lib/rigforge` and starts the one-shot `rigforge upgrade` unit via `systemctl start --no-block` (#785). A first install (no config) is inert.
 - The miner **restarts automatically, but only after a successful upgrade** (owner, 2026-11-20). On failure the previous build keeps running, the marker and failure stay visible in `status`/`doctor`, postinst still exits 0 so dpkg never half-configures the package, and retry is one documented `rigforge upgrade` command. `apt-mark hold` defers.
 - `brew upgrade` never restarts a running miner — it prints a hint; the auto-restart ruling applies to apt only (#787).
 - **Purge** removes `/etc/rigforge` and `/var/lib/rigforge` but **never reverts system tuning** — not GRUB, hugepages, MSR or sysctl. Only `rigforge uninstall` undoes tuning (#784). Remove keeps config and state.
 
 ### D3. Signing-key custody (owner, 2026-11-20 — supersedes pithead #3459)
 
-Custody for both RigForge and pithead follows node-manager's live model: **a CI secret in a protected environment, with offline backups.** Specifically:
+Custody for both RigForge and pithead follows the live model of the owner's node-manager companion repository: **a CI secret in a protected environment, with offline backups.** Specifically:
 
 - A dedicated OpenPGP key, used for nothing else, is held as the repository secret `APT_SIGNING_KEY`, scoped to a **protected GitHub environment that requires the owner's approval before anything is signed**. A run without approval signs nothing.
 - The release workflow imports the secret into a throwaway GNUPGHOME, signs, and removes it on exit. No key material persists on a runner.
 - The **40-hex fingerprint is committed in the repo** (a pinned file, mirrored in README and SECURITY.md) and mirrored in the repository variable `APT_SIGNING_FINGERPRINT`. The build **refuses unless the imported secret key matches the pinned fingerprint**; the job is skipped when the variable is unset.
 - **Passphrase-protected offline backups** of the private key live on the owner's machine and on the NAS (hosts and paths intentionally not recorded here).
-- A **tag ruleset protects release tags**, and a release tag must equal `v$(VERSION)` and be an ancestor of `main`.
+- A **tag ruleset protects release tags**.
 
 The pithead #3459 ruling of 2026-11-01 (offline key, never a CI secret) is **superseded**: signing at cut time on a release host is rejected as unscalable; the protected environment with owner approval is the compensating control that makes the CI secret acceptable.
 
@@ -52,7 +52,7 @@ The pithead #3459 ruling of 2026-11-01 (offline key, never a CI secret) is **sup
 
 ### D5. Signing scope
 
-Feed signing applies to the **apt channel only**. Release tarballs and `SHA256SUMS` stay checksums-only, and the git-tag remote-upgrade path keeps ADR 0002's no-signing trust model (D5/D10) unchanged. This ADR qualifies, and does not reverse, SECURITY.md's "no release signing" statement: that statement governs the git route and the release assets, not the apt feed.
+Feed signing applies to the **apt channel only**. Release tarballs and `SHA256SUMS` stay checksums-only, and the git-tag remote-upgrade path keeps ADR 0002's no-signing trust model (D5/D10) unchanged. This ADR qualifies, and does not reverse, SECURITY.md's no-signing posture: that posture governs the git route and the release assets, not the apt feed.
 
 ### D6. Apt feed rules
 
@@ -61,6 +61,7 @@ Shared with the node-manager precedent:
 - A **flat feed** (`Packages`, `Release`, `InRelease`, `Release.gpg`) built with `apt-ftparchive` (#786).
 - Published to the repository's own **GitHub Pages via Actions**, as a versioned directory behind a pointer so the previous feed can be restored.
 - The feed changes **only on a published stable release** — never on tag push, draft or prerelease.
+- A release tag must equal `v$(VERSION)` and be an ancestor of `main`.
 - The verifying fingerprint is **pinned from `main`**, not from the release being built.
 - **Verified before deploy:** the publish job checks `InRelease`/`Release.gpg` with `gpg --verify` against the pinned fingerprint and installs from a file:// source with a real apt client (`apt-get update`, `apt-get download`); a tampered `Release` file must be rejected by apt in a test.
 
