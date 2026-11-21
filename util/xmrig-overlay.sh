@@ -7,12 +7,26 @@ _parse_xmrig_overlay() {
     XMRIG_OVERLAY=$(jq -c 'if has("xmrig") then .xmrig else {} end' "$CONFIG_JSON")
     jq -e 'type == "object"' <<<"$XMRIG_OVERLAY" >/dev/null || error "xmrig must be a JSON object."
     local key
+    _validate_overlay_cpu_rx
     while IFS= read -r key; do
         error "xmrig overlay cannot set protected key: $key"
     done < <(jq -r 'keys[] | select(. == "pools" or . == "http" or . == "donate-level" or . == "donate-over-proxy" or . == "opencl" or . == "cuda")' <<<"$XMRIG_OVERLAY")
     while IFS= read -r key; do
         warn "xmrig overlay: undocumented key $key; XMRig may ignore it."
     done < <(jq -rf "$(_script_dir)/util/xmrig-overlay-keys.jq" <<<"$XMRIG_OVERLAY")
+}
+
+_placement_cpus() {
+    local n
+    n=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || true)
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+}
+
+_validate_overlay_cpu_rx() {
+    local msg
+    while IFS= read -r msg; do
+        error "xmrig.cpu.rx: $msg"
+    done < <(jq -r --argjson n "$(_placement_cpus)" -f "$(_script_dir)/util/xmrig-overlay-cpu-rx.jq" <<<"$XMRIG_OVERLAY")
 }
 
 _xmrig_overlay_pins() {
