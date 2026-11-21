@@ -175,7 +175,8 @@ much as the channel that handed you the key.
 Key custody (owner ruling, 2026-11-20): the armored private key lives only as the `APT_SIGNING_KEY`
 repository secret scoped to the protected `github-pages` environment, whose required reviewer is
 the owner — the signing job waits for that approval, imports the key into a throwaway keyring,
-and deletes the keyring before it exits. The key holds no other trust (it signs only the feed),
+and deletes that keyring in a cleanup step that runs even when an earlier step fails (the hosted
+runner is ephemeral in any case). The key holds no other trust (it signs only the feed),
 and two passphrase-protected backups of it are stored offline by the owner, one on the owner's
 machine and one on the project NAS. Rotation: generate a new key, commit its fingerprint and
 public key under `packaging/apt/` to `main`, move the secret and the `APT_SIGNING_FINGERPRINT`

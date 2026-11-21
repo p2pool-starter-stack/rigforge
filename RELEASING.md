@@ -274,9 +274,13 @@ job skips, and until step 4 lands a run could sign without approval (only the Pa
 fail — GitHub creates an unprotected `github-pages` environment on first use).
 
 Rollback: the feed deploys as `apt/` (the flat feed every apt source points at) plus an archived
-`apt/<version>/` per release. To restore the previous feed, re-run `Publish APT feed` with
-**Run workflow** and that release's tag — the job re-verifies the tag against `main` and
-republishes. Every archived `.deb` also stays on its GitHub release forever.
+`apt/<version>/` per release. To restore the previous feed, re-run `Publish APT feed` from the
+default branch with **Run workflow** and that release's tag — dispatch runs the workflow file of
+whichever branch is selected, so dispatching is restricted to the default branch. The job
+re-verifies the tag against `main`, requires both release assets to be unmodified since the
+release was published, and republishes. Every deploy re-verifies each archived feed it keeps
+against the pinned key; an archive that does not verify (for example one signed with a rotated
+key) is dropped from `apt/versions`, while its `.deb` stays on its GitHub release.
 
 ## Notes
 

@@ -22,7 +22,7 @@ env:
 
 jobs:
   publish:
-    if: (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease)) && vars.APT_SIGNING_FINGERPRINT != ''
+    if: (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease)) && vars.APT_SIGNING_FINGERPRINT != '' && (github.event_name != 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch)
     name: Sign and publish the APT feed
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -80,6 +80,15 @@ jobs:
             --pattern 'rigforge_*_all.deb' --pattern SHA256SUMS
           deb=$(ls release/rigforge_*_all.deb)
           deb=$(basename "$deb")
+          published=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt -q .publishedAt)
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '.assets[] | [.name, .created_at, .updated_at] | @tsv')
+          for asset in "$deb" SHA256SUMS; do
+              read -r created updated <<<"$(printf '%s\n' "$assets" | awk -F'\t' -v n="$asset" '$1 == n { print $2, $3 }')"
+              [[ -n $created && -n $updated ]]
+              [[ ! $created > $published ]]
+              [[ ! $updated > $published ]]
+          done
           grep " ${deb}\$" release/SHA256SUMS >"$RUNNER_TEMP/deb.sha256"
           (cd release && sha256sum -c "$RUNNER_TEMP/deb.sha256")
           bash scripts/build-apt.sh feed apt-feed "release/$deb"
@@ -88,6 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           ver="${RELEASE_TAG#v}"
+          pinned=$(tr '[:lower:]' '[:upper:]' <"$RUNNER_TEMP/pinned/fingerprint")
           deb=$(basename "$(ls apt-feed/*.deb)")
           mkdir -p pages/apt "pages/apt/$ver"
           cp -a apt-feed/. pages/apt/
@@ -98,13 +108,17 @@ jobs:
           if curl -fsSL "$PAGES_URL/apt/versions" -o "$RUNNER_TEMP/versions"; then
             while read -r old olddeb; do
               [[ -n $old && $old != "$ver" ]] || continue
+              [[ $old =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+              [[ $olddeb =~ ^rigforge_[0-9]+\.[0-9]+\.[0-9]+_all\.deb$ ]] || continue
               dir="pages/apt/$old"
               mkdir -p "$dir"
               ok=1
               for f in Packages Packages.gz Release InRelease Release.gpg rigforge.asc SHA256SUMS "$olddeb"; do
                 curl -fsSL "$PAGES_URL/apt/$old/$f" -o "$dir/$f" || ok=0
               done
-              if [[ $ok -eq 1 ]]; then
+              if [[ $ok -eq 1 ]] &&
+                  bash scripts/build-apt.sh verify "$dir" \
+                      "$RUNNER_TEMP/pinned/rigforge.asc" "$pinned" >"$RUNNER_TEMP/archive-verify.log" 2>&1; then
                 printf '%s %s\n' "$old" "$olddeb" >>"$manifest"
               else
                 rm -rf "$dir"
