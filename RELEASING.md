@@ -243,12 +243,13 @@ To verify a downloaded bundle: `sha256sum -c SHA256SUMS` (see
 
 ## The APT feed
 
-Publishing a stable release triggers `Publish APT feed` (`apt-feed.yml`), which builds, signs and
-deploys the signed flat apt feed to Pages. Prerelease and draft releases never trigger it, it
-checks the tag equals `v$(VERSION)` and sits on `main`, and it runs in the protected
-`github-pages` environment, so nothing is signed until the owner approves the run. The trust
-anchor is the fingerprint and public key under `packaging/apt/` on `main`; a feed signed by any
-other key fails the job closed. See [SECURITY.md › The apt feed is signed](./SECURITY.md#the-apt-feed-is-signed)
+Publishing a stable release starts a `Publish APT feed` run (`apt-feed.yml`), which builds, signs
+and deploys the signed flat apt feed to Pages; a published prerelease or draft only produces a
+skipped job. It checks the tag equals `v$(VERSION)` and sits on `main`, and it runs in the
+protected `github-pages` environment, so nothing is signed until the owner approves the run. The
+trust anchor is the fingerprint and public key under `packaging/apt/` on `main`; a feed signed by
+any other key fails the job closed. See
+[SECURITY.md › The apt feed is signed](./SECURITY.md#the-apt-feed-is-signed)
 for the trust model, custody, rotation and recovery.
 
 Owner-only steps before the first feed (one time, in order):
@@ -268,7 +269,9 @@ Owner-only steps before the first feed (one time, in order):
 6. Add a tag ruleset (or branch-protection tag pattern) for `v[0-9]*` so only the release
    operator can create release tags.
 
-Until those steps exist the feed job is skipped or fails closed, and nothing is signed.
+Complete all six steps before publishing the first stable release: until the variable is set the
+job skips, and until step 4 lands a run could sign without approval (only the Pages deploy would
+fail — GitHub creates an unprotected `github-pages` environment on first use).
 
 Rollback: the feed deploys as `apt/` (the flat feed every apt source points at) plus an archived
 `apt/<version>/` per release. To restore the previous feed, re-run `Publish APT feed` with

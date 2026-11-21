@@ -50,7 +50,6 @@ trap 'rm -rf "$WORK"' EXIT
 chmod 755 "$WORK"
 
 KEYRING=$WORK/gnupg
-mkdir -m 700 "$KEYRING"
 gen_key() {
     local ring=$1
     mkdir -m 700 "$ring"
@@ -132,6 +131,14 @@ apt_against() {
 
 assert_ok 'apt accepts the signed feed on a clean update' apt_against "$WORK/feed" update
 assert_ok 'apt downloads the pinned .deb from the signed feed' apt_against "$WORK/feed" download
+
+assert_ok 'a feed signed by the other key self-verifies' \
+    build_run "$FPR2" "$WORK/gnupg2" "$WORK/foreign" "$WORK/rigforge_9.9.9_all.deb"
+cp "$WORK/pub.asc" "$WORK/foreign/rigforge.asc"
+(cd "$WORK/foreign" && sha256sum Packages Packages.gz Release Release.gpg InRelease rigforge.asc rigforge_9.9.9_all.deb >SHA256SUMS)
+assert_fails 'verify refuses a foreign-key-signed feed whose published key and checksums were swapped to the pinned one' \
+    bash "$ROOT/scripts/build-apt.sh" verify "$WORK/foreign" "$WORK/pub.asc" "$FPR"
+assert_fails 'apt refuses to update from that foreign-key-signed feed' apt_against "$WORK/foreign" update
 
 cp -a "$WORK/feed" "$WORK/tamper-release"
 printf 'Origin: EvilCorp\n' >>"$WORK/tamper-release/Release"

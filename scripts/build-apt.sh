@@ -2,6 +2,8 @@
 set -euo pipefail
 
 PROG=${0##*/}
+CLEANUP=()
+trap '[[ ${#CLEANUP[@]} -eq 0 ]] || rm -rf -- "${CLEANUP[@]}"' EXIT
 
 die() {
     printf '%s: %s\n' "$PROG" "$1" >&2
@@ -15,16 +17,26 @@ usage() {
 }
 
 require_fingerprint() {
-    local fpr
-    fpr=$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')
-    [[ $fpr =~ ^[0-9A-F]{40}$ ]] || die 'expected a full 40-hex-digit fingerprint'
-    printf '%s\n' "$fpr"
+    FPR_NORM=$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')
+    [[ $FPR_NORM =~ ^[0-9A-F]{40}$ ]]
 }
 
-fingerprint_of_key() {
+import_fingerprint() {
     local home=$1 key=$2
-    GNUPGHOME=$home gpg --batch --with-colons --import-options show-only --import "$key" 2>/dev/null |
+    GNUPGHOME=$home gpg --batch --quiet --import "$key" >/dev/null 2>&1 || return 1
+    local pubs
+    pubs=$(GNUPGHOME=$home gpg --batch --with-colons --list-keys 2>/dev/null |
+        awk -F: '$1 == "pub" { n++ } END { print n + 0 }')
+    [[ $pubs -eq 1 ]] || return 1
+    GNUPGHOME=$home gpg --batch --with-colons --list-keys 2>/dev/null |
         awk -F: '$1 == "fpr" { print $10; exit }'
+}
+
+new_keyring() {
+    local -n out=$1
+    out=$(mktemp -d)
+    chmod 700 "$out"
+    CLEANUP+=("$out")
 }
 
 validsig_from_status() {
@@ -33,17 +45,16 @@ validsig_from_status() {
 }
 
 signatures_check() {
-    local feed=$1 pub=$2 fpr
-    fpr=$(require_fingerprint "$3")
+    local feed=$1 pub=$2 fpr=$3
     [[ -f $pub ]] || die "pinned public key file is missing: $pub"
-    local home imported
-    home=$(mktemp -d)
-    chmod 700 "$home"
-    trap 'rm -rf "$home"' RETURN
-    imported=$(fingerprint_of_key "$home" "$pub")
+    local home home2 imported
+    new_keyring home
+    imported=$(import_fingerprint "$home" "$pub") || die 'the pinned public key file is not one usable key'
     [[ $imported == "$fpr" ]] || die 'the pinned public key does not hash to the pinned fingerprint'
     [[ -f $feed/rigforge.asc ]] || die 'the feed must ship the signing public key as rigforge.asc'
-    imported=$(fingerprint_of_key "$home" "$feed/rigforge.asc")
+    new_keyring home2
+    imported=$(import_fingerprint "$home2" "$feed/rigforge.asc") ||
+        die 'the key published in the feed is not one usable key'
     [[ $imported == "$fpr" ]] || die 'the key published in the feed does not hash to the pinned fingerprint'
     local status
     status=$(GNUPGHOME=$home gpg --batch --status-fd 1 --verify "$feed/Release.gpg" "$feed/Release" 2>/dev/null) ||
@@ -70,6 +81,7 @@ apt_roundtrip() {
     fi
     local state
     state=$(mktemp -d)
+    CLEANUP+=("$state")
     chmod 755 "$state"
     mkdir -p "$state/lists/partial" "$state/download"
     cp "$key" "$state/feed-key.asc"
@@ -92,8 +104,9 @@ feed_build() {
     for cmd in apt-ftparchive gpg dpkg-deb gzip; do
         command -v "$cmd" >/dev/null || die "missing required command: $cmd (apt-ftparchive is in apt-utils)"
     done
-    local fpr
-    fpr=$(require_fingerprint "${APT_SIGNING_FINGERPRINT:-}")
+    require_fingerprint "${APT_SIGNING_FINGERPRINT:-}" ||
+        die 'APT_SIGNING_FINGERPRINT must be a full 40-hex-digit fingerprint'
+    local fpr=$FPR_NORM
     [[ -n ${GNUPGHOME:-} && -d $GNUPGHOME ]] || die 'GNUPGHOME must point at the keyring holding the signing key'
     GNUPGHOME=$GNUPGHOME gpg --batch --with-colons --list-secret-keys "$fpr" 2>/dev/null |
         awk -F: -v f="$fpr" '$1 == "fpr" && $10 == f { found = 1 } END { exit !found }' ||
@@ -102,12 +115,12 @@ feed_build() {
     local out=$1 deb=$2
     [[ -f $deb && -r $deb ]] || die "unreadable .deb: $deb"
     dpkg-deb -f "$deb" Package >/dev/null || die "not a usable .deb: $deb"
+    local ver
+    ver=$(dpkg-deb -f "$deb" Version)
     mkdir -p "$out"
     [[ $(find "$out" -mindepth 1 -maxdepth 1 -print -quit) == "" ]] || die 'the output directory must be empty'
     cp -- "$deb" "$out/"
     deb=$(basename "$deb")
-    local ver
-    ver=$(dpkg-deb -f "$deb" Version)
     (
         cd "$out"
         apt-ftparchive packages . >Packages
@@ -132,16 +145,17 @@ feed_build() {
 
 verify_feed() {
     [[ $# -eq 3 ]] || usage
-    local dir=$1 pub=$2 fpr
-    fpr=$(require_fingerprint "$3")
+    local dir=$1 pub=$2
+    require_fingerprint "$3" || die 'expected a full 40-hex-digit fingerprint'
+    local fpr=$FPR_NORM
     [[ -d $dir ]] || die "no such feed directory: $dir"
     dir=$(cd "$dir" && pwd)
     local file
     for file in Packages Packages.gz Release Release.gpg InRelease rigforge.asc; do
         [[ -f $dir/$file ]] || die "the feed is missing $file"
     done
-    (cd "$dir" && sha256sum -c --quiet SHA256SUMS) || die 'a feed file does not match SHA256SUMS'
     signatures_check "$dir" "$pub" "$fpr"
+    (cd "$dir" && sha256sum -c --quiet SHA256SUMS) || die 'a feed file does not match SHA256SUMS'
     apt_roundtrip "$dir" "$pub"
 }
 
