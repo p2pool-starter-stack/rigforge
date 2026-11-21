@@ -124,8 +124,11 @@ apt_against() {
         -o "Dir::State::lists=$state/lists"
     )
     case $sub in
-    update) apt-get "${opts[@]}" update >"$WORK/apt-capture" 2>&1 ;;
-    download) (cd "$state/download" && apt-get "${opts[@]}" download rigforge >"$WORK/apt-capture" 2>&1) ;;
+    update) apt-get "${opts[@]}" update ;;
+    download)
+        apt-get "${opts[@]}" update >/dev/null 2>&1
+        (cd "$state/download" && apt-get "${opts[@]}" download rigforge)
+        ;;
     esac
 }
 
