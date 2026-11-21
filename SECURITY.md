@@ -109,6 +109,12 @@ RigForge is built to be reproducible and tamper-evident:
 - Workflow auditing. [zizmor](https://github.com/zizmorcore/zizmor) static-audits the CI workflows
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
+- Static analysis. [CodeQL](https://codeql.github.com/) analyzes the Python servers
+  (`util/control-server.py`, `util/api-server.py`) and the workflows (`Analyze (python)`,
+  `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly. Shell has no
+  CodeQL support, so `rigforge.sh` and the other Bash files stay ShellCheck-only. The repository
+  ruleset's `code_scanning` rule is a GitHub setting an owner enables once both analyses have
+  reported.
 
 Bug reports: `rigforge.sh support-bundle` produces a redacted tarball (token and pool password
 structurally removed via jq, wallet masked). Redaction covers RigForge's own fields — review the
