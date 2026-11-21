@@ -143,6 +143,15 @@ the key-custody burden wasn't worth it for this project's users, who deploy from
 that trade ever changes (a real download-based user base), the signing machinery lives in the
 git history of `.github/workflows/release.yml` (#137, #205).
 
+That no-signing posture governs the git route and the checksums-only release assets. It is
+qualified by [ADR 0003](docs/adr/0003-package-ownership-upgrade-authority-and-key-custody.md):
+the apt feed added by the DIY install-routes epic (#778) is the one place this project does
+sign — every feed publish is signed with a dedicated OpenPGP key whose 40-hex fingerprint is
+pinned in this repo, because an apt feed is fetched automatically by every `apt upgrade`.
+Until that feed ships (the owner steps are recorded in the ADR), nothing is signed yet.
+Tarballs and `SHA256SUMS` stay checksums-only, and the remote-upgrade git path below stays
+unsigned by the same ADR.
+
 The same trust boundary governs the remote-upgrade path (`control-upgrade`, #308 — opt-in, off by
 default, [ADR 0002](docs/adr/0002-remote-worker-upgrade.md)). There a rig fetches a release and runs
 it as root unattended — but not via the release bundles or `SHA256SUMS` at all: the fetch is a
