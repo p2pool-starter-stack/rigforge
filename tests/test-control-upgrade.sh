@@ -279,3 +279,87 @@ assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.
 echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
 bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
+
+echo "== unit: _control_upgrade_do reowns what the upgrade creates to the checkout owner (#798) =="
+rw_dir=$(mktemp -d "$SANDBOX/reown.XXXXXX")/'we[i]rd'
+mkdir -p "$rw_dir/data/logs" "$rw_dir/.git/refs/remotes/origin"
+touch "$rw_dir/data/logs/x"
+rw_uid=$(id -u) rw_gid=$(id -g) rw_fix=""
+if [ "$rw_uid" -eq 0 ]; then
+    rw_uid=1234 rw_gid=1234 rw_fix=1
+    chown -R "$rw_uid:$rw_gid" "$rw_dir"
+fi
+_reown_run() {
+    local want="$1" rw_r rw_n=0 out=""
+    shift
+    rm -f "$rw_dir/chown.log"
+    for rw_r in "$@"; do
+        rw_n=$((rw_n + 1))
+        out="$out$(
+            source "$SCRIPT"
+            set +e
+            id() { echo 0; }
+            stat() { echo "$want"; }
+            chown() { echo "$2 ${*:3}" >>"$rw_dir/chown.log"; }
+            _control_upgrade_steps() { mkdir -p "$rw_dir/tools$rw_n" && touch "$rw_dir/tools$rw_n/new.sh" && { [ -z "$rw_fix" ] || command chown -R "$rw_uid:$rw_gid" "$rw_dir/tools$rw_n"; } && return "$rw_r"; }
+            SCRIPT_DIR="$rw_dir"
+            _control_upgrade_do v9.9.9
+            echo "rc=$?"
+        )"$'\n'
+    done
+    printf '%s' "$out"
+    local rw_l
+    while IFS= read -r rw_l; do echo "${rw_l/"$rw_dir"\//}"; done < <(sort "$rw_dir/chown.log" 2>/dev/null)
+}
+res=$(_reown_run "4242:4242" 0)
+assert_contains "success path: new directory reowned to the checkout owner" "$res" "4242:4242 tools1"
+assert_contains "success path: new file reowned" "$res" "tools1/new.sh"
+assert_contains "success path: .git refs reowned" "$res" ".git/refs/remotes/origin"
+assert_contains "success path: rc preserved" "$res" "rc=0"
+assert_absent "data/ is left alone, even under a glob-metachar path" "$res" "data"
+res=$(_reown_run "4242:4242" 1)
+assert_contains "failed steps: still reowned" "$res" "4242:4242 tools1"
+assert_contains "failed steps: rc preserved" "$res" "rc=1"
+res=$(_reown_run "4242:4242" 1 0)
+assert_contains "rollback call reowns the directory it creates" "$res" "tools2/new.sh"
+assert_eq "a checkout already owned correctly is not chowned" "$(_reown_run "$rw_uid:$rw_gid" 0 | grep -c 'tools\|\.git')" "0"
+assert_contains "a group-only difference is reowned" "$(_reown_run "$rw_uid:99999" 0)" "$rw_uid:99999 tools1"
+assert_eq "a root-owned checkout keeps root ownership" "$(_reown_run "0:0" 0 | grep -c 'tools\|\.git')" "0"
+
+echo "== unit: real-git control-upgrade as root keeps a user-owned checkout user-owned (#798) =="
+rg_path=${PATH//"${STUBS:-/nonexistent}:"/}
+if ! PATH="$rg_path" command -v git >/dev/null; then
+    ok "SKIP real-git reown: no git on this host"
+else
+    rg_d=$(mktemp -d "$SANDBOX/reown-git.XXXXXX")
+    rg_git() { PATH="$rg_path" git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
+    rg_git init -q --bare "$rg_d/origin.git"
+    rg_git init -q "$rg_d/src"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$rg_d/src/rigforge.sh"
+    chmod +x "$rg_d/src/rigforge.sh"
+    rg_git -C "$rg_d/src" add -A
+    rg_git -C "$rg_d/src" commit -qm v1
+    rg_git -C "$rg_d/src" tag v1.0.0
+    mkdir -p "$rg_d/src/tools/sub"
+    touch "$rg_d/src/tools/sub/new.sh"
+    rg_git -C "$rg_d/src" add -A
+    rg_git -C "$rg_d/src" commit -qm v9
+    rg_git -C "$rg_d/src" tag v9.9.9
+    rg_git -C "$rg_d/src" push -q "$rg_d/origin.git" main --tags
+    rg_git clone -q "$rg_d/origin.git" "$rg_d/co"
+    rg_git -C "$rg_d/co" checkout -q v1.0.0
+    mkdir -p "$rg_d/co/data"
+    rg_owner="$(id -u):$(id -g)" rg_sudo=()
+    if [ "$(id -u)" -eq 0 ]; then
+        rg_owner=1234:1234
+        chown -R "$rg_owner" "$rg_d/co"
+    elif PATH="$rg_path" sudo -n true 2>/dev/null; then
+        rg_sudo=(sudo -n env "PATH=$rg_path")
+    fi
+    rg_rc=$(PATH="$rg_path" ${rg_sudo[@]+"${rg_sudo[@]}"} bash -c 'source "$1"; set +e; SCRIPT_DIR="$2" CONFIG_JSON="$3"; _control_upgrade_do v9.9.9 >/dev/null 2>&1; echo $?' _ "$SCRIPT" "$rg_d/co" "$rg_d/none.json")
+    assert_eq "real-git upgrade to a tag that adds a directory succeeds ($([ "${#rg_sudo[@]}" -gt 0 ] || [ "$(id -u)" -eq 0 ] && echo as root || echo as the owner))" "$rg_rc" "0"
+    assert_eq "the new directory is owned by the checkout owner" "$(stat -c '%u:%g' "$rg_d/co/tools/sub" 2>/dev/null || stat -f '%u:%g' "$rg_d/co/tools/sub")" "$rg_owner"
+    assert_eq "nothing outside data/, .git included, has another owner" \
+        "$(find "$rg_d/co" -path "$rg_d/co/data" -prune -o \( ! -user "${rg_owner%%:*}" -o ! -group "${rg_owner##*:}" \) -print)" ""
+    [ "${#rg_sudo[@]}" -eq 0 ] || PATH="$rg_path" "${rg_sudo[@]}" chown -R "$rg_owner" "$rg_d"
+fi

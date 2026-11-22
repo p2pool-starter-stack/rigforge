@@ -1071,6 +1071,10 @@ upgrade() {
         fi
     fi
 
+    stray=$(find "$HERE" -path "$HERE/data" -prune -o ! -user "$(stat -c %U "$HERE")" -print 2>/dev/null | head -5 | tr '\n' ' ')
+    [ -z "$stray" ] && ok "no path outside data/ is owned by anyone but the checkout owner after the upgrade legs (#798)" ||
+        bad "paths owned by a different user than the checkout root after control-upgrade (#798): $stray"
+
     _upgrade_cleanup || bad "upgrade cleanup failed"
     summary "upgrade"
 }

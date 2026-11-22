@@ -127,6 +127,19 @@ jobs:
       - name: Run test suite
         run: make test-suite
 
+  apt-feed:
+    name: APT feed (sign, verify, tamper)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+      - name: Run the apt feed test
+        run: sudo bash tests/test-apt-feed.sh
+
   stock-home:
     name: Stock home setup (${{ matrix.label }})
     runs-on: ubuntu-24.04

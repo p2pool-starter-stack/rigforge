@@ -4656,7 +4656,7 @@ control_apply() {
     return 0
 }
 
-_control_upgrade_do() { # <ref>
+_control_upgrade_steps() {
     local ref="$1" cobj
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
@@ -4664,9 +4664,6 @@ _control_upgrade_do() { # <ref>
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
     git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    # Run the NEW code's upgrade: regenerate the config, reinstall the units, restart so both are in
-    # effect, and rebuild XMRig first if the pin changed. Every clause was aspirational until #413 —
-    # `upgrade` returned early on an unchanged pin, which is every published release pair.
     "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
 }
 
