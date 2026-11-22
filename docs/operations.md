@@ -815,6 +815,10 @@ ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt re
 in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
 unbounded by it: the D6 throttle is what bounds how often this path fetches and builds at all.
 
+The unit runs as root, so when a fetch, checkout and rebuild (or the rollback) returns, it reowns everything
+outside `data/` (and `.git`) that differs from the checkout root's owner and group, leaving an operator-owned
+clone operator-owned. A root-owned checkout is left alone (#798).
+
 The root upgrade unit keeps its throttle lock and timestamp in
 `/var/lib/rigforge-control-upgrade`, owned by root with mode `0700`, separate from the
 receiver's writable state. Unsafe ownership, permissions, links, file types, or timestamp contents
