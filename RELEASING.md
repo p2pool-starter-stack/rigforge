@@ -258,20 +258,29 @@ Owner-only steps before the first feed (one time, in order):
    networked box), and store two passphrase-protected backups offline: one on the owner's machine
    and one on the project NAS. Keep a revocation certificate with the backups.
 2. Commit the armored public key to `packaging/apt/rigforge.asc` and the 40-hex fingerprint to
-   `packaging/apt/fingerprint` on `main` (replacing the `pending-key-generation` placeholder).
+   `packaging/apt/fingerprint` via `develop` (replacing the `pending-key-generation` placeholder),
+   and ship it in the first feed's release or an earlier one: `main` only holds released
+   commits, and the workflow reads the anchor from `main`.
 3. Add the repository secret `APT_SIGNING_KEY` (the armored private key) scoped to the
    `github-pages` environment, and the repository variable `APT_SIGNING_FINGERPRINT` with the
    same fingerprint. The armored copy that goes into the secret must carry no passphrase (CI
    cannot unlock one); the passphrase-protected exports stay offline as the backups.
 4. Protect the `github-pages` environment with the owner as required reviewer — this approval is
    the gate that keeps a leaked token from signing a feed.
-5. Enable Pages for the repository with **GitHub Actions** as the source.
+5. Enable Pages for the repository with **GitHub Actions** as the source, then allow the
+   release-tag pattern (for example `v[0-9]*`) in the `github-pages` environment's **Deployment
+   branches and tags**, alongside the default branch: GitHub creates that environment with a
+   default-branch-only deployment rule when you pick the Actions source, and that rule alone
+   would refuse every release-tag run at the environment gate, leaving only the
+   `workflow_dispatch` rollback from the default branch.
 6. Add a tag ruleset (or branch-protection tag pattern) for `v[0-9]*` so only the release
    operator can create release tags.
 
-Complete all six steps before publishing the first stable release: until the variable is set the
-job skips, and until step 4 lands a run could sign without approval (only the Pages deploy would
-fail — GitHub creates an unprotected `github-pages` environment on first use).
+Complete all six steps before publishing the first stable release, and make sure that release
+carries the .deb and its `SHA256SUMS` line (#784), which the job downloads and checksum-verifies.
+Until the variable is set the job skips, and until the steps 4 and 5 rules land, a manual run
+from the default branch could sign and deploy without approval while the release-tag run is
+refused at the environment gate.
 
 Rollback: the feed deploys as `apt/` (the flat feed every apt source points at) plus an archived
 `apt/<version>/` per release. To restore the previous feed, re-run `Publish APT feed` from the
