@@ -328,7 +328,8 @@ assert_eq "a root-owned checkout keeps root ownership" "$(_reown_run "0:0" 0 | g
 
 echo "== unit: real-git control-upgrade as root keeps a user-owned checkout user-owned (#798) =="
 rg_d=$(mktemp -d "$SANDBOX/reown-git.XXXXXX")
-rg_git() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
+rg_path=${PATH//"${STUBS:-/nonexistent}:"/}
+rg_git() { PATH="$rg_path" git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
 rg_git init -q --bare "$rg_d/origin.git"
 rg_git init -q "$rg_d/src"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$rg_d/src/rigforge.sh"
@@ -353,7 +354,7 @@ fi
 rg_rc=$(
     source "$SCRIPT"
     set +e
-    SCRIPT_DIR="$rg_d/co" CONFIG_JSON="$rg_d/none.json"
+    PATH="$rg_path" SCRIPT_DIR="$rg_d/co" CONFIG_JSON="$rg_d/none.json"
     _control_upgrade_do v9.9.9 >/dev/null 2>&1
     echo $?
 )
