@@ -147,7 +147,9 @@ cp -a "$WORK/feed" "$WORK/tamper-release"
 printf 'Origin: EvilCorp\n' >>"$WORK/tamper-release/Release"
 assert_fails 'verify refuses a Release edited after signing (Release.gpg breaks)' \
     bash "$ROOT/scripts/build-apt.sh" verify "$WORK/tamper-release" "$WORK/pub.asc" "$FPR"
-assert_fails 'apt refuses a Release edited after signing' apt_against "$WORK/tamper-release" update
+rm "$WORK/tamper-release/InRelease"
+assert_fails 'apt refuses a Release edited after signing when it must fall back to Release.gpg' \
+    apt_against "$WORK/tamper-release" update
 
 cp -a "$WORK/feed" "$WORK/tamper-inrelease"
 awk '{ print } NR == 3 { print "Origin: EvilCorp" }' \
