@@ -164,7 +164,7 @@ W="$D/killed"
 mkdir -p "$W/xmrig/build" "$D/kill-mv"
 printf 'good\n' >"$W/xmrig/build/xmrig"
 printf '{"live":true}\n' >"$W/xmrig/build/config.json"
-printf '#!/usr/bin/env bash\n[ "$*" = "xmrig.new xmrig" ] && kill -9 $PPID\nexec /bin/mv "$@"\n' >"$D/kill-mv/mv"
+printf '#!/usr/bin/env bash\n[ "$*" = "xmrig.new xmrig" ] && { kill -9 $PPID; exit 137; }\nexec /bin/mv "$@"\n' >"$D/kill-mv/mv"
 chmod +x "$D/kill-mv/mv"
 set +e
 (
