@@ -284,7 +284,7 @@ echo "== unit: control-upgrade reowns what it creates to the checkout owner (#79
 ro=$(mktemp -d "$SANDBOX/reown.XXXXXX")
 mkdir -p "$ro/tools" "$ro/data/logs" "$ro/.git/refs/remotes/origin"
 touch "$ro/tools/new.sh" "$ro/data/logs/x"
-_run_reown() { # <stat-ids> -> chowned paths relative to the checkout
+_run_reown() {
     (
         source "$SCRIPT"
         set +e

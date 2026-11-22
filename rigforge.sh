@@ -4656,7 +4656,7 @@ control_apply() {
     return 0
 }
 
-_control_upgrade_steps() { # <ref>
+_control_upgrade_steps() {
     local ref="$1" cobj
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
