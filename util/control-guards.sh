@@ -31,7 +31,7 @@ _control_upgrade_reown() {
     ids=$(stat -c '%u:%g' "$dir" 2>/dev/null) || return 0
     uid="${ids%%:*}" gid="${ids##*:}"
     [ "$uid" != 0 ] || return 0
-    skip="${dir//[\\*?[]/\\&}/data"
+    skip="$(printf '%s' "$dir" | sed 's/[][\\*?]/\\&/g')/data"
     while IFS= read -r -d '' f; do
         chown -h "$uid:$gid" "$f" 2>/dev/null || warn "control-upgrade: could not reown $f to $uid:$gid"
     done < <(find "$dir" -xdev -path "$skip" -prune -o \( ! -user "$uid" -o ! -group "$gid" \) -print0 2>/dev/null)

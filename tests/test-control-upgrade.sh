@@ -280,25 +280,43 @@ echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
 bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
 
-echo "== unit: control-upgrade reowns what it creates to the checkout owner (#798) =="
-ro=$(mktemp -d "$SANDBOX/reown.XXXXXX")
-mkdir -p "$ro/tools" "$ro/data/logs" "$ro/.git/refs/remotes/origin"
-touch "$ro/tools/new.sh" "$ro/data/logs/x"
-_run_reown() {
-    (
-        source "$SCRIPT"
-        set +e
-        id() { echo 0; }
-        stat() { echo "$STAT_IDS"; }
-        chown() { echo "$2 ${*:3}" >>"$ro/chown.log"; }
-        STAT_IDS="$1" _control_upgrade_reown "$ro"
-    )
-    sed "s#$ro/##" "$ro/chown.log" 2>/dev/null | sort
-    rm -f "$ro/chown.log"
+echo "== unit: _control_upgrade_do reowns what the upgrade creates to the checkout owner (#798) =="
+rw_dir=$(mktemp -d "$SANDBOX/reown.XXXXXX")/'we*ird'
+mkdir -p "$rw_dir/data/logs" "$rw_dir/.git/refs/remotes/origin"
+touch "$rw_dir/data/logs/x"
+_reown_run() {
+    local want="$1" rw_r rw_n=0 out=""
+    shift
+    rm -f "$rw_dir/chown.log"
+    for rw_r in "$@"; do
+        rw_n=$((rw_n + 1))
+        out="$out$(
+            source "$SCRIPT"
+            set +e
+            id() { echo 0; }
+            stat() { echo "$want"; }
+            chown() { echo "$2 ${*:3}" >>"$rw_dir/chown.log"; }
+            _control_upgrade_steps() { mkdir -p "$rw_dir/tools$rw_n" && touch "$rw_dir/tools$rw_n/new.sh" && return "$rw_r"; }
+            SCRIPT_DIR="$rw_dir"
+            _control_upgrade_do v9.9.9
+            echo "rc=$?"
+        )"$'\n'
+    done
+    printf '%s' "$out"
+    local rw_l
+    while IFS= read -r rw_l; do echo "${rw_l/"$rw_dir"\//}"; done < <(sort "$rw_dir/chown.log" 2>/dev/null)
 }
-reowned=$(_run_reown "4242:4242")
-assert_contains "new directory is reowned to the checkout owner" "$reowned" "4242:4242 tools"
-assert_contains "new file is reowned" "$reowned" "tools/new.sh"
-assert_contains ".git refs are reowned" "$reowned" ".git/refs/remotes/origin"
-assert_absent "data/ is left alone" "$reowned" "data/"
-assert_eq "a root-owned checkout keeps root ownership" "$(_run_reown "0:0")" ""
+res=$(_reown_run "4242:4242" 0)
+assert_contains "success path: new directory reowned to the checkout owner" "$res" "4242:4242 tools1"
+assert_contains "success path: new file reowned" "$res" "tools1/new.sh"
+assert_contains "success path: .git refs reowned" "$res" ".git/refs/remotes/origin"
+assert_contains "success path: rc preserved" "$res" "rc=0"
+assert_absent "data/ is left alone, even under a glob-metachar path" "$res" "data"
+res=$(_reown_run "4242:4242" 1)
+assert_contains "failed steps: still reowned" "$res" "4242:4242 tools1"
+assert_contains "failed steps: rc preserved" "$res" "rc=1"
+res=$(_reown_run "4242:4242" 1 0)
+assert_contains "rollback call reowns the directory it creates" "$res" "tools2/new.sh"
+assert_eq "a checkout already owned correctly is not chowned" "$(_reown_run "$(id -u):$(id -g)" 0 | grep -c 'tools\|\.git')" "0"
+assert_contains "a group-only difference is reowned" "$(_reown_run "$(id -u):99999" 0)" "$(id -u):99999 tools1"
+assert_eq "a root-owned checkout keeps root ownership" "$(_reown_run "0:0" 0 | grep -c 'tools\|\.git')" "0"
