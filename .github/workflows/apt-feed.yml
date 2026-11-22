@@ -1,0 +1,138 @@
+name: Publish APT feed
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable release tag to sign and (re)deploy (rollback aid)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apt-feed
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+  PAGES_URL: https://p2pool-starter-stack.github.io/rigforge
+
+jobs:
+  publish:
+    if: (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease)) && vars.APT_SIGNING_FINGERPRINT != '' && (github.event_name != 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch)
+    name: Sign and publish the APT feed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag || github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a published stable release whose tag is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$(tr -d '[:space:]' < VERSION)"
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease -q '.isDraft or .isPrerelease')" = false
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+      - name: Pin the trust anchor to main
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pinned"
+          git show refs/remotes/origin/main:packaging/apt/fingerprint >"$RUNNER_TEMP/pinned/fingerprint"
+          git show refs/remotes/origin/main:packaging/apt/rigforge.asc >"$RUNNER_TEMP/pinned/rigforge.asc"
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+      - name: Import the signing key into a throwaway keyring
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          GNUPGHOME: ${{ runner.temp }}/gnupg
+        run: |
+          set -euo pipefail
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --quiet --import
+      - name: Build, sign and verify the feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APT_SIGNING_FINGERPRINT: ${{ vars.APT_SIGNING_FINGERPRINT }}
+          GNUPGHOME: ${{ runner.temp }}/gnupg
+        run: |
+          set -euo pipefail
+          pinned=$(tr '[:lower:]' '[:upper:]' <"$RUNNER_TEMP/pinned/fingerprint")
+          test "$pinned" = "$(printf '%s' "$APT_SIGNING_FINGERPRINT" | tr '[:lower:]' '[:upper:]')"
+          mkdir release
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release \
+            --pattern 'rigforge_*_all.deb' --pattern SHA256SUMS
+          deb=$(ls release/rigforge_*_all.deb)
+          deb=$(basename "$deb")
+          published=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt -q .publishedAt)
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '.assets[] | [.name, .created_at, .updated_at] | @tsv')
+          for asset in "$deb" SHA256SUMS; do
+              read -r created updated <<<"$(printf '%s\n' "$assets" | awk -F'\t' -v n="$asset" '$1 == n { print $2, $3 }')"
+              [[ -n $created && -n $updated ]]
+              [[ ! $created > $published ]]
+              [[ ! $updated > $published ]]
+          done
+          grep " ${deb}\$" release/SHA256SUMS >"$RUNNER_TEMP/deb.sha256"
+          (cd release && sha256sum -c "$RUNNER_TEMP/deb.sha256")
+          bash scripts/build-apt.sh feed apt-feed "release/$deb"
+          bash scripts/build-apt.sh verify apt-feed "$RUNNER_TEMP/pinned/rigforge.asc" "$pinned"
+      - name: Assemble the Pages site (pointer plus versioned archive)
+        run: |
+          set -euo pipefail
+          ver="${RELEASE_TAG#v}"
+          pinned=$(tr '[:lower:]' '[:upper:]' <"$RUNNER_TEMP/pinned/fingerprint")
+          deb=$(basename "$(ls apt-feed/*.deb)")
+          mkdir -p pages/apt "pages/apt/$ver"
+          cp -a apt-feed/. pages/apt/
+          cp -a apt-feed/. "pages/apt/$ver/"
+          manifest="$RUNNER_TEMP/manifest"
+          : >"$manifest"
+          printf '%s %s\n' "$ver" "$deb" >>"$manifest"
+          if curl -fsSL "$PAGES_URL/apt/versions" -o "$RUNNER_TEMP/versions"; then
+            while read -r old olddeb; do
+              [[ -n $old && $old != "$ver" ]] || continue
+              [[ $old =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+              [[ $olddeb =~ ^rigforge_[0-9]+\.[0-9]+\.[0-9]+_all\.deb$ ]] || continue
+              dir="pages/apt/$old"
+              mkdir -p "$dir"
+              ok=1
+              for f in Packages Packages.gz Release InRelease Release.gpg rigforge.asc SHA256SUMS "$olddeb"; do
+                curl -fsSL "$PAGES_URL/apt/$old/$f" -o "$dir/$f" || ok=0
+              done
+              if [[ $ok -eq 1 ]] &&
+                  bash scripts/build-apt.sh verify "$dir" \
+                      "$RUNNER_TEMP/pinned/rigforge.asc" "$pinned" >"$RUNNER_TEMP/archive-verify.log" 2>&1; then
+                printf '%s %s\n' "$old" "$olddeb" >>"$manifest"
+              else
+                rm -rf "$dir"
+              fi
+            done <"$RUNNER_TEMP/versions"
+          fi
+          sort -u -k1,1 -V "$manifest" | tail -n 12 >pages/apt/versions
+      - name: Remove the signing keyring
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/gnupg"
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: pages
+      - name: Deploy the signed APT feed
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
