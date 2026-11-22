@@ -361,5 +361,5 @@ else
     assert_eq "the new directory is owned by the checkout owner" "$(stat -c '%u:%g' "$rg_d/co/tools/sub" 2>/dev/null || stat -f '%u:%g' "$rg_d/co/tools/sub")" "$rg_owner"
     assert_eq "nothing outside data/, .git included, has another owner" \
         "$(find "$rg_d/co" -path "$rg_d/co/data" -prune -o \( ! -user "${rg_owner%%:*}" -o ! -group "${rg_owner##*:}" \) -print)" ""
-    [ "${#rg_sudo[@]}" -eq 0 ] || PATH="$rg_path" sudo -n chown -R "$rg_owner" "$rg_d"
+    [ "${#rg_sudo[@]}" -eq 0 ] || PATH="$rg_path" "${rg_sudo[@]}" chown -R "$rg_owner" "$rg_d"
 fi
