@@ -284,6 +284,11 @@ echo "== unit: _control_upgrade_do reowns what the upgrade creates to the checko
 rw_dir=$(mktemp -d "$SANDBOX/reown.XXXXXX")/'we*ird'
 mkdir -p "$rw_dir/data/logs" "$rw_dir/.git/refs/remotes/origin"
 touch "$rw_dir/data/logs/x"
+rw_uid=$(id -u) rw_gid=$(id -g) rw_fix=""
+if [ "$rw_uid" -eq 0 ]; then
+    rw_uid=1234 rw_gid=1234 rw_fix=1
+    chown -R "$rw_uid:$rw_gid" "$rw_dir"
+fi
 _reown_run() {
     local want="$1" rw_r rw_n=0 out=""
     shift
@@ -296,7 +301,7 @@ _reown_run() {
             id() { echo 0; }
             stat() { echo "$want"; }
             chown() { echo "$2 ${*:3}" >>"$rw_dir/chown.log"; }
-            _control_upgrade_steps() { mkdir -p "$rw_dir/tools$rw_n" && touch "$rw_dir/tools$rw_n/new.sh" && return "$rw_r"; }
+            _control_upgrade_steps() { mkdir -p "$rw_dir/tools$rw_n" && touch "$rw_dir/tools$rw_n/new.sh" && { [ -z "$rw_fix" ] || command chown -R "$rw_uid:$rw_gid" "$rw_dir/tools$rw_n"; } && return "$rw_r"; }
             SCRIPT_DIR="$rw_dir"
             _control_upgrade_do v9.9.9
             echo "rc=$?"
@@ -317,6 +322,6 @@ assert_contains "failed steps: still reowned" "$res" "4242:4242 tools1"
 assert_contains "failed steps: rc preserved" "$res" "rc=1"
 res=$(_reown_run "4242:4242" 1 0)
 assert_contains "rollback call reowns the directory it creates" "$res" "tools2/new.sh"
-assert_eq "a checkout already owned correctly is not chowned" "$(_reown_run "$(id -u):$(id -g)" 0 | grep -c 'tools\|\.git')" "0"
-assert_contains "a group-only difference is reowned" "$(_reown_run "$(id -u):99999" 0)" "$(id -u):99999 tools1"
+assert_eq "a checkout already owned correctly is not chowned" "$(_reown_run "$rw_uid:$rw_gid" 0 | grep -c 'tools\|\.git')" "0"
+assert_contains "a group-only difference is reowned" "$(_reown_run "$rw_uid:99999" 0)" "$rw_uid:99999 tools1"
 assert_eq "a root-owned checkout keeps root ownership" "$(_reown_run "0:0" 0 | grep -c 'tools\|\.git')" "0"
