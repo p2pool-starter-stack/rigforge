@@ -279,3 +279,26 @@ assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.
 echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
 bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
+
+echo "== unit: control-upgrade reowns what it creates to the checkout owner (#798) =="
+ro=$(mktemp -d "$SANDBOX/reown.XXXXXX")
+mkdir -p "$ro/tools" "$ro/data/logs" "$ro/.git/refs/remotes/origin"
+touch "$ro/tools/new.sh" "$ro/data/logs/x"
+_run_reown() { # <stat-ids> -> chowned paths relative to the checkout
+    (
+        source "$SCRIPT"
+        set +e
+        id() { echo 0; }
+        stat() { echo "$STAT_IDS"; }
+        chown() { echo "$2 ${*:3}" >>"$ro/chown.log"; }
+        STAT_IDS="$1" _control_upgrade_reown "$ro"
+    )
+    sed "s#$ro/##" "$ro/chown.log" 2>/dev/null | sort
+    rm -f "$ro/chown.log"
+}
+reowned=$(_run_reown "4242:4242")
+assert_contains "new directory is reowned to the checkout owner" "$reowned" "4242:4242 tools"
+assert_contains "new file is reowned" "$reowned" "tools/new.sh"
+assert_contains ".git refs are reowned" "$reowned" ".git/refs/remotes/origin"
+assert_absent "data/ is left alone" "$reowned" "data/"
+assert_eq "a root-owned checkout keeps root ownership" "$(_run_reown "0:0")" ""
