@@ -23,6 +23,10 @@ _check_randomx_memory() {
         return 1
     fi
     RX_MODE=$(jq -r '.mode' <<<"$settings")
+    if [ "$RX_MODE" = auto ]; then
+        _randomx_auto_pick "$@"
+        return $?
+    fi
     _ck_info "RandomX mode: $RX_MODE" randomx-mode
     [ "$RX_MODE" = fast ] && [ "${1:-n}" != y ] || return 0
     available=$(awk '/^MemAvailable:/ { available=$2; seen=1 } /^MemFree:/ { free=$2; seen_free=1 } /^HugePages_Free:/ { pages=$2 } /^HugePages_Rsvd:/ { reserved=$2 } /^Hugepagesize:/ { size=$2 } END { if (!seen && !seen_free) exit; if (pages < reserved) pages=reserved; printf "%.0f", (seen ? available : free) + (pages-reserved)*(size ? size : 2048) }' "$MEMINFO" 2>/dev/null) || available=""
@@ -40,4 +44,51 @@ _check_randomx_memory() {
         _ck_warn "RandomX fast needs at least 2080 MiB for its dataset; only $((available / 1024)) MiB available including free HugePages — set xmrig.randomx.mode to light or auto before starting" randomx-memory
         return 1
     fi
+}
+
+_randomx_auto_pick() {
+    local available page_size free_1g=0 reserved_1g=0
+    available=$(awk '/^MemAvailable:/ { available=$2; seen=1 } /^MemFree:/ { free=$2; seen_free=1 } /^HugePages_Free:/ { pages=$2 } /^HugePages_Rsvd:/ { reserved=$2 } /^Hugepagesize:/ { size=$2 } END { if (!seen && !seen_free) exit; if (pages < reserved) pages=reserved; printf "%.0f", (seen ? available : free) + (pages-reserved)*(size ? size : 2048) }' "$MEMINFO" 2>/dev/null) || available=""
+    if [ -z "$available" ]; then
+        _ck_info "Available memory unknown — cannot decide the RandomX auto fallback" randomx-memory
+        return 0
+    fi
+    [ ! -r "${HUGEPAGES_1G_NR%/*}/free_hugepages" ] || read -r free_1g <"${HUGEPAGES_1G_NR%/*}/free_hugepages" || true
+    [ ! -r "${HUGEPAGES_1G_NR%/*}/resv_hugepages" ] || read -r reserved_1g <"${HUGEPAGES_1G_NR%/*}/resv_hugepages" || true
+    page_size=$(awk '/^Hugepagesize:/ {print $2; exit}' "$MEMINFO" 2>/dev/null) || page_size=""
+    if [ "$page_size" != 1048576 ] && [[ "$free_1g" =~ ^[0-9]+$ && "$reserved_1g" =~ ^[0-9]+$ ]] && [ "$free_1g" -gt "$reserved_1g" ]; then
+        available=$((available + (free_1g - reserved_1g) * 1048576))
+    fi
+    if [ "$available" -lt 2129920 ]; then
+        _ck_info "RandomX auto: $((available / 1024)) MiB available (need ~2080 MiB for fast); picking light mode (shared 256 MiB cache, 1 GB pages off) — degraded performance on this hardware" randomx-memory
+        RX_MODE=light
+        _ck_info "RandomX mode: $RX_MODE" randomx-mode
+        return 0
+    fi
+    _ck_info "RandomX auto: $((available / 1024)) MiB available — fast mode is viable" randomx-memory
+    _ck_info "RandomX mode: $RX_MODE" randomx-mode
+    return 0
+}
+
+_randomx_auto_pick_log() {
+    [ "$RX_MODE" = auto ] || return 0
+    local available page_size free_1g=0 reserved_1g=0
+    available=$(awk '/^MemAvailable:/ { available=$2; seen=1 } /^MemFree:/ { free=$2; seen_free=1 } /^HugePages_Free:/ { pages=$2 } /^HugePages_Rsvd:/ { reserved=$2 } /^Hugepagesize:/ { size=$2 } END { if (!seen && !seen_free) exit; if (pages < reserved) pages=reserved; printf "%.0f", (seen ? available : free) + (pages-reserved)*(size ? size : 2048) }' "$MEMINFO" 2>/dev/null) || available=""
+    if [ -z "$available" ]; then
+        log "RandomX auto: available memory unknown — keeping fast as default"
+        return 0
+    fi
+    [ ! -r "${HUGEPAGES_1G_NR%/*}/free_hugepages" ] || read -r free_1g <"${HUGEPAGES_1G_NR%/*}/free_hugepages" || true
+    [ ! -r "${HUGEPAGES_1G_NR%/*}/resv_hugepages" ] || read -r reserved_1g <"${HUGEPAGES_1G_NR%/*}/resv_hugepages" || true
+    page_size=$(awk '/^Hugepagesize:/ {print $2; exit}' "$MEMINFO" 2>/dev/null) || page_size=""
+    if [ "$page_size" != 1048576 ] && [[ "$free_1g" =~ ^[0-9]+$ && "$reserved_1g" =~ ^[0-9]+$ ]] && [ "$free_1g" -gt "$reserved_1g" ]; then
+        available=$((available + (free_1g - reserved_1g) * 1048576))
+    fi
+    if [ "$available" -lt 2129920 ]; then
+        log "RandomX auto: $((available / 1024)) MiB available (need ~2080 MiB for fast); picking light mode (shared 256 MiB cache, 1 GB pages off) — degraded performance on this hardware"
+        RX_MODE=light
+        return 0
+    fi
+    log "RandomX auto: $((available / 1024)) MiB available — fast mode is viable"
+    return 0
 }

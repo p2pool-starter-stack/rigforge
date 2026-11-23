@@ -60,7 +60,7 @@ adds a few defaults that make sense because the box is a dedicated miner:
 | `cpu.asm` | `auto` | XMRig picks the Ryzen / Intel / Bulldozer assembly path for the detected CPU. |
 | `randomx.wrmsr` | `true` | Auto-applies the correct per-family MSR preset (needs root + the `msr` module). |
 | `randomx.numa` | `true` | A no-op on single-NUMA machines; on multi-NUMA CPUs it gives each node its own dataset copy. Note a single-socket EPYC can still expose several NUMA nodes, so RigForge sizes the 1 GB HugePage reservation per NUMA node rather than per socket. |
-| `randomx.mode` | `fast` | `auto` lets XMRig fall back when the dataset cannot be allocated; explicit `light` uses the shared 256 MiB cache and the smaller 2 MB HugePages reservation. |
+| `randomx.mode` | `fast` | `auto` lets RigForge check available memory at apply time; if there is not enough for the fast dataset (~2080 MiB), it picks light mode with an info message. Explicit `light` uses the shared 256 MiB cache and the smaller 2 MB HugePages reservation. There is no hard floor. |
 | `randomx.init` / `randomx.init-avx2` | `-1` / `-1` (auto) | The `xmrig.randomx` settings can limit dataset-initialization threads and control AVX2 initialization; `init-avx2: 1` enables it only on supporting CPUs. A smaller thread count reduces startup and thermal-resume contention on a co-located host. |
 | `cpu.yield` | `false` | Busy-wait for maximum hashrate (we own the whole machine). |
 | `cpu.priority` | `2` | Wins scheduling vs. background daemons (XMRig warns >2 can hang a desktop). |
