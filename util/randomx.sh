@@ -47,43 +47,43 @@ _check_randomx_memory() {
         _ck_info "Available memory unknown — cannot check the RandomX fast dataset" randomx-memory
         return 0
     fi
-    if [ "$available" -lt 2129920 ]; then
+    if [ "$available" -lt "$RANDOMX_FAST_MIN_KIB" ]; then
         _ck_warn "RandomX fast needs at least 2080 MiB for its dataset; only $((available / 1024)) MiB available including free HugePages — set xmrig.randomx.mode to light or auto before starting" randomx-memory
         return 1
     fi
 }
 
-_randomx_auto_pick() {
+RANDOMX_FAST_MIN_KIB=2129920
+
+_randomx_auto_decide() {
     local available
+    RX_AUTO_NOTE=""
+    [ "$RX_MODE" = auto ] || return 0
+    if [ "${1:-n}" = y ]; then
+        RX_AUTO_NOTE="RandomX auto: service running, memory in use by the miner is not counted — keeping auto"
+        return 0
+    fi
     available=$(_randomx_available_kib) || available=""
     if [ -z "$available" ]; then
-        _ck_info "Available memory unknown — cannot decide the RandomX auto fallback" randomx-memory
-        return 0
-    fi
-    if [ "$available" -lt 2129920 ]; then
-        _ck_info "RandomX auto: $((available / 1024)) MiB available (need ~2080 MiB for fast); picking light mode (shared 256 MiB cache, 1 GB pages off) — degraded performance on this hardware" randomx-memory
+        RX_AUTO_NOTE="RandomX auto: available memory unknown — cannot decide the fallback, keeping auto"
+    elif [ "$available" -lt "$RANDOMX_FAST_MIN_KIB" ]; then
+        RX_AUTO_NOTE="RandomX auto: $((available / 1024)) MiB available (need ~2080 MiB for fast); picking light mode (shared 256 MiB cache, 1 GB pages off) — degraded performance on this hardware"
         RX_MODE=light
-        _ck_info "RandomX mode: $RX_MODE" randomx-mode
-        return 0
+    else
+        RX_AUTO_NOTE="RandomX auto: $((available / 1024)) MiB available — fast mode is viable"
     fi
-    _ck_info "RandomX auto: $((available / 1024)) MiB available — fast mode is viable" randomx-memory
+}
+
+_randomx_auto_pick() {
+    _randomx_auto_decide "$@"
+    [ -z "$RX_AUTO_NOTE" ] || _ck_info "$RX_AUTO_NOTE" randomx-memory
     _ck_info "RandomX mode: $RX_MODE" randomx-mode
-    return 0
 }
 
 _randomx_auto_pick_log() {
+    local svc_up=n
     [ "$RX_MODE" = auto ] || return 0
-    local available
-    available=$(_randomx_available_kib) || available=""
-    if [ -z "$available" ]; then
-        log "RandomX auto: available memory unknown — keeping fast as default"
-        return 0
-    fi
-    if [ "$available" -lt 2129920 ]; then
-        log "RandomX auto: $((available / 1024)) MiB available (need ~2080 MiB for fast); picking light mode (shared 256 MiB cache, 1 GB pages off) — degraded performance on this hardware"
-        RX_MODE=light
-        return 0
-    fi
-    log "RandomX auto: $((available / 1024)) MiB available — fast mode is viable"
-    return 0
+    [ "${OS_TYPE:-}" != Linux ] || ! systemctl is-active --quiet "${SERVICE_NAME:-xmrig}" 2>/dev/null || svc_up=y
+    _randomx_auto_decide "$svc_up"
+    [ -z "$RX_AUTO_NOTE" ] || log "$RX_AUTO_NOTE"
 }

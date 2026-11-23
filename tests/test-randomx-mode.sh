@@ -282,9 +282,11 @@ has "$out" 'Invalid xmrig.randomx settings'
 
 write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
 printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
+RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick
 eq "$RX_MODE" light
 printf 'MemAvailable: 2097152 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-2g"
+RX_MODE=auto
 MEMINFO="$D/mem-2g" _randomx_auto_pick
 eq "$RX_MODE" light
 printf 'MemAvailable: 3145728 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-3g"
@@ -293,6 +295,7 @@ MEMINFO="$D/mem-3g" _randomx_auto_pick
 eq "$RX_MODE" auto
 
 write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
+RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick_log
 eq "$RX_MODE" light
 RX_MODE=fast
@@ -310,6 +313,7 @@ printf '3\n' >"$D/hugepages-1g/free_hugepages"
 printf '0\n' >"$D/hugepages-1g/resv_hugepages"
 printf '1048576\n' >"$D/hugepages-1g/nr_hugepages"
 RX_MODE=auto
+RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick
 eq "$RX_MODE" auto
 
@@ -317,6 +321,7 @@ write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
 printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
 printf '3\n' >"$D/hugepages-1g/free_hugepages"
 printf '0\n' >"$D/hugepages-1g/resv_hugepages"
+RX_MODE=auto
 RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick_log
 eq "$RX_MODE" auto
@@ -326,6 +331,28 @@ printf 'MemAvailable: 8388608 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"
 RX_MODE=auto
 MEMINFO="$D/mem-8g" _randomx_auto_pick_log
 eq "$RX_MODE" auto
+
+printf '0\n' >"$D/hugepages-1g/free_hugepages"
+printf 'MemTotal: 8388608 kB\nMemAvailable: 1500000 kB\nHugePages_Total: 1200\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-running"
+RX_MODE=auto
+out=$(MEMINFO="$D/mem-running" _randomx_auto_pick y)
+has "$out" 'service running'
+absent "$out" 'picking light'
+MEMINFO="$D/mem-running" _randomx_auto_pick y >/dev/null
+eq "$RX_MODE" auto
+out=$(memory_check '{"xmrig":{"randomx":{"mode":"auto"}}}' "$D/mem-running" y)
+absent "$out" 'picking light'
+has "$out" 'RandomX mode: auto'
+(
+    systemctl() { return 0; }
+    OS_TYPE=Linux
+    RX_MODE=auto
+    MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" auto
+    systemctl() { return 3; }
+    MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" light
+)
 
 cmd_version() { :; }
 systemctl() { return 1; }
