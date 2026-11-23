@@ -9,7 +9,8 @@
 # compile (git/cmake/make), the package install (dpkg reports "already present"), and the host-only
 # bits (systemctl/modprobe/mount/sysctl). Hardware detection is stubbed so the CPU profile is
 # deterministic. We force linux/amd64 so the x86-only MSR path actually fires (emulated on Apple
-# Silicon).
+# Silicon). Two passes, a fresh container each: the standard deploy, then RIGFORGE_APPLIANCE=1
+# (#348) — appliance mode against a real /etc, which must stay untouched while units land in /run.
 # Run: tests/e2e/linux.sh   (or: make test-e2e)
 #
 set -uo pipefail
@@ -25,9 +26,9 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-#
-# Pinned by digest for reproducible base images (supply-chain hardening, cf. issue #2).
-#
+# Pinned by digest for a reproducible base image (supply-chain hardening, cf. issue #2). This is the
+# multi-arch index digest; --platform below selects linux/amd64 from it. Refresh with:
+#   docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manifest.Digest}}'
 IMAGE_24="ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54"
 IMAGE_26="ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
 
@@ -40,7 +41,7 @@ run_pass() { # <label> <image> [docker env args...]
         "$image" bash /src/tests/e2e/in-container.sh
 }
 
-run_suite() { # <image>
+run_suite() { # <image> — runs deploy/appliance/isolation on one image
     local image="$1"
     run_pass "deploy"      "$image"  || STATUS=1
     echo ""

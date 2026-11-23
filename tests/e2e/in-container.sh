@@ -2,9 +2,9 @@
 #
 # Runs INSIDE a disposable Linux container (invoked by tests/e2e/linux.sh). Provisions a writable copy
 # of the repo, runs the real rigforge.sh twice against the container's real /etc, and asserts the
-# Linux deploy path + idempotency. With RIGFORGE_APPLIANCE=1 (linux.sh's appliance pass, #348)
-# asserts the appliance contracts against the same real /etc: units in /run/systemd/system, no
-# package installs, no fstab/limits.conf/logrotate writes, --runtime enables.
+# Linux deploy path + idempotency. With RIGFORGE_APPLIANCE=1 in the environment (linux.sh's second
+# pass, #348) it instead asserts the appliance contracts against the same real /etc: units in
+# /run/systemd/system, no package installs, no fstab/limits.conf/logrotate writes, --runtime enables.
 # Exits non-zero on any failed assertion.
 #
 set -uo pipefail
