@@ -1,6 +1,6 @@
 # Security Policy
 
-RigForge compiles XMRig from upstream source and applies privileged system
+RigForge installs a pre-built, checksum-verified XMRig binary and applies privileged system
 tuning. It runs as root, configures kernel HugePages and MSR access, and
 installs a `systemd` service. Given that footprint, we take security reports
 seriously and appreciate responsible disclosure.
@@ -41,8 +41,7 @@ The optional sister API (`:8081`, `"api": "enabled"` — **off by default**) fol
 posture: read-only by construction (GET only, fixed routes, nothing from a request is executed or
 logged). When `ACCESS_TOKEN` is set it accepts the exact bearer and a read-only HMAC-derived bearer;
 the writable `:8082` endpoint rejects the derived value and still requires the exact token. It uses a
-single persistent python3-stdlib
-process that only ships pre-computed files (`ProtectSystem=strict`, `NoNewPrivileges`, lowest CPU
+single persistent Rust process that only ships pre-computed files (`ProtectSystem=strict`, `NoNewPrivileges`, lowest CPU
 priority — it can never compete with the miner, and a config it cannot parse is fatal at startup
 rather than silently dropping the token). The probe pass that produces those files runs from a
 separate idle-priority timer. It additionally serves RigForge's tune/health/power data — still
@@ -66,7 +65,7 @@ first, so a bad or hostile change cannot inject a command, corrupt `config.json`
 previous config. See [ADR 0001](docs/adr/0001-writable-worker-config-control-path.md).
 
 The control token is write-capable and travels in cleartext (#256). The `Authorization: Bearer`
-header rides plain HTTP — the sister and control APIs are python3-stdlib `HTTPServer` with no TLS —
+header rides plain HTTP — the sister and control APIs are Rust `HTTPServer` with no TLS —
 and with the control path enabled that token now grants **writes** (redirect a rig's `pools`, change
 its thermal settings). `api_allow_from` scopes *who may connect* (source IP); it does **not** encrypt
 the token in flight, so a same-subnet passive sniffer or an ARP-spoof MITM that captures the header
@@ -109,8 +108,8 @@ RigForge is built to be reproducible and tamper-evident:
 - Workflow auditing. [zizmor](https://github.com/zizmorcore/zizmor) static-audits the CI workflows
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
-- Static analysis. [CodeQL](https://codeql.github.com/) analyzes the Python servers
-  (`util/control-server.py`, `util/api-server.py`) and the workflows (`Analyze (python)`,
+- Static analysis. [CodeQL](https://codeql.github.com/) analyzes the Rust servers
+  (`src/bin/sister-api.rs`, `src/bin/control-server.rs`) and the workflows (`Analyze (rust)`,
   `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly. Shell has no
   CodeQL support, so `rigforge.sh` and the other Bash files stay ShellCheck-only. The repository
   ruleset's `code_scanning` rule is a GitHub setting an owner enables once both analyses have
@@ -135,6 +134,8 @@ bundle you downloaded is byte-identical to what CI built from the tagged commit:
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
+This verifies the release bundle and the shipped XMRig binary. On a rig, `setup` and
+`upgrade` verify the binary checksum before installing it — a mismatch refuses the install.
 What it does **not** prove is origin: checksums and bundles live in the same place, so an
 attacker who fully controls the GitHub account could regenerate both. Release *signing*
 (minisign) existed briefly for that gap and was removed by decision on 2026-07-11: its
@@ -166,8 +167,8 @@ compromise of GitHub itself — the proportionate mitigation is hardening the ac
 2FA, tight release and branch-protection permissions), not re-adding bundle signing.
 
 For the strongest guarantee available today, deploy from a git checkout at the release tag —
-the commit hash is the integrity anchor, and the XMRig source it builds is itself pinned and
-commit-verified.
+the commit hash is the integrity anchor, and the XMRig binary it ships is itself pinned and
+checksum-verified before install.
 
 #### The apt feed is signed
 
