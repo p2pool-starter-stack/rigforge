@@ -153,9 +153,12 @@ revision and provenance remain separate.
 
 `fast` remains the default and uses the full dataset for maximum hashrate. `light` uses one shared
 256 MiB cache and is intended for hosts that cannot spare the dataset memory; it is substantially
-slower. `auto` lets XMRig fall back to light if it cannot allocate the fast dataset, but RigForge still
-reserves HugePages for fast mode because allocation fallback does not make a safe smaller reservation.
-Choose `light` explicitly when the smaller reservation is required.
+slower. `auto` starts with fast, but when RigForge detects that available memory is below the ~2080 MiB
+threshold it automatically picks light mode, turns 1 GB pages off, and logs an info message — there is
+no hard floor or refusal. `light` mode runs on any machine with enough RAM for a 256 MiB cache.
+
+Choosing `light` explicitly skips the memory check entirely and uses the smallest possible HugePages
+reservation (2 MB only). `auto` does the same thing under the hood when memory is low.
 
 Changing `xmrig.randomx.mode` and running `apply` immediately renders the new miner config. On Linux,
 re-run `setup` and reboot as well to resize the persistent HugePages reservation. Runtime reservation is
@@ -165,7 +168,9 @@ not reclaim a larger live pool automatically.
 `doctor` reports the configured mode. With the service stopped, it also warns before a `fast` start
 when `MemAvailable` (or `MemFree` on older kernels) plus free HugePages is below the 2080 MiB dataset
 lower bound. This is an early dataset warning, not an estimate of whether the cache, per-thread
-scratchpads, or every NUMA replica will fit.
+scratchpads, or every NUMA replica will fit. For `auto`, it reports the chosen mode (fast or light)
+and the available memory; for `auto` with low memory it notes the degraded-performance path without
+refusing to start.
 
 > Don't put a wallet address in the worker `user` when using Pithead. The stack handles payouts
 > centrally; the pool `user` is just a rig label (it defaults to the hostname so you can tell workers

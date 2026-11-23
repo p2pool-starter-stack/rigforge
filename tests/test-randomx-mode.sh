@@ -258,11 +258,14 @@ printf '1\n' >"$D/hugepages-1g/free_hugepages"
 if out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-default-1g"); then fail 'default 1G pages counted twice'; fi
 has "$out" 'WARN:'
 printf '0\n' >"$D/hugepages-1g/free_hugepages"
-for mode in auto light; do
-    out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"$mode\"}}}" "$D/mem-low")
-    has "$out" "RandomX mode: $mode"
-    absent "$out" 'WARN:'
-done
+out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"auto\"}}}" "$D/mem-low")
+has "$out" 'RandomX mode: light'
+has "$out" 'RandomX auto:'
+has "$out" 'picking light mode'
+absent "$out" 'WARN:'
+out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"light\"}}}" "$D/mem-low")
+has "$out" "RandomX mode: light"
+absent "$out" 'WARN:'
 out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-low" y)
 has "$out" 'RandomX mode: fast'
 absent "$out" 'WARN:'
@@ -272,6 +275,25 @@ has "$out" 'Available memory unknown'
 absent "$out" 'WARN:'
 if out=$(memory_check '{"xmrig":{"randomx":{"mode":"bogus"}}}' "$D/mem-low"); then fail 'invalid RandomX settings passed the memory check'; fi
 has "$out" 'Invalid xmrig.randomx settings'
+
+write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
+printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
+MEMINFO="$D/mem-1g" _randomx_auto_pick
+eq "$RX_MODE" light
+printf 'MemAvailable: 2048000 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-2g"
+MEMINFO="$D/mem-2g" _randomx_auto_pick
+eq "$RX_MODE" light
+printf 'MemAvailable: 3145728 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-3g"
+RX_MODE=auto
+MEMINFO="$D/mem-3g" _randomx_auto_pick
+eq "$RX_MODE" auto
+
+write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
+MEMINFO="$D/mem-1g" _randomx_auto_pick_log
+eq "$RX_MODE" light
+RX_MODE=fast
+MEMINFO="$D/mem-1g" _randomx_auto_pick_log
+eq "$RX_MODE" fast
 
 cmd_version() { :; }
 systemctl() { return 1; }
