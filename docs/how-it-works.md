@@ -1,6 +1,6 @@
 # How It Works
 
-RigForge installs a pre-built, checksum-verified [XMRig](https://github.com/xmrig/xmrig) binary and wraps it in the setup,
+RigForge compiles stock, upstream [XMRig](https://github.com/xmrig/xmrig) and wraps it in the setup,
 hardware tuning, and service management that are otherwise fiddly to get right by hand. It is not a
 custom miner. This page describes what the script does, step by step.
 
@@ -17,7 +17,7 @@ already done.
 2. Config: create a minimal `config.json` interactively if none exists, then parse and validate
    it (see [Configuration](configuration.md)).
 3. Rebuild decision: decide whether XMRig needs (re)building, based on the pinned
-   version/commit vs. what's already installed, a zero compiled-minimum marker, and a valid binary
+   version/commit vs. what's already compiled, a zero compiled-minimum marker, and a valid binary
    checksum.
 4. Workspace: prepare the worker root. The prior install stays in place until its replacement has
    built (step 6).
@@ -28,7 +28,7 @@ already done.
    configuration are both ready is the prior install archived, the build swapped in and old archives
    pruned, so a failed fetch, build or configuration leaves the running miner's binary and config
    untouched. The swap records `xmrig.swap` first; if it is interrupted between its two renames, the
-   next `setup` or `upgrade` completes it (or restores the archive) once it reaches the install step,
+   next `setup` or `upgrade` completes it (or restores the archive) once it reaches the compile step,
    before it builds.
    Output is captured to a logfile; `make -j` is capped by available RAM to avoid OOM on low-memory
    hosts.
@@ -46,29 +46,22 @@ already done.
 
 ---
 
-## Install the shipped binary
+## Compile from source, pinned
 
-RigForge ships a pre-built XMRig binary, verified by checksum:
+RigForge builds XMRig from source rather than shipping a binary:
 
-- Pinned to a known `XMRIG_VERSION` / `XMRIG_COMMIT`. The binary is fetched and its checksum is
-  verified against the published `SHA256SUMS`, so every worker runs the same audited binary and
-  supply-chain risk is bounded.
-- The donation default follows `DONATION` (zero when omitted). The runtime config controls the
-  effective donation after a miner restart. No recompilation is needed on upgrade; the binary is
-  swapped in place, recorded by the compiled-minimum marker, and subsequent changes use `apply`
+- Pinned to a known `XMRIG_VERSION` / `XMRIG_COMMIT`. The checkout is verified against the pinned
+  commit (`git rev-parse HEAD` must match `XMRIG_COMMIT`, or the build aborts), so every worker runs the
+  same audited source and supply-chain risk is bounded.
+- The compiled donation minimum is always zero; the compiled default follows `DONATION` (zero when
+  omitted). The runtime config controls the effective donation after a miner restart. Existing builds
+  rebuild once on upgrade, recorded by the compiled-minimum marker; subsequent changes use `apply`
   without recompiling (see [Configuration](configuration.md#changing-settings-later)).
-- Idempotent. If the pinned binary already exists and its checksum matches, setup skips the
-  download. The
-  [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy) command replaces
-  the binary when the pin changes, the checksum no longer matches, or the compiled-minimum marker
-  is missing or nonzero.
-
-## RIGFORGE_IMPL switch
-
-`RIGFORGE_IMPL=rust` uses the native Rust implementation for all RigForge services (sister API,
-control server, watchdog). `RIGFORGE_IMPL=bash` falls back to the Bash dispatcher. The default is
-`rust` once the Rust implementation is shipped and passes the benchmark threshold; before that,
-the default is `bash`. Set `RIGFORGE_IMPL` to choose the implementation.
+- Memory-guarded parallelism. `make -j` is capped based on available RAM, so the build doesn't OOM
+  on small machines.
+- Idempotent. If the pinned build already exists, setup skips the recompile. The
+  [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy) command rebuilds when the pin changes, the compiled-minimum marker is missing or nonzero, or the
+  binary checksum no longer matches.
 
 ---
 

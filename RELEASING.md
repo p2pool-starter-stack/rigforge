@@ -28,12 +28,12 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 
 1. Ensure `develop` is green: `make test` (and `make test-e2e` if Docker is available).
 2. Full real-hardware e2e (the release gate). CI exercises everything it can (lint, the
-   dependency-free suite, the Docker `/etc` e2e, the coverage gate), but it can't download the
-   XMRig binary, reserve HugePages, write MSRs, set the governor, or actually hash. So on a real Linux rig, run
+   dependency-free suite, the Docker `/etc` e2e, the coverage gate), but it can't compile XMRig,
+   reserve HugePages, write MSRs, set the governor, or actually hash. So on a real Linux rig, run
    the genuine deploy end to end and assert each step:
 
    ```bash
-   sudo bash tests/e2e-real.sh provision   # real deps + XMRig binary install + tuning + kernel tuning + service
+   sudo bash tests/e2e-real.sh provision   # real deps + XMRig build + tuning + kernel tuning + service
    sudo reboot                             # HugePages (1G + GRUB cmdline) take effect on boot; reconnect
    sudo bash tests/e2e-real.sh verify      # doctor (HugePages/MSR/governor/service) + bench (real H/s) + a short tune + a live auto-tune pass
    sudo bash tests/e2e-real.sh control     # the writable control path (#236) against real systemd: enable, POST a change, poll to applied, revert

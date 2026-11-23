@@ -89,8 +89,8 @@ sudo ./rigforge.sh
    stratum password (Enter skips it). An `.onion` host also offers a SOCKS proxy override, defaulting
    to `127.0.0.1:9050`; install and run Tor yourself. It writes a minimal config. (You can also pre-create one; see
    [Configuration](configuration.md).)
-3. **Install the binary.** Downloads the pre-built XMRig binary, verifies its checksum, and installs it
-   at the pinned version/commit with the configured `DONATION` level.
+3. **Build.** Clones and compiles XMRig from source, pinned to a known version/commit and patched to
+   your `DONATION` level. Build output is captured to a logfile.
 4. **Hardware tuning.** Detects your CPU and writes a matching XMRig config (NUMA, ASM, thread layout,
    MSR). See [How It Works](how-it-works.md).
 5. **Kernel tuning (Linux only).** Configures **HugePages** (1 GB and 2 MB), MSR access, `hugetlbfs`
@@ -98,9 +98,9 @@ sudo ./rigforge.sh
 6. **Service.** Installs and enables the `xmrig` systemd service with a `cpupower` performance
    governor and log rotation.
 
-Re-running `setup` is **idempotent**: it skips the install when the pinned XMRig binary is already
-present with a matching checksum, and it won't duplicate the kernel/limits edits. Later on, to apply a `config.json` edit use
-[`apply`](operations.md#applying-configuration-changes); to redeploy a release and reinstall when its pin, compiled-minimum marker or binary checksum requires it,
+Re-running `setup` is **idempotent**: it skips the (slow) recompile when the pinned XMRig is already
+built, and it won't duplicate the kernel/limits edits. Later on, to apply a `config.json` edit use
+[`apply`](operations.md#applying-configuration-changes); to redeploy a release and rebuild when its pin, compiled-minimum marker or binary checksum requires it,
 use [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy).
 
 **Optional: a `rigforge` command on your PATH.** Set `"add_to_path": true` in `config.json` and setup

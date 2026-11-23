@@ -16,15 +16,15 @@ You can build, tune, and run XMRig yourself; it's a well-documented miner. By ha
 - Wiring up a systemd service, a performance governor, and log rotation.
 - Redoing the CPU-specific parts every time you deploy a different machine.
 
-RigForge does that in one command: tuning auto-detected from your CPU, idempotent re-runs, and a binary
-pinned to an audited XMRig version. The manual route is a fine learning exercise. RigForge ships stock
+RigForge does that in one command: tuning auto-detected from your CPU, idempotent re-runs, and a build
+pinned to an audited XMRig version. The manual route is a fine learning exercise. RigForge compiles stock
 upstream XMRig, so you're never locked into a custom fork.
 
 ---
 
 ## Is RigForge a custom miner?
 
-No. RigForge ships stock, upstream [XMRig](https://github.com/xmrig/xmrig); it doesn't fork or modify
+No. RigForge compiles stock, upstream [XMRig](https://github.com/xmrig/xmrig); it doesn't fork or modify
 the miner. The only build-time change is the donate level, so your configured `DONATION` is honored.
 Everything else is standard XMRig plus the setup, tuning, and service wrapping.
 
@@ -32,7 +32,7 @@ Everything else is standard XMRig plus the setup, tuning, and service wrapping.
 
 ## Do I need a specific XMRig version?
 
-No. RigForge installs a pinned, recent upstream XMRig binary. Any RandomX-capable XMRig (5.0+, 2019) speaks the
+No. RigForge builds a pinned, recent upstream XMRig. Any RandomX-capable XMRig (5.0+, 2019) speaks the
 standard Stratum protocol that pools and Pithead's proxy accept. There's no version coupling between the
 miner and the stack.
 
@@ -93,7 +93,7 @@ reboot. See [Operations › Troubleshooting](operations.md#troubleshooting).
 
 ## Is it safe to re-run the script?
 
-Yes. `setup` is idempotent. It skips the install when the pinned XMRig binary is already present, never
+Yes. `setup` is idempotent. It skips the recompile when the pinned XMRig is already built, never
 duplicates system-file edits (`fstab`, `limits.conf`, `/etc/modules`), merges (not overwrites) GRUB
 parameters, and archives a prior install rather than clobbering it. To redeploy and rebuild when the pin changes, the compiled-minimum marker is missing/nonzero, or the
 binary checksum fails, use [`upgrade`](operations.md#upgrading-xmrig-check-out-the-new-release-and-redeploy).
