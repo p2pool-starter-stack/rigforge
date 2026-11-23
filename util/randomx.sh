@@ -7,7 +7,7 @@ _read_randomx_config() {
 _apply_randomx_config() {
     local settings="${RANDOMX_JSON:-}" rendered
     [ -n "$settings" ] || settings='{}'
-    rendered=$(jq --argjson settings "$settings" --arg rx_mode "${RX_MODE:-fast}" '.randomx = (.randomx // {}) * $settings | if .randomx.mode == "light" or $rx_mode == "light" then .randomx."1gb-pages" = false else . end' "$1") || return 1
+    rendered=$(jq --argjson settings "$settings" --arg rx_mode "${RX_MODE:-fast}" '.randomx *= $settings | if $rx_mode == "light" then .randomx.mode = "light" else . end | if .randomx.mode == "light" then .randomx."1gb-pages" = false else . end' "$1") || return 1
     printf '%s\n' "$rendered" >"$1"
 }
 

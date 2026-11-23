@@ -66,6 +66,10 @@ eq "$(bash -c 'printf %s "${RX_MODE:-}"')" light
 overlay='{"randomx":{"mode":"fast","init":19,"init-avx2":1,"1gb-pages":true}}'
 light_config=$(generate light "$overlay")
 eq "$(jq -c '.randomx | {mode,init,"init-avx2":."init-avx2","1gb-pages":."1gb-pages"}' "$light_config")" '{"mode":"light","init":7,"init-avx2":0,"1gb-pages":false}'
+auto_cfg="$D/auto-render.json"
+printf '{"randomx":{"1gb-pages":true}}\n' >"$auto_cfg"
+(RANDOMX_JSON='{"mode":"auto","init":-1,"init-avx2":-1}' RX_MODE=light _apply_randomx_config "$auto_cfg")
+eq "$(jq -c '.randomx | {mode,"1gb-pages":."1gb-pages"}' "$auto_cfg")" '{"mode":"light","1gb-pages":false}'
 TUNE_BASE="$light_config"
 RX_MODE=light
 _tune_config "$D/light-candidate.json" 2 false 4 true 2 false false true
@@ -86,10 +90,10 @@ mkdir -p "$WORKER_ROOT/xmrig/build"
 printf '{"randomx":null}\n' >"$WORKER_ROOT/tune-overrides.json"
 printf '{"previous":true}\n' >"$WORKER_ROOT/xmrig/build/config.json"
 POOLS_JSON='[]'
-cd "$WORKER_ROOT/xmrig/build" && OS_TYPE=Linux RIGFORGE_APPLIANCE=1 LOG_FILE_PATH="" generate_xmrig_config || fail 'null randomx in tune-overrides prevented config generation'
-cd "$D"
-eq "$(jq -c .randomx "$WORKER_ROOT/xmrig/build/config.json")" '{"mode":"fast","init":-1,"init-avx2":-1}'
-eq "$(find "$WORKER_ROOT/xmrig/build" -type f -name config.json | wc -l | tr -d ' ')" 1
+if out=$(cd "$WORKER_ROOT/xmrig/build" && OS_TYPE=Linux RIGFORGE_APPLIANCE=1 LOG_FILE_PATH="" generate_xmrig_config 2>&1); then fail 'a failed xmrig.randomx overlay still rendered a config'; fi
+has "$out" 'Applying the xmrig.randomx settings failed'
+eq "$(cat "$WORKER_ROOT/xmrig/build/config.json")" '{"previous":true}'
+eq "$(find "$WORKER_ROOT/xmrig/build" -type f | wc -l | tr -d ' ')" 1
 
 for value in auto fast light; do
     parse_ok "{\"xmrig\":{\"randomx\":{\"mode\":\"$value\",\"init\":2147483647,\"init-avx2\":1}}}"
@@ -266,7 +270,7 @@ absent "$out" 'WARN:'
 out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"light\"}}}" "$D/mem-low")
 has "$out" "RandomX mode: light"
 absent "$out" 'WARN:'
-out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-low" y || true)
+out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-low" y)
 has "$out" 'RandomX mode: fast'
 absent "$out" 'WARN:'
 printf 'HugePages_Free: 0\n' >"$D/mem-unknown"
@@ -280,7 +284,7 @@ write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
 printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
 MEMINFO="$D/mem-1g" _randomx_auto_pick
 eq "$RX_MODE" light
-printf 'MemAvailable: 2048000 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-2g"
+printf 'MemAvailable: 2097152 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-2g"
 MEMINFO="$D/mem-2g" _randomx_auto_pick
 eq "$RX_MODE" light
 printf 'MemAvailable: 3145728 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-3g"
@@ -332,7 +336,7 @@ _cpu_missing_isa() { :; }
 _nps_suspect() { :; }
 (
     OS_TYPE=Linux
-    HUGEPAGES_1G_NR="/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
+    HUGEPAGES_1G_NR="$D/no-1g/nr_hugepages"
     mkdir -p "$D/doctor-msr"
     MSR_MODULE_DIR="$D/doctor-msr"
     GOVERNOR_FILE="$D/no-governor"
