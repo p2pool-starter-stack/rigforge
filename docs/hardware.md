@@ -16,7 +16,7 @@ are modest; most of the performance comes from tuning, which RigForge applies fo
 | CPU | 64-bit x86 with AVX2 support | A high-core-count CPU (e.g. AMD Ryzen / EPYC); more and faster cores mean more hashrate. XMRig auto-detects the CPU and sizes the tuning to it. |
 | RAM | ~2.3 GB free for RandomX fast mode (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread | 4 GB+; budget more on high-core-count CPUs. |
 | HugePages | Optional, but a significant speedup | RigForge configures 2 MB and 1 GB HugePages (plus MSR access) for you. Linux only, and it needs a reboot to take effect. |
-| OS | Ubuntu 24.04 LTS, 26.04 LTS | 24.04 and 26.04 LTS are the supported targets. macOS is deprecated (unsupported, untested since 2026-09-14). |
+| OS | Ubuntu 24.04 LTS, 26.04 LTS | Both are fully supported. macOS is best effort (no CI or bench). Ubuntu 22.04 and Debian 12 are no longer listed or tested. |
 | Network | Reach your pool / stack host on its Stratum port (Pithead uses 3333) | A LAN pool needs no Tor. An `.onion` pool needs an operator-managed Tor SOCKS proxy. |
 
 > RandomX light mode uses a shared 256 MiB cache instead of the fast dataset and is far slower; fast
@@ -71,9 +71,8 @@ adds a few defaults that make sense because the box is a dedicated miner:
 > (7950X3D/7900X3D), where only one CCD has the V-cache and using all cores would push threads onto the
 > slow CCD. Letting XMRig decide is both simpler and more correct.
 
-The only branch that remains is OS-level: macOS (deprecated, unsupported and untested since
-2026-09-14) has no HugePages or MSRs, so those are disabled and the API binds IPv6 `::` instead of
-`0.0.0.0`.
+The only branch that remains is OS-level: macOS (best effort: no CI or bench) has no HugePages or
+MSRs, so those are disabled and the API binds IPv6 `::` instead of `0.0.0.0`.
 
 The resulting XMRig config (pools, donate level, API, CPU section) lives under your worker root; see
 [Configuration](configuration.md#how-the-generated-xmrig-config-is-built) for how it's generated.

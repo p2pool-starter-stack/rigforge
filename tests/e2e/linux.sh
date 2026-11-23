@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-#
-# End-to-end test: run the REAL rigforge.sh, twice, inside a disposable Ubuntu container.
-#
-# Ubuntu/Debian is RigForge's documented Linux target (see README), so that's what we exercise here.
-# Unlike tests/run.sh (which stubs everything and runs on any host), this runs the genuine Linux
-# deploy path with REAL tools — GNU `sed -i`, `tee`, `envsubst`, and a real (disposable) /etc — which
-# cannot run natively on a macOS host. Only the heavy/privileged operations are stubbed: the XMRig
-# compile (git/cmake/make), the package install (dpkg reports "already present"), and the host-only
-# bits (systemctl/modprobe/mount/sysctl). Hardware detection is stubbed so the CPU profile is
-# deterministic. We force linux/amd64 so the x86-only MSR path actually fires (emulated on Apple
-# Silicon). Two passes, a fresh container each: the standard deploy, then RIGFORGE_APPLIANCE=1
-# (#348) — appliance mode against a real /etc, which must stay untouched while units land in /run.
-# Run: tests/e2e/linux.sh   (or: make test-e2e)
-#
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,6 +14,10 @@ fi
 
 IMAGE_24="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e-24/Dockerfile")"
 IMAGE_26="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e/Dockerfile")"
+[ -n "$IMAGE_24" ] && [ -n "$IMAGE_26" ] || {
+    echo "FATAL: cannot read the pinned base images from tests/e2e*/Dockerfile" >&2
+    exit 1
+}
 
 run_pass() {
     local label="$1" image="$2"
@@ -49,8 +39,8 @@ run_suite() {
 }
 
 STATUS=0
-run_suite "$IMAGE_24" || STATUS=1
-run_suite "$IMAGE_26" || STATUS=1
+run_suite "$IMAGE_24"
+run_suite "$IMAGE_26"
 echo ""
 if [ "$STATUS" = 0 ]; then
     echo "rigforge e2e: all passes (deploy + appliance + isolation) on Ubuntu 24.04 and 26.04 passed"
