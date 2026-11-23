@@ -335,37 +335,37 @@ _nps_suspect() { :; }
 # Doctor is Linux-only; run in a subshell with OS_TYPE=Linux so
 # the early-return guard (OS_TYPE != Linux) does not swallow the checks.
 (
-OS_TYPE=Linux
-# Reset HUGEPAGES_1G_NR to default — earlier memory tests may have set it
-# to $D/hugepages-1g/ which would leak fake hugepages into this check.
-HUGEPAGES_1G_NR="/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
-mkdir -p "$D/doctor-msr"
-MSR_MODULE_DIR="$D/doctor-msr"
-GOVERNOR_FILE="$D/no-governor"
-CPUFREQ_MAX="$D/no-cpufreq"
-CPUINFO="$D/no-cpuinfo"
-DMI_DIR="$D/no-dmi"
-SMT_CONTROL="$D/no-smt"
-NODE_SYSFS="$D/no-node"
-LOCKDOWN_FILE="$D/no-lockdown"
-DMIDECODE="$D/no-dmidecode"
-MEMINFO="$D/doctor-meminfo"
-printf 'MemAvailable: 1 kB\nHugePages_Total: 1\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$MEMINFO"
-doctor_config() {
-    jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON"
-}
-doctor_config light
-if light_doctor=$(doctor 2>&1); then fail 'light doctor unexpectedly passed the inactive-service baseline'; fi
-has "$light_doctor" 'RandomX mode: light'
-absent "$light_doctor" 'RandomX fast needs'
-has "$light_doctor" '1GB HugePages disabled in RandomX light mode'
-has "$light_doctor" 'doctor: 1 issue(s) found'
-doctor_config fast
-if fast_doctor=$(doctor 2>&1); then fail 'fast doctor unexpectedly passed low memory'; fi
-has "$fast_doctor" 'RandomX mode: fast'
-has "$fast_doctor" 'RandomX fast needs'
-absent "$fast_doctor" '1GB HugePages disabled'
-has "$fast_doctor" 'doctor: 2 issue(s) found'
+    OS_TYPE=Linux
+    # Reset HUGEPAGES_1G_NR to default — earlier memory tests may have set it
+    # to $D/hugepages-1g/ which would leak fake hugepages into this check.
+    HUGEPAGES_1G_NR="/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
+    mkdir -p "$D/doctor-msr"
+    MSR_MODULE_DIR="$D/doctor-msr"
+    GOVERNOR_FILE="$D/no-governor"
+    CPUFREQ_MAX="$D/no-cpufreq"
+    CPUINFO="$D/no-cpuinfo"
+    DMI_DIR="$D/no-dmi"
+    SMT_CONTROL="$D/no-smt"
+    NODE_SYSFS="$D/no-node"
+    LOCKDOWN_FILE="$D/no-lockdown"
+    DMIDECODE="$D/no-dmidecode"
+    MEMINFO="$D/doctor-meminfo"
+    printf 'MemAvailable: 1 kB\nHugePages_Total: 1\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$MEMINFO"
+    doctor_config() {
+        jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON"
+    }
+    doctor_config light
+    if light_doctor=$(doctor 2>&1); then fail 'light doctor unexpectedly passed the inactive-service baseline'; fi
+    has "$light_doctor" 'RandomX mode: light'
+    absent "$light_doctor" 'RandomX fast needs'
+    has "$light_doctor" '1GB HugePages disabled in RandomX light mode'
+    has "$light_doctor" 'doctor: 1 issue(s) found'
+    doctor_config fast
+    if fast_doctor=$(doctor 2>&1); then fail 'fast doctor unexpectedly passed low memory'; fi
+    has "$fast_doctor" 'RandomX mode: fast'
+    has "$fast_doctor" 'RandomX fast needs'
+    absent "$fast_doctor" '1GB HugePages disabled'
+    has "$fast_doctor" 'doctor: 2 issue(s) found'
 )
 
 out=$(CONFIG_JSON="$D/missing-config" _check_randomx_memory)
