@@ -739,6 +739,9 @@ parse_config() {
     _parse_xmrig_overlay
     RANDOMX_JSON=$(_read_randomx_config) || error "xmrig.randomx must be an object whose mode is auto/fast/light, init is -1 or a positive integer, and init-avx2 is -1/0/1."
     RX_MODE=$(jq -r '.mode' <<<"$RANDOMX_JSON")
+    if [ "$RX_MODE" = auto ]; then
+        _randomx_auto_pick_log
+    fi
     export RX_MODE
     RIG_ID=$(jq -r '.rig_id | if type == "string" and test("\\S") then . else empty end' "$CONFIG_JSON")
 

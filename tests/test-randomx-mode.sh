@@ -66,6 +66,10 @@ eq "$(bash -c 'printf %s "${RX_MODE:-}"')" light
 overlay='{"randomx":{"mode":"fast","init":19,"init-avx2":1,"1gb-pages":true}}'
 light_config=$(generate light "$overlay")
 eq "$(jq -c '.randomx | {mode,init,"init-avx2":."init-avx2","1gb-pages":."1gb-pages"}' "$light_config")" '{"mode":"light","init":7,"init-avx2":0,"1gb-pages":false}'
+auto_cfg="$D/auto-render.json"
+printf '{"randomx":{"1gb-pages":true}}\n' >"$auto_cfg"
+(RANDOMX_JSON='{"mode":"auto","init":-1,"init-avx2":-1}' RX_MODE=light _apply_randomx_config "$auto_cfg")
+eq "$(jq -c '.randomx | {mode,"1gb-pages":."1gb-pages"}' "$auto_cfg")" '{"mode":"light","1gb-pages":false}'
 TUNE_BASE="$light_config"
 RX_MODE=light
 _tune_config "$D/light-candidate.json" 2 false 4 true 2 false false true
@@ -258,11 +262,14 @@ printf '1\n' >"$D/hugepages-1g/free_hugepages"
 if out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-default-1g"); then fail 'default 1G pages counted twice'; fi
 has "$out" 'WARN:'
 printf '0\n' >"$D/hugepages-1g/free_hugepages"
-for mode in auto light; do
-    out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"$mode\"}}}" "$D/mem-low")
-    has "$out" "RandomX mode: $mode"
-    absent "$out" 'WARN:'
-done
+out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"auto\"}}}" "$D/mem-low")
+has "$out" 'RandomX mode: light'
+has "$out" 'RandomX auto:'
+has "$out" 'picking light mode'
+absent "$out" 'WARN:'
+out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"light\"}}}" "$D/mem-low")
+has "$out" "RandomX mode: light"
+absent "$out" 'WARN:'
 out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-low" y)
 has "$out" 'RandomX mode: fast'
 absent "$out" 'WARN:'
@@ -273,6 +280,77 @@ absent "$out" 'WARN:'
 if out=$(memory_check '{"xmrig":{"randomx":{"mode":"bogus"}}}' "$D/mem-low"); then fail 'invalid RandomX settings passed the memory check'; fi
 has "$out" 'Invalid xmrig.randomx settings'
 
+write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
+printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
+RX_MODE=auto
+MEMINFO="$D/mem-1g" _randomx_auto_pick
+eq "$RX_MODE" light
+printf 'MemAvailable: 2097152 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-2g"
+RX_MODE=auto
+MEMINFO="$D/mem-2g" _randomx_auto_pick
+eq "$RX_MODE" light
+printf 'MemAvailable: 3145728 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-3g"
+RX_MODE=auto
+MEMINFO="$D/mem-3g" _randomx_auto_pick
+eq "$RX_MODE" auto
+
+RX_MODE=auto
+MEMINFO="$D/mem-1g" _randomx_auto_pick_log
+eq "$RX_MODE" light
+RX_MODE=fast
+MEMINFO="$D/mem-1g" _randomx_auto_pick_log
+eq "$RX_MODE" fast
+
+printf 'HugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-no-memavailable"
+RX_MODE=auto
+MEMINFO="$D/mem-no-memavailable" _randomx_auto_pick
+eq "$RX_MODE" auto
+
+printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
+printf '3\n' >"$D/hugepages-1g/free_hugepages"
+printf '0\n' >"$D/hugepages-1g/resv_hugepages"
+printf '1048576\n' >"$D/hugepages-1g/nr_hugepages"
+RX_MODE=auto
+MEMINFO="$D/mem-1g" _randomx_auto_pick
+eq "$RX_MODE" auto
+
+printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
+printf '3\n' >"$D/hugepages-1g/free_hugepages"
+printf '0\n' >"$D/hugepages-1g/resv_hugepages"
+RX_MODE=auto
+MEMINFO="$D/mem-1g" _randomx_auto_pick_log
+eq "$RX_MODE" auto
+
+printf 'MemAvailable: 8388608 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-8g"
+RX_MODE=auto
+MEMINFO="$D/mem-8g" _randomx_auto_pick_log
+eq "$RX_MODE" auto
+
+printf '0\n' >"$D/hugepages-1g/free_hugepages"
+printf 'MemTotal: 8388608 kB\nMemAvailable: 1500000 kB\nHugePages_Total: 1200\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-running"
+RX_MODE=auto
+out=$(MEMINFO="$D/mem-running" _randomx_auto_pick y)
+has "$out" 'service running'
+absent "$out" 'picking light'
+out=$(memory_check '{"xmrig":{"randomx":{"mode":"auto"}}}' "$D/mem-running" y)
+has "$out" 'RandomX mode: auto'
+(
+    systemctl() { return 0; }
+    OS_TYPE=Linux
+    RX_MODE=auto
+    MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" auto
+    mkdir -p "$D/wr-light/xmrig/build" && printf '{"randomx":{"mode":"light"}}\n' >"$D/wr-light/xmrig/build/config.json"
+    WORKER_ROOT="$D/wr-light" MEMINFO="$D/mem-8g" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" auto
+    WORKER_ROOT="$D/wr-light" MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" light
+    systemctl() { return 3; }
+    RX_MODE=auto
+    MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" light
+)
+
 cmd_version() { :; }
 systemctl() { return 1; }
 _worker_root_from_config() { :; }
@@ -280,33 +358,37 @@ _dmi() { :; }
 _lockdown_state() { printf 'none\n'; }
 _cpu_missing_isa() { :; }
 _nps_suspect() { :; }
-mkdir -p "$D/doctor-msr"
-MSR_MODULE_DIR="$D/doctor-msr"
-GOVERNOR_FILE="$D/no-governor"
-CPUFREQ_MAX="$D/no-cpufreq"
-CPUINFO="$D/no-cpuinfo"
-DMI_DIR="$D/no-dmi"
-SMT_CONTROL="$D/no-smt"
-NODE_SYSFS="$D/no-node"
-LOCKDOWN_FILE="$D/no-lockdown"
-DMIDECODE="$D/no-dmidecode"
-MEMINFO="$D/doctor-meminfo"
-printf 'MemAvailable: 1 kB\nHugePages_Total: 1\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$MEMINFO"
-doctor_config() {
-    jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON"
-}
-doctor_config light
-if light_doctor=$(doctor 2>&1); then fail 'light doctor unexpectedly passed the inactive-service baseline'; fi
-has "$light_doctor" 'RandomX mode: light'
-absent "$light_doctor" 'RandomX fast needs'
-has "$light_doctor" '1GB HugePages disabled in RandomX light mode'
-has "$light_doctor" 'doctor: 1 issue(s) found'
-doctor_config fast
-if fast_doctor=$(doctor 2>&1); then fail 'fast doctor unexpectedly passed low memory'; fi
-has "$fast_doctor" 'RandomX mode: fast'
-has "$fast_doctor" 'RandomX fast needs'
-absent "$fast_doctor" '1GB HugePages disabled'
-has "$fast_doctor" 'doctor: 2 issue(s) found'
+(
+    OS_TYPE=Linux
+    HUGEPAGES_1G_NR="$D/no-1g/nr_hugepages"
+    mkdir -p "$D/doctor-msr"
+    MSR_MODULE_DIR="$D/doctor-msr"
+    GOVERNOR_FILE="$D/no-governor"
+    CPUFREQ_MAX="$D/no-cpufreq"
+    CPUINFO="$D/no-cpuinfo"
+    DMI_DIR="$D/no-dmi"
+    SMT_CONTROL="$D/no-smt"
+    NODE_SYSFS="$D/no-node"
+    LOCKDOWN_FILE="$D/no-lockdown"
+    DMIDECODE="$D/no-dmidecode"
+    MEMINFO="$D/doctor-meminfo"
+    printf 'MemAvailable: 1 kB\nHugePages_Total: 1\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$MEMINFO"
+    doctor_config() {
+        jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON"
+    }
+    doctor_config light
+    if light_doctor=$(doctor 2>&1); then fail 'light doctor unexpectedly passed the inactive-service baseline'; fi
+    has "$light_doctor" 'RandomX mode: light'
+    absent "$light_doctor" 'RandomX fast needs'
+    has "$light_doctor" '1GB HugePages disabled in RandomX light mode'
+    has "$light_doctor" 'doctor: 1 issue(s) found'
+    doctor_config fast
+    if fast_doctor=$(doctor 2>&1); then fail 'fast doctor unexpectedly passed low memory'; fi
+    has "$fast_doctor" 'RandomX mode: fast'
+    has "$fast_doctor" 'RandomX fast needs'
+    absent "$fast_doctor" '1GB HugePages disabled'
+    has "$fast_doctor" 'doctor: 2 issue(s) found'
+)
 
 out=$(CONFIG_JSON="$D/missing-config" _check_randomx_memory)
 has "$out" 'RandomX mode unavailable'
