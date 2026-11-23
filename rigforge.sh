@@ -82,8 +82,8 @@ SERVICE_INSTALLED=false
 SERVICE_NO_START=false
 
 # Pinned XMRig release for reproducible builds; environment-overridable.
-XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
-XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
+XMRIG_VERSION="${XMRIG_VERSION:-v6.27.0}"
+XMRIG_COMMIT="${XMRIG_COMMIT:-be97bc8f864fdd94b1c336c8ee62136578f0b080}"
 # Set to false when the pinned XMRig commit is already built, so a re-run/upgrade skips the (slow)
 # recompile and the service restart — making re-runs idempotent (#4).
 XMRIG_REBUILD=true
