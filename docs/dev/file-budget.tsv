@@ -8,3 +8,4 @@ tests/run.sh	9556
 tests/test-fetch-proxy.sh	416
 tests/test-xmrig-overlay.sh	413
 util/control-server.py	432
+tests/e2e/in-container.sh	401

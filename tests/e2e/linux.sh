@@ -9,8 +9,8 @@
 # compile (git/cmake/make), the package install (dpkg reports "already present"), and the host-only
 # bits (systemctl/modprobe/mount/sysctl). Hardware detection is stubbed so the CPU profile is
 # deterministic. We force linux/amd64 so the x86-only MSR path actually fires (emulated on Apple
-# Silicon). Two passes, a fresh container each: the standard deploy, then RIGFORGE_APPLIANCE=1
-# (#348) — appliance mode against a real /etc, which must stay untouched while units land in /run.
+# Silicon). The full suite (deploy + appliance + isolation) runs on both Ubuntu 24.04 and 26.04,
+# two disposable containers per image.
 # Run: tests/e2e/linux.sh   (or: make test-e2e)
 #
 set -uo pipefail
@@ -26,30 +26,39 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-IMAGE="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e/Dockerfile")"
-[ -n "$IMAGE" ] || {
-    echo "FATAL: cannot read the pinned base image from tests/e2e/Dockerfile" >&2
-    exit 1
-}
+#
+# Pinned by digest for a reproducible base image (supply-chain hardening, cf. issue #2). Both
+# supported Ubuntu releases are exercised: the deploy and appliance passes run on each, two
+# disposable containers per image.
+#
+IMAGE_24="ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54"
+IMAGE_26="ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
 
-run_pass() { # <label> [docker env args...] — one disposable container per pass
-    local label="$1"
-    shift
-    echo "=================== E2E ($label): $IMAGE (linux/amd64) ==================="
+run_pass() { # <label> <image> [docker env args...] — one disposable container per pass
+    local label="$1" image="$2"
+    shift 2
+    echo "=================== E2E ($label): $image (linux/amd64) ==================="
     docker run --rm --platform linux/amd64 "$@" \
         -v "$ROOT:/src:ro" \
-        "$IMAGE" bash /src/tests/e2e/in-container.sh
+        "$image" bash /src/tests/e2e/in-container.sh
+}
+
+run_suite() { # <image> — runs the full deploy/appliance/isolation sequence on one image
+    local image="$1"
+    run_pass "deploy"      "$image"  || STATUS=1
+    echo ""
+    run_pass "appliance"   "$image" -e RIGFORGE_APPLIANCE=1 || STATUS=1
+    echo ""
+    bash "$ROOT/tests/e2e/isolation.sh" "$image" || STATUS=1
+    echo ""
 }
 
 STATUS=0
-run_pass "deploy" || STATUS=1
-echo ""
-run_pass "appliance" -e RIGFORGE_APPLIANCE=1 || STATUS=1
-echo ""
-bash "$ROOT/tests/e2e/isolation.sh" || STATUS=1
+run_suite "$IMAGE_24" || STATUS=1
+run_suite "$IMAGE_26" || STATUS=1
 echo ""
 if [ "$STATUS" = 0 ]; then
-    echo "rigforge e2e: all passes (deploy + appliance + isolation) passed"
+    echo "rigforge e2e: all passes (deploy + appliance + isolation) on Ubuntu 24.04 and 26.04 passed"
 else
     echo "rigforge e2e: FAILED (see the failing pass above)"
 fi

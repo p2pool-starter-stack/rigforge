@@ -1351,8 +1351,8 @@ install_watchdog() {
 # JSON from /run/rigforge-api; a systemd timer (`rigforge.sh api-refresh`) recomputes the files every
 # 15 s. Requests never touch the miner. Toggle shape mirrors install_autotune above.
 # Opt-in API firewall (#142): an own `inet rigforge` nft table scoping the read-only API port(s)
-# to `api_allow_from` + loopback. nftables only (Ubuntu 24.04's native firewall — a ufw fallback
-# would double the surface); own table so teardown is a single `destroy`. Matches only the API
+# to `api_allow_from` + loopback. nftables only; own table so teardown is a single `destroy`.
+# Matches only the API
 # dports, so SSH and the outbound stratum connection are untouchable by construction. Applied now
 # AND re-applied on boot via xmrig.service (the always-present anchor); removed with the table.
 install_api_firewall() {
@@ -1463,7 +1463,7 @@ install_control() (
         fi
         return 0
     fi
-    command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
+    command -v python3 >/dev/null 2>&1 || error "The control server needs python3. Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
     CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
         envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \

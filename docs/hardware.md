@@ -16,7 +16,7 @@ are modest; most of the performance comes from tuning, which RigForge applies fo
 | CPU | 64-bit x86 with AVX2 support | A high-core-count CPU (e.g. AMD Ryzen / EPYC); more and faster cores mean more hashrate. XMRig auto-detects the CPU and sizes the tuning to it. |
 | RAM | ~2.3 GB free for RandomX fast mode (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread | 4 GB+; budget more on high-core-count CPUs. |
 | HugePages | Optional, but a significant speedup | RigForge configures 2 MB and 1 GB HugePages (plus MSR access) for you. Linux only, and it needs a reboot to take effect. |
-| OS | Ubuntu 22.04+ or Debian 12 | Ubuntu is the supported target. macOS is deprecated (unsupported, untested since 2026-09-14). |
+| OS | Ubuntu 24.04 LTS, 26.04 LTS | 24.04 and 26.04 LTS are the supported targets. macOS is deprecated (unsupported, untested since 2026-09-14). |
 | Network | Reach your pool / stack host on its Stratum port (Pithead uses 3333) | A LAN pool needs no Tor. An `.onion` pool needs an operator-managed Tor SOCKS proxy. |
 
 > RandomX light mode uses a shared 256 MiB cache instead of the fast dataset and is far slower; fast

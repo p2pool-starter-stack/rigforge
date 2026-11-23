@@ -12,11 +12,7 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-IMAGE="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e/Dockerfile")"
-[ -n "$IMAGE" ] || {
-    echo "FATAL: cannot read the pinned IMAGE from tests/e2e/Dockerfile"
-    exit 1
-}
+IMAGE="${1:?usage: isolation.sh <image>}
 
 SUFFIX="$$"
 NET="rf-iso-net-$SUFFIX"
