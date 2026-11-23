@@ -63,7 +63,7 @@ if grep -q 'MARKDOWNLINT_VERSION' Makefile; then
     fail "the Makefile must not hand-pin markdownlint-cli2 outside package.json"
 fi
 
-for d in tests/e2e tests/coverage tests/docker; do
+for d in tests/e2e tests/e2e-24 tests/coverage tests/docker; do
     grep -qE '^FROM [^[:space:]]+:[^@[:space:]]+@sha256:[0-9a-f]{64}$' "$d/Dockerfile" ||
         fail "$d/Dockerfile must pin its image by tag and digest"
     grep -q "\"/$d\"" "$dependabot" ||
