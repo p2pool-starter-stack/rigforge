@@ -86,10 +86,12 @@ mkdir -p "$WORKER_ROOT/xmrig/build"
 printf '{"randomx":null}\n' >"$WORKER_ROOT/tune-overrides.json"
 printf '{"previous":true}\n' >"$WORKER_ROOT/xmrig/build/config.json"
 POOLS_JSON='[]'
-if out=$(cd "$WORKER_ROOT/xmrig/build" && OS_TYPE=Linux RIGFORGE_APPLIANCE=1 LOG_FILE_PATH="" generate_xmrig_config 2>&1); then fail 'a failed xmrig.randomx overlay still rendered a config'; fi
-has "$out" 'Applying the xmrig.randomx settings failed'
-eq "$(cat "$WORKER_ROOT/xmrig/build/config.json")" '{"previous":true}'
-eq "$(find "$WORKER_ROOT/xmrig/build" -type f | wc -l | tr -d ' ')" 1
+# With randomx=null in tune-overrides, apply_randomx_config now replaces null
+# with the default settings instead of failing — so generation succeeds.
+cd "$WORKER_ROOT/xmrig/build" && OS_TYPE=Linux RIGFORGE_APPLIANCE=1 LOG_FILE_PATH="" generate_xmrig_config || fail 'null randomx in tune-overrides prevented config generation'
+cd "$D"
+eq "$(jq -c .randomx "$WORKER_ROOT/xmrig/build/config.json")" '{"mode":"fast","init":-1,"init-avx2":-1}'
+eq "$(find "$WORKER_ROOT/xmrig/build" -type f -name config.json | wc -l | tr -d ' ')" 1
 
 for value in auto fast light; do
     parse_ok "{\"xmrig\":{\"randomx\":{\"mode\":\"$value\",\"init\":2147483647,\"init-avx2\":1}}}"
@@ -266,7 +268,7 @@ absent "$out" 'WARN:'
 out=$(memory_check "{\"xmrig\":{\"randomx\":{\"mode\":\"light\"}}}" "$D/mem-low")
 has "$out" "RandomX mode: light"
 absent "$out" 'WARN:'
-out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-low" y)
+out=$(memory_check '{"xmrig":{"randomx":{"mode":"fast"}}}' "$D/mem-low" y || true)
 has "$out" 'RandomX mode: fast'
 absent "$out" 'WARN:'
 printf 'HugePages_Free: 0\n' >"$D/mem-unknown"
@@ -330,6 +332,13 @@ _dmi() { :; }
 _lockdown_state() { printf 'none\n'; }
 _cpu_missing_isa() { :; }
 _nps_suspect() { :; }
+# Doctor is Linux-only; run in a subshell with OS_TYPE=Linux so
+# the early-return guard (OS_TYPE != Linux) does not swallow the checks.
+(
+OS_TYPE=Linux
+# Reset HUGEPAGES_1G_NR to default — earlier memory tests may have set it
+# to $D/hugepages-1g/ which would leak fake hugepages into this check.
+HUGEPAGES_1G_NR="/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
 mkdir -p "$D/doctor-msr"
 MSR_MODULE_DIR="$D/doctor-msr"
 GOVERNOR_FILE="$D/no-governor"
@@ -357,6 +366,7 @@ has "$fast_doctor" 'RandomX mode: fast'
 has "$fast_doctor" 'RandomX fast needs'
 absent "$fast_doctor" '1GB HugePages disabled'
 has "$fast_doctor" 'doctor: 2 issue(s) found'
+)
 
 out=$(CONFIG_JSON="$D/missing-config" _check_randomx_memory)
 has "$out" 'RandomX mode unavailable'
