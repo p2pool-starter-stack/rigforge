@@ -59,13 +59,8 @@ _randomx_auto_decide() {
     local available
     RX_AUTO_NOTE=""
     [ "$RX_MODE" = auto ] || return 0
-    if [ "${1:-n}" = y ]; then
-        if [ "$(jq -r '.randomx.mode // empty' "${WORKER_ROOT:-$(_worker_root_from_config 2>/dev/null)}/xmrig/build/config.json" 2>/dev/null)" = light ]; then
-            RX_MODE=light
-            RX_AUTO_NOTE="RandomX auto: service running in light mode — keeping light"
-        else
-            RX_AUTO_NOTE="RandomX auto: service running, memory in use by the miner is not counted — keeping auto"
-        fi
+    if [ "${1:-n}" = y ] && [ "$(jq -r '.randomx.mode // empty' "${WORKER_ROOT:-$(_worker_root_from_config 2>/dev/null)}/xmrig/build/config.json" 2>/dev/null)" != light ]; then
+        RX_AUTO_NOTE="RandomX auto: service running, memory in use by the miner is not counted — keeping auto"
         return 0
     fi
     available=$(_randomx_available_kib) || available=""

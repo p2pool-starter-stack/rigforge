@@ -155,7 +155,9 @@ revision and provenance remain separate.
 256 MiB cache and is intended for hosts that cannot spare the dataset memory; it is substantially
 slower. `auto` starts with fast, but when RigForge detects that available memory is below the ~2080 MiB
 threshold it automatically picks light mode, turns 1 GB pages off, and logs an info message — there is
-no hard floor or refusal. The rendered miner config then carries `mode: light`. Light mode runs on any
+no hard floor or refusal. The rendered miner config then carries `mode: light`. While a fast or auto miner is running, its
+dataset memory is in use, so `auto` keeps the auto mode instead of re-reading memory; a running light miner
+holds only its small cache, so memory is checked as usual and `auto` returns to fast once enough is available. Light mode runs on any
 machine with enough RAM for a 256 MiB cache, at a fraction of fast-mode hashrate (expect it to be several
 times slower; it is not measured here). A CPU without AES-NI or AVX2 is likewise only a warning, with lower
 hashrate.

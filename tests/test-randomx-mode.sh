@@ -333,7 +333,6 @@ out=$(MEMINFO="$D/mem-running" _randomx_auto_pick y)
 has "$out" 'service running'
 absent "$out" 'picking light'
 out=$(memory_check '{"xmrig":{"randomx":{"mode":"auto"}}}' "$D/mem-running" y)
-absent "$out" 'picking light'
 has "$out" 'RandomX mode: auto'
 (
     systemctl() { return 0; }
@@ -342,9 +341,10 @@ has "$out" 'RandomX mode: auto'
     MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
     eq "$RX_MODE" auto
     mkdir -p "$D/wr-light/xmrig/build" && printf '{"randomx":{"mode":"light"}}\n' >"$D/wr-light/xmrig/build/config.json"
+    WORKER_ROOT="$D/wr-light" MEMINFO="$D/mem-8g" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" auto
     WORKER_ROOT="$D/wr-light" MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
     eq "$RX_MODE" light
-    RX_MODE=auto WORKER_ROOT="$D/wr-light" MEMINFO="$D/mem-running" _randomx_auto_pick y | grep -q 'running in light mode' || fail 'running light rig not kept light'
     systemctl() { return 3; }
     RX_MODE=auto
     MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
