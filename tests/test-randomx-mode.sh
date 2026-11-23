@@ -294,7 +294,6 @@ RX_MODE=auto
 MEMINFO="$D/mem-3g" _randomx_auto_pick
 eq "$RX_MODE" auto
 
-write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
 RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick_log
 eq "$RX_MODE" light
@@ -302,7 +301,6 @@ RX_MODE=fast
 MEMINFO="$D/mem-1g" _randomx_auto_pick_log
 eq "$RX_MODE" fast
 
-write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
 printf 'HugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-no-memavailable"
 RX_MODE=auto
 MEMINFO="$D/mem-no-memavailable" _randomx_auto_pick
@@ -317,7 +315,6 @@ RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick
 eq "$RX_MODE" auto
 
-write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
 printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
 printf '3\n' >"$D/hugepages-1g/free_hugepages"
 printf '0\n' >"$D/hugepages-1g/resv_hugepages"
@@ -326,7 +323,6 @@ RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick_log
 eq "$RX_MODE" auto
 
-write_config '{"xmrig":{"randomx":{"mode":"auto"}}}'
 printf 'MemAvailable: 8388608 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-8g"
 RX_MODE=auto
 MEMINFO="$D/mem-8g" _randomx_auto_pick_log
