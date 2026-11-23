@@ -311,14 +311,12 @@ printf '3\n' >"$D/hugepages-1g/free_hugepages"
 printf '0\n' >"$D/hugepages-1g/resv_hugepages"
 printf '1048576\n' >"$D/hugepages-1g/nr_hugepages"
 RX_MODE=auto
-RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick
 eq "$RX_MODE" auto
 
 printf 'MemAvailable: 1048576 kB\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$D/mem-1g"
 printf '3\n' >"$D/hugepages-1g/free_hugepages"
 printf '0\n' >"$D/hugepages-1g/resv_hugepages"
-RX_MODE=auto
 RX_MODE=auto
 MEMINFO="$D/mem-1g" _randomx_auto_pick_log
 eq "$RX_MODE" auto
@@ -334,8 +332,6 @@ RX_MODE=auto
 out=$(MEMINFO="$D/mem-running" _randomx_auto_pick y)
 has "$out" 'service running'
 absent "$out" 'picking light'
-MEMINFO="$D/mem-running" _randomx_auto_pick y >/dev/null
-eq "$RX_MODE" auto
 out=$(memory_check '{"xmrig":{"randomx":{"mode":"auto"}}}' "$D/mem-running" y)
 absent "$out" 'picking light'
 has "$out" 'RandomX mode: auto'
@@ -345,7 +341,12 @@ has "$out" 'RandomX mode: auto'
     RX_MODE=auto
     MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
     eq "$RX_MODE" auto
+    mkdir -p "$D/wr-light/xmrig/build" && printf '{"randomx":{"mode":"light"}}\n' >"$D/wr-light/xmrig/build/config.json"
+    WORKER_ROOT="$D/wr-light" MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
+    eq "$RX_MODE" light
+    RX_MODE=auto WORKER_ROOT="$D/wr-light" MEMINFO="$D/mem-running" _randomx_auto_pick y | grep -q 'running in light mode' || fail 'running light rig not kept light'
     systemctl() { return 3; }
+    RX_MODE=auto
     MEMINFO="$D/mem-running" _randomx_auto_pick_log >/dev/null
     eq "$RX_MODE" light
 )
