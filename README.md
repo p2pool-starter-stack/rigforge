@@ -13,7 +13,7 @@
 [![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 
 RigForge provisions a tuned [XMRig](https://github.com/xmrig/xmrig) mining worker on a fresh
-Ubuntu/Debian machine. It installs the toolchain, compiles XMRig from source, applies
+Ubuntu/Debian machine. It ships a pre-built XMRig binary, applies
 kernel- and CPU-level tuning for RandomX hashrate, and runs it as a managed service. Point it at a
 pool to start mining.
 
@@ -27,7 +27,8 @@ you like to your stack's single endpoint.
 
 </div>
 
-> RigForge is not a custom miner. It compiles stock, upstream XMRig and wraps it in the setup,
+> RigForge is not a custom miner. It ships stock, upstream XMRig (a pre-built, checksum-verified binary)
+> and wraps it in the setup,
 > hardware tuning, and service management that are otherwise fiddly to get right by hand.
 
 ---
@@ -36,8 +37,8 @@ you like to your stack's single endpoint.
 
 **Sets up the rig:**
 
-- Installs build dependencies (`cmake`, `libuv`, `hwloc`, …) and compiles a pinned, commit-verified
-  XMRig from source.
+- Fetches the pre-built XMRig binary, verifies its checksum, and installs it alongside
+  the tuning toolchain (`libuv`, `hwloc`, …).
 - Tunes for the detected CPU: XMRig's cache-aware auto-detection (thread count, assembly path, MSR
   preset, NUMA), plus dedicated-miner defaults.
 - Applies kernel and system tuning on Linux: topology-aware HugePages (1 GB and 2 MB), MSR access
@@ -45,7 +46,7 @@ you like to your stack's single endpoint.
 - Runs XMRig as a `systemd` service on Linux, with a `cpupower` performance governor and log
   rotation.
 - Asks for your pool URL and optional password on first run; an `.onion` pool also offers a Tor SOCKS proxy override.
-- Is idempotent: re-running skips the recompile when the pinned XMRig is already built and never
+- Is idempotent: re-running skips the install when the pinned XMRig binary is already present and never
   double-applies system tuning.
 
 **Then keeps it running:**
@@ -74,8 +75,8 @@ you like to your stack's single endpoint.
 
 ## 📊 Does it actually help?
 
-RigForge automates upstream XMRig tuning. The benefit depends on the hardware and the starting
-OS configuration.
+RigForge automates upstream XMRig tuning. The benefit depends on the hardware, the OS
+configuration, and the `RIGFORGE_IMPL` setting.
 
 The [historical benchmark report](docs/benchmarks.md) records live-mining observations on a Ryzen
 7800X3D and an EPYC 7642. These are illustrative results, not measurements of the RigForge baked
@@ -163,7 +164,7 @@ release is published the feed URL is not live and the pinned fingerprint file is
 | **[Configuration](docs/configuration.md)** | Every `config.json` key and default, and how the XMRig config is generated. |
 | **[Shared-host profile](docs/shared-host.md)** | Opt-in CPU and memory bounds for co-resident workloads. |
 | **[Operations & Maintenance](docs/operations.md)** | The full command reference, service management, logs, upgrades, and troubleshooting. |
-| **[How It Works](docs/how-it-works.md)** | What the script actually does: compile, HugePages, MSR, NUMA, governor, service. |
+| **[How It Works](docs/how-it-works.md)** | What the script actually does: install, HugePages, MSR, NUMA, governor, service. |
 | **[Pithead Integration](docs/pithead-integration.md)** | The worker ↔ dashboard contract: discovery via `:3333`, the read-only API on `:8080` (plus the optional enriched sister API on `:8081`), and the token rules. |
 | **[FAQ](docs/faq.md)** | Common questions, plus why RigForge vs. doing it by hand. |
 
@@ -233,7 +234,7 @@ make e2e-real    # release pre-tag gate (full): real build+tune+bench+doctor+uni
 ```
 
 **What `make test` covers.** It sources `rigforge.sh` and exercises its functions in isolation, with
-every external/privileged command (`git`, `make`, `cmake`, `sudo`, `systemctl`, `modprobe`,
+every external/privileged command (`git`, `curl`, `sudo`, `systemctl`, `modprobe`,
 `apt-get`, …) and all hardware detection (`uname`, `lscpu`, `sysctl`, `nproc`, `hostname`) replaced by
 fakes on `PATH`. Because the hardware is faked, one run on any machine simulates every supported
 platform. It asserts the generated XMRig config for EPYC / Ryzen X3D / generic-Linux inputs and the
@@ -244,10 +245,10 @@ deployment run (executed twice to prove idempotency).
 `ubuntu` container (RigForge's documented Linux target, `linux/amd64`), against a real, disposable
 `/etc`. This validates the Linux-only deploy path with genuine tools (GNU `sed`, `envsubst`, the
 `fstab`/`limits`/GRUB edits and their idempotency) which can't run natively on a macOS host. Only the
-heavy XMRig compile and the package install are stubbed. It skips cleanly if Docker isn't available.
+heavy XMRig binary download and the package install are stubbed. It skips cleanly if Docker isn't available.
 
-No XMRig binary is compiled by the tests; the heavy native build is stubbed. The suite asserts the
-*orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
+No XMRig binary is compiled by the tests; the heavy native download is stubbed. The suite asserts the
+*orchestration* (fetch → verify checksum → install) and the generated configuration instead.
 
 **`make coverage`** measures line coverage of `rigforge.sh` + the shell helpers in `util/` by running the
 suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned container, since kcov is
@@ -257,7 +258,7 @@ committed **total floor** ([`tests/coverage-floor.txt`](tests/coverage-floor.txt
 time) and, the important lever, **patch coverage** (`diff-cover` against the PR's base branch,
 normally `develop`) so new/changed lines must be tested. Neither needs an external service.
 
-**`make smoke`** closes that gap at release time. Because the suites never compile or run XMRig, they
+**`make smoke`** closes that gap at release time. Because the suites never download or run XMRig, they
 can't prove the shipped binary actually starts and hashes. `make smoke` benches a real worker
 (`xmrig --bench`, fully offline) on a real rig and passes only if a hashrate is reported and the run is
 clean. It's a manual, Linux-only-for-full-effect pre-tag gate, not a CI job. See
@@ -283,5 +284,5 @@ maintainer's wallet, separate from XMRig's own dev donation) are appreciated:
 
 Provided "as-is" under the [MIT License](./LICENSE).
 
-RigForge itself is MIT; [XMRig](https://github.com/xmrig/xmrig) is GPLv3. RigForge clones and
-compiles upstream XMRig source on your own machine and redistributes no XMRig binaries.
+RigForge itself is MIT; [XMRig](https://github.com/xmrig/xmrig) is GPLv3. RigForge ships a
+pre-built XMRig binary (pinned, checksum-verified) and redistributes no XMRig source.
