@@ -1350,11 +1350,6 @@ install_watchdog() {
 # Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
 # JSON from /run/rigforge-api; a systemd timer (`rigforge.sh api-refresh`) recomputes the files every
 # 15 s. Requests never touch the miner. Toggle shape mirrors install_autotune above.
-# Opt-in API firewall (#142): an own `inet rigforge` nft table scoping the read-only API port(s)
-# to `api_allow_from` + loopback. nftables only; own table so teardown is a single `destroy`.
-# Matches only the API
-# dports, so SSH and the outbound stratum connection are untouchable by construction. Applied now
-# AND re-applied on boot via xmrig.service (the always-present anchor); removed with the table.
 install_api_firewall() {
     [ "$OS_TYPE" == "Linux" ] || return 0
     [ -n "${WORKER_ROOT:-}" ] || return 0 # nowhere to stage the rule file yet
