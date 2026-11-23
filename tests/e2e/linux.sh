@@ -26,13 +26,10 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-# Pinned by digest for a reproducible base image (supply-chain hardening, cf. issue #2). This is the
-# multi-arch index digest; --platform below selects linux/amd64 from it. Refresh with:
-#   docker buildx imagetools inspect ubuntu:24.04 --format '{{.Manifest.Digest}}'
 IMAGE_24="ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54"
 IMAGE_26="ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
 
-run_pass() { # <label> <image> [docker env args...]
+run_pass() {
     local label="$1" image="$2"
     shift 2
     echo "=================== E2E ($label): $image (linux/amd64) ==================="
@@ -41,7 +38,7 @@ run_pass() { # <label> <image> [docker env args...]
         "$image" bash /src/tests/e2e/in-container.sh
 }
 
-run_suite() { # <image> — runs deploy/appliance/isolation on one image
+run_suite() {
     local image="$1"
     run_pass "deploy"      "$image"  || STATUS=1
     echo ""
