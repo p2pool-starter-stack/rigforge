@@ -40,9 +40,9 @@ run_pass() {
 
 run_suite() {
     local image="$1"
-    run_pass "deploy"      "$image"  || STATUS=1
+    run_pass "deploy" "$image" || STATUS=1
     echo ""
-    run_pass "appliance"   "$image" -e RIGFORGE_APPLIANCE=1 || STATUS=1
+    run_pass "appliance" "$image" -e RIGFORGE_APPLIANCE=1 || STATUS=1
     echo ""
     bash "$ROOT/tests/e2e/isolation.sh" "$image" || STATUS=1
     echo ""
