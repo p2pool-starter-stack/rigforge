@@ -64,3 +64,6 @@ _config_apply_check() (
         _ck_ok "Generated configuration matches config.json and tune-overrides.json at the last generation" config-apply
     fi
 )
+
+_lib_dir() { printf '%s' "${RIGFORGE_LIB:-$SCRIPT_DIR}"; }
+_state_dir() { printf '%s' "${RIGFORGE_STATE:-$SCRIPT_DIR}"; }

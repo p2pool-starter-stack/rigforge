@@ -561,6 +561,17 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 
 ---
 
+## Where files live
+
+RigForge reads code from one directory and writes state to another. Both default to the directory holding `rigforge.sh`, so a git clone keeps everything in one tree and nothing changes unless you set a variable.
+
+| Variable | Default | Holds |
+|---|---|---|
+| `RIGFORGE_LIB` | the directory of `rigforge.sh` | `rigforge.sh`, `util/` scripts, `systemd/` unit templates, `VERSION`, `RIGFORGE_REF`. Never written by a worker command, so it can be root-owned and read-only. |
+| `RIGFORGE_STATE` | the same directory (`RIGFORGE_HOME` when set) | `config.json`, the `.rigforge-*` markers and sidecars (appliance marker, config provenance, revision key), `config-backups/`, `backups/`, support tarballs and the default worker root `data/worker`. |
+
+`RIGFORGE_HOME` is the older sandbox override: it sets the state directory and the template, `VERSION` and `proposed-grub.sh` lookups, while the `util/` scripts still come from the directory of `rigforge.sh`. Set `RIGFORGE_LIB` and `RIGFORGE_STATE` instead; each wins over it. Rendered units take `ExecStart` and the server script from the lib directory and the `config.json` credential from the state directory. The `upgrade` verb updates a git checkout in place, so it still needs a writable checkout.
+
 ## Backup & restore
 
 A worker's expensive, hard-to-recreate state is small: your `config.json` and the tuning result

@@ -31,6 +31,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-worker-proof.sh
 	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
+	bash tests/test-state-lib.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh

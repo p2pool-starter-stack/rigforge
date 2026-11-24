@@ -1,0 +1,59 @@
+[Unit]
+Description=XMRig High-Performance Miner Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Default root: XMRig then applies the MSR mod itself (write /dev/cpu/*/msr). With miner_user set
+# (#140) this renders as that dedicated nologin user instead — RigForge applies the MSR preset
+# root-side via the msr-apply ExecStartPre below, HugePages come from the boot-time reservation +
+# LimitMEMLOCK (no root needed to mmap them), and the hardening below still applies.
+User=rfminer
+
+# --- Performance Optimization ---
+# Force CPU governor to 'performance' mode to prevent frequency scaling latency. Best-effort (leading
+# `-`): on VMs/cloud kernels with no active cpufreq driver, or distros that ship no `cpupower`, this
+# call fails — and with Restart=always below, a non-optional ExecStartPre failure would wedge the miner
+# in a restart loop. The governor is a tuning nicety, not a correctness requirement, so a failed set
+# must never stop mining.
+ExecStartPre=+- frequency-set -g performance
+# Root-side MSR preset for an unprivileged miner (#140) — empty (a no-op line) when running as root.
+ExecStartPre=+@LIB@/rigforge.sh msr-apply
+# Re-apply the opt-in API firewall on boot (#142). Best-effort (`-`) + only when the file exists:
+# a rig without api_allow_from set ships no file, so this is a clean no-op there. `+` runs it as
+# root even if a future release moves the miner to an unprivileged user.
+ExecStartPre=+-/bin/sh -c 'test -f @OUT@/worker/api-firewall.nft &&  -f @OUT@/worker/api-firewall.nft || true'
+
+# --- Execution Configuration ---
+# Set working directory to ensure relative paths in config.json resolve correctly
+WorkingDirectory=
+# Execute the miner binary with the generated configuration
+ExecStart=/xmrig --config=/config.json
+
+# --- Process Management ---
+Restart=always
+RestartSec=10s
+
+# Unlock memory limits to allow HugePages allocation (scopes the privilege to THIS service rather than
+# granting every user unlimited memlock).
+LimitMEMLOCK=infinity
+# An unprivileged miner still needs to raise its own priority (cpu.priority: 2). Harmless for root.
+LimitNICE=-20
+
+# --- Hardening (defense-in-depth) ---
+# Deliberately conservative: every directive here is safe for a RandomX miner. We do NOT set
+# PrivateDevices/DeviceAllow (would hide /dev/cpu/*/msr and break the MSR mod), MemoryDenyWriteExecute
+# (would break the RandomX JIT), or ProtectKernelModules (can block msr access).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+PrivateTmp=true
+# The miner only ever writes under its worker root (config, build, log).
+ReadWritePaths=@OUT@/worker
+
+[Install]
+WantedBy=multi-user.target
