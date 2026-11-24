@@ -2914,6 +2914,7 @@ np_out="$(
 )"
 assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
 assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
+bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" "regression failed"
 
 # `tune --now` is the on-demand spelling of the autotune engine: it must reach autotune() AND map the
 # --perf/--efficiency flag onto the target. Drive the same stubbed sweep as above through `tune --now`.
@@ -2941,7 +2942,6 @@ tune_now_decide() { # <flags...> -> final prefetch mode
 }
 assert_eq "tune --now delegates to autotune; --perf picks raw-fastest" "$(tune_now_decide --now --perf)" "1"
 assert_eq "tune --now --efficiency keeps the most-efficient mode" "$(tune_now_decide --now --efficiency)" "0"
-# '--short' is the explicit spelling of the default quick '--now' pass — same autotune delegation.
 assert_eq "tune --short is the quick prefetch pass (alias of --now)" "$(tune_now_decide --short --perf)" "1"
 
 # `tune --now` drives the live service, so it's Linux-only — refuse with a clear message elsewhere.

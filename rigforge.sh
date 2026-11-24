@@ -2570,9 +2570,6 @@ _bench_once() {
     fi
 }
 
-# Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
-# few API samples over steady state and return their median. Heavier than --bench (it restarts the
-# service per candidate) but reflects real-world conditions. Linux-only; reuses _read_api_hashrate.
 _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
     local tmp
     tmp=$(mktemp)
@@ -2581,8 +2578,6 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     _apply_runtime >/dev/null 2>&1 || true
     sleep "${TUNE_LIVE_WARMUP:-60}"
     local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
-    # #81: bracket the steady-state window for power — RAPL energy delta over the window, or the mean of
-    # instantaneous TUNE_POWER_CMD samples taken alongside the hashrate samples. Written to BENCH_WATTS_FILE.
     local wsamples="" pe0="" pt0="" pmax="" w
     if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -z "${TUNE_POWER_CMD:-}" ]; then
         # `|| true` (#290/#301, same idiom as _autotune_sample's #81 guard): no powercap sysfs is an
@@ -2614,7 +2609,7 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
         fi
         printf '%s' "$wout" >"$BENCH_WATTS_FILE"
     fi
-    _median "${samples[@]}"
+    printf '%s\n' "${samples[*]}"
 }
 
 # Measure one candidate (memoized): median over TUNE_ITERS bench runs, or one live window. On a cache
@@ -2630,9 +2625,9 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     local med samples=() s i cfg minfk="" bf watts="" wsamps=() wv
     if [ "$TUNE_MODE" = live ]; then
         : >"$TUNE_TMP/watts" # #81: _measure_live writes the under-load average watts here
-        med=$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
-        [ -n "$med" ] || med=0
-        samples=("$med")
+        read -ra samples <<<"$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")"
+        [ "${#samples[@]}" -gt 0 ] || samples=(0)
+        med=$(_median "${samples[@]}")
         watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
@@ -2647,9 +2642,6 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
-            # The freq writer above already floors to whole kHz (awk's OFMT prints large medians in
-            # scientific notation, e.g. 4.6275e+06, which this floor would otherwise mangle into "4").
-            # This is now just a belt-and-suspenders trim of a stray fractional part.
             bf=${bf%.*}
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
             wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
@@ -2669,8 +2661,6 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     fi
     if [ "$throttled" = 1 ]; then warn "  tune: candidate throttled to ${minfmhz} MHz (< ${TUNE_MIN_FREQ_MHZ} MHz min) — reading unreliable, skipping it." >&2; fi
 
-    # #65: did this candidate's thread count exceed the HugePages reservation? Recorded per-candidate and
-    # summarized at the end of tune. Only meaningful for a concrete count ("-1" lets XMRig auto-size to fit).
     local hpcapped=false
     if [ -n "${HP_CAP_THREADS:-}" ] && [ "$t" != "-1" ] && [ "$t" -gt "$HP_CAP_THREADS" ] 2>/dev/null; then hpcapped=true; fi
 
@@ -3383,6 +3373,13 @@ _autotune_score() { # <target> <hr> <watts>
         printf '%s' "${2:-0}"
     fi
 }
+_autotune_vs_base() {
+    if [ "$1" = efficiency ] && ! awk -v a="$3" -v b="$5" 'BEGIN{exit !(a > 0 && b > 0)}'; then
+        awk -v h="$2" -v s="$6" -v b="$4" 'BEGIN{if (b > 0) printf "%.4f", h * s / b; else printf "%s", h}'
+    else
+        _autotune_score "$1" "$2" "$3"
+    fi
+}
 # Human-readable sample for the log line: "10700 H/s" or "10700 H/s, 83.10 W, 128.84 H/s/W".
 _autotune_fmt() { # <target> <hr> <watts>
     if [ "$1" = efficiency ] && [ -n "$3" ] && awk -v w="$3" 'BEGIN{exit !(w > 0)}'; then
@@ -3408,9 +3405,6 @@ autotune() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "autotune drives the live systemd service and is only supported on Linux."
     fi
-    # The scheduled run gets AUTOTUNE_TARGET from the systemd unit's env (baked at setup); capture it
-    # before parse_config re-derives one from config.json so the unit's choice wins. An interactive run
-    # (no unit env) falls through to the config value.
     local target_env="${AUTOTUNE_TARGET:-}"
     parse_config
     _shared_host_start_guard
@@ -3426,22 +3420,18 @@ autotune() {
     local n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}"
     local margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
     local target="${target_env:-${AUTOTUNE_TARGET:-perf}}"
-    local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s unit
+    local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s
 
-    # #95: efficiency ranks by hashrate-per-watt, which needs a power source; without one, optimize raw
-    # H/s instead (same fallback as `tune --efficiency`).
     if [ "$target" = efficiency ] && ! _power_supported; then
         warn "autotune: efficiency target needs a power source (RAPL or TUNE_POWER_CMD) — none available; falling back to performance (raw hashrate) instead."
         target=perf
     fi
-    [ "$target" = efficiency ] && unit="H/s/W" || unit="H/s"
     cur=$(jq -r '.randomx.scratchpad_prefetch_mode // 1' "$overrides" 2>/dev/null || echo 1)
 
-    # Baseline = the mode running right now (no restart needed to measure it).
     s=$(_autotune_sample "$n" "$iv" "$target")
     base_hr=${s%%$'\t'*}
     base_w=${s#*$'\t'}
-    [ -n "$base_hr" ] && [ "$base_hr" != 0 ] || {
+    awk -v h="$base_hr" 'BEGIN{exit !(h + 0 > 0)}' || {
         warn "autotune: could not read a live hashrate from the API — is the miner running? Skipping."
         return 0
     }
@@ -3457,7 +3447,6 @@ autotune() {
     _AUTOTUNE_DIRTY=1
     trap '_autotune_cleanup' EXIT
 
-    # Try every OTHER mode once, live; track the running best by the target's score.
     for m in $modes; do
         [ "$m" = "$cur" ] && continue
         _autotune_set_prefetch "$overrides" "$m"
@@ -3468,7 +3457,7 @@ autotune() {
         hr=${s%%$'\t'*}
         w=${s#*$'\t'}
         [ -n "$hr" ] || hr=0
-        sc=$(_autotune_score "$target" "$hr" "$w")
+        sc=$(_autotune_vs_base "$target" "$hr" "$w" "$base_hr" "$base_w" "$base_score")
         log "autotune: prefetch_mode=$m measured $(_autotune_fmt "$target" "$hr" "$w")."
         if awk -v sc="$sc" -v b="$best_score" 'BEGIN{exit !(sc > b)}'; then
             best_mode="$m"
@@ -3476,12 +3465,23 @@ autotune() {
         fi
     done
 
-    # Adopt the winner only if it beats the baseline by the margin (noise guard); else keep the current mode.
     if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
-        log "autotune: best is prefetch_mode=$best_mode at $best_score $unit (vs $base_score baseline) — applying it."
+        if [ "$last_applied" != "$best_mode" ]; then
+            _autotune_settle "$best_mode"
+            last_applied="$best_mode"
+            sleep "$warm"
+        fi
+        s=$(_autotune_sample "$n" "$iv" "$target")
+        hr=${s%%$'\t'*}
+        w=${s#*$'\t'}
+        best_score=$(_autotune_vs_base "$target" "${hr:-0}" "$w" "$base_hr" "$base_w" "$base_score")
+        log "autotune: re-measured prefetch_mode=$best_mode at $(_autotune_fmt "$target" "${hr:-0}" "$w") to confirm it."
+    fi
+    if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
+        log "autotune: best is prefetch_mode=$best_mode at $(_autotune_fmt "$target" "${hr:-0}" "$w") (vs $(_autotune_fmt "$target" "$base_hr" "$base_w") baseline) — applying it."
     else
         best_mode="$cur"
-        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($base_score $unit)."
+        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($(_autotune_fmt "$target" "$base_hr" "$base_w"))."
     fi
     # Leave the chosen mode running (the sweep may have ended on a different one).
     if [ "$last_applied" != "$best_mode" ]; then
