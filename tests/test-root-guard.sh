@@ -155,7 +155,7 @@ cp "$TEST_TMP/config.json" "$TEST_ANC/parent/child/config.json"
 (
     set +e
     chmod 774 "$TEST_ANC/parent/child"
-    chmod 757 "$TEST_ANC/parent"
+    chmod 1557 "$TEST_ANC/parent"
     SCRIPT_DIR="$TEST_ANC/parent/child"
     OS_TYPE=Linux
     stat() {

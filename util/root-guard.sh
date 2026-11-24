@@ -28,13 +28,13 @@ _root_guard_check() {
             warn "root-guard: stat failed on $dir — refusing"
             return 1
         }
-        local g_digit="${mode:1:1}"
+        local g_digit="${mode: -2:1}"
         case "$g_digit" in 2 | 3 | 6 | 7)
             warn "root-guard: $dir is group-writable (mode=$mode) — refusing"
             return 1
             ;;
         esac
-        local o_digit="${mode:2:1}"
+        local o_digit="${mode: -1}"
         case "$o_digit" in 2 | 3 | 6 | 7)
             warn "root-guard: $dir is other-writable (mode=$mode) — refusing"
             return 1
@@ -66,13 +66,13 @@ _root_guard_check() {
         warn "root-guard: stat failed on $path — refusing"
         return 1
     }
-    g_digit="${mode:1:1}"
+    g_digit="${mode: -2:1}"
     case "$g_digit" in 2 | 3 | 6 | 7)
         warn "root-guard: $path is group-writable (mode=$mode) — refusing"
         return 1
         ;;
     esac
-    o_digit="${mode:2:1}"
+    o_digit="${mode: -1}"
     case "$o_digit" in 2 | 3 | 6 | 7)
         warn "root-guard: $path is other-writable (mode=$mode) — refusing"
         return 1
@@ -96,13 +96,13 @@ _root_guard_check() {
                 warn "root-guard: stat failed on $path — refusing"
                 return 1
             }
-            g_digit="${mode:1:1}"
+            g_digit="${mode: -2:1}"
             case "$g_digit" in 2 | 3 | 6 | 7)
                 warn "root-guard: $path is group-writable (mode=$mode) — refusing"
                 return 1
                 ;;
             esac
-            o_digit="${mode:2:1}"
+            o_digit="${mode: -1}"
             case "$o_digit" in 2 | 3 | 6 | 7)
                 warn "root-guard: $path is other-writable (mode=$mode) — refusing"
                 return 1
@@ -129,13 +129,13 @@ _root_guard_check() {
             warn "root-guard: stat failed on $path — refusing"
             return 1
         }
-        g_digit="${mode:1:1}"
+        g_digit="${mode: -2:1}"
         case "$g_digit" in 2 | 3 | 6 | 7)
             warn "root-guard: $path is group-writable (mode=$mode) — refusing"
             return 1
             ;;
         esac
-        o_digit="${mode:2:1}"
+        o_digit="${mode: -1}"
         case "$o_digit" in 2 | 3 | 6 | 7)
             warn "root-guard: $path is other-writable (mode=$mode) — refusing"
             return 1
@@ -147,7 +147,7 @@ _root_guard_check() {
 }
 
 _persist_root_guard_allow() {
-    [ "${RIGFORGE_ROOT_GUARD_ALLOW:-}" = 1 ] || return 0
+    [ "${RIGFORGE_ROOT_GUARD_ALLOW:-}" = 1 ] || [ "${ROOT_GUARD_ALLOW:-}" = true ] || return 0
     [ "$OS_TYPE" = Linux ] || return 0
 
     if [ -d "$SCRIPT_DIR/.git" ]; then
