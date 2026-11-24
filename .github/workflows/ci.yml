@@ -215,3 +215,37 @@ jobs:
           echo "$RUNNER_TEMP/ci-python-tools/bin" >>"$GITHUB_PATH"
       - name: Enforce patch coverage on changed lines
         run: diff-cover coverage/cobertura.xml --compare-branch="origin/$BASE_REF" --fail-under="${PATCH_COVERAGE_MIN}"
+
+  homebrew:
+    name: Homebrew formula (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tap the checkout and install the formula
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          if [ "$(uname)" = Linux ]; then eval "$("$(compgen -G "/home/*/.linuxbrew/bin/brew")" shellenv)"; fi
+          eval "$(brew shellenv)"
+          brew tap p2pool-starter-stack/rigforge "$GITHUB_WORKSPACE"
+          brew install p2pool-starter-stack/rigforge/rigforge
+          brew test p2pool-starter-stack/rigforge/rigforge
+          want=$(sed -n 's/^  url ".*\/rigforge-v\([0-9.]*\)\.tar\.gz"$/\1/p' Formula/rigforge.rb)
+          test "$(rigforge --version)" = "RigForge $want"
+          test -f "$(brew --prefix rigforge)/libexec/.rigforge-package"
+          test "$(cat "$(brew --prefix rigforge)/libexec/.rigforge-package")" = brew
+      - name: Report whether sudo finds the brew command
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          eval "$("$(compgen -G "/home/*/.linuxbrew/bin/brew")" shellenv)"
+          if sudo -n sh -c 'command -v rigforge'; then echo "sudo resolves rigforge"; else echo "sudo does not resolve rigforge"; fi
+          sudo -n "$(command -v rigforge)" --version
