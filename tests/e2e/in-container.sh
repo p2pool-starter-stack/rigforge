@@ -171,7 +171,7 @@ X
     limits_before="$(cat /etc/security/limits.conf)"
 
     echo "== appliance run (the real /etc must stay untouched) =="
-    aout="$(CALL_LOG="$WORK/appliance-calls.log" ./rigforge.sh --no-root-guard </dev/null 2>&1)"
+    aout="$(CALL_LOG="$WORK/appliance-calls.log" ./rigforge.sh setup --no-root-guard </dev/null 2>&1)"
     arc=$?
     assert_rc "appliance run exits 0" "$arc" "0"
     [ "$arc" = 0 ] || printf '%s\n' "$aout" | tail -20
@@ -206,7 +206,7 @@ X
     assert_eq "appliance: 1G mountpoint dir created for real" "$([ -d /dev/hugepages1G ] && echo y || echo n)" "y"
 
     echo "== appliance second run (the every-boot path accretes no /etc state) =="
-    aout2="$(CALL_LOG="$WORK/appliance-calls2.log" ./rigforge.sh --no-root-guard </dev/null 2>&1)"
+    aout2="$(CALL_LOG="$WORK/appliance-calls2.log" ./rigforge.sh setup --no-root-guard </dev/null 2>&1)"
     arc2=$?
     assert_rc "appliance re-run exits 0" "$arc2" "0"
     [ "$arc2" = 0 ] || printf '%s\n' "$aout2" | tail -20
@@ -236,7 +236,7 @@ assert_eq "dry-run: no unit installed" "$([ -f /etc/systemd/system/xmrig.service
 assert_absent "dry-run: fstab untouched" "$(cat /etc/fstab)" "hugetlbfs"
 
 echo "== first run =="
-out1="$(./rigforge.sh --no-root-guard </dev/null 2>&1)"
+out1="$(./rigforge.sh setup --no-root-guard </dev/null 2>&1)"
 rc1=$?
 assert_rc "first run exits 0" "$rc1" "0"
 [ "$rc1" = 0 ] || printf '%s\n' "$out1" | tail -20
@@ -302,7 +302,7 @@ assert_contains "cli: 'rigforge' runs from PATH and resolves the repo" "$(rigfor
 cp "$BUILD/config.json" "$WORK/config-run1.json"
 
 echo "== second run (idempotency) =="
-out2="$(./rigforge.sh --no-root-guard </dev/null 2>&1)"
+out2="$(./rigforge.sh setup --no-root-guard </dev/null 2>&1)"
 rc2=$?
 assert_rc "second run exits 0" "$rc2" "0"
 [ "$rc2" = 0 ] || printf '%s\n' "$out2" | tail -20
@@ -326,7 +326,7 @@ echo "== third run (recompile is skipped when already built) =="
 printf '#!/bin/sh\necho fake-xmrig\n' >"$BUILD/xmrig"
 chmod +x "$BUILD/xmrig"
 : >"$WORK/calls3.log"
-out3="$(CALL_LOG="$WORK/calls3.log" ./rigforge.sh --no-root-guard </dev/null 2>&1)"
+out3="$(CALL_LOG="$WORK/calls3.log" ./rigforge.sh setup --no-root-guard </dev/null 2>&1)"
 assert_rc "third run (already built) exits 0" "$?" "0"
 assert_contains "recompile SKIPPED when already built at the pinned commit" "$out3" "recompile will be skipped"
 assert_absent "no git clone on a build-skip re-run" "$(cat "$WORK/calls3.log" 2>/dev/null)" "clone"
