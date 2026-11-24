@@ -9066,7 +9066,7 @@ fi
 # tests do it below) rather than reimplement it — only phase and the bench are stubbed.
 echo "== unit: e2e-real perf record gate (#214/#267) =="
 PJ="$(mktemp -d "$SANDBOX/pj.XXXXXX")"
-sed -n '/^ok() {$/,/^}/p; /^bad() {$/,/^}/p; /^summary() {$/,/^}/p; /^_perf_judge()/,/^}/p; /^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
+sed -n '/^ok() {$/,/^}/p; /^bad() {$/,/^}/p; /^summary() {$/,/^}/p; /^_perf_[a-z]*()/,/^}/p; /^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
 cat >"$PJ/rigforge-stub" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = bench ] && echo "${STUB_BENCH_HS:-10000.0} H/s"
@@ -9104,7 +9104,7 @@ assert_eq "record: regressed history untouched (#214)" "$(grep -c . "$PJ/tests/p
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 E2E_PERF_FORCE=1 run_perf)"
 assert_contains "record: FORCE records a regression loudly (#214)" "$out" "REGRESSED measurement"
 assert_eq "record: FORCE actually wrote (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
-out="$(STUB_BENCH_HS=9000.0 run_perf)"
+out="$(STUB_BENCH_HS=9000.0 E2E_PERF_GATE=1 run_perf)"
 rc=$?
 [ "$rc" -ge 1 ] && ok "judge: regression vs best-ever still fails (#214)" || bad "judge: regression vs best-ever still fails (#214)" "rc=$rc"
 assert_contains "judge: ratchet names best-ever (#214)" "$out" "RATCHET"
