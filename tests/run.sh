@@ -2810,9 +2810,6 @@ touch "$WDR/watchdog.thermal-hold"
 out="$(run_watchdog 'echo 35' 'echo 0' '090' n)"
 assert_contains "090 normalises to 90 -> thermal lift floor is 85" "$out" "thermal hold lifted"
 assert_eq "090 lift starts the miner" "$(wd_calls 'start xmrig')" "1"
-set +e
-out="$(cd "$WDZ" && sudo systemctl() { wdz_systemctl "\$@"; }; systemctl() { wdz_systemctl "\$@"; }; CONFIG_JSON="$WDZ/config.json" parse_config 2>&1; echo "parse_rc=\$?")"
-assert_contains "bad pool address makes parse_config fail" "$out" "parse_rc=1" || true
 WDZ2="$(mktemp -d "$SANDBOX/wdz2.XXXXXX")"
 mkdir -p "$WDZ2/bin" "$WDZ2/home/worker"
 cat >"$WDZ2/config.json" <<EOF
@@ -2826,10 +2823,36 @@ wdz2_systemctl() {
     *) return 0 ;;
     esac
 }
-out="$(cd "$WDZ2" && set +e; source "$SCRIPT"; parse_config() { :; }; sudo systemctl() { wdz2_systemctl "\$@"; }; systemctl() { wdz2_systemctl "\$@"; }; CONFIG_JSON="$WDZ2/config.json"; TUNE_TEMP_CMD='echo 99'; API_CMD='echo 0'; watchdog 2>&1; echo "rc=\$?")"
+set +e
+wdz_test_script=$(mktemp "$SANDBOX/wdz-test.XXXXXX.sh")
+cat >"$wdz_test_script" <<WDZEOF
+cd "$WDZ"
+systemctl() { wdz_systemctl "\$@"; }
+sudo systemctl() { wdz_systemctl "\$@"; }
+CONFIG_JSON="$WDZ/config.json" parse_config 2>&1
+echo "parse_rc=\$?"
+WDZEOF
+out="$(bash "$wdz_test_script")"
+assert_contains "bad pool address makes parse_config fail" "$out" "parse_rc=1" || true
+wdz_test_script2=$(mktemp "$SANDBOX/wdz2-test.XXXXXX.sh")
+cat >"$wdz_test_script2" <<WDZ2EOF
+set +e
+cd "$WDZ2"
+systemctl() { wdz2_systemctl "\$@"; }
+sudo systemctl() { wdz2_systemctl "\$@"; }
+source "$SCRIPT"
+parse_config() { :; }
+CONFIG_JSON="$WDZ2/config.json"
+TUNE_TEMP_CMD="echo 99"
+API_CMD="echo 0"
+watchdog 2>&1
+echo "rc=\$?"
+WDZ2EOF
+out="$(bash "$wdz_test_script2")"
 assert_contains "bad pool + 99°C still stops the miner (early thermal path)" "$out" "above max_temp_c=90"
 assert_eq "bad pool + 99°C issued systemctl stop" "$(grep -c 'stop xmrig' "$WDZ2/calls.log" 2>/dev/null || echo 0)" "1"
 assert_eq "bad pool + 99°C left the hold marker" "$([ -f "$WDZ2/home/worker/watchdog.thermal-hold" ] && echo y || echo n)" "y"
+rm -f "$wdz_test_script" "$wdz_test_script2"
 # Service not active (and no hold): systemd Restart= owns it; state resets, exit 0.
 printf '1\n' >"$WDR/watchdog.fails"
 out="$(run_watchdog 'echo 60' 'echo 0' '' n)"
