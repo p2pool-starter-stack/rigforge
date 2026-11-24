@@ -3276,6 +3276,8 @@ comp_out="$(bash "$SCRIPT" completion bash)"
 dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|package-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
+pkg_idle="$(RIGFORGE_PKG_STATE="$SANDBOX" bash "$SCRIPT" package-upgrade 2>&1)"
+assert_contains "package-upgrade verb is a no-op without a pending marker (#785)" "$pkg_idle" "No package upgrade is pending"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
 # #207: per-verb FLAG drift guard — hand-maintained map (verbs gain flags rarely; the failure
 # message says exactly where to add one). The verb-level guard above can't see flags.
