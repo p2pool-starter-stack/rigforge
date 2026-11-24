@@ -80,13 +80,13 @@ cp -R "$ROOT/docs/"* "$WORK/archive/docs/"
 cp -R "$ROOT/images/"* "$WORK/archive/images/"
 cp "$ROOT/LICENSE" "$WORK/archive/"
 cp "$ROOT/VERSION" "$WORK/archive/"
-tar -czf "$WORK/bundle.tar.gz" -C "$WORK/archive" .
+tar -czf "$WORK/bundle.tar.gz" -C "$WORK" archive
 assert_fails "missing fingerprint file exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "1.0.0" "$WORK/nope"
 
 printf '0.0.0-mismatch\n' >"$WORK/archive/VERSION"
 assert_fails "VERSION mismatch exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "1.0.0" "$ROOT/packaging/apt/fingerprint"
 printf '%s\n' "$(cat "$ROOT/VERSION")" >"$WORK/archive/VERSION"
-tar -czf "$WORK/bundle.tar.gz" -C "$WORK/archive" .
+tar -czf "$WORK/bundle.tar.gz" -C "$WORK" archive
 
 VER="$(tr -d '[:space:]' <"$ROOT/VERSION")"
 bash "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "v$VER" "$ROOT/packaging/apt/fingerprint"
