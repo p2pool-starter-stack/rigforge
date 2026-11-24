@@ -8860,12 +8860,8 @@ assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$
 
 PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
 PATH="$STUBS:$PATH" source "$ROOT/tests/test-fetch-proxy.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-package-mode.sh"
 
-# Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
-# its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
-# `sudo bash tests/e2e-real.sh upgrade` works. Nest that inside another sudo — a `nohup setsid`
-# repo owned by the operator, and every bare `git -C "$HERE"` in the upgrade phase fatals with
-# "detected dubious ownership". The releaser then reads a RED on a gate that is fine.
 echo "== unit: e2e-real git calls survive a nested sudo (#401) =="
 assert_eq "e2e-real callers snapshot four service states and hide bearer argv" "$(printf '%s|%s|%s|%s' "$(grep -c '^    _snapshot_control_state$' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec 'systemctl is-(active|enabled).*&& CTL_.*=1' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec 'curl .*Authorization: Bearer' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec '(auth|_auth)=\(' "$ROOT/tests/e2e-real.sh")")" "2|4|0|0"
 bare_e2e_git=$(grep -nE 'git -C "\$HERE"' "$ROOT/tests/e2e-real.sh" | grep -v 'safe\.directory' || true)

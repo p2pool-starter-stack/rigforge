@@ -536,6 +536,14 @@ connection. The same key carries the XMRig source clone and a remote upgrade's `
 upgrade refuses to start when the proxy does not answer or `origin` is not an https URL, and records
 that as its `failed` reason.
 
+**Package installs.** A `.rigforge-package` marker beside `rigforge.sh` (its value is `apt` or `brew`;
+`RIGFORGE_PACKAGE_MARKER` points the lookup elsewhere) says the package manager owns the tree, as the
+`.rigforge-appliance` marker does for an appliance. With it, `upgrade --check` still compares versions
+through the `tor_socks5`-aware fetcher but prints `sudo apt upgrade rigforge` or `brew upgrade rigforge`
+instead of git steps; `control_upgrade` and any tag upgrade refuse before running git and record that
+command as the `failed` reason; setup and `upgrade` skip the dependency install and the `add_to_path`
+symlink. Without the marker nothing changes.
+
 `upgrade` skips the recompile when the pinned XMRig is already built with a zero minimum marker
 and a valid binary checksum, so it's cheap to run — but it is
 not a no-op: it regenerates the live config, reinstalls the systemd units and restarts, because a

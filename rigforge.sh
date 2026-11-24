@@ -69,6 +69,10 @@ SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 source "$(_script_dir)/util/xmrig-overlay.sh"
 # shellcheck source=util/daemon-pools.sh
 source "$(_script_dir)/util/daemon-pools.sh"
+# shellcheck source=util/upgrade-check.sh
+source "$(_script_dir)/util/upgrade-check.sh"
+# shellcheck source=util/package-mode.sh
+source "$(_script_dir)/util/package-mode.sh"
 # shellcheck source=util/fetch-proxy.sh
 source "$(_script_dir)/util/fetch-proxy.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
@@ -943,6 +947,7 @@ install_dependencies() {
         log "Appliance mode: dependencies are baked into the image — skipping package install."
         return 0
     fi
+    _package_install && { log "Package install ($(_package_channel)): the package manager owns the dependencies — skipping package install." && return 0; }
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
         if command -v brew &>/dev/null; then
@@ -1743,12 +1748,9 @@ configure_limits() {
     append_once "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
 }
 
-# Put a `rigforge` command on PATH: a symlink in BIN_DIR pointing at this script, so the operator can
-# run `sudo rigforge <cmd>` from anywhere instead of `./rigforge.sh`. OPT-IN via `add_to_path` in
-# config.json (off by default). Best-effort and idempotent — it never fails the deploy. `uninstall`
-# removes it regardless, but only while it's still our symlink.
 link_cli() {
     [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
+    _package_install && { log "Package install ($(_package_channel)): the package owns the 'rigforge' command — skipping add_to_path." && return 0; }
     local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge"
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
@@ -1761,8 +1763,6 @@ link_cli() {
         warn "Didn't add the 'rigforge' command — $link already exists and isn't a RigForge symlink."
         return 0
     fi
-    # Use sudo only when BIN_DIR isn't writable (it is when setup runs as root on Linux); empty prefix
-    # otherwise. shellcheck SC2086: the unquoted prefix is intentional (it must vanish when empty).
     local sudo_pfx=""
     [ -w "$BIN_DIR" ] || sudo_pfx="sudo"
     # shellcheck disable=SC2086
@@ -1877,6 +1877,8 @@ _setup_plan() {
         else
             _p "installing dependencies" "appliance mode: baked into the image — no package install"
         fi
+    elif _package_install; then
+        _p "installing dependencies" "package install ($(_package_channel)): the package manager owns the dependencies — no package install"
     elif [ "$OS_TYPE" = "Darwin" ]; then
         _p "installing dependencies" "install/verify via brew: cmake libuv openssl hwloc"
     elif _detect_pkg_manager; then
@@ -1970,7 +1972,9 @@ _setup_plan() {
     else
         _p "configuring the API firewall" "no api_allow_from — no firewall scoping (an installed table would be removed)"
     fi
-    if [ "$ADD_TO_PATH" = true ]; then
+    if _package_install; then
+        _p "linking the rigforge command" "package install ($(_package_channel)): the package owns the command — no symlink"
+    elif [ "$ADD_TO_PATH" = true ]; then
         _p "linking the rigforge command" "symlink $BIN_DIR/rigforge -> $SCRIPT_DIR/rigforge.sh"
     else
         _p "linking the rigforge command" "add_to_path is off — no symlink"
@@ -2101,44 +2105,6 @@ _upgrade_restart() { # <was-active: yes|no>
     fi
     log "Restarting XMRig so the regenerated config and reinstalled unit take effect..."
     sudo systemctl restart "$SERVICE_NAME.service"
-}
-
-_upgrade_check() {
-    local local_v remote_v url body highest via=""
-    local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true) # guard inside the $() (#210)
-    if [ -z "$local_v" ]; then
-        warn "No VERSION file at $SCRIPT_DIR/VERSION — can't compare against the latest release."
-        return 0
-    fi
-    via=$(_tor_socks5) || return 0
-    [ -z "$via" ] || via=" through tor_socks5 (no direct fallback)"
-    body=$(_fetch_curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null || true)
-    if [ -z "$body" ]; then
-        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
-        return 0
-    fi
-    remote_v=$(printf '%s' "$body" | jq -r '.tag_name // empty' 2>/dev/null || true)
-    url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null || true)
-    remote_v="${remote_v#v}"
-    if [ -z "$remote_v" ]; then
-        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
-        return 0
-    fi
-    if [ "$local_v" = "$remote_v" ]; then
-        log "RigForge $local_v is the latest release."
-        return 0
-    fi
-    highest=$(printf '%s\n%s\n' "$local_v" "$remote_v" | sort -V | tail -n1)
-    if [ "$highest" = "$remote_v" ]; then
-        log "A newer RigForge is available: $remote_v (you have $local_v)."
-        if [ -n "$url" ]; then
-            log "Release notes: $url"
-        fi
-        log "Update: cd $SCRIPT_DIR && git fetch --tags && git checkout v$remote_v && sudo $0 upgrade  (development checkouts on a branch: git pull && sudo $0 upgrade)"
-    else
-        log "RigForge $local_v is ahead of the latest release ($remote_v) — development build."
-    fi
-    return 0
 }
 
 # Upgrade redeploys this release: regenerate config, reinstall every unit, re-tune, re-own, and restart. The COMPILE is
@@ -4661,6 +4627,7 @@ control_apply() {
 
 _control_upgrade_steps() {
     local ref="$1" cobj
+    ! _package_install || return 1
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
@@ -4705,9 +4672,13 @@ control_upgrade() {
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" version "the upgrade run ended before recording an outcome (aborted or killed mid-fetch/build); the checkout may be half-updated and this upgrade will not be retried — check the installed version and re-request the upgrade")
     trap _control_run_incomplete EXIT # #535: the spool entry is claimed; nothing else will retry it
     _control_status "$status" started "$cid" version "" ""
-    # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
     target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)
     rm -f "$staged"
+    if _package_install; then
+        _control_status "$status" failed "$cid" version "package-owned install: upgrade with $(_package_upgrade_cmd)" ""
+        warn "control-upgrade: package-owned install — refused; run $(_package_upgrade_cmd)."
+        return 0
+    fi
     if ! [[ "$target" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         _control_status "$status" failed "$cid" version "staged upgrade target malformed (want vX.Y.Z)" ""
         warn "control-upgrade: malformed target for $cid — refused."
