@@ -370,7 +370,17 @@ pending_run() {
     d=$(mktemp -d "$SANDBOX/pending.XXXXXX")
     mkdir -p "$d/state/spool" && mkdir -m 700 "$d/upgrade-state" && printf '%s' "$2" >"$d/VERSION" && printf 'keep' >"$d/target"
     printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json" && printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
-    printf '#!/usr/bin/env bash\necho REINSTALL >>"%s/work.log"\n' "$d" >"$d/rigforge.sh" && chmod +x "$d/rigforge.sh"
+    cat >"$d/rigforge.sh" <<'STUB'
+#!/usr/bin/env bash
+echo REINSTALL >>"$1/work.log"
+if [ -f "$1/upgrade-fail" ]; then
+    c=$(<"$1/upgrade-fail")
+    c=$((c + 1))
+    printf '%d' "$c" >"$1/upgrade-fail"
+    [ "$c" -gt 1 ] || exit 1
+fi
+STUB
+    chmod +x "$d/rigforge.sh"
     case "$1" in pending) : >"$d/upgrade-state/upgrade-pending" ;; owner) printf 'orig' >"$d/upgrade-state/upgrade-pending" ;; link) ln -s "$d/target" "$d/upgrade-state/upgrade-pending" ;; esac
     (
         source "$SCRIPT"
@@ -398,3 +408,12 @@ s="$(pending_run link 9.9.9)"
 assert_eq "unsafe pending marker refused before checkout, target untouched (#816)" "$(st "${s%%|*}")|${s#*|}" "failed||marker-left|keep|keep"
 s="$(pending_run owner 9.9.9)"
 assert_eq "pending marker with a foreign owner refused before checkout, marker untouched (#816)" "$(st "${s%%|*}")|${s#*|}" "failed||marker-left|keep|orig"
+echo "== unit: install failure leaves marker, rollback cleans it (#816) =="
+s="$(pending_run rollback_fail 1.0.0)"
+assert_eq "install + rollback failure -> failed, marker stays (#816)" "$(st "${s%%|*}")" "failed"
+assert_contains "rollback failure still names the fetch (#816)" "$s" "could not fetch from origin; nothing was changed"
+assert_absent "install failure with failed rollback never claims manual intervention (#816)" "$s" "manual intervention"
+assert_eq "install failure with failed rollback leaves marker and target (#816)" "${s#*|}" "||keep|keep|"
+s="$(pending_run rollback_ok 1.0.0)"
+assert_eq "install fails, rollback succeeds, status rolled_back (#816)" "$(st "${s%%|*}")" "rolled_back"
+assert_eq "rollback install runs upgrade twice, marker cleaned (#816)" "${s#*|}" "checkout"$'\n'"REINSTALL"$'\n'"checkout"$'\n'"REINSTALL|||keep|"

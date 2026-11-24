@@ -4688,14 +4688,10 @@ control_upgrade() {
         return 0
     fi
     installed=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
-    # D10 monotonic anti-rollback: never install a version <= the one running. A compromised trigger
-    # can't pin a rig to an older, known-vulnerable release (reachability + immutable releases cover
-    # tag-moving / dangling commits; this covers downgrade and no-op).
     local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     if [ -n "$installed" ]; then
         local want="${target#v}" highest
         if [ "$want" = "$installed" ] && [ ! -e "$throttle/upgrade-pending" ] && [ ! -L "$throttle/upgrade-pending" ]; then
-            # #320: an idempotent no-op, not a failure — the rig is exactly where the operator wants it.
             _control_status "$status" noop "$cid" version "already on $target — nothing to upgrade" ""
             log "control-upgrade: already on $target."
             return 0
@@ -4727,7 +4723,6 @@ control_upgrade() {
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid" RIGFORGE_UPGRADE_UNMOVED=""
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-        # #320: echo the landed version — the poller shouldn't have to cross-read the miner API for it.
         _control_status "$status" applied "$cid" version "upgraded to $target" ""
         log "control-upgrade: $cid applied — now on $target."
     elif [ -n "${RIGFORGE_UPGRADE_UNMOVED:-}" ]; then
