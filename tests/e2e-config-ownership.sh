@@ -97,7 +97,7 @@ phase_config_ownership() {
     jq --argjson k "$keepalive" '.pools[0].keepalive = $k' "$CFG" >"$tmp" && cat "$tmp" >"$CFG"
     rm -f "$tmp"
     setup_log=$(mktemp)
-    if "$RIGFORGE" setup </dev/null >"$setup_log" 2>&1 && grep -q 'recompile will be skipped' "$setup_log" &&
+    if "$RIGFORGE" setup --no-root-guard </dev/null >"$setup_log" 2>&1 && grep -q 'recompile will be skipped' "$setup_log" &&
         grep -q 'Restarting XMRig service' "$setup_log" && [ "$(_co_pid)" != "$pid" ] && [ "$(_co_pid)" != 0 ] &&
         [ "$(jq '.pools[0].keepalive != false' "$GEN_CFG")" = "$keepalive" ] &&
         [ "$(_co_sum "$binary")" = "$binary_before" ] && _co_wait_live; then
@@ -105,5 +105,14 @@ phase_config_ownership() {
     else
         bad "setup did not restart the miner with the changed pool setting, or rebuilt XMRig (#529)" || true
     fi
+    grep 'root-guard:' "$setup_log" || true
     rm -f "$setup_log"
+    upgrade_log=$(mktemp)
+    if "$RIGFORGE" upgrade </dev/null >"$upgrade_log" 2>&1 && _co_wait_live; then
+        ok "upgrade without --no-root-guard passes the root guard after setup on this rig (#783)"
+    else
+        bad "upgrade without --no-root-guard failed after setup on this rig (#783)" || true
+    fi
+    grep -E 'root-guard:|ERROR' "$upgrade_log" || true
+    rm -f "$upgrade_log"
 }

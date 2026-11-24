@@ -51,6 +51,27 @@ Not every verb needs root — the design, in four lines:
 - `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
   root.
 
+On Linux, `setup` and `upgrade` refuse to install the root-run units when a non-root user could change
+the code those units run (#783). They check `rigforge.sh`, the `util/` and `systemd/` directories and every
+file in them, `.git/config` and the git hooks in a git checkout (root runs `git` there for remote
+upgrades), and every directory from the code tree up to `/`, both as given and with symlinks resolved. Each path must be owned by root, writable by
+no group other than root's, and not writable by every user. A path that cannot be inspected counts as a
+refusal, and the message names the first path that fails. `config.json` is operator data, not code, and is
+not checked. A root-owned tree passes silently.
+
+- `--no-root-guard` accepts the tree anyway and prints a warning. It also records the allowance in the
+  root-owned `/etc/rigforge-root-guard` (it names the tree), so later remote upgrades through the control
+  path, which pass no flags, accept the same tree with a warning. An allowance file that a non-root user
+  could write, or one that names another tree, is ignored. `uninstall` removes it.
+- An install that predates the guard (a git checkout with the miner unit installed and no allowance file)
+  is allowed once with a loud warning and the allowance is recorded, so its remote upgrades keep working.
+  A packaged tree (with a `.rigforge-package` marker) is never allowed this way.
+- The guard runs from the tree it checks, so it catches a tree left writable by mistake. It cannot stop a
+  user who already writes the tree before the first guarded run, because that user can change the guard
+  itself or create a `.git` directory to qualify for the one-time allowance.
+- To close the gap instead, make the tree root-owned: `sudo chown -R root:root <tree> && sudo chmod -R
+  go-w <tree>`, then delete `/etc/rigforge-root-guard`. Afterwards, update the checkout with `sudo git`.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
@@ -566,6 +587,22 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 > XMRig fetch, build or configuration step aborts the upgrade and leaves the live `xmrig/` tree (binary
 > and config) untouched. A swap interrupted mid-way is recovered by the next `setup` or `upgrade`.
 
+### Upgrading through apt
+
+When `apt upgrade rigforge` installs a newer version on a host that already has a
+`config.json`, the package's postinst only writes `/var/lib/rigforge/upgrade-pending` and starts
+the one-shot `rigforge-upgrade.service` with `systemctl start --no-block`; dpkg returns at once.
+A first install, a reinstall of the same version and a host without a config queue nothing.
+
+The one-shot runs `rigforge package-upgrade`, which is `upgrade` outside dpkg: it rebuilds XMRig
+only when the pin, compiled minimum or checksum requires it, re-renders every unit, and restarts
+the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and hands the tree and units back to them. Follow it with `journalctl -u rigforge-upgrade`.
+
+If it fails, the previous build keeps running, the marker stays, `/var/lib/rigforge/upgrade-failed`
+records the failure, and both `rigforge status` and `rigforge doctor` report it. dpkg is never
+failed by it. Retry with the one command `sudo rigforge upgrade`; a successful run clears the
+marker. To defer upgrades, `sudo apt-mark hold rigforge` (undo with `apt-mark unhold rigforge`).
+
 ---
 
 ## Backup & restore
@@ -590,7 +627,9 @@ sudo ./rigforge.sh setup            # rebuild + apply (or 'apply' if XMRig is al
 ```
 
 Restore overwrites `config.json` and the tuning on the current machine (so it prompts first), then tells
-you to run `setup`/`apply` to put the restored config into effect.
+you to run `setup`/`apply` to put the restored config into effect. Before it overwrites, restore saves the
+current config to `config-backups/`, the same folder the control path uses, and the newest 20 files are
+kept. Restore therefore needs to be able to write next to `config.json`.
 
 ### Two reasons to use it
 
@@ -638,7 +677,7 @@ If you see MSR errors, see Troubleshooting below.
 | `doctor`: "MSR registers don't match the preset" | XMRig's log says the write succeeded but the read-back disagrees: something silently dropped it. When kernel lockdown is active, `doctor` names it as the cause (see the lockdown item it prints first); otherwise a hypervisor is the usual culprit — common on VMs/cloud instances, run RigForge on bare metal. `msr.allow_writes=on` (RigForge sets this) only matters when lockdown is *not* enforced. |
 | `doctor`: "couldn't read the MSRs via rdmsr" | The `msr` module isn't loaded (or `doctor` wasn't run as root). Run `sudo ./rigforge.sh doctor`; if it persists, `sudo modprobe msr` and check `/etc/modules-load.d/msr.conf` — a missing module is a modprobe/packaging problem, not Secure Boot (the in-tree signed module loads fine under it). This is advisory; XMRig's log already confirms the write. |
 | `HugePages_Total` is 0 | The kernel tuning needs a reboot to take effect (GRUB change). Reboot, then re-check `grep Huge /proc/meminfo`. |
-| HugePages still 0 after reboot | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; RigForge merges its kernel parameters into `GRUB_CMDLINE_LINUX_DEFAULT` rather than overwriting, so other params are preserved. |
+| HugePages still 0 after reboot | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; it merges its parameters into `GRUB_CMDLINE_LINUX_DEFAULT` and keeps the others. If that line is not one plain double-quoted value (single quotes, a trailing comment, an escaped double quote, or more than one such line), RigForge leaves the file untouched and prints the parameters to add by hand: edit `/etc/default/grub`, then `sudo update-grub`. |
 | Low hashrate / few threads | RandomX is L3-bound (~2 MB per thread). A CPU with little L3 runs fewer effective threads; this is expected. See [Hardware › L3 cache](hardware.md#a-note-on-l3-cache). |
 | No AVX2 | RandomX still runs but slower. AVX2 is strongly recommended; there's no fix beyond different hardware. |
 | Dashboard can't read the worker | The API is open (no token) by default, so first check the worker is reachable from the stack host on `:8080`. If you set an `ACCESS_TOKEN`, the dashboard must send the same token (`workers.api_auth: token` + `workers.api_token`, or `name` if the token is the rig name). See [Pithead Integration › Troubleshooting](pithead-integration.md#troubleshooting). |
@@ -835,6 +874,6 @@ receiver's writable state. Unsafe ownership, permissions, links, file types, or 
 fail the upgrade before any fetch or build. Existing throttle files in the receiver's state are
 left untouched and never migrated, so the first upgrade after this change starts a fresh cooldown.
 
-`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
+`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too, with both state directories under `/var/lib`. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).

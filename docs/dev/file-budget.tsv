@@ -7,5 +7,6 @@ tests/e2e-real.sh	1388
 tests/run.sh	9552
 tests/test-control-upgrade.sh	419
 tests/test-fetch-proxy.sh	416
+tests/test-randomx-mode.sh	402
 tests/test-xmrig-overlay.sh	413
 util/control-server.py	432

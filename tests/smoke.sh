@@ -37,7 +37,7 @@ fi
 
 if [ "${SMOKE_RUN_SETUP:-0}" = "1" ]; then
     banner "setup (build + tune)"
-    "$RIGFORGE" setup
+    "$RIGFORGE" setup --no-root-guard
 fi
 
 banner "bench (real xmrig --bench, offline)"
