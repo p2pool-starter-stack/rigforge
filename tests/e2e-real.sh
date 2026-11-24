@@ -72,14 +72,6 @@ die() {
     printf '\033[31me2e-real: %s\033[0m\n' "$1" >&2
     exit 2
 }
-# #183: the shared-rig lock. miner-0 hosts BOTH RigForge's release gates (rig-mutating) and
-# Pithead's e2e (API-reading, assumes a steadily-hashing miner) — a kernel flock serializes them.
-# Exclusive for mutators, `shared` for future read-only modes; the lock dies with the holding
-# process, so a killed run never needs cleanup. Pithead's harness carries the same helper against
-# the same path — the path IS the contract. Duplicated verbatim in tests/e2e-pithead.sh on purpose
-# (15 lines beat a lib two repos must share; tests/run.sh guards the copies against drift). The
-# env-overridable paths exist only so tests/run.sh can sandbox it without root. FD 9 is inherited
-# by children — that is what keeps the lock held for the whole run; do not close it.
 rig_lock() { # rig_lock <project> <suite> [shared]
     local mode=-x
     [ "${3:-}" = shared ] && mode=-s
@@ -107,15 +99,10 @@ rig_lock() { # rig_lock <project> <suite> [shared]
             echo "rig busy ($(cat "$hf" 2>/dev/null || echo unknown)) — waiting..." >&2
             flock $mode 9
         else
-            echo "miner-0 busy: $(cat "$hf" 2>/dev/null || echo unknown). Retry with RIG_LOCK_WAIT=1 to queue." >&2
+            echo "rig busy ($(cat "$hf" 2>/dev/null || echo unknown)). Retry with RIG_LOCK_WAIT=1 to queue." >&2
             exit 75 # EX_TEMPFAIL — callers can tell "busy, retry later" from a real failure
         fi
     fi
-    # DISPLAY-ONLY and strictly best-effort. The flock is already HELD on FD 9 above; a holder
-    # marker we can't write (a root-owned RIG_LOCK_HOLDER + a non-root runner) must NEVER abort
-    # under set -e and drop the lock — that would leave the box UNRESERVED, the exact bug (#249).
-    # Plain write, then passwordless sudo, then swallow. Portable UTC stamp — the GNU-only
-    # `date -Iseconds` errors on BSD/macOS. (#244)
     local _line
     _line="$(printf '%s %s pid=%s started=%s' "$1" "$2" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
     { printf '%s\n' "$_line" >"$hf" || printf '%s\n' "$_line" | sudo -n tee "$hf" >/dev/null; } 2>/dev/null || true
@@ -1358,7 +1345,6 @@ case "${1:-}" in
 provision | verify | control | upgrade | watchdog | perf | teardown | all) ;;
 *) die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|watchdog|perf|teardown|all}" ;;
 esac
-# #183: serialize the shared rig — taken after arg parsing, before the first systemctl/API touch.
 rig_lock rigforge e2e-real
 
 case "$1" in

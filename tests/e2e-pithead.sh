@@ -33,10 +33,6 @@ die() {
     exit 2
 }
 
-# #183: the shared-rig lock, duplicated verbatim in tests/e2e-real.sh — same helper, same path, the
-# cross-project contract (tests/run.sh guards the two copies against drift). FD 9 is inherited by
-# children; do not close it. Its own EXIT trap is later REPLACED by snapshot_config's (traps replace,
-# not stack), so _cleanup also removes the holder sidecar.
 rig_lock() { # rig_lock <project> <suite> [shared]
     local mode=-x
     [ "${3:-}" = shared ] && mode=-s
@@ -64,7 +60,7 @@ rig_lock() { # rig_lock <project> <suite> [shared]
             echo "rig busy ($(cat "$hf" 2>/dev/null || echo unknown)) — waiting..." >&2
             flock $mode 9
         else
-            echo "miner-0 busy: $(cat "$hf" 2>/dev/null || echo unknown). Retry with RIG_LOCK_WAIT=1 to queue." >&2
+            echo "rig busy ($(cat "$hf" 2>/dev/null || echo unknown)). Retry with RIG_LOCK_WAIT=1 to queue." >&2
             exit 75 # EX_TEMPFAIL — callers can tell "busy, retry later" from a real failure
         fi
     fi
@@ -520,8 +516,6 @@ summary() {
 
 proof_preflight "${1:-all}"
 require_preflight "$@"
-# Validate the phase against its own `phase_<name>` function: a typo dies with the rig untouched.
-# #183: the lock follows, before snapshot_config (whose _cleanup runs `apply`) and the first API touch.
 [ "${1:-all}" = all ] || declare -F "phase_${1//-/_}" >/dev/null || die "unknown phase '$1' (connect|worker-api|api-impact|network|network-sequence|stratum-auth|dashboard|dev-fee|config-ownership|control|control-replay-thermal|control-replay-pools|access-tokens|thread-profile|shared-host|selftest|all)"
 replay_lock "${1:-all}"
 
