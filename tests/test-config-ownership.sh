@@ -58,7 +58,7 @@ run_setup() {
     : >"$case_dir/calls.log"
     (
         set -Eeuo pipefail
-        export RIGFORGE_ROOT_GUARD_STAMP="$case_dir/root-guard" RIGFORGE_HOME="$case_dir/home"
+        export RIGFORGE_HOME="$case_dir/home"
         export TEST_CALL_LOG="$case_dir/calls.log"
         export TEST_DONATION="$donation"
         export TEST_SERVICE_STATE="$service_state"
@@ -68,6 +68,7 @@ run_setup() {
         source "$SCRIPT"
 
         SCRIPT_DIR="$ROOT"
+        ROOT_GUARD_STAMP="$case_dir/root-guard"
         WORKER_ROOT="$case_dir/worker"
         SYSTEMD_DIR="$case_dir/systemd"
         OS_TYPE=Linux

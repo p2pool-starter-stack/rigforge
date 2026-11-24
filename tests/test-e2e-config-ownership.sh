@@ -45,7 +45,7 @@ co_rigforge() {
         [ "$mode" != reboot ] || echo 'tuning the kernel: x — a reboot WILL be required'
         ;;
     'upgrade ') [ "$mode" != upgrade-refused ] || return 1 ;;
-    'setup ')
+    'setup --no-root-guard')
         : >"$D/setup-ran"
         render
         echo 'XMRig already built at the pinned commit — recompile will be skipped.'

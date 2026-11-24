@@ -91,9 +91,25 @@ guard ""
 assert_eq "$rc" 1 "user-owned ancestor of a root-owned tree refused"
 assert_has "$out" "$R/home/op is owned by uid 1000" "ancestor refusal names the ancestor"
 
+mkdir -p "$R/home/u"
+ln -s "$TREE" "$R/home/u/link"
+reset "$R/home/u 1000:1000:755"
+SCRIPT_DIR="$R/home/u/link" guard ""
+assert_eq "$rc" 1 "a code path through a symlink in a user-owned directory is refused"
+
+SCRIPT_DIR=relative/tree guard ""
+assert_eq "$rc" 1 "a relative code path is refused"
+
 reset "$R/home 0:0:1557"
 guard ""
 assert_eq "$rc" 1 "other-writable ancestor with a special bit refused"
+
+reset "$TREE/.git/hooks/post-checkout 1000:1000:755"
+mkdir -p "$TREE/.git/hooks"
+: >"$TREE/.git/hooks/post-checkout"
+guard ""
+assert_eq "$rc" 1 "a user-owned git hook root would run is refused"
+assert_has "$out" "$TREE/.git/hooks/post-checkout" "the git hook refusal names the hook"
 
 reset "$TREE/systemd fail"
 guard ""
@@ -135,6 +151,12 @@ reset "$TREE/rigforge.sh 1000:1000:755"
 mkdir "$TREE/.git"
 guard ""
 assert_eq "$rc" 1 "fresh git checkout is not grandfathered"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+mkdir "$TREE/.git"
+: >"$SYSTEMD_DIR/xmrig.service"
+SUDO_OK=0 guard ""
+assert_eq "$rc" 1 "a one-time allowance that cannot be recorded refuses"
 
 reset "$TREE/rigforge.sh 1000:1000:755"
 mkdir "$TREE/.git"

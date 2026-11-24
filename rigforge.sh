@@ -2258,13 +2258,13 @@ uninstall() {
     if [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" 2>/dev/null || true
-        sudo rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service" "$ROOT_GUARD_STAMP"
+        sudo rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service"
         sudo systemctl daemon-reload 2>/dev/null || true
         log "Removed the $SERVICE_NAME service."
     fi
 
     # 2. logrotate policy
-    sudo rm -f "$LOGROTATE_DIR/xmrig"
+    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP"
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
@@ -4627,14 +4627,14 @@ control_apply() {
 
 _control_upgrade_steps() {
     local ref="$1" cobj
-    ! _package_install || return 1
+    ! _package_install && _root_guard_check "" || return 1
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
     git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
+    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null
 }
 
 # control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
