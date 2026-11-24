@@ -12,6 +12,10 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 
+PROBE_TAG = "v99.99.99"
+ALLOWED_SECOND_SOURCE = "169.254.241.3"
+
+
 class ReplayError(Exception):
     pass
 
@@ -103,8 +107,20 @@ class Guest:
         raise PlatformError("guest failed to return with a new boot ID")
 
 
+def candidate(root):
+    result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                            capture_output=True, text=True)
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ReplayError("candidate commit of the driver checkout is unavailable")
+    return sha
+
+
 def replay(root, guest, config):
     commands = recipes(root)
+    commit = candidate(root)
+    allow_from = json.loads(config)["api_allow_from"]
+    token = uuid.uuid4().hex
     info = guest.virsh("dominfo", guest.domain)
     if not re.search(r"^Persistent:\s+no\s*$", info, re.MULTILINE):
         raise ReplayError("docs replay requires a transient disposable domain")
@@ -116,6 +132,7 @@ def replay(root, guest, config):
     if not re.fullmatch(r"/var/tmp/rigforge-docs\.[A-Za-z0-9]+", work):
         raise ReplayError("invalid guest scratch directory")
     quoted = shlex.quote(work)
+    clone = f"{quoted}/rigforge"
     helper = base64.b64encode((root / "tests/e2e-docs-guest.sh").read_bytes()).decode()
     prepared = base64.b64encode(config).decode()
     guest.run(f"chmod 755 {quoted}\ncd {quoted}\nprintf %s {helper} | base64 -d >check.sh\n"
@@ -131,10 +148,56 @@ def replay(root, guest, config):
     guest.reboot(commands["reboot"])
     guest.run(f"{check} installed {args}\n", timeout=600)
     print("PASS: reboot autostart, donation, pool, shares and read-only API", flush=True)
+    guest.run(f"E2E_ALLOWLIST_ALLOWED_SOURCE={ALLOWED_SECOND_SOURCE} {check} allowlist-refuse {args}\n", timeout=300)
+    guest.run("cd " + clone + "\njq --arg source " + shlex.quote(ALLOWED_SECOND_SOURCE) +
+              " '.api_allow_from = $source' config.json >config.tmp && mv config.tmp config.json\n"
+              "sudo ./rigforge.sh apply\n", timeout=300)
+    guest.run(f"E2E_ALLOWLIST_ALLOWED_SOURCE={ALLOWED_SECOND_SOURCE} {check} allowlist-accept {args}\n", timeout=180)
+    guest.run("cd " + clone + "\njq --arg original " + shlex.quote(allow_from) +
+              " '.api_allow_from = $original' config.json >config.tmp && mv config.tmp config.json\n"
+              "sudo ./rigforge.sh apply\n", timeout=300)
+    print("PASS: API allowlist refused a second source and accepted an allowed source", flush=True)
+    guest.run("cd " + clone + "\njq --arg token " + shlex.quote(token) +
+              " '.control = \"enabled\" | .control_upgrade = \"enabled\" | .ACCESS_TOKEN = $token'"
+              " config.json >config.tmp && mv config.tmp config.json\n"
+              "sudo ./rigforge.sh apply\n", timeout=600)
+    guest.run(f"E2E_CONTROL_TOKEN={token} {check} control-apply {args}\n", timeout=480)
+    guest.run(f"E2E_CONTROL_TOKEN={token} {check} control-revert {args}\n", timeout=480)
+    print("PASS: writable control path applied one change and rolled back one change", flush=True)
+    guest.run("cd " + clone + "\nprobe=$(git -c user.name=docs-replay -c user.email=docs-replay@localhost"
+              " commit-tree 'HEAD^{tree}' -p HEAD -m 'docs replay upgrade probe')\n"
+              "git tag " + PROBE_TAG + " \"$probe\"\n", timeout=120)
+    guest.run(f"E2E_CONTROL_TOKEN={token} E2E_UPGRADE_LEG=noop E2E_CONTROL_PROBE_TAG={PROBE_TAG} "
+              f"{check} upgrade-leg {args}\n", timeout=480)
+    guest.run(f"E2E_CONTROL_TOKEN={token} E2E_UPGRADE_LEG=refused E2E_CONTROL_PROBE_TAG={PROBE_TAG} "
+              f"{check} upgrade-leg {args}\n", timeout=900)
+    print("PASS: remote-upgrade chain reached noop and refused a forged tag with the checkout intact", flush=True)
+    guest.run(f"cd {quoted}/rigforge\ngit fetch --quiet --tags origin\n"
+              f"git fetch --quiet origin {commit}\ngit checkout --quiet --force FETCH_HEAD\n"
+              "sudo ./rigforge.sh upgrade\n", timeout=2400)
+    guest.run(f"E2E_CONTROL_TOKEN={token} E2E_EXPECTED_HEAD={commit} {check} upgraded {args}\n", timeout=900)
+    print("PASS: remote upgrade from the previous release to the candidate kept shares landing", flush=True)
+    digest = guest.run(f"cd {quoted}/rigforge\nsha256sum config.json | awk '{{print $1}}'\n").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ReplayError("config digest is unreadable")
+    archive = guest.run(f"cd {quoted}/rigforge\nsudo ./rigforge.sh backup --yes\n"
+                        "ls -1 backups/rigforge-backup-*.tar.gz | sort | tail -1\n",
+                        timeout=300).strip().splitlines()[-1]
+    if not re.fullmatch(r"backups/rigforge-backup-[0-9]{8}-[0-9]{6}\.tar\.gz", archive):
+        raise ReplayError("backup archive path is invalid")
+    guest.run(f"cd {quoted}/rigforge\njq '.DONATION = 1' config.json >config.tmp && mv config.tmp config.json\n")
+    guest.run(f"cd {quoted}/rigforge\nsudo ./rigforge.sh restore --yes {shlex.quote(archive)}\n", timeout=300)
+    guest.run(f"E2E_RESTORED_CONFIG_SHA256={digest} {check} restored {args}\n", timeout=120)
+    print("PASS: backup and restore round-tripped the config", flush=True)
     guest.run(f"cd {quoted}/rigforge\nsudo ./rigforge.sh uninstall --yes\n", timeout=120)
     guest.reboot(commands["reboot"])
     guest.run(f"{check} removed {args}\n")
     print("PASS: uninstall remained complete after reboot", flush=True)
+    guest.run(f"cd {quoted}/rigforge\numask 077\nprintf %s {prepared} | base64 -d >config.json\n")
+    guest.run(f"cd {quoted}/rigforge\nsudo env RIGFORGE_APPLIANCE=1 LC_ALL=C ./rigforge.sh\n", timeout=3600)
+    guest.run(f"{check} appliance {args}\n", timeout=300)
+    print("PASS: appliance mode ran with runtime-only units on the stock systemd guest", flush=True)
+    guest.run(f"cd {quoted}/rigforge\nsudo env RIGFORGE_APPLIANCE=1 ./rigforge.sh uninstall --yes\n", timeout=120)
 
 
 def check_config(config):
@@ -154,7 +217,10 @@ def check_config(config):
             or pools[0].get("user", "docs-replay") != "docs-replay"
             or pools[0].get("pass", "x") not in ("", "x")):
         raise ReplayError("prepared config needs one throwaway pool, donation zero and an API allowlist")
-    ipaddress.ip_network(data["api_allow_from"], strict=False)
+    try:
+        ipaddress.ip_network(data["api_allow_from"], strict=False)
+    except ValueError:
+        raise ReplayError("prepared config api_allow_from must be one valid address or network") from None
     endpoint = urlsplit("//" + pools[0]["url"])
     if (not endpoint.hostname or not endpoint.port or endpoint.username is not None
             or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment
