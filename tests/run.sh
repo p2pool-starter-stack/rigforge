@@ -2827,8 +2827,16 @@ set +e
 wdz_test_script=$(mktemp "$SANDBOX/wdz-test.XXXXXX.sh")
 cat >"$wdz_test_script" <<WDZEOF
 cd "$WDZ"
+wdz_systemctl() {
+    echo "[systemctl] \$*" >>"$WDZ/calls.log"
+    case "\$*" in
+    *"is-active"*xmrig*) echo "active"; return 0 ;;
+    *"is-active"*) echo "inactive"; return 1 ;;
+    *) return 0 ;;
+    esac
+}
 systemctl() { wdz_systemctl "\$@"; }
-sudo systemctl() { wdz_systemctl "\$@"; }
+sudo() { wdz_systemctl "\$@"; }
 CONFIG_JSON="$WDZ/config.json" parse_config 2>&1
 echo "parse_rc=\$?"
 WDZEOF
@@ -2838,8 +2846,16 @@ wdz_test_script2=$(mktemp "$SANDBOX/wdz2-test.XXXXXX.sh")
 cat >"$wdz_test_script2" <<WDZ2EOF
 set +e
 cd "$WDZ2"
+wdz2_systemctl() {
+    echo "[systemctl] \$*" >>"$WDZ2/calls.log"
+    case "\$*" in
+    *"is-active"*xmrig*) echo "active"; return 0 ;;
+    *"is-active"*) echo "inactive"; return 1 ;;
+    *) return 0 ;;
+    esac
+}
 systemctl() { wdz2_systemctl "\$@"; }
-sudo systemctl() { wdz2_systemctl "\$@"; }
+sudo() { wdz2_systemctl "\$@"; }
 source "$SCRIPT"
 parse_config() { :; }
 CONFIG_JSON="$WDZ2/config.json"
