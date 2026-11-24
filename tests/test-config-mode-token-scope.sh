@@ -172,6 +172,7 @@ printf '{"DONATION":4}' >"$CC/s.json"
     umask 022
     CONFIG_JSON="$CC/config.json"
     parse_config() { mode_of "$CONFIG_JSON" >"$CC/seen"; }
+    _fsync_paths() { :; }
     out=$(_control_commit "$CC/s.json" "$CC/backups")
     assert_has "commit under umask 022 lands the change" "$out" "committed "
     assert_eq "the candidate is owner-only while parse_config validates it" "$(cat "$CC/seen")" 600
@@ -192,6 +193,7 @@ printf '{"DONATION":4}' >"$RB/state/spool/pending-abc123.json"
     CONFIG_JSON="$RB/config.json"
     RIGFORGE_CONTROL_STATE="$RB/state"
     parse_config() { :; }
+    _fsync_paths() { :; }
     _control_claim_staged() { cp "$1" "$RB/staged.json" && printf '%s' "$RB/staged.json"; }
     _control_do_apply_fast() { return 1; }
     _control_do_apply() { return 1; }
