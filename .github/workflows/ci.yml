@@ -231,10 +231,9 @@ jobs:
       - name: Tap the checkout and install the formula
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
-          HOMEBREW_NO_INSTALL_FROM_API: "1"
         run: |
           set -euo pipefail
-          if [ "$(uname)" = Linux ]; then eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"; fi
+          eval "$(brew shellenv)"
           brew tap p2pool-starter-stack/rigforge "$GITHUB_WORKSPACE"
           brew install p2pool-starter-stack/rigforge/rigforge
           brew test p2pool-starter-stack/rigforge/rigforge
@@ -246,6 +245,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          eval "$(brew shellenv)"
           if sudo -n sh -c 'command -v rigforge'; then echo "sudo resolves rigforge"; else echo "sudo does not resolve rigforge"; fi
           sudo -n "$(command -v rigforge)" --version
