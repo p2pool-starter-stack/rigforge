@@ -207,10 +207,11 @@ These are why a reboot is needed on Linux:
   `util/proposed-grub.sh`). Making it persistent edits
   GRUB, which takes effect on reboot. RigForge merges its parameters into the existing
   `GRUB_CMDLINE_LINUX_DEFAULT` instead of overwriting it, so other kernel params are preserved (a
-  boot-safety fix). It edits only when the line is one plain double-quoted string; for single-quoted,
-  multi-line, or trailing-comment GRUB configs RigForge prints the parameters to set by hand and
-  leaves the file untouched. The first `.bak` is kept on every edit cycle; subsequent backups are
-  never overwritten.
+  boot-safety fix). It edits only when the file has at most one `GRUB_CMDLINE_LINUX_DEFAULT=` line and
+  that line is one plain double-quoted value. A single-quoted value, a trailing comment, more than one
+  `GRUB_CMDLINE_LINUX_DEFAULT=` line or a value containing an escaped double quote is refused: setup
+  and uninstall leave the file untouched and setup prints the parameters to add by hand. RigForge
+  writes `/etc/default/grub.bak` only if none exists, so the original is kept.
 - MSR access. Loads the `msr` module and sets the hardware-prefetcher / cache model-specific
   registers XMRig recommends for the CPU. (Blocked by Secure Boot; see
   [troubleshooting](operations.md#troubleshooting).)
