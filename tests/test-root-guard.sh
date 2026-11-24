@@ -22,7 +22,7 @@ echo "== unit: root-guard refuses root-run units on a tree a non-root user can w
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 R=$(cd -P "$T" && pwd -P)
-TREE="$R/home/op/rigforge"
+TREE="$R/users/op/rigforge"
 mkdir -p "$TREE/util" "$TREE/systemd" "$R/etc-systemd" "$R/etc"
 cp "$ROOT/util/root-guard.sh" "$TREE/util/root-guard.sh"
 : >"$TREE/rigforge.sh"
@@ -86,21 +86,21 @@ reset "$TREE/systemd/xmrig.service.template 0:1000:664"
 guard ""
 assert_eq "$rc" 1 "group-writable unit template refused"
 
-reset "$R/home/op 1000:1000:755"
+reset "$R/users/op 1000:1000:755"
 guard ""
 assert_eq "$rc" 1 "user-owned ancestor of a root-owned tree refused"
-assert_has "$out" "$R/home/op is owned by uid 1000" "ancestor refusal names the ancestor"
+assert_has "$out" "$R/users/op is owned by uid 1000" "ancestor refusal names the ancestor"
 
-mkdir -p "$R/home/u"
-ln -s "$TREE" "$R/home/u/link"
-reset "$R/home/u 1000:1000:755"
-SCRIPT_DIR="$R/home/u/link" guard ""
+mkdir -p "$R/users/u"
+ln -s "$TREE" "$R/users/u/link"
+reset "$R/users/u 1000:1000:755"
+SCRIPT_DIR="$R/users/u/link" guard ""
 assert_eq "$rc" 1 "a code path through a symlink in a user-owned directory is refused"
 
 SCRIPT_DIR=relative/tree guard ""
 assert_eq "$rc" 1 "a relative code path is refused"
 
-reset "$R/home 0:0:1557"
+reset "$R/users 0:0:1557"
 guard ""
 assert_eq "$rc" 1 "other-writable ancestor with a special bit refused"
 
