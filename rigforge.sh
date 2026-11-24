@@ -80,7 +80,6 @@ REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
 SERVICE_NO_START=false
-
 # Pinned XMRig release for reproducible builds; environment-overridable.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
@@ -1749,7 +1748,8 @@ configure_limits() {
 # removes it regardless, but only while it's still our symlink.
 link_cli() {
     [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
-    local target="${RIGFORGE_LIB:-$SCRIPT_DIR}/rigforge.sh" link="$BIN_DIR/rigforge"
+    local link="$BIN_DIR/rigforge" target
+    target="$(_lib_dir)/rigforge.sh"
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
         return 0
@@ -3630,10 +3630,10 @@ backup() {
     jq -n --arg v "$(cmd_version)" --arg host "$(hostname 2>/dev/null)" --arg files "$included" \
         '{rigforge: $v, source_host: $host, files: ($files | split(" "))}' >"$STAGE_DIR/rigforge-backup.json" 2>/dev/null || true
 
-    local backups_dir="${RIGFORGE_STATE:-$SCRIPT_DIR}/backups" stamp archive
-    mkdir -p "$backups_dir"
+    local stamp archive
+    mkdir -p "$(_state_dir)/backups"
     stamp=$(date +%Y%m%d-%H%M%S)
-    archive="$backups_dir/rigforge-backup-$stamp.tar.gz"
+    archive="$(_state_dir)/backups/rigforge-backup-$stamp.tar.gz"
     (umask 077 && tar -czf "$archive" -C "$STAGE_DIR" .)
     chmod 600 "$archive" 2>/dev/null || true
 
@@ -4661,12 +4661,12 @@ control_apply() {
 
 _control_upgrade_steps() {
     local ref="$1" cobj
-    _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    _fetch_git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
-        git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
+        cobj=$(git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
+        git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
-    git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
+    git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" checkout --quiet --force "$ref" 2>/dev/null || return 1
     "$(_lib_dir)/rigforge.sh" upgrade >/dev/null 2>&1
 }
 
@@ -4732,7 +4732,7 @@ control_upgrade() {
             return 0
         fi
     fi
-    _fetch_preflight -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" || {
+    _fetch_preflight -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" || {
         _control_status "$status" failed "$cid" version "$FETCH_PREFLIGHT_REASON" ""
         warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
         return 0
@@ -4749,7 +4749,7 @@ control_upgrade() {
         warn "control-upgrade: throttled."
         return 0
     fi
-    old_tag=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
+    old_tag=$(git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" describe --tags --exact-match 2>/dev/null || git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" rev-parse HEAD 2>/dev/null || true)
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then

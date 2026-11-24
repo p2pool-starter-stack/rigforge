@@ -275,9 +275,9 @@ assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.
 # #308: the control-upgrade oneshot runs as root with NO $HOME, so git can't read root's safe.directory
 # config and fatals on "dubious ownership" of the operator-owned install — every git op then fails and
 # the upgrade silently dies (a real miner-0 finding; the stubbed suite can't reach it since it stubs
-# git). Every `git -C "$SCRIPT_DIR"` in the upgrade path MUST pin -c safe.directory. Drift-guard it.
+# git). Every `git -C` of the checkout in the upgrade path MUST pin -c safe.directory. Drift-guard it.
 echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
-bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
+bare_rf_git=$(grep -nE 'git -C "\$(SCRIPT_DIR|\(_lib_dir\))"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
 
 echo "== unit: _control_upgrade_do reowns what the upgrade creates to the checkout owner (#798) =="

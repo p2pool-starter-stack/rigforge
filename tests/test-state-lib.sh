@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1090,SC2034,SC2329
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 D="$(mktemp -d)"
@@ -87,6 +88,52 @@ eq "default state, lib and worker root follow SCRIPT_DIR" "$(paths /x '' '')" "/
 eq "RIGFORGE_STATE moves state and the worker root only" "$(paths /x /s '')" "/s /x /s/data/worker "
 eq "RIGFORGE_LIB moves lib only" "$(paths /x '' "$ROOT")" "/x $ROOT /x/data/worker "
 
+echo "== RIGFORGE_STATE elsewhere: every state file lands only there =="
+mkdir -p "$D/sx/lib" "$D/sx/st"
+bundle "$D/sx/lib"
+printf '{"pools":[{"url":"h:3333"}]}' >"$D/sx/st/config.json"
+state_probe() {
+  (
+    export RIGFORGE_STATE="$D/sx/st"
+    export RIGFORGE_LIB="$D/sx/lib"
+    unset RIGFORGE_HOME
+    source "$D/sx/lib/rigforge.sh"
+    SCRIPT_DIR="$D/sx/lib"
+    printf '%s\n' "$CONFIG_JSON" "$CONFIG_META_FILE" "$APPLIANCE_MARKER" "$(_worker_root_for_home DYNAMIC_HOME)"
+    _writable_config_canonical() { printf '{}'; }
+    REAL_USER=$(id -un)
+    _writable_config_hash >/dev/null
+    ls -A "$D/sx/st"
+  )
+}
+probe=$(state_probe 2>&1)
+has_line() { printf '%s\n' "$probe" | grep -Fxq "$1"; }
+has_line "$D/sx/st/config.json" && pass "config.json is in the state dir" || fail "config.json is in the state dir" "$probe"
+has_line "$D/sx/st/.rigforge-config-meta.json" && pass "provenance sidecar is in the state dir" || fail "provenance sidecar is in the state dir" "$probe"
+has_line "$D/sx/st/.rigforge-appliance" && pass "appliance marker is in the state dir" || fail "appliance marker is in the state dir" "$probe"
+has_line "$D/sx/st/data/worker" && pass "default worker root is in the state dir" || fail "default worker root is in the state dir" "$probe"
+has_line ".rigforge-revision-key" && pass "revision key is written in the state dir" || fail "revision key is written in the state dir" "$probe"
+eq "lib dir gained no revision key" "$(find "$D/sx/lib" -maxdepth 1 -name '.rigforge*' | wc -l | tr -d ' ')" "0"
+if command -v flock >/dev/null; then
+  mkdir -p "$D/sx/cs/spool" "$D/sx/cs/processing"
+  chmod 700 "$D/sx/cs/processing"
+  printf '{"DONATION":2}' >"$D/sx/cs/spool/pending-fedcba9876543210.json"
+  committed=$(
+    export RIGFORGE_STATE="$D/sx/st" RIGFORGE_LIB="$D/sx/lib"
+    source "$D/sx/lib/rigforge.sh"
+    OS_TYPE=Linux SCRIPT_DIR="$D/sx/lib" CONFIG_JSON="$D/sx/st/config.json" RIGFORGE_CONTROL_STATE="$D/sx/cs" RIGFORGE_CONTROL_PROCESSING="$D/sx/cs/processing"
+    stat() { printf '0:0:700\n'; }
+    _control_commit() { printf '%s' "$2" >"$D/sx/backups-arg"; }
+    _control_fast_path_eligible() { return 1; }
+    _control_do_apply() { return 0; }
+    _sweep_config_backups() { :; }
+    control_apply >"$D/sx/ca.log" 2>&1 </dev/null
+    cat "$D/sx/backups-arg" 2>/dev/null
+  )
+  eq "control-apply hands config-backups under the state dir" "$committed" "$D/sx/st/config-backups"
+else
+  echo "  skip: control-apply backups dir needs flock (Linux CI carries it)"
+fi
 echo "== black-box: read-only lib, writable state =="
 bundle "$D/ro"
 chmod -R a-w "$D/ro"

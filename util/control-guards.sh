@@ -40,6 +40,6 @@ _control_upgrade_reown() {
 _control_upgrade_do() {
     local rc=0
     _control_upgrade_steps "$1" || rc=$?
-    _control_upgrade_reown "$SCRIPT_DIR"
+    _control_upgrade_reown "$(_lib_dir)"
     return "$rc"
 }
