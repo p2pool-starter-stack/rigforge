@@ -4591,6 +4591,7 @@ control_apply() {
 
 _control_upgrade_steps() {
     local ref="$1" cobj udir="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
+    RIGFORGE_UPGRADE_UNMOVED="the root guard refused this tree"
     ! _package_install && _root_guard_check "" || return 1
     RIGFORGE_UPGRADE_UNMOVED="could not fetch from origin"
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1

@@ -384,7 +384,7 @@ STUB
         source "$SCRIPT"
         OS_TYPE=Linux SCRIPT_DIR="$d" CONFIG_JSON="$d/config.json" RIGFORGE_CONTROL_STATE="$d/state" RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state" CONTROL_UPGRADE_MIN_INTERVAL=0 MODE="$1"
         _wait_miner_live() { return 0; }
-        _root_guard_check() { :; }
+        _root_guard_check() { [ "$MODE" != guard ]; }
         stat() { case "$MODE:$*" in owner:*upgrade-pending*) echo 1000:1000:600:1 ;; *) command stat "$@" ;; esac }
         git() { case "$*" in *fetch*) [ "$MODE" != fetch ] ;; *describe*) echo v0.0.1 ;; *checkout*) echo checkout >>"$d/work.log" ;; *"is-ancestor unreach "*) return 1 ;; *"tags/v9.9.9"*) [ "$MODE" = tag ] && echo unreach || echo c0ffee ;; *rev-parse*) echo c0ffee ;; esac }
         set +e
@@ -397,6 +397,9 @@ assert_eq "fetch failure -> failed (#816)" "$(st "${s%%|*}")" "failed"
 assert_contains "fetch failure reason names the fetch and says nothing was changed (#816)" "$s" "could not fetch from origin; nothing was changed"
 assert_absent "fetch failure never claims manual intervention (#816)" "$s" "manual intervention"
 assert_eq "fetch failure neither checks out, reinstalls nor marks (#816)" "${s#*|}" "||keep|"
+s="$(pending_run guard 1.0.0)"
+assert_contains "root-guard refusal -> failed, nothing was changed (#816)" "$s" "the root guard refused this tree; nothing was changed"
+assert_eq "root-guard refusal neither checks out, reinstalls nor marks (#816)" "$(st "${s%%|*}")|${s#*|}" "failed|||keep|"
 s="$(pending_run tag 1.0.0)"
 assert_eq "tag not reachable from origin/main still rolls back with the rollback checkout (#816)" "$(st "${s%%|*}")|$(printf '%s' "${s%%|*}" | jq -r .reason)|${s#*|}" "rolled_back|upgrade to v9.9.9 failed; rolled back to v0.0.1 and live|checkout"$'\n'"REINSTALL||keep|"
 s="$(pending_run ok 1.0.0)"
