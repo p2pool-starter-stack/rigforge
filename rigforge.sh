@@ -4715,7 +4715,7 @@ _watchdog_thermal_floor() {
         warn "watchdog: the config does not validate and temp ${t}°C is above max_temp_c=${m}°C, but stopping $SERVICE_NAME failed — will retry."
         return 0
     }
-    [ -z "${WORKER_ROOT:-}" ] || touch "$WORKER_ROOT/watchdog.thermal-hold" 2>/dev/null || warn "watchdog: could not write the thermal-hold marker in $WORKER_ROOT."
+    [ -n "${WORKER_ROOT:-}" ] && touch "$WORKER_ROOT/watchdog.thermal-hold" 2>/dev/null || warn "watchdog: could not write the thermal-hold marker; start $SERVICE_NAME by hand once the config is fixed."
     warn "watchdog: the config does not validate, but temp ${t}°C is above max_temp_c=${m}°C — miner stopped."
 }
 
@@ -4747,7 +4747,10 @@ watchdog() {
             rm -f "$hold_f"
             log "watchdog: $lift_reason — thermal hold lifted, miner started."
         else
-            ! systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || warn "watchdog: thermal hold, but stopping $SERVICE_NAME failed."
+            if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: thermal hold active, but stopping $SERVICE_NAME failed — will retry."
+                return 0
+            fi
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
         fi
         return 0

@@ -356,9 +356,11 @@ watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
   re-apply) is stopped again on the next tick; a tuning sweep's re-apply leaves a held miner stopped.
   The cutoff also runs when the rest of `config.json` fails validation: if `max_temp_c` itself still
   reads as a whole number 40-110 and the miner is active above it, the watchdog stops it, writes the
-  hold marker and still exits with the config error. A `config.json` that is not valid JSON, or an
-  invalid `max_temp_c`, gives no cutoff until it is fixed. A held rig is not started again while the
-  config fails validation; fix the config and the normal lift applies.
+  hold marker and still exits with the config error. While the config fails validation, only that
+  cutoff runs: no hold is lifted, and a held miner that was started again is stopped only while it
+  is above `max_temp_c`. When `HOME_DIR` itself is rejected, the stop writes no hold marker and says
+  so; start the miner by hand once the config is fixed. A `config.json` that is not valid JSON, or
+  an invalid `max_temp_c`, gives no cutoff until it is fixed.
   A failed stop is logged and retried on later ticks while the miner remains active and above the
   cutoff. A failed recovery start is logged and retains the hold for later retries, including when
   `max_temp_c` is removed; only a successful start clears the hold.

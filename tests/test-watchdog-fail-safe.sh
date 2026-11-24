@@ -27,7 +27,8 @@ run_real() {
     rm -f "$TEST_DIR/calls.log"
     mkdir -p "$home/worker"
     [ "${6:-}" != hold ] || : >"$home/worker/watchdog.thermal-hold"
-    printf '{"HOME_DIR": "%s", "max_temp_c": %s, "pools": [{"url": "%s"}]}\n' "$home" "$2" "$3" >"$TEST_DIR/config.json"
+    printf '{"HOME_DIR": "%s", "max_temp_c": %s, "pools": [{"url": "%s"}]}\n' "${RAW_HOME:-$home}" "$2" "$3" >"$TEST_DIR/config.json"
+    [ -z "${RAW_CFG:-}" ] || printf '%s\n' "$RAW_CFG" >"$TEST_DIR/config.json"
     (
         source "$SCRIPT"
         OS_TYPE=Linux
@@ -63,6 +64,13 @@ check "a failed stop is tried" 1 "$(calls 'stop xmrig')"
 check "a failed stop writes no hold marker" n "$(held g)"
 check "a failed stop is reported" 1 "$(grep -c 'stopping xmrig failed' "$TEST_DIR/out.log")"
 check "a failed stop does not claim the miner stopped" 0 "$(grep -c 'miner stopped' "$TEST_DIR/out.log")"
+rc=$(RAW_HOME=/etc run_real h 90 h:3333 99 y)
+check "a rejected HOME_DIR still gets the thermal stop" 1 "$(calls 'stop xmrig')"
+check "a stop without a hold marker says so" 1 "$(grep -c 'could not write the thermal-hold marker' "$TEST_DIR/out.log")"
+rc=$(RAW_CFG='{"max_temp_c": 90, "pools": [' run_real i 90 h:3333 99 y)
+check "a config that is not JSON exits non-zero" "rc=1" "$rc"
+check "a config that is not JSON stops nothing" 0 "$(calls 'stop xmrig')"
+check "a config that is not JSON aborts nothing else" 0 "$(grep -c 'aborted' "$TEST_DIR/out.log")"
 rc=$(run_real d 300 nohostport 99 y)
 check "an out-of-range max_temp_c stops nothing" 0 "$(calls 'stop xmrig')"
 
@@ -88,10 +96,11 @@ run_held() {
         SERVICE_NAME=xmrig
         MAX_TEMP_C=90
         _ACT="$1"
+        _STOP="${2:-0}"
         sudo() { "$@"; }
         systemctl() {
             echo "[systemctl] $*" >>"$TEST_DIR/calls.log"
-            case "$*" in *is-active*) [ "$_ACT" = y ] ;; *) return 0 ;; esac
+            case "$*" in *is-active*) [ "$_ACT" = y ] ;; stop*) return "$_STOP" ;; *) return 0 ;; esac
         }
         set +e
         TUNE_TEMP_CMD="echo 99" watchdog
@@ -103,6 +112,10 @@ run_held y
 check "the running miner is stopped" 1 "$(calls 'stop xmrig')"
 check "the hold stays" y "$([ -f "$TEST_DIR/held/watchdog.thermal-hold" ] && echo y || echo n)"
 check "it is not started" 0 "$(calls '] start xmrig')"
+run_held y 1
+check "a failed stop during a hold is reported" 1 "$(grep -c 'stopping xmrig failed' "$TEST_DIR/out.log")"
+check "a failed stop during a hold does not claim the miner stays stopped" 0 "$(grep -c 'stays stopped' "$TEST_DIR/out.log")"
+check "a failed stop during a hold keeps the hold" y "$([ -f "$TEST_DIR/held/watchdog.thermal-hold" ] && echo y || echo n)"
 run_held n
 check "a miner that is already stopped gets no stop" 0 "$(calls 'stop xmrig')"
 
