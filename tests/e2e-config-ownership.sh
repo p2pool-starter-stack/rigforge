@@ -105,5 +105,14 @@ phase_config_ownership() {
     else
         bad "setup did not restart the miner with the changed pool setting, or rebuilt XMRig (#529)" || true
     fi
+    grep 'root-guard:' "$setup_log" || true
     rm -f "$setup_log"
+    upgrade_log=$(mktemp)
+    if "$RIGFORGE" upgrade </dev/null >"$upgrade_log" 2>&1 && _co_wait_live; then
+        ok "upgrade without --no-root-guard passes the root guard after setup on this rig (#783)"
+    else
+        bad "upgrade without --no-root-guard failed after setup on this rig (#783)" || true
+    fi
+    grep -E 'root-guard:|ERROR' "$upgrade_log" || true
+    rm -f "$upgrade_log"
 }
