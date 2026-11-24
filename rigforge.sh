@@ -71,6 +71,8 @@ source "$(_script_dir)/util/xmrig-overlay.sh"
 source "$(_script_dir)/util/daemon-pools.sh"
 # shellcheck source=util/fetch-proxy.sh
 source "$(_script_dir)/util/fetch-proxy.sh"
+# shellcheck source=util/package-upgrade.sh
+source "$(_script_dir)/util/package-upgrade.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
@@ -2141,9 +2143,6 @@ _upgrade_check() {
     return 0
 }
 
-# Upgrade redeploys this release: regenerate config, reinstall every unit, re-tune, re-own, and restart. The COMPILE is
-# what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
-# (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
     local arg _api_rc=0 _control_rc=0
     for arg in "$@"; do
@@ -2160,7 +2159,6 @@ upgrade() {
     parse_config
     _shared_host_prepare
     decide_rebuild
-    # #413: reinstall the whole release even when the XMRig pin (and therefore build) is unchanged.
     local was_active=no
     if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         was_active=yes
@@ -2187,7 +2185,7 @@ upgrade() {
     _reown_worker
     [ "$_control_rc" -eq 0 ] || _control_failed upgrade
     [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
-    [ "$_api_rc:$_control_rc" = 0:0 ]
+    [ "$_api_rc:$_control_rc" = 0:0 ] && _pkg_upgrade_clear
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -3965,14 +3963,14 @@ _render_duration() {
 svc_status() {
     _shared_host_status_report
     _config_apply_check
+    _pkg_upgrade_status
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
         (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
     (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
-    # Read-only: `systemctl status` is world-readable, so no sudo (don't prompt for a password to look).
-    systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
+    systemctl status "$SERVICE_NAME" || true
 }
 svc_logs() {
     [ "$OS_TYPE" = "Linux" ] || {
@@ -5342,7 +5340,7 @@ doctor() {
         ;;
     esac
 
-    # Service active?
+    _pkg_upgrade_doctor || issues=$((issues + 1))
     local svc_up=n
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         svc_up=y
@@ -6134,6 +6132,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         upgrade "$@"
         ;;
+    package-upgrade) package_upgrade ;;
     uninstall)
         shift
         uninstall "$@"

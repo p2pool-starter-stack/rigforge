@@ -20,6 +20,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-access-token-readiness.sh
 	bash tests/test-docs-clone-pin.sh
 	bash tests/test-staged-rebuild.sh
+	bash tests/test-package-upgrade.sh
 	bash tests/test-dependabot-coverage.sh
 	bash tests/test-codeql-workflow.sh
 	bash tests/test-tool-pin-watch.sh

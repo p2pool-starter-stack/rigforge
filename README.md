@@ -147,7 +147,7 @@ sudo apt update && sudo apt install rigforge
 ```
 
 `sudo apt upgrade rigforge` keeps the worker current and first-run setup is unchanged
-(`rigforge --version` confirms the install). What the signature proves, and how the key is held,
+(`rigforge --version` confirms the install). An upgrade of a configured host is queued outside dpkg and restarts the miner only after it succeeds; `apt-mark hold rigforge` defers it ([operations](docs/operations.md#upgrading-through-apt)). What the signature proves, and how the key is held,
 is in [SECURITY.md › Release integrity](SECURITY.md#release-integrity). Until the first signed
 release is published the feed URL is not live and the pinned fingerprint file is a placeholder.
 
