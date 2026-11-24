@@ -14,9 +14,12 @@ fail() {
     exit 1
 }
 ok() { printf '  \033[1;32m✓\033[0m %s\n' "$1"; }
-bad() { printf '  \033[1;31m✗\033[0m %s\n      %s\n' "$1" "$2"; exit 1; }
-assert_eq() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected [$2], got [$1]"; fi }
-assert_rc() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected rc $2, got $1"; fi }
+bad() {
+    printf '  \033[1;31m✗\033[0m %s\n      %s\n' "$1" "$2"
+    exit 1
+}
+assert_eq() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected [$2], got [$1]"; fi; }
+assert_rc() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected rc $2, got $1"; fi; }
 
 source "$SCRIPT"
 PASS=0
@@ -41,8 +44,8 @@ _test_root_guard() {
         stat() {
             case "$*" in
             *'-c'*'%U'*) echo "$uname" ;;
-            *'-c'*'%u'*|*'-c'*'%g'*) echo "$uid" ;;
-            *'-c'*'%a'*|*'-c'*'%A'*) echo "755" ;;
+            *'-c'*'%u'* | *'-c'*'%g'*) echo "$uid" ;;
+            *'-c'*'%a'* | *'-c'*'%A'*) echo "755" ;;
             *) /usr/bin/stat "$@" ;;
             esac
         }
@@ -101,7 +104,7 @@ assert_eq "$rc" "0" "Darwin skips guard (#783)"
     stat() {
         case "$*" in
         *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'*|*'-c'*'%g'*|*'-c'*'%a'*|*'-c'*'%A'*) echo "0" ;;
+        *'-c'*'%u'* | *'-c'*'%g'* | *'-c'*'%a'* | *'-c'*'%A'*) echo "0" ;;
         *) /usr/bin/stat "$@" ;;
         esac
     }
@@ -138,8 +141,8 @@ cp "$TEST_TMP/config.json" "$TEST_ANC/parent/child/config.json"
     stat() {
         case "$*" in
         *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'*|*'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'*|*'-c'*'%A'*) /usr/bin/stat "$@" ;;
+        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
+        *'-c'*'%a'* | *'-c'*'%A'*) /usr/bin/stat "$@" ;;
         *) /usr/bin/stat "$@" ;;
         esac
     }
@@ -158,8 +161,8 @@ cp "$TEST_TMP/config.json" "$TEST_ANC/parent/child/config.json"
     stat() {
         case "$*" in
         *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'*|*'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'*|*'-c'*'%A'*) /usr/bin/stat "$@" ;;
+        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
+        *'-c'*'%a'* | *'-c'*'%A'*) /usr/bin/stat "$@" ;;
         *) /usr/bin/stat "$@" ;;
         esac
     }
@@ -177,8 +180,8 @@ cp "$TEST_TMP/config.json" "$TEST_ANC/parent/child/config.json"
     stat() {
         case "$*" in
         *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'*|*'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'*|*'-c'*'%A'*) /usr/bin/stat "$@" ;;
+        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
+        *'-c'*'%a'* | *'-c'*'%A'*) /usr/bin/stat "$@" ;;
         *) /usr/bin/stat "$@" ;;
         esac
     }
@@ -220,8 +223,8 @@ rm -rf "$TEST_ANC"
     stat() {
         case "$*" in
         *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'*|*'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'*|*'-c'*'%A'*) echo "755" ;;
+        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
+        *'-c'*'%a'* | *'-c'*'%A'*) echo "755" ;;
         *) /usr/bin/stat "$@" ;;
         esac
     }

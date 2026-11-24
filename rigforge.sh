@@ -1991,33 +1991,6 @@ _persist_appliance_mode() {
         rmdir "$APPLIANCE_MARKER" 2>/dev/null || [ ! -e "$APPLIANCE_MARKER" ] || error "Could not clear stale appliance mode at $APPLIANCE_MARKER."
     fi
 }
-
-_persist_root_guard_allow() {
-    [ "${RIGFORGE_ROOT_GUARD_ALLOW:-}" = 1 ] || return 0
-    [ "$OS_TYPE" = Linux ] || return 0
-
-    if [ -d "$SCRIPT_DIR/.git" ]; then
-        local has_package_marker=false
-        [ -d "/homebrew/Cellar/rigforge" ] && has_package_marker=true
-        [ -d "/opt/rigforge" ] && has_package_marker=true
-        if [ "$has_package_marker" = true ]; then
-            warn "root-guard: $SCRIPT_DIR/.git found alongside package marker — refusing auto-allowance; pass --no-root-guard explicitly"
-            return 0
-        fi
-    fi
-
-    local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service"
-    if [ -f "$usvc" ]; then
-        if ! grep -q 'Environment=ROOT_GUARD_ALLOW' "$usvc" 2>/dev/null; then
-            sudo sed -i '/^\[Service\]/a Environment=ROOT_GUARD_ALLOW' "$usvc" 2>/dev/null || true
-            sudo systemctl daemon-reload 2>/dev/null || true
-            if [ -d "$SCRIPT_DIR/.git" ]; then
-                warn "root-guard: persisted allowance into $usvc — the tree $SCRIPT_DIR is now trusted for root-run units; pass --no-root-guard on future upgrades to silence this warning"
-            fi
-        fi
-    fi
-}
-
 main() {
     local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
     for _arg in "$@"; do
@@ -2069,12 +2042,10 @@ main() {
     install_control || _control_rc=1
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
-    CURRENT_STEP="persisting root guard allowance"
-    _persist_root_guard_allow
     CURRENT_STEP="linking the rigforge command"
     link_cli
     CURRENT_STEP="reconciling file ownership"
-    _reown_worker
+    _reown_worker && _persist_root_guard_allow
     CURRENT_STEP="finishing up"
     finish_deployment
     [ "$_control_rc" -eq 0 ] || _control_failed setup
@@ -2170,7 +2141,6 @@ upgrade() {
     install_api || _api_rc=1
     install_control || _control_rc=1
     install_api_firewall
-    _persist_root_guard_allow
     if [ "$XMRIG_REBUILD" = true ]; then
         log "Upgraded to XMRig $XMRIG_VERSION."
     else
@@ -2180,7 +2150,7 @@ upgrade() {
     _upgrade_restart "$was_active"
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
-    _reown_worker
+    _reown_worker && _persist_root_guard_allow
     [ "$_control_rc" -eq 0 ] || _control_failed upgrade
     [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
     [ "$_api_rc:$_control_rc" = 0:0 ]

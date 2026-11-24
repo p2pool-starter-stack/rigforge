@@ -51,6 +51,11 @@ Not every verb needs root — the design, in four lines:
 - `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
   root.
 
+`setup` and `upgrade` refuse to render root-run systemd units from a checkout that is not root-owned (any
+ancestor directory owned by another user, or group/other-writable), since that user could then edit what
+root executes (#783). `--no-root-guard` accepts the tree for that run and persists the allowance into the
+control-upgrade unit; a checkout that also looks package-installed is never auto-allowed.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
