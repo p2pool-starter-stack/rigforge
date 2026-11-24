@@ -596,7 +596,6 @@ verify() {
     fi
     summary "verify"
 }
-# the v1.12.0 gate). Sets RCV_CODE/RCV_TRY for the caller's ok/bad line.
 _auth_curl() { # <token> <curl args...>; keep the bearer out of process argv
     local token=$1
     shift
