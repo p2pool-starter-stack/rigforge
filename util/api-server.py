@@ -17,6 +17,7 @@ import json
 import os
 import socket
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ROUTES = {
@@ -59,6 +60,22 @@ def derive_read_token(token):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def handle(self):
+        self._reaper = threading.Timer(self.timeout, self._drop)
+        self._reaper.daemon = True
+        self._reaper.start()
+        try:
+            super().handle()
+        except ConnectionError:
+            pass
+        self._reaper.cancel()
+
+    def _drop(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def log_message(self, *_):  # never log requests: quiet by design, and headers stay out of the journal
         pass
