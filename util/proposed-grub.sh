@@ -27,14 +27,10 @@ HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB
 # --- 1. Hardware Topology Discovery ---
 
 # Extract L3 Cache size and normalize to Megabytes
-# Output format varies (e.g., "32M", "32768K"), so we strip non-numeric characters.
-L3_RAW=$(lscpu | awk '/L3 cache/{print $3$4; exit}')
-L3_MB="${L3_RAW//[!0-9]/}"
-
-# Convert Kilobytes to Megabytes if necessary
-if [[ "$L3_RAW" == *K* ]]; then
-    L3_MB=$((L3_MB / 1024))
-fi
+L3_MB=$(lscpu | awk '/L3 cache/{ s=$3$4; v=s+0; u="";
+    if (match(s, /[KMGkmg]/)) u=toupper(substr(s, RSTART, 1));
+    if (u == "K") v=v/1024; else if (u == "G") v=v*1024; else if (u == "" && v > 100000) v=v/1024/1024;
+    if (s ~ /[0-9]/) printf "%d", v; exit }')
 if [[ -z "$L3_MB" ]]; then
     L3_MB=4
 fi
@@ -94,6 +90,13 @@ fi
 EXTRA_2MB_PAGES=0
 if [ -n "${RESERVE_EXTRA_MB:-}" ] && [ "$RESERVE_EXTRA_MB" -gt 0 ] 2>/dev/null; then
     EXTRA_2MB_PAGES=$(((RESERVE_EXTRA_MB + 1) / 2))
+fi
+
+MEMINFO="${MEMINFO:-/proc/meminfo}"
+MEM_TOTAL_KB=$(awk '/^MemTotal:/{print $2; exit}' "$MEMINFO" 2>/dev/null)
+if [ "$EXTRA_2MB_PAGES" -gt 0 ] && [ "${MEM_TOTAL_KB:-0}" -gt 0 ] 2>/dev/null &&
+    [ $((EXTRA_2MB_PAGES * 2048)) -gt $((MEM_TOTAL_KB * 3 / 4)) ]; then
+    echo "WARNING: hugepages_reserve_extra_mb (${RESERVE_EXTRA_MB}MB) exceeds three quarters of installed memory (${MEM_TOTAL_KB}kB); lower it." >&2
 fi
 
 # 1GB HugePages: 3 per NUMA node — each node holds its own ~2080MB RandomX dataset copy (rounds up to 3GB).
