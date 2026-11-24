@@ -32,6 +32,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
 	bash tests/test-state-lib.sh
+	bash tests/test-homebrew-formula.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
@@ -39,7 +40,7 @@ test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 e2e-docs-replay: ## Replay documented setup and two reboots in an explicitly supplied disposable KVM guest
 	python3 tests/docs_replay.py
 
-test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) — BSD sed, launchd, nohup (macOS only, deprecated, not run in CI)
+test-e2e-macos: ## Native macOS e2e: real rigforge.sh (brew/git/cmake stubbed) — BSD sed, launchd, nohup (macOS only, best effort, not run in CI)
 	bash tests/e2e/macos.sh
 
 smoke: ## Release pre-tag gate (quick): real xmrig --bench proves the built worker hashes (manual, Linux-only)

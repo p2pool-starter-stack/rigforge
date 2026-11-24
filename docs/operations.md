@@ -372,9 +372,8 @@ reboot).
 
 ## Running on macOS
 
-**Deprecated as of 2026-09-14: macOS is unsupported and untested going forward** (no CI, no bench).
-Ubuntu is the supported deployment platform. The instructions below describe the Darwin code paths,
-which still work but get no further investment. On macOS,
+**macOS is best effort**: Ubuntu 24.04 is the fully supported deployment platform, and on macOS most
+of RigForge works while the degraded features are listed below (no CI coverage or bench for macOS). On macOS,
 `sudo ./rigforge.sh` still does the core work: it installs dependencies (via Homebrew), compiles XMRig
 from source, and writes a tuned `config.json`. What it doesn't do is the Linux-only system integration:
 
@@ -536,6 +535,14 @@ connection. The same key carries the XMRig source clone and a remote upgrade's `
 upgrade refuses to start when the proxy does not answer or `origin` is not an https URL, and records
 that as its `failed` reason.
 
+**Package installs.** A `.rigforge-package` marker beside `rigforge.sh` (its value is `apt` or `brew`;
+`RIGFORGE_PACKAGE_MARKER` points the lookup elsewhere) says the package manager owns the tree, as the
+`.rigforge-appliance` marker does for an appliance. With it, `upgrade --check` still compares versions
+through the `tor_socks5`-aware fetcher but prints `sudo apt upgrade rigforge` or `brew upgrade rigforge`
+instead of git steps; `control_upgrade` and any tag upgrade refuse before running git and record that
+command as the `failed` reason; setup and `upgrade` skip the dependency install and the `add_to_path`
+symlink. Without the marker nothing changes.
+
 `upgrade` skips the recompile when the pinned XMRig is already built with a zero minimum marker
 and a valid binary checksum, so it's cheap to run — but it is
 not a no-op: it regenerates the live config, reinstalls the systemd units and restarts, because a
@@ -567,7 +574,7 @@ RigForge reads code from one directory and writes state to another. Both default
 
 | Variable | Default | Holds |
 |---|---|---|
-| `RIGFORGE_LIB` | the directory of `rigforge.sh` | `rigforge.sh`, `util/` scripts, `systemd/` unit templates, `VERSION`, `RIGFORGE_REF`. Never written by a worker command, so it can be root-owned and read-only. |
+| `RIGFORGE_LIB` | the directory of `rigforge.sh` | `rigforge.sh`, `util/` scripts, `systemd/` unit templates, `VERSION`, `RIGFORGE_REF`, the `.rigforge-package` marker. Never written by a worker command, so it can be root-owned and read-only. |
 | `RIGFORGE_STATE` | the same directory (`RIGFORGE_HOME` when set) | `config.json`, the `.rigforge-*` markers and sidecars (appliance marker, config provenance, revision key), `config-backups/`, `backups/`, support tarballs and the default worker root `data/worker`. |
 
 `RIGFORGE_HOME` is the older sandbox override: it sets the state directory and the template, `VERSION` and `proposed-grub.sh` lookups, while the `util/` scripts still come from the directory of `rigforge.sh`. Set `RIGFORGE_LIB` and `RIGFORGE_STATE` instead; each wins over it. Rendered units take `ExecStart` and the server script from the lib directory and the `config.json` credential from the state directory. When either variable is set, the miner unit and the scheduled verb units (autotune, watchdog, api-refresh, control-apply, control-upgrade) and the shared-host runner carry it in their environment. Both values must be clean absolute paths (letters, digits, `.`, `_`, `-`, `/`), and as root `RIGFORGE_LIB` must be owned by root and not group- or world-writable; otherwise `rigforge.sh` refuses to start. The `upgrade` verb updates a git checkout in place, so it still needs a writable checkout.
