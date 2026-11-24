@@ -29,7 +29,7 @@ count, and `proof_preflight` refuses it with that reason whenever a proof contex
 is set. It runs only unbound (`bash tests/e2e-pithead.sh shared-host`).
 
 Each replay group (`control-replay-thermal`, `control-replay-pools`) retains its
-runner-owned fixture/reservation, nested connect assertions (8), scalar apply
+fixture/reservation, nested connect assertions (8), scalar apply
 sequence, pools mutation, optional thermal mutation, publication window and final
 assertion (1). Nested connect belongs to that replay row, not a separate group.
 Neither replay is added to or removed from `all`.
@@ -42,7 +42,7 @@ An interrupted or incomplete group cannot pass by presenting its successful pref
 
 ## Binding an invocation
 
-The runner may supply `E2E_PROOF_CONTEXT` as one JSON object with exactly these
+A harness may supply `E2E_PROOF_CONTEXT` as one JSON object with exactly these
 fields. Do not put deployment coordinates, credentials, config bodies or private
 paths into this object.
 
@@ -51,10 +51,10 @@ paths into this object.
 | `schema` | Integer `1`. |
 | `head` | Exact lowercase, forty-character Git commit ID. |
 | `ref` | Full Git ref identifying that commit. The ref must resolve locally. |
-| `input` | SHA-256 digest of the immutable, non-secret input manifest agreed by the runner. |
+| `input` | SHA-256 digest of the immutable, non-secret input manifest agreed by the harness. |
 | `run` | Fresh thirty-two-character lowercase hexadecimal attempt ID. |
 | `group` | Exact existing phase argument, `all`, or `network-sequence`. |
-| `row` | Runner-owned opaque lowercase row slug, unique within the required plan. |
+| `row` | Opaque lowercase row slug, unique within the required plan. |
 | `platform` | `linux-x86_64` or `linux-aarch64`, checked against the executing system. |
 | `allowed_skips` | Explicit map of permitted phase IDs to fixed skip reasons; normally `{}`. |
 
@@ -62,8 +62,8 @@ Before acquiring the rig lock and after restoration, the producer checks the
 requested HEAD, ref resolution, platform, tracked-tree cleanliness, and absence of
 untracked executable inputs under the product/test directories. These calls mark
 the exact checkout path as trusted so root can read operator-owned checkouts.
-The input digest is a runner assertion: this script cannot establish the coordinator
-revision, image identities or fixture provenance. The runner must resolve and
+The input digest is a harness assertion: this script cannot establish the coordinator
+revision, image identities or fixture provenance. The harness must resolve and
 freeze those inputs before dispatch and retain the corresponding manifest.
 
 Without context the script emits `worker-proof: {"schema":1,"bound":false}` and
@@ -108,30 +108,16 @@ rejects missing, duplicate, substituted or stale rows; wrong platform or context
 missing, reordered, duplicated or unknown phases; partial assertion counts;
 unapproved skips; malformed/truncated data; nonzero exit; and failed cleanup.
 It must receive the trusted plan, never derive expectations from the artifacts it
-is checking. Receipts are not signed attestations: trust remains with the runner
+is checking. Receipts are not signed attestations: trust remains with the party
 that owns the checkout, plan, fixtures and artifact collection.
 
-## Acceptance still required before rollout
+## Open acceptance requirements
 
-The sibling runner and evidence-preflight repositories must wire this required AND
+An independent verification step must wire this required AND
 into the same current-head product/release status. Until then, local receipt
-validation alone does not establish the fleet gate. Keep all existing required
-statuses and per-PR proofs, including both independent bench-ci `make check` runs.
+validation alone does not establish the full gate. Keep all existing required
+statuses and per-PR proofs, including any independent CI checks.
 The shared proof manifest and rank-7 immutable inputs remain coordinated work;
 review complete before/after behavior, assertion, input and platform inventories
 by hand until that manifest is available. Unknown or truncated evidence blocks
 acceptance, and existing row ownership remains authoritative.
-
-After rank-1 capacity acceptance, only independently proven groups may overlap,
-with distinct mutable rigs **and** stacks. Measure existing benches; obtain the
-owner's decision before adding a lane. Keep hashing/accepted-share, systemd/feed,
-donation, performance baselines, all `e2e-real` release phases, and every other
-currently required live/release witness.
-
-Before rollout, run hosted checks and paired live serial/concurrent acceptance on
-the same immutable inputs. Compare complete assertion/platform manifests, gate
-median/p90, occupied setup hours, failures and restoration. Record the baseline on
-normal authorized runs; one week after rollout compare paired PR/head latency,
-stage median/p90 minutes, occupied hours, failures and cleanup outcomes, reporting
-sample sizes and load. Roll back on lost evidence, cleanup failure or increased
-KVM queueing. None of those live measurements is claimed by the local regressions.
