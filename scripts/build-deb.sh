@@ -124,7 +124,7 @@ Section: ${PKG_SECTION}
 Priority: ${PKG_PRIORITY}
 Architecture: ${PKG_ARCH}
 Depends: bash, jq, curl, nftables, git, build-essential, cmake, libuv1-dev, libssl-dev, libhwloc-dev, gettext-base, python3, msr-tools
-Maintainer: RigForge <noreply@p2pool-starter-stack.github.com>
+Maintainer: user@example.com
 Description: Companion miner for P2Pool/XMRig workers
  RigForge provisions and runs an XMRig worker for a P2Pool
  coordinator, any RandomX Stratum pool, or a solo daemon pool.
