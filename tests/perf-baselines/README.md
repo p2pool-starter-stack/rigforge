@@ -1,7 +1,13 @@
 # Perf baselines
 
-Per-host `xmrig --bench=1M` baselines for the `e2e-real` `perf` phase — see
+Legacy per-host `xmrig --bench=1M` baselines for the `e2e-real` `perf` phase — see
 [tests/README.md › Performance testing](../README.md#performance-testing-standardized).
+
+**Retiring.** The phase now emits `{"<class>":{"bench_1m_hs":<H/s>}}` on stdout and reads history from
+`E2E_PERF_HISTORY` (JSON lines of earlier emitted results), so nothing needs committing. These files are
+read only when `E2E_PERF_HISTORY` is unset and are no longer the way to record; delete them once every
+rig's history lives in the caller's store. In report mode (the default) a regression against them is
+printed, not failed; `E2E_PERF_GATE=1` restores the failing gate.
 
 One `<hostname>.json` per rig: `{"bench_1m_hs": <H/s>, "cpu": "...", "recorded": "YYYY-MM-DD"}`.
 
@@ -11,8 +17,8 @@ Record or update one (then commit the file):
 E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf
 ```
 
-Baselines are per-host on purpose — hashrate is hardware. When a rig's hardware or BIOS tuning
-changes deliberately, re-record its baseline in the same PR that documents the change.
+Hashrate is hardware: when a rig's hardware or BIOS tuning changes deliberately, start a new class
+history or re-record in the same PR that documents the change.
 
 ## Per-release history (never lose a benchmark)
 
@@ -32,11 +38,12 @@ loudly as `perf RATCHET`.
 
 `E2E_PERF_SUBMIT=1` makes the perf gate run `bench --submit` and verify the returned ID.
 It publishes hardware and performance information; without the option the gate stays offline.
-Successful recordings add an optional `benchmark_id` field to both the baseline JSON and the
-history entry. Existing records remain valid, and the performance judge still compares H/s.
+The emitted JSON gains a `benchmark_id` field inside the class object, and the legacy recordings
+add it to both the baseline JSON and the history entry. Existing records remain valid, and the
+performance judge still compares H/s.
 
 ```bash
-sudo env E2E_PERF_SUBMIT=1 E2E_PERF_RECORD=1 E2E_PERF_TAG=vX.Y.Z bash tests/e2e-real.sh perf
+sudo env E2E_PERF_SUBMIT=1 E2E_PERF_HISTORY=<history.jsonl> bash tests/e2e-real.sh perf
 ```
 
 Copy the returned ID into [the published benchmarks](../../docs/benchmarks.md) with the release tag
