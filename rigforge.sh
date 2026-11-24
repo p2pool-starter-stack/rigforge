@@ -2006,7 +2006,7 @@ main() {
     _persist_appliance_mode
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
-    source "$SCRIPT_DIR/util/root-guard.sh" && _root_guard_check || return 1
+    _root_guard_check || return 1
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
     _seed_appliance_tor_default
@@ -2123,7 +2123,7 @@ upgrade() {
     done
     _persist_appliance_mode
     check_prerequisites
-    source "$SCRIPT_DIR/util/root-guard.sh" && _root_guard_check || return 1
+    _root_guard_check || return 1
     parse_config
     _shared_host_prepare
     decide_rebuild

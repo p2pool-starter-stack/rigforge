@@ -171,6 +171,7 @@ cp "$TEST_TMP/config.json" "$TEST_ANC/parent/child/config.json"
     _root_guard_check >/dev/null 2>&1
     rc=$?
     assert_eq "$rc" "1" "other-writable ancestor refused (#783)"
+    chmod 755 "$TEST_ANC/parent"
 )
 
 (
