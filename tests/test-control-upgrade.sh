@@ -370,22 +370,21 @@ pending_run() {
     d=$(mktemp -d "$SANDBOX/pending.XXXXXX")
     mkdir -p "$d/state/spool" && mkdir -m 700 "$d/upgrade-state" && printf '%s' "$2" >"$d/VERSION" && printf 'keep' >"$d/target"
     printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json" && printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
-    cat >"$d/rigforge.sh" <<'STUB'
+    cat >"$d/rigforge.sh" <<STUB
 #!/usr/bin/env bash
-echo REINSTALL >>"$1/work.log"
-if [ -f "$1/upgrade-fail" ]; then
-    c=$(<"$1/upgrade-fail")
-    c=$((c + 1))
-    printf '%d' "$c" >"$1/upgrade-fail"
-    [ "$c" -gt 1 ] || exit 1
-fi
+echo REINSTALL >>"$d/work.log"
+n=\$(cat "$d/upgrade-fail" 2>/dev/null || echo 0)
+[ "\$n" -gt 0 ] || exit 0
+echo \$((n - 1)) >"$d/upgrade-fail"
+exit 1
 STUB
     chmod +x "$d/rigforge.sh"
-    case "$1" in pending) : >"$d/upgrade-state/upgrade-pending" ;; owner) printf 'orig' >"$d/upgrade-state/upgrade-pending" ;; link) ln -s "$d/target" "$d/upgrade-state/upgrade-pending" ;; esac
+    case "$1" in pending) : >"$d/upgrade-state/upgrade-pending" ;; owner) printf 'orig' >"$d/upgrade-state/upgrade-pending" ;; link) ln -s "$d/target" "$d/upgrade-state/upgrade-pending" ;; rollback_ok) echo 1 >"$d/upgrade-fail" ;; rollback_fail) echo 9 >"$d/upgrade-fail" ;; esac
     (
         source "$SCRIPT"
         OS_TYPE=Linux SCRIPT_DIR="$d" CONFIG_JSON="$d/config.json" RIGFORGE_CONTROL_STATE="$d/state" RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state" CONTROL_UPGRADE_MIN_INTERVAL=0 MODE="$1"
         _wait_miner_live() { return 0; }
+        _root_guard_check() { :; }
         stat() { case "$MODE:$*" in owner:*upgrade-pending*) echo 1000:1000:600:1 ;; *) command stat "$@" ;; esac }
         git() { case "$*" in *fetch*) [ "$MODE" != fetch ] ;; *describe*) echo v0.0.1 ;; *checkout*) echo checkout >>"$d/work.log" ;; *"is-ancestor unreach "*) return 1 ;; *"tags/v9.9.9"*) [ "$MODE" = tag ] && echo unreach || echo c0ffee ;; *rev-parse*) echo c0ffee ;; esac }
         set +e
@@ -411,9 +410,8 @@ assert_eq "pending marker with a foreign owner refused before checkout, marker u
 echo "== unit: install failure leaves marker, rollback cleans it (#816) =="
 s="$(pending_run rollback_fail 1.0.0)"
 assert_eq "install + rollback failure -> failed, marker stays (#816)" "$(st "${s%%|*}")" "failed"
-assert_contains "rollback failure still names the fetch (#816)" "$s" "could not fetch from origin; nothing was changed"
-assert_absent "install failure with failed rollback never claims manual intervention (#816)" "$s" "manual intervention"
-assert_eq "install failure with failed rollback leaves marker and target (#816)" "${s#*|}" "||keep|keep|"
+assert_contains "install failure with failed rollback asks for manual intervention (#816)" "$s" "manual intervention needed"
+assert_eq "install failure with failed rollback leaves marker and target (#816)" "${s#*|}" "checkout"$'\n'"REINSTALL"$'\n'"checkout"$'\n'"REINSTALL|marker-left|keep|"
 s="$(pending_run rollback_ok 1.0.0)"
 assert_eq "install fails, rollback succeeds, status rolled_back (#816)" "$(st "${s%%|*}")" "rolled_back"
-assert_eq "rollback install runs upgrade twice, marker cleaned (#816)" "${s#*|}" "checkout"$'\n'"REINSTALL"$'\n'"checkout"$'\n'"REINSTALL|||keep|"
+assert_eq "rollback install runs upgrade twice, marker cleaned (#816)" "${s#*|}" "checkout"$'\n'"REINSTALL"$'\n'"checkout"$'\n'"REINSTALL||keep|"
