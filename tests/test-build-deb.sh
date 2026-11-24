@@ -151,4 +151,4 @@ if command -v apt-ftparchive >/dev/null 2>&1 && command -v gpg >/dev/null 2>&1; 
     assert_eq "$ver" "$VER" "build-apt: Version field matches"
 fi
 
-printf '\nbuild-deb: %s tests passed\n' "$PASS" 2>/dev/null || true
+printf '\nbuild-deb: tests passed\n' 2>/dev/null || true
