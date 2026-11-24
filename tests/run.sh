@@ -2292,12 +2292,9 @@ assert_contains "and the restart really is issued (#396)" "$(cat "$ARS/calls.log
 out="$(ars_run bare inactive)"
 assert_contains "a BARE _apply_runtime still restarts a stopped miner — tune/autotune depend on it (#396)" "$(cat "$ARS/calls.log")" "] restart xmrig"
 assert_absent "a bare _apply_runtime never claims it left anything stopped (#396)" "$out" "left stopped"
-# The thermal-hold branch (#812): when the watchdog marker is present, even a bare call must not
-# restart — the miner stays stopped while above max_temp_c, and restarts when the operator runs `sudo
-# $0 start` (which the watchdog lifts).
 out="$(ars_run bare inactive y)"
-assert_contains "a bare _apply_runtime with thermal-hold stays stopped (no restart) (#812)" "$out" "held by the watchdog"
-assert_absent "a bare _apply_runtime with thermal-hold does NOT restart (#812)" "$(cat "$ARS/calls.log")" "] restart"
+assert_contains "a bare _apply_runtime with thermal-hold stays stopped (no restart)" "$out" "held by the watchdog"
+assert_absent "a bare _apply_runtime with thermal-hold does NOT restart" "$(cat "$ARS/calls.log")" "] restart"
 
 echo "== black-box: apply on a deliberately stopped rig regenerates and holds (#396) =="
 AST="$(mktemp -d "$SANDBOX/apply-stopped.XXXXXX")"
@@ -2795,15 +2792,6 @@ touch "$WDR/watchdog.thermal-hold"
 out="$(run_watchdog 'echo 92' 'echo 0' '' n)"
 assert_contains "hold with max_temp_c removed is lifted" "$out" "no longer set"
 assert_eq "stale hold cleared" "$([ -f "$WDR/watchdog.thermal-hold" ] && echo y || echo n)" "n"
-# Leading-zero max_temp_c ("090" -> 90): normalised via 10# so awk arithmetic stays decimal.
-# At 35°C the miner is below the hysteresis floor (90-5=85) so the hold lifts.
-: >"$WDR/calls.log"
-touch "$WDR/watchdog.thermal-hold"
-out="$(run_watchdog 'echo 35' 'echo 0' '090' n)"
-assert_contains "090 normalises to 90 -> thermal lift floor is 85" "$out" "thermal hold lifted"
-assert_eq "090 lift starts the miner" "$(wd_calls 'start xmrig')" "1"
-# Bad pool address at 99°C: even though parse_config would reject a bad pool, the early thermal
-# validation in watchdog reads max_temp_c FIRST and stops the miner before parse_config runs.
 WDZ="$(mktemp -d "$SANDBOX/wdz.XXXXXX")"
 mkdir -p "$WDZ/bin" "$WDZ/home/worker"
 cat >"$WDZ/config.json" <<EOF
@@ -2817,10 +2805,14 @@ wdz_systemctl() {
     *) return 0 ;;
     esac
 }
-out="$(cd "$WDZ" && set +e; sudo systemctl() { wdz_systemctl "\$@"; }; systemctl() { wdz_systemctl "\$@"; }; CONFIG_JSON="$WDZ/config.json" parse_config 2>&1; echo "parse_rc=\$?")"
-# parse_config should fail because of the bad pool
+: >"$WDR/calls.log"
+touch "$WDR/watchdog.thermal-hold"
+out="$(run_watchdog 'echo 35' 'echo 0' '090' n)"
+assert_contains "090 normalises to 90 -> thermal lift floor is 85" "$out" "thermal hold lifted"
+assert_eq "090 lift starts the miner" "$(wd_calls 'start xmrig')" "1"
+set +e
+out="$(cd "$WDZ" && sudo systemctl() { wdz_systemctl "\$@"; }; systemctl() { wdz_systemctl "\$@"; }; CONFIG_JSON="$WDZ/config.json" parse_config 2>&1; echo "parse_rc=\$?")"
 assert_contains "bad pool address makes parse_config fail" "$out" "parse_rc=1" || true
-# But watchdog still reads max_temp_c early and stops the hot miner before parse_config runs.
 WDZ2="$(mktemp -d "$SANDBOX/wdz2.XXXXXX")"
 mkdir -p "$WDZ2/bin" "$WDZ2/home/worker"
 cat >"$WDZ2/config.json" <<EOF
@@ -2834,9 +2826,8 @@ wdz2_systemctl() {
     *) return 0 ;;
     esac
 }
-# Stub parse_config so we don't need a full env — but watchdog early-read must still fire.
 out="$(cd "$WDZ2" && set +e; source "$SCRIPT"; parse_config() { :; }; sudo systemctl() { wdz2_systemctl "\$@"; }; systemctl() { wdz2_systemctl "\$@"; }; CONFIG_JSON="$WDZ2/config.json"; TUNE_TEMP_CMD='echo 99'; API_CMD='echo 0'; watchdog 2>&1; echo "rc=\$?")"
-assert_contains "bad pool + 99°C still stops the miner (early thermal path) (#812)" "$out" "above max_temp_c=90"
+assert_contains "bad pool + 99°C still stops the miner (early thermal path)" "$out" "above max_temp_c=90"
 assert_eq "bad pool + 99°C issued systemctl stop" "$(grep -c 'stop xmrig' "$WDZ2/calls.log" 2>/dev/null || echo 0)" "1"
 assert_eq "bad pool + 99°C left the hold marker" "$([ -f "$WDZ2/home/worker/watchdog.thermal-hold" ] && echo y || echo n)" "y"
 # Service not active (and no hold): systemd Restart= owns it; state resets, exit 0.

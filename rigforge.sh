@@ -4783,10 +4783,6 @@ watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
     fi
-    # Read and validate the thermal cutoff before parse_config so a bad pool address
-    # cannot prevent the thermal stop / hold-lift. Normalise with 10# so leading-zero JSON
-    # strings ("090") work correctly with awk arithmetic.  Only override when CONFIG_JSON
-    # is set (live dispatch) — unit tests often set MAX_TEMP_C directly.
     if [ -n "${CONFIG_JSON:-}" ] && [ -f "$CONFIG_JSON" ]; then
         local _raw_max_temp
         _raw_max_temp=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON" 2>/dev/null || true)
@@ -4835,8 +4831,6 @@ watchdog() {
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0
     fi
-    # Full parse_config now runs for the wedge check (wedge recovery is the only part that
-    # needs SERVICE_NAME, WORKER_ROOT, _read_api_hashrate, etc. — thermal safety already ran).
     RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config
     if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
         warn "watchdog: DONATION is $DONATION while Tor is in effect, so setup, upgrade and apply refuse this config until DONATION is 0; the thermal stop and wedge recovery still run."
