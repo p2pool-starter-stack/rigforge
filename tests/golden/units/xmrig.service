@@ -17,19 +17,19 @@ User=rfminer
 # call fails — and with Restart=always below, a non-optional ExecStartPre failure would wedge the miner
 # in a restart loop. The governor is a tuning nicety, not a correctness requirement, so a failed set
 # must never stop mining.
-ExecStartPre=+- frequency-set -g performance
+ExecStartPre=+-/usr/bin/cpupower frequency-set -g performance
 # Root-side MSR preset for an unprivileged miner (#140) — empty (a no-op line) when running as root.
 ExecStartPre=+@LIB@/rigforge.sh msr-apply
 # Re-apply the opt-in API firewall on boot (#142). Best-effort (`-`) + only when the file exists:
 # a rig without api_allow_from set ships no file, so this is a clean no-op there. `+` runs it as
 # root even if a future release moves the miner to an unprivileged user.
-ExecStartPre=+-/bin/sh -c 'test -f @OUT@/worker/api-firewall.nft &&  -f @OUT@/worker/api-firewall.nft || true'
+ExecStartPre=+-/bin/sh -c 'test -f @OUT@/worker/api-firewall.nft && /usr/sbin/nft -f @OUT@/worker/api-firewall.nft || true'
 
 # --- Execution Configuration ---
 # Set working directory to ensure relative paths in config.json resolve correctly
-WorkingDirectory=
+WorkingDirectory=@OUT@/worker/xmrig/build
 # Execute the miner binary with the generated configuration
-ExecStart=/xmrig --config=/config.json
+ExecStart=@OUT@/worker/xmrig/build/xmrig --config=@OUT@/worker/xmrig/build/config.json
 
 # --- Process Management ---
 Restart=always

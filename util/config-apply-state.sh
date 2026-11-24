@@ -67,3 +67,9 @@ _config_apply_check() (
 
 _lib_dir() { printf '%s' "${RIGFORGE_LIB:-$SCRIPT_DIR}"; }
 _state_dir() { printf '%s' "${RIGFORGE_STATE:-$SCRIPT_DIR}"; }
+_unit_split_env() {
+    local e=""
+    [ -z "${RIGFORGE_STATE:-}" ] || e="Environment=RIGFORGE_STATE=$RIGFORGE_STATE"
+    [ -z "${RIGFORGE_LIB:-}" ] || e="${e:+$e$'\n'}Environment=RIGFORGE_LIB=$RIGFORGE_LIB"
+    UNIT_ENV="$e" awk '{ print } /^\[Service\]$/ && ENVIRON["UNIT_ENV"] != "" { print ENVIRON["UNIT_ENV"] }'
+}

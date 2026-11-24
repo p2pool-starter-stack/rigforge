@@ -15,6 +15,7 @@ mkdir -p "$OUT"
     BUILD_DIR="$WORKER_ROOT/xmrig/build"
     CPUPOWER_PATH=/usr/bin/cpupower
     NFT_PATH=/usr/sbin/nft
+    export BUILD_DIR CPUPOWER_PATH NFT_PATH
     MINER_USER=rfminer
     SERVICE_NAME=xmrig
     API_MODE=enabled API_BIND=0.0.0.0 API_PORT=8081

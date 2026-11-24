@@ -13,7 +13,6 @@
 #
 
 set -Eeuo pipefail
-
 # --- Logging Utilities ---
 # Color only when stdout is a terminal and NO_COLOR (https://no-color.org) is unset/empty (#144) —
 # pipes, captures, CI logs, and the journal entries timer units write all get plain text. The
@@ -61,7 +60,8 @@ _script_dir() {
     done
     cd -P "$(dirname "$src")" &>/dev/null && pwd
 }
-
+for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
+[ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
 # shellcheck source=util/config-apply-state.sh
 source "${RIGFORGE_LIB:-$(_script_dir)}/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
@@ -1302,7 +1302,7 @@ install_autotune() {
     # Bake operator, appliance posture, and target into the scheduled root run.
     SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" AUTOTUNE_TARGET="${AUTOTUNE_TARGET:-perf}" \
         envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR $AUTOTUNE_TARGET' \
-        <"$(_lib_dir)/systemd/rigforge-autotune.service.template" | sudo tee "$svc" >/dev/null
+        <"$(_lib_dir)/systemd/rigforge-autotune.service.template" | _unit_split_env | sudo tee "$svc" >/dev/null
     AUTOTUNE_ONCALENDAR="${AUTOTUNE_ONCALENDAR:-monthly}" \
         envsubst '$AUTOTUNE_ONCALENDAR' \
         <"$(_lib_dir)/systemd/rigforge-autotune.timer.template" | sudo tee "$tmr" >/dev/null
@@ -1341,7 +1341,7 @@ install_watchdog() {
     # `apply` after a max_temp_c or ACCESS_TOKEN edit needs no unit rewrite (and no token on disk).
     SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$(_lib_dir)" \
         envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR' \
-        <"$(_lib_dir)/systemd/rigforge-watchdog.service.template" | sudo tee "$svc" >/dev/null || rc=1
+        <"$(_lib_dir)/systemd/rigforge-watchdog.service.template" | _unit_split_env | sudo tee "$svc" >/dev/null || rc=1
     WATCHDOG_INTERVAL_MIN="${WATCHDOG_INTERVAL_MIN:-5}" \
         envsubst '$WATCHDOG_INTERVAL_MIN' \
         <"$(_lib_dir)/systemd/rigforge-watchdog.timer.template" | sudo tee "$tmr" >/dev/null || rc=1
@@ -1432,7 +1432,7 @@ install_api() {
     }
     log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open); state refreshes every 15s)..."
     API_BIND="$API_BIND" API_PORT="$API_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" envsubst '$API_BIND $API_PORT $SCRIPT_DIR $RIGFORGE_STATE' <"$(_lib_dir)/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null || return 1
-    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$(_lib_dir)" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$(_lib_dir)/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null || return 1
+    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$(_lib_dir)" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$(_lib_dir)/systemd/rigforge-api-refresh.service.template" | _unit_split_env | sudo tee "$rsvc" >/dev/null || return 1
     sudo tee "$rtmr" <"$(_lib_dir)/systemd/rigforge-api-refresh.timer.template" >/dev/null || return 1
     sudo systemctl daemon-reload || return 1
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api-refresh.timer || return 1
@@ -1473,12 +1473,12 @@ install_control() (
         <"$(_lib_dir)/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-        <"$(_lib_dir)/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null || return 1
+        <"$(_lib_dir)/systemd/rigforge-control-apply.service.template" | _unit_split_env | sudo tee "$asvc" >/dev/null || return 1
     sudo tee "$apath" <"$(_lib_dir)/systemd/rigforge-control-apply.path.template" >/dev/null || return 1
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
         RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" \
             envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-            <"$(_lib_dir)/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null || return 1
+            <"$(_lib_dir)/systemd/rigforge-control-upgrade.service.template" | _unit_split_env | sudo tee "$usvc" >/dev/null || return 1
         sudo tee "$upath" <"$(_lib_dir)/systemd/rigforge-control-upgrade.path.template" >/dev/null || return 1
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
     elif [ -f "$upath" ] || [ -f "$usvc" ]; then
@@ -2134,7 +2134,7 @@ _upgrade_check() {
         if [ -n "$url" ]; then
             log "Release notes: $url"
         fi
-        log "Update: cd $SCRIPT_DIR && git fetch --tags && git checkout v$remote_v && sudo $0 upgrade  (development checkouts on a branch: git pull && sudo $0 upgrade)"
+        log "Update: cd $(_lib_dir) && git fetch --tags && git checkout v$remote_v && sudo $0 upgrade  (development checkouts on a branch: git pull && sudo $0 upgrade)"
     else
         log "RigForge $local_v is ahead of the latest release ($remote_v) — development build."
     fi

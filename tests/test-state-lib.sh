@@ -41,7 +41,12 @@ for g in "$ROOT"/tests/golden/units/*; do
     n=$(basename "$g")
     if cmp -s "$g" "$D/out/$n.norm"; then pass "golden $n"; else fail "golden $n" "render differs from tests/golden/units/$n"; fi
 done
-eq "every unit template has a golden" "$golden_count" "$(find "$ROOT/systemd" -name '*.template' | wc -l | tr -d ' ')"
+for t in "$ROOT"/systemd/*.template; do
+    n=$(basename "$t" .template)
+    [ -f "$ROOT/tests/golden/units/$n" ] && pass "golden exists for $n" || fail "golden exists for $n"
+done
+eq "no golden without a template" "$(ls "$ROOT/tests/golden/units" | wc -l | tr -d ' ')" "$(ls "$ROOT"/systemd/*.template | wc -l | tr -d ' ')"
+eq "unset variables add no Environment line" "$(grep -Ec '^Environment=RIGFORGE_(STATE|LIB)=' "$D"/out/*.service | grep -vc ':0$')" "0"
 
 echo "== units: split lib and state dirs =="
 bundle "$D/lib"
@@ -52,7 +57,20 @@ for u in api control; do
     eq "$u unit loads its server from the lib dir" "$(grep -c "^LoadCredential=server:$D/lib/util/$u-server.py$" "$D/split/rigforge-$u.service")" "1"
 done
 eq "watchdog ExecStart is under the lib dir" "$(grep -c "^ExecStart=$D/lib/rigforge.sh watchdog$" "$D/split/rigforge-watchdog.service")" "1"
+for u in autotune watchdog api-refresh control-apply control-upgrade; do
+    eq "$u unit gets the state dir in its environment" "$(grep -c "^Environment=RIGFORGE_STATE=$D/state$" "$D/split/rigforge-$u.service")" "1"
+    eq "$u unit gets the lib dir in its environment" "$(grep -c "^Environment=RIGFORGE_LIB=$D/lib$" "$D/split/rigforge-$u.service")" "1"
+done
 eq "no unit references the unsplit code dir" "$(grep -l "$D/code" "$D"/split/*.service "$D"/split/*.path "$D"/split/*.timer 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+echo "== validation =="
+for bad in 'rel/path' '/with space' "/new
+line" '/pct%s'; do
+    RIGFORGE_STATE="$bad" bash "$ROOT/rigforge.sh" version >/dev/null 2>&1
+    eq "RIGFORGE_STATE=[$bad] is refused" "$?" "1"
+    RIGFORGE_LIB="$bad" bash "$ROOT/rigforge.sh" version >/dev/null 2>&1
+    eq "RIGFORGE_LIB=[$bad] is refused" "$?" "1"
+done
 
 echo "== state paths: default equals SCRIPT_DIR, override moves them =="
 paths() {
