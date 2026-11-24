@@ -374,7 +374,7 @@ _nps_suspect() { :; }
     MEMINFO="$D/doctor-meminfo"
     printf 'MemAvailable: 1 kB\nHugePages_Total: 1\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$MEMINFO"
     doctor_config() {
-        jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON"
+        jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON" && chmod 600 "$CONFIG_JSON"
     }
     doctor_config light
     if light_doctor=$(doctor 2>&1); then fail 'light doctor unexpectedly passed the inactive-service baseline'; fi

@@ -1809,11 +1809,6 @@ decide_rebuild() {
     fi
 }
 
-# Re-own everything written as root back to the invoking operator. setup/upgrade/tune/apply/restore write
-# files under WORKER_ROOT as root (the XMRig build, the generated config, logs, tune-overrides), and the
-# first-run config.json is created as root under `sudo` — leaving a tree the operator can't edit, re-run
-# `setup` over without sudo, or `git clean`. Reconcile ownership once at the end of each such command,
-# rather than chmod-ing every individual `sudo cp`/`tee`. No-op unless we're root on Linux/macOS.
 _reown_worker() {
     [ "$(id -u)" -eq 0 ] || return 0
     local owner
@@ -1823,7 +1818,10 @@ _reown_worker() {
     *) return 0 ;;
     esac
     if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
-    if [ -f "$CONFIG_JSON" ]; then sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true; fi
+    if [ -f "$CONFIG_JSON" ]; then
+        sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true
+        sudo chmod 600 "$CONFIG_JSON" 2>/dev/null || true
+    fi
     [ "$OS_TYPE" = Linux ] || return 0
     if [ "${SHARED_HOST:-false}" = true ] && [ "${RIGFORGE_APPLIANCE:-0}" != 1 ] && [ -d "$WORKER_ROOT" ]; then sudo touch "$WORKER_ROOT/xmrig.log" 2>/dev/null || true; fi
     if [ -n "${MINER_USER:-}" ]; then
@@ -3522,6 +3520,7 @@ _read_api_summary() {
     fi
     command -v curl >/dev/null 2>&1 || return 0
     if [ -n "${ACCESS_TOKEN:-}" ]; then
+        if [ "$OS_TYPE" = Darwin ]; then _mac_paths && [ -n "$(_mac_pid)$(_mac_agent_pid)" ] || return 0; else systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0; fi
         _bearer_curl "$ACCESS_TOKEN" -fsS --max-time 5 "$url" 2>/dev/null || true
     else
         curl -fsS --max-time 5 "$url" 2>/dev/null || true
@@ -3783,7 +3782,7 @@ _mac_pid() { # echo the live ad-hoc miner PID (empty if not running)
 _mac_label() { echo "com.rigforge.$SERVICE_NAME"; }
 _mac_plist() { echo "${HOME:-/tmp}/Library/LaunchAgents/$(_mac_label).plist"; }
 _mac_enabled() { [ -f "$(_mac_plist)" ]; } # the login agent is installed => launchd owns the miner
-_mac_agent_pid() { launchctl list "$(_mac_label)" 2>/dev/null | awk -F'= ' '/"PID"/{gsub(/[^0-9]/,"",$2); print $2; exit}'; }
+_mac_agent_pid() { launchctl list "$(_mac_label)" 2>/dev/null | awk -F'= ' '/"PID"/{gsub(/[^0-9]/,"",$2); print $2; exit}' || true; }
 
 mac_start() {
     _mac_paths
@@ -5481,10 +5480,8 @@ EOF
         fi
     fi
 
-    # Combined exposure posture: open (tokenless) AND unscoped is the designed LAN default, but it
-    # deserves one loud advisory line. Advisory, not a counted issue.
     if [ -f "$CONFIG_JSON" ]; then
-        local cfg_tok cfg_scope cfg_extra_n
+        local cfg_tok cfg_scope cfg_extra_n cfg_mode
         cfg_tok=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)
         cfg_scope=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON" 2>/dev/null || true)
         cfg_extra_n=$(jq -r '(.ACCESS_TOKENS // {}) | length' "$CONFIG_JSON" 2>/dev/null || echo 0)
@@ -5493,13 +5490,16 @@ EOF
         else
             _ck_ok "API exposure is limited (${cfg_tok:+token}${cfg_tok:+${cfg_scope:+ + }}${cfg_scope:+firewall scope})" api-exposure
         fi
-        # #516: xmrig's :8080 is master-only; :8081/:8082 take any configured token. Never interpolate
-        # cfg_tok itself here — this line is a NAME/COUNT report, not a value one.
         _ck_info "$(($([ -n "$cfg_tok" ] && echo 1 || echo 0) + cfg_extra_n)) access token(s) configured ($([ -n "$cfg_tok" ] && echo 1 || echo 0) master + $cfg_extra_n named in ACCESS_TOKENS); xmrig's own :8080 API carries $([ -n "$cfg_tok" ] && echo "ACCESS_TOKEN (the master)" || echo "no token (open)")" access-tokens
+        cfg_mode=$(stat -c '%a' "$CONFIG_JSON" 2>/dev/null || stat -f '%Lp' "$CONFIG_JSON" 2>/dev/null || echo 600)
+        if [ $((8#$cfg_mode & 077)) -ne 0 ]; then
+            _ck_warn "config.json is readable by group or others (mode $cfg_mode) — it holds the access token and pool passwords; fix with: sudo chmod 600 $CONFIG_JSON" config-mode
+            issues=$((issues + 1))
+        else
+            _ck_ok "config.json is owner-only (mode $cfg_mode)" config-mode
+        fi
     fi
 
-    # Control receiver health (#278): probe the writable service when enabled; retry briefly because
-    # systemd marks the Python service active before it binds its socket on a busy miner.
     if [ -f "$CONFIG_JSON" ]; then
         local cfg_control
         cfg_control=$(jq -r '.control // "disabled"' "$CONFIG_JSON" 2>/dev/null || true)
