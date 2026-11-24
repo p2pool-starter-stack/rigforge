@@ -71,6 +71,8 @@ source "$(_script_dir)/util/xmrig-overlay.sh"
 source "$(_script_dir)/util/daemon-pools.sh"
 # shellcheck source=util/upgrade-check.sh
 source "$(_script_dir)/util/upgrade-check.sh"
+# shellcheck source=util/package-mode.sh
+source "$(_script_dir)/util/package-mode.sh"
 # shellcheck source=util/fetch-proxy.sh
 source "$(_script_dir)/util/fetch-proxy.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
@@ -945,6 +947,7 @@ install_dependencies() {
         log "Appliance mode: dependencies are baked into the image — skipping package install."
         return 0
     fi
+    _package_install && { log "Package install ($(_package_channel)): the package manager owns the dependencies — skipping package install." && return 0; }
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
         if command -v brew &>/dev/null; then
@@ -1745,12 +1748,9 @@ configure_limits() {
     append_once "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
 }
 
-# Put a `rigforge` command on PATH: a symlink in BIN_DIR pointing at this script, so the operator can
-# run `sudo rigforge <cmd>` from anywhere instead of `./rigforge.sh`. OPT-IN via `add_to_path` in
-# config.json (off by default). Best-effort and idempotent — it never fails the deploy. `uninstall`
-# removes it regardless, but only while it's still our symlink.
 link_cli() {
     [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
+    _package_install && { log "Package install ($(_package_channel)): the package owns the 'rigforge' command — skipping add_to_path." && return 0; }
     local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge"
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
@@ -1763,8 +1763,6 @@ link_cli() {
         warn "Didn't add the 'rigforge' command — $link already exists and isn't a RigForge symlink."
         return 0
     fi
-    # Use sudo only when BIN_DIR isn't writable (it is when setup runs as root on Linux); empty prefix
-    # otherwise. shellcheck SC2086: the unquoted prefix is intentional (it must vanish when empty).
     local sudo_pfx=""
     [ -w "$BIN_DIR" ] || sudo_pfx="sudo"
     # shellcheck disable=SC2086
@@ -1879,6 +1877,8 @@ _setup_plan() {
         else
             _p "installing dependencies" "appliance mode: baked into the image — no package install"
         fi
+    elif _package_install; then
+        _p "installing dependencies" "package install ($(_package_channel)): the package manager owns the dependencies — no package install"
     elif [ "$OS_TYPE" = "Darwin" ]; then
         _p "installing dependencies" "install/verify via brew: cmake libuv openssl hwloc"
     elif _detect_pkg_manager; then
@@ -1972,7 +1972,9 @@ _setup_plan() {
     else
         _p "configuring the API firewall" "no api_allow_from — no firewall scoping (an installed table would be removed)"
     fi
-    if [ "$ADD_TO_PATH" = true ]; then
+    if _package_install; then
+        _p "linking the rigforge command" "package install ($(_package_channel)): the package owns the command — no symlink"
+    elif [ "$ADD_TO_PATH" = true ]; then
         _p "linking the rigforge command" "symlink $BIN_DIR/rigforge -> $SCRIPT_DIR/rigforge.sh"
     else
         _p "linking the rigforge command" "add_to_path is off — no symlink"
@@ -4625,6 +4627,7 @@ control_apply() {
 
 _control_upgrade_steps() {
     local ref="$1" cobj
+    ! _package_install || return 1
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
@@ -4669,9 +4672,13 @@ control_upgrade() {
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" version "the upgrade run ended before recording an outcome (aborted or killed mid-fetch/build); the checkout may be half-updated and this upgrade will not be retried — check the installed version and re-request the upgrade")
     trap _control_run_incomplete EXIT # #535: the spool entry is claimed; nothing else will retry it
     _control_status "$status" started "$cid" version "" ""
-    # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
     target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)
     rm -f "$staged"
+    if _package_install; then
+        _control_status "$status" failed "$cid" version "package-owned install: upgrade with $(_package_upgrade_cmd)" ""
+        warn "control-upgrade: package-owned install — refused; run $(_package_upgrade_cmd)."
+        return 0
+    fi
     if ! [[ "$target" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         _control_status "$status" failed "$cid" version "staged upgrade target malformed (want vX.Y.Z)" ""
         warn "control-upgrade: malformed target for $cid — refused."
