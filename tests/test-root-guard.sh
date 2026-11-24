@@ -21,6 +21,7 @@ bad() {
 assert_eq() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected [$2], got [$1]"; fi; }
 assert_rc() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected rc $2, got $1"; fi; }
 
+unset RIGFORGE_ROOT_GUARD_ALLOW ROOT_GUARD_ALLOW
 source "$SCRIPT"
 PASS=0
 FAIL=0

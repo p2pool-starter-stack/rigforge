@@ -18,7 +18,7 @@ apply_rc=not-run
 http_code=not-probed
 setup_attempted=0
 run_cli() {
-    env HOME="$home_dir" bash -c 'cd "$1" && shift && sudo -n ./rigforge.sh "$@"' bash "$checkout" "$@"
+    env HOME="$home_dir" bash -c 'cd "$1" && shift && sudo -n env RIGFORGE_ROOT_GUARD_ALLOW=1 ./rigforge.sh "$@"' bash "$checkout" "$@"
 }
 report_failure() {
     printf 'stock-home failure: stage=%s line=%s setup_rc=%s apply_rc=%s http_code=%s\n' "$stage" "$1" "$setup_rc" "$apply_rc" "$http_code" >&2
