@@ -7393,6 +7393,7 @@ assert_eq "api-refresh: a broken health block leaves health.json serving the pre
 assert_eq "api-refresh: tune.json still updates despite the health failure (#276)" "$(jq -r '.applied' "$APIQ/data/tune.json")" "true"
 assert_eq "api-refresh: summary.json still updates despite the health failure (#276)" "$(jq -r '.rigforge.xmrig_version' "$APIQ/data/summary.json")" "x"
 source "$ROOT/tests/test-api-refresh-liveness.sh"
+bash "$ROOT/tests/test-api-refresh-spawns.sh" "$SCRIPT" >/dev/null 2>&1 && ok "api-refresh starts a bounded number of programs and parses config as before (#818)" || bad "api-refresh starts a bounded number of programs and parses config as before (#818)" "regression failed"
 # The dispatch entry is wired (any OS: rc + message prove the verb was reached).
 out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
