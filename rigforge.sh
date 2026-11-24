@@ -621,6 +621,7 @@ parse_config() {
     if ! _uint_in_range "$WATCHDOG_INTERVAL_MIN" 1 1440; then
         error "watchdog_interval_min must be a whole number of minutes, 1-1440 (got: $WATCHDOG_INTERVAL_MIN)."
     fi
+    WATCHDOG_INTERVAL_MIN=$((10#$WATCHDOG_INTERVAL_MIN))
     # Empty (the default) = no thermal cutoff. Opt-in because thermal_zone0's meaning varies by
     # board — a wrong cutoff on an unchecked sensor is worse than none. 40-110: below 40 a loaded
     # rig would never restart, above 110 is past any CPU's limit.
@@ -629,6 +630,7 @@ parse_config() {
         if ! _uint_in_range "$MAX_TEMP_C" 40 110; then
             error "max_temp_c must be empty (no thermal cutoff) or a whole number 40-110 °C (got: $MAX_TEMP_C)."
         fi
+        MAX_TEMP_C=$((10#$MAX_TEMP_C))
     fi
 
     # Co-resident reservation headroom (#305): MB of HugePages to leave for another workload on the box
@@ -4133,6 +4135,8 @@ _apply_runtime() { # [preserve-run-state]
         local why=""
         [ -f "$WORKER_ROOT/watchdog.thermal-hold" ] && why=" (the watchdog is holding it below max_temp_c)"
         log "Applied config. $SERVICE_NAME was stopped$why, so it was left stopped — the new config takes effect at the next 'sudo $0 start'."
+    elif [ -f "$WORKER_ROOT/watchdog.thermal-hold" ]; then
+        log "Applied config. $SERVICE_NAME is held by the watchdog below max_temp_c, so it was left stopped — the new config takes effect at the next 'sudo $0 start'."
     else
         sudo systemctl restart "$SERVICE_NAME" || RIGFORGE_RESTART_FAILED=1
         [ "$RIGFORGE_RESTART_FAILED" -eq 0 ] && log "Applied config and restarted $SERVICE_NAME." || warn "Config regenerated, but restarting $SERVICE_NAME failed."
@@ -4779,9 +4783,21 @@ watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
     fi
-    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config
-    if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
-        warn "watchdog: DONATION is $DONATION while Tor is in effect, so setup, upgrade and apply refuse this config until DONATION is 0; the thermal stop and wedge recovery still run."
+    # Read and validate the thermal cutoff before parse_config so a bad pool address
+    # cannot prevent the thermal stop / hold-lift. Normalise with 10# so leading-zero JSON
+    # strings ("090") work correctly with awk arithmetic.  Only override when CONFIG_JSON
+    # is set (live dispatch) — unit tests often set MAX_TEMP_C directly.
+    if [ -n "${CONFIG_JSON:-}" ] && [ -f "$CONFIG_JSON" ]; then
+        local _raw_max_temp
+        _raw_max_temp=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON" 2>/dev/null || true)
+        if [ -n "$_raw_max_temp" ]; then
+            if _uint_in_range "$_raw_max_temp" 40 110; then
+                MAX_TEMP_C=$((10#$_raw_max_temp))
+            fi
+        fi
+        local _raw_home _wr
+        _raw_home=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON" 2>/dev/null || true)
+        _wr=$(_worker_root_for_home "$_raw_home" 2>/dev/null) && WORKER_ROOT="$_wr" || WORKER_ROOT=""
     fi
     local fails_f="$WORKER_ROOT/watchdog.fails" hold_f="$WORKER_ROOT/watchdog.thermal-hold" t hr f
     t=$(_read_temp)
@@ -4810,8 +4826,6 @@ watchdog() {
         log "watchdog: $SERVICE_NAME is not active — dead-process recovery is systemd's (Restart=). Nothing to do."
         return 0
     fi
-    # Thermal cutoff (opt-in). An unreadable temp skips this — a missing sensor must not stop a
-    # healthy miner.
     if [ -n "$MAX_TEMP_C" ] && [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t > m) }'; then
         if ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
             warn "watchdog: failed to stop $SERVICE_NAME at ${t}°C — will retry while above max_temp_c=${MAX_TEMP_C}°C."
@@ -4820,6 +4834,12 @@ watchdog() {
         touch "$hold_f"
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0
+    fi
+    # Full parse_config now runs for the wedge check (wedge recovery is the only part that
+    # needs SERVICE_NAME, WORKER_ROOT, _read_api_hashrate, etc. — thermal safety already ran).
+    RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config
+    if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
+        warn "watchdog: DONATION is $DONATION while Tor is in effect, so setup, upgrade and apply refuse this config until DONATION is 0; the thermal stop and wedge recovery still run."
     fi
     # Wedge check: the API probe returns empty (unreachable) or the live hashrate (a float). An
     # unreachable API is a STRIKE, not a crash — _read_api_hashrate swallows curl's refused/timeout
