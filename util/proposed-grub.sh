@@ -27,10 +27,10 @@ HUGEPAGES_1G_NR="${HUGEPAGES_1G_NR:-/sys/kernel/mm/hugepages/hugepages-1048576kB
 # --- 1. Hardware Topology Discovery ---
 
 # Extract L3 Cache size and normalize to Megabytes
-L3_MB=$(lscpu | awk '/L3 cache/{ s=$3$4; v=s+0; u="";
-    if (match(s, /[KMGkmg]/)) u=toupper(substr(s, RSTART, 1));
-    if (u == "K") v=v/1024; else if (u == "G") v=v*1024; else if (u == "" && v > 100000) v=v/1024/1024;
-    if (s ~ /[0-9]/) printf "%d", v; exit }')
+L3_AWK='/L3 cache/{ s=$3$4; v=s+0; u=""; if (match(s, /[KMGkmg]/)) u=toupper(substr(s, RSTART, 1));'
+L3_AWK+=' if (u == "K") v=v/1024; else if (u == "G") v=v*1024; else if (u == "" && v > 100000) v=v/1024/1024;'
+L3_AWK+=' if (s ~ /[0-9]/) printf "%d", v; exit }'
+L3_MB=$(lscpu | awk "$L3_AWK")
 if [[ -z "$L3_MB" ]]; then
     L3_MB=4
 fi
