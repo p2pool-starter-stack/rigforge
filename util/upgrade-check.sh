@@ -42,3 +42,6 @@ _upgrade_check() {
     fi
     return 0
 }
+
+# shellcheck source=root-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/root-guard.sh"

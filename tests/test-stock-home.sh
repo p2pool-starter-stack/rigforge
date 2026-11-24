@@ -56,7 +56,9 @@ stage=operator-access
 [ ! -e "$build" ]
 stage=setup
 setup_attempted=1
-if run_cli setup >"$TEST_DIR/setup.log" 2>&1; then setup_rc=0; else setup_rc=$?; fi
+guard_flag=()
+grep -q -- --no-root-guard "$checkout/rigforge.sh" && guard_flag=(--no-root-guard)
+if run_cli setup "${guard_flag[@]}" >"$TEST_DIR/setup.log" 2>&1; then setup_rc=0; else setup_rc=$?; fi
 [ "$setup_rc" = 0 ]
 stage=real-worker-installation
 [ -x "$build/xmrig" ]

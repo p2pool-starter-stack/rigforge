@@ -1988,19 +1988,21 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
+    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false no_guard=""
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
             _setup_plan
             return 0
             ;;
-        *) error "Unknown option for setup: '$_arg' (use --dry-run). Run '$0 help'." ;;
+        --no-root-guard) no_guard=1 ;;
+        *) error "Unknown option for setup: '$_arg' (use --dry-run, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
+    _root_guard_check "$no_guard" || return 1
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
     _seed_appliance_tor_default
@@ -2037,9 +2039,9 @@ main() {
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
     CURRENT_STEP="linking the rigforge command"
-    link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
+    link_cli
     CURRENT_STEP="reconciling file ownership"
-    _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
+    _reown_worker
     CURRENT_STEP="finishing up"
     finish_deployment
     [ "$_control_rc" -eq 0 ] || _control_failed setup
@@ -2104,18 +2106,20 @@ _upgrade_restart() { # <was-active: yes|no>
 }
 
 upgrade() {
-    local arg _api_rc=0 _control_rc=0
+    local arg _api_rc=0 _control_rc=0 no_guard=""
     for arg in "$@"; do
         case "$arg" in
         --check)
             _upgrade_check
             return 0
             ;;
-        *) error "Unknown option for upgrade: '$arg' (use --check). Run '$0 help'." ;;
+        --no-root-guard) no_guard=1 ;;
+        *) error "Unknown option for upgrade: '$arg' (use --check, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     check_prerequisites
+    _root_guard_check "$no_guard" || return 1
     parse_config
     _shared_host_prepare
     decide_rebuild
@@ -2123,7 +2127,7 @@ upgrade() {
     if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         was_active=yes
     fi
-    SERVICE_NO_START=true # _upgrade_restart below owns the restart decision, not install_service
+    SERVICE_NO_START=true
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
@@ -2258,7 +2262,7 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    sudo rm -f "$LOGROTATE_DIR/xmrig"
+    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP"
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
@@ -4589,14 +4593,14 @@ control_apply() {
 
 _control_upgrade_steps() {
     local ref="$1" cobj
-    ! _package_install || return 1
+    ! _package_install && _root_guard_check "" || return 1
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
     git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
+    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null
 }
 
 # control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
@@ -5988,7 +5992,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
-  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
+  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   doctor     check worker health (doctor --json: machine report on stdout, human report on stderr)
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
@@ -6016,7 +6020,7 @@ Tuning:
              writes BIOS itself
 
 Provision & lifecycle:
-  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo)
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   uninstall  remove the service and revert all system changes (add -y|--yes to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically

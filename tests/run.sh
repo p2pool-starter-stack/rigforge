@@ -48,7 +48,7 @@ bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
 assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
-for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest; do
+for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest root-guard; do
     bash "$ROOT/tests/test-$selftest.sh"
     assert_rc "XMRig $selftest regression (#533)" "$?" 0
 done

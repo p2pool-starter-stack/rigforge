@@ -51,6 +51,27 @@ Not every verb needs root — the design, in four lines:
 - `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
   root.
 
+On Linux, `setup` and `upgrade` refuse to install the root-run units when a non-root user could change
+the code those units run (#783). They check `rigforge.sh`, the `util/` and `systemd/` directories and every
+file in them, `.git/config` and the git hooks in a git checkout (root runs `git` there for remote
+upgrades), and every directory from the code tree up to `/`, both as given and with symlinks resolved. Each path must be owned by root, writable by
+no group other than root's, and not writable by every user. A path that cannot be inspected counts as a
+refusal, and the message names the first path that fails. `config.json` is operator data, not code, and is
+not checked. A root-owned tree passes silently.
+
+- `--no-root-guard` accepts the tree anyway and prints a warning. It also records the allowance in the
+  root-owned `/etc/rigforge-root-guard` (it names the tree), so later remote upgrades through the control
+  path, which pass no flags, accept the same tree with a warning. An allowance file that a non-root user
+  could write, or one that names another tree, is ignored. `uninstall` removes it.
+- An install that predates the guard (a git checkout with the miner unit installed and no allowance file)
+  is allowed once with a loud warning and the allowance is recorded, so its remote upgrades keep working.
+  A packaged tree (with a `.rigforge-package` marker) is never allowed this way.
+- The guard runs from the tree it checks, so it catches a tree left writable by mistake. It cannot stop a
+  user who already writes the tree before the first guarded run, because that user can change the guard
+  itself or create a `.git` directory to qualify for the one-time allowance.
+- To close the gap instead, make the tree root-owned: `sudo chown -R root:root <tree> && sudo chmod -R
+  go-w <tree>`, then delete `/etc/rigforge-root-guard`. Afterwards, update the checkout with `sudo git`.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |

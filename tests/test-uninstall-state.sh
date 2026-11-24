@@ -48,6 +48,7 @@ BIN_DIR="$D/bin"
 REAL_USER=opuser
 RIGFORGE_CONTROL_STATE="$D/ctl"
 RIGFORGE_CONTROL_UPGRADE_STATE="$D/ctlu"
+ROOT_GUARD_STAMP="$D/root-guard"
 mkdir -p "$SYSTEMD_DIR" "$LOGROTATE_DIR" "$BIN_DIR" "$D/outside"
 : >"$D/outside/keep"
 : >"$D/refused"
