@@ -21,7 +21,7 @@ whole process, and most of it is automated.
 
 | Requirement | Recommendation |
 |---|---|
-| **Operating system** | Ubuntu Server **22.04+** (or Debian 12) is the officially supported target. macOS is **deprecated** (unsupported, untested since 2026-09-14; see [Running on macOS](operations.md#running-on-macos)); other Linux distros are courtesy. |
+| **Operating system** | **Ubuntu 24.04 is fully supported** (Ubuntu 22.04+ and Debian 12 also work). **macOS is best effort**: most of it works and some features are degraded (see [Running on macOS](operations.md#running-on-macos)); other Linux distros are courtesy. |
 | **CPU** | 64-bit x86 with **AVX2** is strongly recommended for RandomX performance. More and faster cores mean more hashrate. |
 | **RAM** | **~2.3 GB free** for RandomX fast mode (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread. **4 GB+** recommended. |
 | **Privileges** | `root` for `setup` (it installs packages and tunes the kernel, so run it with `sudo`). Looking is free: `status`, `logs`, and `backup` never need root. |
@@ -33,6 +33,23 @@ whole process, and most of it is automated.
 
 You don't need to install build dependencies yourself. RigForge installs the toolchain (`cmake`,
 `libuv`, `hwloc`, …) for you on first run. You only need `git` to clone the repo.
+
+### Install with Homebrew (macOS best effort, Linux extra)
+
+The repository is its own Homebrew tap, installed by URL:
+
+```bash
+brew tap p2pool-starter-stack/rigforge https://github.com/p2pool-starter-stack/rigforge.git
+brew install p2pool-starter-stack/rigforge/rigforge
+```
+
+Installing is inert: it puts a `rigforge` command on your `PATH` (with `bash`, `jq` and `flock`)
+and changes nothing else. Setup stays explicit: copy `config.minimal.json` to `config.json` in the
+installed tree, then run `sudo "$(command -v rigforge)" setup` (the full path, because sudo's `secure_path` may not include the Homebrew prefix). There is no service block, and `brew upgrade rigforge`
+never restarts a running miner. `config.json` lives in the installed tree, which an upgrade replaces,
+so run `rigforge backup` before and `rigforge restore` after. Brew cannot do the root tuning (GRUB,
+HugePages, MSR): on Linux, that is `rigforge setup`'s job, and Linuxbrew's user-owned prefix is not a
+safe place for code that root-run units execute, so prefer the git route below on a Linux rig.
 
 ---
 

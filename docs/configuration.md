@@ -341,7 +341,7 @@ sudo ./rigforge.sh apply
 
 `apply` re-reads `config.json`, regenerates the live XMRig config, and restarts the service, with no
 recompile. It's the path for a `pools` change, a new rig label, TLS, failover pools, and the like. (On
-macOS — **deprecated, unsupported and untested since 2026-09-14** — there's no service, so `apply`
+macOS (best effort) there's no service, so `apply`
 regenerates the config and you restart the miner yourself; see
 [Operations › Running on macOS](operations.md#running-on-macos).)
 
