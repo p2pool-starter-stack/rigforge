@@ -566,6 +566,22 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 > XMRig fetch, build or configuration step aborts the upgrade and leaves the live `xmrig/` tree (binary
 > and config) untouched. A swap interrupted mid-way is recovered by the next `setup` or `upgrade`.
 
+### Upgrading through apt
+
+When `apt upgrade rigforge` installs a newer version on a host that already has a
+`config.json`, the package's postinst only writes `/var/lib/rigforge/upgrade-pending` and starts
+the one-shot `rigforge-upgrade.service` with `systemctl start --no-block`; dpkg returns at once.
+A first install, a reinstall of the same version and a host without a config queue nothing.
+
+The one-shot runs `rigforge package-upgrade`, which is `upgrade` outside dpkg: it rebuilds XMRig
+only when the pin, compiled minimum or checksum requires it, re-renders every unit, and restarts
+the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and hands the tree and units back to them. Follow it with `journalctl -u rigforge-upgrade`.
+
+If it fails, the previous build keeps running, the marker stays, `/var/lib/rigforge/upgrade-failed`
+records the failure, and both `rigforge status` and `rigforge doctor` report it. dpkg is never
+failed by it. Retry with the one command `sudo rigforge upgrade`; a successful run clears the
+marker. To defer upgrades, `sudo apt-mark hold rigforge` (undo with `apt-mark unhold rigforge`).
+
 ---
 
 ## Backup & restore

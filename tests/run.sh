@@ -3270,12 +3270,11 @@ assert_rc "unknown setup arg errors (#146)" "${setup_arg_rc:-0}" "1"
 # -v/-h flag spellings are deliberately excluded by the ^[a-z]+$ filter.
 echo "== black-box: completion script + verb-list drift guard (#145) =="
 comp_out="$(bash "$SCRIPT" completion bash)"
-# Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
-# systemd, not operators) are excluded by name.
-# sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|package-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
+pkg_idle="$(RIGFORGE_PKG_STATE="$SANDBOX" bash "$SCRIPT" package-upgrade 2>&1)"
+assert_contains "package-upgrade verb is a no-op without a pending marker (#785)" "$pkg_idle" "No package upgrade is pending"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
 # #207: per-verb FLAG drift guard — hand-maintained map (verbs gain flags rarely; the failure
 # message says exactly where to add one). The verb-level guard above can't see flags.
