@@ -72,9 +72,10 @@ printf 'Types: deb\nURIs: https://p2pool-starter-stack.github.io/rigforge/apt/\n
 sudo apt update && sudo apt install rigforge
 ```
 
-`apt upgrade rigforge` keeps the worker current. On Linux the package installs systemd units and
-a `/usr/bin/rigforge` wrapper that exports `RIGFORGE_LIB` and `RIGFORGE_STATE`. First-run setup
-is the same as the git or Homebrew routes: `sudo rigforge.sh setup` (or `sudo rigforge setup`).
+`apt upgrade rigforge` keeps the worker current. On Linux the package installs a
+`/usr/bin/rigforge` wrapper that exports `RIGFORGE_LIB` and `RIGFORGE_STATE`. First-run setup
+is the same as the git or Homebrew routes: `sudo rigforge.sh setup` (or `sudo rigforge setup`),
+which installs and enables the systemd units, builds the worker, and tunes the kernel.
 
 ---
 

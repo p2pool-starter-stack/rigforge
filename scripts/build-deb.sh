@@ -45,8 +45,6 @@ FINGERPRINT="$(tr -d '[:space:]' <"$FINGERPRINT_FILE")"
 
 STAGING="$(mktemp -d)"
 CLEANUP+=("$STAGING")
-RELEASE_DIR="$(mktemp -d)"
-CLEANUP+=("$RELEASE_DIR")
 
 case "$RELEASE_ARCHIVE" in
 *.tar.gz) tar -xzf "$RELEASE_ARCHIVE" -C "$STAGING" ;;
@@ -140,7 +138,7 @@ mkdir -p /var/lib/rigforge
 
 systemctl daemon-reload 2>/dev/null || true
 
-if [ ! -f /etc/rigforge/config.json ]; then
+if [ -z "${2:-}" ]; then
     echo ""
     echo "RigForge is installed. Run the following to complete setup:"
     echo ""
