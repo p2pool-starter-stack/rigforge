@@ -209,30 +209,37 @@ xmrig_already_built() {
     [ ! -f "$sums" ] || [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$WORKER_ROOT/xmrig/build/xmrig")" ]
 }
 
-# Merge the HugePage/MSR kernel params we manage into an existing GRUB cmdline, preserving every
-# other parameter and replacing only the ones we own (so re-runs don't accumulate). Echoes the merged
-# cmdline. Usage: grub_merge_cmdline "<managed params>" "<current cmdline>"
+grub_cmdline_editable() {
+    local lines re='^GRUB_CMDLINE_LINUX_DEFAULT="[^"]*"$'
+    lines=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$1") || return 0
+    [[ "$lines" =~ $re ]] && return 0
+    warn "GRUB_CMDLINE_LINUX_DEFAULT in $1 is not one plain double-quoted line; left untouched. Edit the kernel parameters by hand."
+    return 1
+}
+
 grub_merge_cmdline() {
     local managed="$1" current="$2" preserved="" tok
+    set -f
     for tok in $current; do
         case "$tok" in
         hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop, re-added below
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
+    set +f
     echo "${preserved:+$preserved }$managed"
 }
 
-# Drop only the kernel params RigForge manages (HugePages/MSR), preserving everything else. The inverse
-# of what tune_kernel adds — used by `uninstall` to revert the GRUB cmdline.
 grub_strip_managed() { # <current cmdline>
     local current="$1" preserved="" tok
+    set -f
     for tok in $current; do
         case "$tok" in
         hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
+    set +f
     printf '%s' "$preserved"
 }
 
@@ -1518,17 +1525,6 @@ _rx_setup_threads() {
     case "$RX_SETUP_THREADS" in -1 | 0 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
 }
 
-# Read-only GRUB computation shared by tune_kernel (the mutation half) and the setup --dry-run plan
-# (#146): sets MANAGED (params we manage), CURRENT (the live cmdline), MERGED (#19 merge — never
-# clobbers params the user/distro set). Callers guard on proposed-grub.sh + $GRUB_DEFAULT existing.
-#
-# POOL_CEILING_MB (#410): the declared hugepages_pool_ceiling_mb reaches the PERSISTED reservation
-# here, not only the runtime write in _ensure_hugepages. Without it the boot pool comes up above the
-# ceiling and the grow-only runtime guard can never bring it back down — a declared ceiling that
-# holds until the next reboot and then silently stops holding. Passed to the cmdline-generating call
-# ONLY: the two --runtime calls below and in tune_kernel ask for the miner's REQUIREMENT, which
-# _ensure_hugepages weighs against availability before clamping the write, so clamping it there
-# would move that decision instead of bounding the pool.
 _grub_proposed() {
     MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
@@ -1687,13 +1683,15 @@ tune_kernel() {
         # clobber other kernel parameters the user/distro set (#19 — boot-safety).
         _grub_proposed
 
-        if [ "$CURRENT" = "$MERGED" ]; then
+        if ! grub_cmdline_editable "$GRUB_DEFAULT"; then
+            warn "Kernel parameters RigForge would have set: $MANAGED"
+        elif [ "$CURRENT" = "$MERGED" ]; then
             # Either already optimal, or _grub_proposed's co-resident keep-existing guard (#305) set
             # MERGED := CURRENT because the ambient reservation already covers miner + headroom — either
             # way there's nothing to write and no reboot.
             log "GRUB is already configured for the required HugePages reservation (no reboot)."
         else
-            sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+            [ -e "$GRUB_DEFAULT.bak" ] || sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
             sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$MERGED")\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
@@ -1919,7 +1917,9 @@ _setup_plan() {
             _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
             if [ "$RIGFORGE_APPLIANCE" != 1 ] && [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
-                if [ "$CURRENT" = "$MERGED" ]; then
+                if ! grub_cmdline_editable "$GRUB_DEFAULT" 2>/dev/null; then
+                    _grubline="GRUB line is not one plain double-quoted line: left untouched, set by hand: $MANAGED"
+                elif [ "$CURRENT" = "$MERGED" ]; then
                     _grubline="GRUB already configured (no reboot needed for it)"
                 else
                     _grubline="GRUB cmdline: '$CURRENT' -> '$MERGED'"
@@ -2284,12 +2284,12 @@ uninstall() {
         fi
         sudo rmdir "$HUGEPAGES_1G_DIR" 2>/dev/null || true
 
-        if [ -f "$GRUB_DEFAULT" ]; then
+        if [ -f "$GRUB_DEFAULT" ] && grub_cmdline_editable "$GRUB_DEFAULT"; then
             local cur stripped
             cur=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
             stripped=$(grub_strip_managed "$cur")
             if [ "$cur" != "$stripped" ]; then
-                sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+                [ -e "$GRUB_DEFAULT.bak" ] || sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
                 sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$stripped")\"|" "$GRUB_DEFAULT"
                 if command -v update-grub >/dev/null; then
                     sudo update-grub
