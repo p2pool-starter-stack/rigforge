@@ -23,7 +23,7 @@ bundle() {
     cp -R "$ROOT/rigforge.sh" "$ROOT/VERSION" "$ROOT/systemd" "$ROOT/util" "$1/"
 }
 
-normalize() { # <dir> <lib> <out>
+normalize() {
     local f n
     for f in "$1"/*.*; do
         n=$(basename "$f")

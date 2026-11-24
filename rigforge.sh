@@ -75,7 +75,7 @@ REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$(_state_dir)/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$(_state_dir)/.rigforge-appliance}"
 LEGACY_APPLIANCE_UNIT="${RIGFORGE_LEGACY_APPLIANCE_UNIT:-/run/systemd/system/xmrig.service}"
-CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$(_state_dir)/.rigforge-config-meta.json}" # #254 provenance sidecar
+CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$(_state_dir)/.rigforge-config-meta.json}"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
@@ -2105,7 +2105,7 @@ _upgrade_restart() { # <was-active: yes|no>
 
 _upgrade_check() {
     local local_v remote_v url body highest via=""
-    local_v=$(tr -d '[:space:]' <"$(_lib_dir)/VERSION" 2>/dev/null || true) # guard inside the $() (#210)
+    local_v=$(tr -d '[:space:]' <"$(_lib_dir)/VERSION" 2>/dev/null || true)
     if [ -z "$local_v" ]; then
         warn "No VERSION file at $(_lib_dir)/VERSION — can't compare against the latest release."
         return 0
