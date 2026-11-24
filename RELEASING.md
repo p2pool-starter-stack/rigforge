@@ -291,6 +291,20 @@ release was published, and republishes. Every deploy re-verifies each archived f
 against the pinned key; an archive that does not verify (for example one signed with a rotated
 key) is dropped from `apt/versions`, while its `.deb` stays on its GitHub release.
 
+## The Homebrew formula
+
+Every release uploads a generated `rigforge.rb` beside the tarball (`scripts/build-homebrew-formula.sh`
+renders `Formula/rigforge.rb.in` with the tarball URL and the sha256 from `SHA256SUMS`, and fails if
+they disagree). Publishing a stable release then starts `Bump Homebrew formula`
+(`homebrew-formula.yml`), which re-derives the formula from the published assets and opens or
+updates a pull request from the fixed branch `homebrew/formula-bump` against `main`; it never
+pushes to `main`. The formula is live for `brew tap` users only after that PR merges. Drafts,
+prereleases and a repository without the bot configured skip the job.
+
+Owner-only steps before the first bump (one time): create a GitHub App with contents and pull
+requests write access on this repository only, install it here, then add the repository variable
+`FORMULA_BOT_APP_ID` and the secret `FORMULA_BOT_PRIVATE_KEY`.
+
 ## Notes
 
 - Keep `VERSION` and the latest `CHANGELOG.md` heading in lock-step; the test suite checks `VERSION`

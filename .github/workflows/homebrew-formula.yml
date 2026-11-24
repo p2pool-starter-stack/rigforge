@@ -1,0 +1,71 @@
+name: Bump Homebrew formula
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-formula
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: ${{ !github.event.release.draft && !github.event.release.prerelease && vars.FORMULA_BOT_APP_ID != '' }}
+    name: Open the formula bump PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      BRANCH: homebrew/formula-bump
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - name: Require a stable tag equal to VERSION
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$(tr -d '[:space:]' < VERSION)"
+      - name: Re-derive the formula from the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir release
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release \
+            --pattern "rigforge-$RELEASE_TAG.tar.gz" --pattern SHA256SUMS --pattern rigforge.rb
+          bash scripts/build-homebrew-formula.sh "$RELEASE_TAG" release/SHA256SUMS formula.rb "release/rigforge-$RELEASE_TAG.tar.gz"
+          cmp formula.rb release/rigforge.rb
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        id: app
+        with:
+          app-id: ${{ vars.FORMULA_BOT_APP_ID }}
+          private-key: ${{ secrets.FORMULA_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or update the bump PR against main
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          git clone --quiet --branch main "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main
+          cd main
+          git checkout -q -B "$BRANCH"
+          cp ../formula.rb Formula/rigforge.rb
+          git add Formula/rigforge.rb
+          if git diff --cached --quiet; then
+            echo "Formula already at ${RELEASE_TAG}"
+            exit 0
+          fi
+          git -c user.name='rigforge-formula-bot' -c user.email='rigforge-formula-bot@users.noreply.github.com' \
+            commit -q -m "Bump Homebrew formula to ${RELEASE_TAG}"
+          git push --force origin "$BRANCH"
+          if [[ -z "$(gh pr list --head "$BRANCH" --base main --state open --json number -q '.[0].number')" ]]; then
+            gh pr create --base main --head "$BRANCH" \
+              --title "Bump Homebrew formula to ${RELEASE_TAG}" \
+              --body "Generated from the ${RELEASE_TAG} release assets by scripts/build-homebrew-formula.sh. The formula is live only after this PR merges."
+          fi
