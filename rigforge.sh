@@ -75,6 +75,8 @@ source "$(_script_dir)/util/upgrade-check.sh"
 source "$(_script_dir)/util/package-mode.sh"
 # shellcheck source=util/fetch-proxy.sh
 source "$(_script_dir)/util/fetch-proxy.sh"
+# shellcheck source=util/package-upgrade.sh
+source "$(_script_dir)/util/package-upgrade.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
@@ -2141,13 +2143,13 @@ upgrade() {
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) was already built — regenerated the config and reinstalled the units."
     fi
     _reown_worker
-    _upgrade_restart "$was_active"
+    { _pkg_restart_gate "$_api_rc" "$_control_rc" && _upgrade_restart "$was_active"; } || return 1
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
     _reown_worker
     [ "$_control_rc" -eq 0 ] || _control_failed upgrade
     [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
-    [ "$_api_rc:$_control_rc" = 0:0 ]
+    [ "$_api_rc:$_control_rc" = 0:0 ] && _pkg_upgrade_clear
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -3922,14 +3924,14 @@ _render_duration() {
 svc_status() {
     _shared_host_status_report
     _config_apply_check
+    _pkg_upgrade_status
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
         (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
     (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
-    # Read-only: `systemctl status` is world-readable, so no sudo (don't prompt for a password to look).
-    systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
+    systemctl status "$SERVICE_NAME" || true
 }
 svc_logs() {
     [ "$OS_TYPE" = "Linux" ] || {
@@ -3980,12 +3982,7 @@ svc_disable() {
     sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
 }
 # --- Commands: version, apply & bench ---
-
 # Tab completion (#145): PRINT a completion script, install nothing — the operator opts in with
-# `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
-# (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
-# dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
-# verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
 _rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios stress status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
@@ -5304,7 +5301,7 @@ doctor() {
         ;;
     esac
 
-    # Service active?
+    _pkg_upgrade_doctor || issues=$((issues + 1))
     local svc_up=n
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         svc_up=y
@@ -6096,6 +6093,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         upgrade "$@"
         ;;
+    package-upgrade) package_upgrade ;;
     uninstall)
         shift
         uninstall "$@"
