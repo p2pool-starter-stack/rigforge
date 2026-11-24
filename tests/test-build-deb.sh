@@ -71,13 +71,13 @@ assert_fails "missing archive exits non-zero" "$ROOT/scripts/build-deb.sh" "$WOR
 
 mkdir -p "$WORK/archive/util" "$WORK/archive/systemd" "$WORK/archive/docs" "$WORK/archive/images"
 cp "$ROOT/rigforge.sh" "$WORK/archive/"
-cp "$ROOT/util/"* "$WORK/archive/util/"
-cp "$ROOT/systemd/"* "$WORK/archive/systemd/"
+cp -R "$ROOT/util/"* "$WORK/archive/util/"
+cp -R "$ROOT/systemd/"* "$WORK/archive/systemd/"
 cp "$ROOT/config.minimal.json" "$WORK/archive/"
 cp "$ROOT/config.reference.json" "$WORK/archive/"
 cp "$ROOT/README.md" "$WORK/archive/"
-cp "$ROOT/docs/"* "$WORK/archive/docs/"
-cp "$ROOT/images/"* "$WORK/archive/images/"
+cp -R "$ROOT/docs/"* "$WORK/archive/docs/"
+cp -R "$ROOT/images/"* "$WORK/archive/images/"
 cp "$ROOT/LICENSE" "$WORK/archive/"
 cp "$ROOT/VERSION" "$WORK/archive/"
 tar -czf "$WORK/bundle.tar.gz" -C "$WORK/archive" .
