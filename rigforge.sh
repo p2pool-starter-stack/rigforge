@@ -2395,50 +2395,31 @@ _median() {
         END{ if(NR==0) exit; print (NR%2) ? a[(NR+1)/2] : (a[NR/2]+a[NR/2+1])/2 }'
 }
 
-# Tiny file-backed memo (bash 3.2 has no associative arrays). Keyed by the candidate tuple so the
-# hill-climb — which revisits the current point as it sweeps each knob — never re-benchmarks a combo.
-_memo_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_FILE" 2>/dev/null; }
-_memo_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_FILE"; }
-# Parallel store for each candidate's sample stddev (kept out of the median memo so its value stays a
-# bare number for every existing caller), and the state's memo key (#63).
-_memo_sd_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_SD_FILE" 2>/dev/null; }
-_memo_sd_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_SD_FILE"; }
-_memo_hpw_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_HPW_FILE" 2>/dev/null; } # #79
-_memo_hpw_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_HPW_FILE"; }
-# #79: efficiency mode needs a power source. True if TUNE_POWER_CMD is set or RAPL is readable.
+_memo_get() { awk -F'\t' -v k="$2" '$1==k{print $2; exit}' "$1" 2>/dev/null; }
+_memo_put() { printf '%s\t%s\n' "$2" "$3" >>"$1"; }
 _power_supported() {
     [ -n "${TUNE_POWER_CMD:-}" ] && return 0
     [ -n "$(_rapl_sum energy_uj)" ] && return 0
     return 1
 }
-_memo_thr_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_THROTTLE_FILE" 2>/dev/null; } # #62
-_memo_thr_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_THROTTLE_FILE"; }
 _state_key() { printf '%s|%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq" "$S_wr"; }
-# Population stddev of the args (0 with fewer than 2).
 _stddev() {
     printf '%s\n' "$@" | awk '{ s += $1; ss += $1 * $1; n++ } END { if (n < 2) { print 0; exit } m = s / n; v = ss / n - m * m; if (v < 0) v = 0; printf "%.4f", sqrt(v) }'
 }
-# Variance-aware acceptance (#63): the candidate wins only if its median beats the best by BOTH the
-# TUNE_MIN_DELTA floor AND more than the combined sample-noise band (TUNE_SIGMA × √(sd_cand²+sd_best²)),
-# so jitter on noisy hardware can't trigger a phantom adoption. sd is looked up by each combo's memo key.
-_accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
-    # #62: a throttled candidate's reading is unreliable — never adopt it.
-    if [ "$(_memo_thr_get "$2")" = 1 ]; then return 1; fi
-    # #79: the efficiency target ranks by hashrate-per-watt instead of raw H/s. The variance band (#63)
-    # carries over proportionally — each candidate's relative H/s spread applied to its hs_per_watt. Any
-    # pair missing a power reading falls back to the raw-H/s comparison so the search still progresses.
+_accept_better() {
+    if [ "$(_memo_get "$MEMO_THROTTLE_FILE" "$2")" = 1 ]; then return 1; fi
     if [ "${TUNE_TARGET:-perf}" = efficiency ]; then
         local chpw bhpw
-        chpw=$(_memo_hpw_get "$2")
-        bhpw=$(_memo_hpw_get "$4")
+        chpw=$(_memo_get "$MEMO_HPW_FILE" "$2")
+        bhpw=$(_memo_get "$MEMO_HPW_FILE" "$4")
         if [ -n "$chpw" ] && [ -n "$bhpw" ]; then
-            awk -v c="$chpw" -v b="$bhpw" -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+            awk -v c="$chpw" -v b="$bhpw" -v cm="$1" -v best="$3" -v csd="$(_memo_get "$MEMO_SD_FILE" "$2")" -v bsd="$(_memo_get "$MEMO_SD_FILE" "$4")" \
                 -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
                 'BEGIN { crel = (cm > 0 ? csd / cm : 0); brel = (best > 0 ? bsd / best : 0); band = sig * sqrt((c * crel) ^ 2 + (b * brel) ^ 2); exit !(c > b * (1 + delta) && (c - b) > band) }'
             return
         fi
     fi
-    awk -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+    awk -v cm="$1" -v best="$3" -v csd="$(_memo_get "$MEMO_SD_FILE" "$2")" -v bsd="$(_memo_get "$MEMO_SD_FILE" "$4")" \
         -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
         'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
 }
@@ -2604,11 +2585,9 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     printf '%s\n' "${samples[*]}"
 }
 
-# Measure one candidate (memoized): median over TUNE_ITERS bench runs, or one live window. On a cache
-# miss it also records the candidate — samples, median, and any temp/watts — to the results log.
-_measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr> -> median H/s
+_measure() {
     local p="$1" y="$2" t="$3" g="$4" pr="$5" hj="$6" cq="$7" wr="$8" key="$1|$2|$3|$4|$5|$6|$7|$8" cached
-    cached=$(_memo_get "$key")
+    cached=$(_memo_get "$MEMO_FILE" "$key")
     if [ -n "$cached" ]; then
         printf '%s' "$cached"
         return 0
@@ -2671,13 +2650,12 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
           temp_c: (if $temp=="" then null else ($temp|tonumber) end),
           hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
         >>"$RESULTS_FILE"
-    # #79: store hashrate-per-watt for the efficiency-target gate (empty when there's no power reading).
     local hpw
     hpw=$(awk -v m="$med" -v w="${watts:-0}" 'BEGIN{if(w+0>0)printf "%.4f",m/w}')
-    _memo_put "$key" "$med"
-    _memo_sd_put "$key" "${sd:-0}"
-    _memo_thr_put "$key" "$throttled"
-    _memo_hpw_put "$key" "$hpw"
+    _memo_put "$MEMO_FILE" "$key" "$med"
+    _memo_put "$MEMO_SD_FILE" "$key" "${sd:-0}"
+    _memo_put "$MEMO_THROTTLE_FILE" "$key" "$throttled"
+    _memo_put "$MEMO_HPW_FILE" "$key" "$hpw"
     printf '%s' "$med"
 }
 
