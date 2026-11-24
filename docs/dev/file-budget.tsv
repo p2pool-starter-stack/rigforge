@@ -5,7 +5,7 @@ rigforge.sh	6169
 tests/e2e-pithead.sh	562
 tests/e2e-real.sh	1388
 tests/run.sh	9552
-tests/test-control-upgrade.sh	419
+tests/test-control-upgrade.sh	417
 tests/test-fetch-proxy.sh	416
 tests/test-randomx-mode.sh	402
 tests/test-xmrig-overlay.sh	413
