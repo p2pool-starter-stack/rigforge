@@ -220,8 +220,7 @@ After a rig is re-tagged, record its benchmark for the release
 (`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
 the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
 catch slow drift across releases (see `tests/perf-baselines/README.md`). It is whichever rig ran the
-gate, which is **not** always miner-0 despite [`tests/README.md`](./tests/README.md#the-shared-rig-miner-0)
-calling it the shared rig: v1.15.0 was gated on miner-2 and v1.15.1 on miner-3, and miner-0 currently
+gate, which is **not** always the shared rig: v1.15.0 was gated on miner-2 and v1.15.1 on miner-3, and the shared rig currently
 cannot pass the gate at all — it dual-boots Windows, so Secure Boot is enabled, kernel lockdown
 (`integrity`) denies every MSR write, and `doctor` counts that as an issue and exits non-zero. Pick a
 rig with Secure Boot off. The rest of the fleet isn't re-tagged on every release, so its baselines are

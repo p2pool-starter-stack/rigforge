@@ -1,16 +1,15 @@
 # shellcheck shell=bash
-# #540: only the runner's private pithead-control fixture authorizes these replay cases.
-REPLAY_RUNNER_LOCK=0
+REPLAY_LOCK=0
 replay_lock() {
     case "${E2E_PITHEAD_CONTROL_FIXTURE:-}:$1" in
     :control-replay-*) die "replay requires the queued pithead-control fixture" ;;
     :*) rig_lock rigforge e2e-pithead ;;
     pithead-control:control-replay-thermal | pithead-control:control-replay-pools)
-        [[ "${E2E_RIG_LOCK_UNIT:-}" =~ ^bench-ci-riglock-[a-zA-Z0-9_-]+-[0-9]+$ ]] &&
-            systemctl is-active --quiet "$E2E_RIG_LOCK_UNIT" || die "runner reservation is unavailable"
+        [[ "${E2E_RIG_LOCK_UNIT:-}" =~ ^harness-riglock-[a-zA-Z0-9_-]+-[0-9]+$ ]] &&
+            systemctl is-active --quiet "$E2E_RIG_LOCK_UNIT" || die "reservation is unavailable"
         printf '%s' "${E2E_PITHEAD_CONTROL_CONTEXT:-}" | jq -e '.version == 1 and .fixture == "pithead-control" and .thermal.feed_deadline_s == 90 and .thermal.starting_scalars == {max_temp_c:100,DONATION:0,watchdog_interval_min:5} and (.unknown | type == "array" and length > 0)' >/dev/null || die "invalid replay context"
         printf '%s' "${IT_RIG_POOLS_PROBE:-}" | jq -e 'type == "array" and length > 0 and all(.[]; type == "object" and all(.url,.user,.pass; type == "string" and length > 0))' >/dev/null || die "missing private pools probe"
-        REPLAY_RUNNER_LOCK=1
+        REPLAY_LOCK=1
         ;;
     *) die "fixture requires one declaring replay phase" ;;
     esac
@@ -125,8 +124,6 @@ _replay_window() { # <thermal|pools> -- publication of this exact ID, not a late
 _replay_setup() {
     local stage
     stage=$(mktemp) || return 1
-    # Token and endpoint enter jq through stdin. Promote the runner-added pool without
-    # altering source pools, worker identities or credentials; refuse a missing bench pool.
     if printf '%s\n%s\n' "$tok" "$PITHEAD_URL" | jq -Rn --slurpfile cfg "$CFG" '
         [inputs] as $i | $cfg[0] |
         if any(.pools[]; .url == $i[1]) then
@@ -134,7 +131,7 @@ _replay_setup() {
             .api="enabled" | .control="enabled" | .ACCESS_TOKEN=$i[0] |
             .api_allow_from="127.0.0.1/32" | .watchdog="enabled" |
             .max_temp_c=100 | .DONATION=0 | .watchdog_interval_min=5
-        else error("runner bench pool missing") end' >"$stage" && mv "$stage" "$CFG"; then
+        else error("pool missing") end' >"$stage" && mv "$stage" "$CFG"; then
         "$RIGFORGE" apply >/dev/null 2>&1
     else
         rm -f "$stage"
@@ -143,7 +140,7 @@ _replay_setup() {
 }
 phase_control_replay() {
     local kind="$1" tok port api_port cid before payload
-    [ "$REPLAY_RUNNER_LOCK" = 1 ] || bad "replay requires verified runner reservation"
+    [ "$REPLAY_LOCK" = 1 ] || bad "replay requires verified reservation"
     phase "control replay — $kind publication (#540)"
     tok=$(head -c 32 /dev/urandom | xxd -p -c 256)
     # Replay only the recorded scalars; preserve worker threads, tuning and payout identity.
