@@ -51,6 +51,31 @@ so run `rigforge backup` before and `rigforge restore` after. Brew cannot do the
 HugePages, MSR): on Linux, that is `rigforge setup`'s job, and Linuxbrew's user-owned prefix is not a
 safe place for code that root-run units execute, so prefer the git route below on a Linux rig.
 
+### Install with apt (Debian / Ubuntu on Linux)
+
+The project publishes a signed `.deb` through a GitHub-hosted apt feed. Install the signing key
+and verify its fingerprint against [`packaging/apt/fingerprint`](../packaging/apt/fingerprint)
+in this repository:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://p2pool-starter-stack.github.io/rigforge/apt/rigforge.asc |
+  sudo tee /etc/apt/keyrings/rigforge.asc >/dev/null
+gpg --show-keys --with-colons /etc/apt/keyrings/rigforge.asc | awk -F: '/^fpr/{print $10; exit}'
+```
+
+The printed fingerprint must match the pinned one. Then add the source and install:
+
+```bash
+printf 'Types: deb\nURIs: https://p2pool-starter-stack.github.io/rigforge/apt/\nSuites: ./\nSigned-By: /etc/apt/keyrings/rigforge.asc\n' |
+  sudo tee /etc/apt/sources.list.d/rigforge.sources >/dev/null
+sudo apt update && sudo apt install rigforge
+```
+
+`apt upgrade rigforge` keeps the worker current. On Linux the package installs systemd units and
+a `/usr/bin/rigforge` wrapper that exports `RIGFORGE_LIB` and `RIGFORGE_STATE`. First-run setup
+is the same as the git or Homebrew routes: `sudo rigforge.sh setup` (or `sudo rigforge setup`).
+
 ---
 
 ## 2. Get the code
