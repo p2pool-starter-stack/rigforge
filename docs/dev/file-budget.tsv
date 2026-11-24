@@ -2,9 +2,9 @@
 # target/ceiling rationale and CONTRIBUTING.md for the gate.
 # path<TAB>ceiling-in-lines. Ceilings only ever go down; a file at or below 400 lines drops its entry.
 rigforge.sh	6203
-tests/e2e-pithead.sh	563
+tests/e2e-pithead.sh	523
 tests/e2e-real.sh	1388
-tests/run.sh	9556
+tests/run.sh	9510
 tests/test-fetch-proxy.sh	416
 tests/test-xmrig-overlay.sh	413
 util/control-server.py	432
