@@ -181,7 +181,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
 
-- verifies the tag matches `VERSION` (the build fails otherwise),
+- verifies the tagged commit is on `main` and that the tag matches `VERSION` (the build fails otherwise),
 - packages the deploy bundle (`rigforge.sh`, `util/`, `systemd/`, `config.minimal.json`,
   `config.reference.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`) as
   `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev files are excluded),
