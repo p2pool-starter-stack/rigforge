@@ -61,7 +61,7 @@ _script_dir() {
     cd -P "$(dirname "$src")" &>/dev/null && pwd
 }
 for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
-[ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
+[ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find -H "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
 # shellcheck source=util/config-apply-state.sh
 source "${RIGFORGE_LIB:-$(_script_dir)}/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
@@ -1237,7 +1237,7 @@ _render_xmrig_unit() {
     if [ -n "${MINER_USER:-}" ] && [ "${SHARED_HOST:-false}" != true ]; then msr_line="ExecStartPre=+$(_lib_dir)/rigforge.sh msr-apply"; fi
     WORKER_ROOT="$WORKER_ROOT" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
         envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
-        <"$(_lib_dir)/systemd/xmrig.service.template" | _shared_host_unit | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
+        <"$(_lib_dir)/systemd/xmrig.service.template" | _shared_host_unit | _unit_split_env | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 }
 
 install_service() {

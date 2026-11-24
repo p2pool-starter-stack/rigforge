@@ -57,9 +57,9 @@ for u in api control; do
     eq "$u unit loads its server from the lib dir" "$(grep -c "^LoadCredential=server:$D/lib/util/$u-server.py$" "$D/split/rigforge-$u.service")" "1"
 done
 eq "watchdog ExecStart is under the lib dir" "$(grep -c "^ExecStart=$D/lib/rigforge.sh watchdog$" "$D/split/rigforge-watchdog.service")" "1"
-for u in autotune watchdog api-refresh control-apply control-upgrade; do
-    eq "$u unit gets the state dir in its environment" "$(grep -c "^Environment=RIGFORGE_STATE=$D/state$" "$D/split/rigforge-$u.service")" "1"
-    eq "$u unit gets the lib dir in its environment" "$(grep -c "^Environment=RIGFORGE_LIB=$D/lib$" "$D/split/rigforge-$u.service")" "1"
+for u in rigforge-autotune rigforge-watchdog rigforge-api-refresh rigforge-control-apply rigforge-control-upgrade xmrig; do
+    eq "$u unit gets the state dir in its environment" "$(grep -c "^Environment=RIGFORGE_STATE=$D/state$" "$D/split/$u.service")" "1"
+    eq "$u unit gets the lib dir in its environment" "$(grep -c "^Environment=RIGFORGE_LIB=$D/lib$" "$D/split/$u.service")" "1"
 done
 eq "no unit references the unsplit code dir" "$(grep -l "$D/code" "$D"/split/*.service "$D"/split/*.path "$D"/split/*.timer 2>/dev/null | wc -l | tr -d ' ')" "0"
 
