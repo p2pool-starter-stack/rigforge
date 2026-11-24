@@ -11,7 +11,7 @@ configure)
     old=$2
     new=$(dpkg-query -W -f '${Version}' rigforge 2>/dev/null || true)
     if [ -n "$old" ] && [ -n "$new" ] && [ -f "$CONFIG" ] && dpkg --compare-versions "$new" gt "$old"; then
-        if install -d -m 0755 "$STATE" && tmp=$(mktemp "$STATE/.upgrade-pending.XXXXXX") && printf '%s\n' "$new" >"$tmp" && mv -f "$tmp" "$STATE/upgrade-pending"; then
+        if install -d -m 0755 "$STATE" && tmp=$(mktemp "$STATE/.upgrade-pending.XXXXXX") && chmod 0644 "$tmp" && printf '%s\n' "$new" >"$tmp" && mv -f "$tmp" "$STATE/upgrade-pending"; then
             if [ -d "$ROOT/run/systemd/system" ] && systemctl daemon-reload && systemctl start --no-block rigforge-upgrade.service; then
                 echo "rigforge: upgrade to $new queued outside dpkg; follow it with: journalctl -u rigforge-upgrade"
             else

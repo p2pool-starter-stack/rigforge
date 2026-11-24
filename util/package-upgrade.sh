@@ -4,11 +4,26 @@ _pkg_state() { printf '%s' "${RIGFORGE_PKG_STATE:-/var/lib/rigforge}"; }
 
 _pkg_upgrade_clear() { rm -f "$(_pkg_state)/upgrade-pending" "$(_pkg_state)/upgrade-failed" 2>/dev/null || true; }
 
+_pkg_operator() {
+    local u
+    u=$(sed -n 's/^Environment=RIGFORGE_OPERATOR=//p' "$SYSTEMD_DIR/rigforge-watchdog.service" 2>/dev/null | head -n 1)
+    [ -n "$u" ] && [ "$u" != root ] && id -u "$u" >/dev/null 2>&1 && printf '%s' "$u"
+}
+
+_pkg_restart_gate() {
+    [ "${RIGFORGE_PKG_UPGRADE:-}" = 1 ] || return 0
+    [ "$1:$2" != 0:0 ] || return 0
+    [ "$2" -eq 0 ] || _control_failed upgrade
+    [ "$1" -eq 0 ] || _sister_api_failed upgrade || true
+    return 1
+}
+
 _pkg_upgrade_failed() {
     local st tmp
     st=$(_pkg_state)
     [ "$1" -ne 0 ] || return 0
     tmp=$(mktemp "$st/.upgrade-failed.XXXXXX") || return 0
+    chmod 0644 "$tmp"
     printf '%s upgrade exited %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >"$tmp"
     mv -f "$tmp" "$st/upgrade-failed"
     warn "Package upgrade did not finish. Retry with: sudo rigforge upgrade"
@@ -23,6 +38,8 @@ package_upgrade() {
     }
     rm -f "$st/upgrade-failed"
     (
+        RIGFORGE_PKG_UPGRADE=1
+        if [ -z "${SUDO_USER:-}${RIGFORGE_OPERATOR:-}" ]; then REAL_USER=$(_pkg_operator || printf '%s' "$REAL_USER"); fi
         trap '_pkg_upgrade_failed "$?"' EXIT
         upgrade
         trap - EXIT

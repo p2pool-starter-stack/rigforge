@@ -58,6 +58,7 @@ check "downgrade is inert" "$([ ! -e "$D/older/var/lib/rigforge/upgrade-pending"
 
 postinst queue 1.9.0 2.0.0 y
 check "upgrade writes the marker" "$([ "$(cat "$D/queue/var/lib/rigforge/upgrade-pending")" = 2.0.0 ] && echo 0 || echo 1)"
+check "queued marker is world-readable for unprivileged status" "$(find "$D/queue/var/lib/rigforge/upgrade-pending" -perm 0644 | grep -q . && echo 0 || echo 1)"
 check "upgrade starts the unit with --no-block" "$(grep -qx 'systemctl start --no-block rigforge-upgrade.service' "$CALLS" && echo 0 || echo 1)"
 
 postinst nosystemd 1.9.0 2.0.0 y n
@@ -126,7 +127,8 @@ for mode in fail cmdfail apifail; do
     set -e
     check "$mode: exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
     check "$mode: keeps the marker and records the failure" "$([ -f "$STATE/upgrade-pending" ] && [ -s "$STATE/upgrade-failed" ] && echo 0 || echo 1)"
-    [ "$mode" = apifail ] || check "$mode: does not restart the miner" "$(grep -qx restart "$CALLS" && echo 1 || echo 0)"
+    check "$mode: failure record is world-readable for unprivileged status" "$(find "$STATE/upgrade-failed" -perm 0644 | grep -q . && echo 0 || echo 1)"
+    check "$mode: does not restart the miner" "$(grep -qx restart "$CALLS" && echo 1 || echo 0)"
 done
 status_out=$(
     source "$SCRIPT"
@@ -149,6 +151,46 @@ set -e
 check "successful upgrade exits 0" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 check "successful upgrade clears the marker and failure" "$([ ! -e "$STATE/upgrade-pending" ] && [ ! -e "$STATE/upgrade-failed" ] && echo 0 || echo 1)"
 check "successful upgrade re-renders every unit and restarts once" "$(for u in unit:service unit:autotune unit:watchdog unit:api unit:control; do grep -qx "$u" "$CALLS" || exit 1; done && [ "$(grep -cx restart "$CALLS")" -eq 1 ] && echo 0 || echo 1)"
+
+eval "$(sed -n '/^make_stubs() {/,/^STUBS=/p' "$ROOT/tests/run.sh" | sed '$d')"
+RIG="$D/rig"
+RS="$D/rigstubs"
+make_stubs "$RS"
+mkdir -p "$RIG/home/worker/xmrig/build" "$RIG/etc-systemd" "$RIG/logrotate" "$RIG/state" "$RS/own"
+cp "$ROOT/VERSION" "$RIG/"
+cp -R "$ROOT/systemd" "$RIG/"
+: >"$RIG/home/worker/xmrig/build/xmrig"
+chmod +x "$RIG/home/worker/xmrig/build/xmrig"
+printf 'ABC\n' >"$RIG/home/worker/xmrig/.rigforge-commit"
+printf '0\n' >"$RIG/home/worker/xmrig/.rigforge-donate-min"
+printf '{"HOME_DIR": "%s/home", "DONATION": 1, "watchdog": "enabled", "pools": [{"url": "poolbox.lan:3333"}]}\n' "$RIG" >"$RIG/config.json"
+printf '[Service]\nEnvironment=RIGFORGE_OPERATOR=nobody\nStaleMarker=1\n' >"$RIG/etc-systemd/rigforge-watchdog.service"
+printf '#!/usr/bin/env bash\n[ "$*" = "-u" ] && echo 0 && exit 0\nexec /usr/bin/id "$@"\n' >"$RS/own/id"
+printf '#!/usr/bin/env bash\necho "[chown] $*" >>"$CALL_LOG"\n' >"$RS/own/chown"
+chmod +x "$RS/own"/*
+echo 2.0.0 >"$RIG/state/upgrade-pending"
+rig_run() {
+    (
+        cd "$RIG"
+        env -u SUDO_USER -u USER -u RIGFORGE_OPERATOR PATH="$RS/own:$RS:$PATH" LOGROTATE_DIR="$RIG/logrotate" SYSTEMD_DIR="$RIG/etc-systemd" \
+            CALL_LOG="$RIG/calls.log" STUB_UNAME_S=Linux XMRIG_COMMIT=ABC RIGFORGE_PKG_STATE="$RIG/state" \
+            RIGFORGE_HOME="$RIG" bash "$SCRIPT" package-upgrade </dev/null 2>&1
+    )
+}
+: >"$RIG/calls.log"
+set +e
+rig_out=$(rig_run)
+rc=$?
+set -e
+check "real package-upgrade exits 0" "$([ "$rc" -eq 0 ] && echo 0 || {
+    echo "$rig_out" >&2
+    echo 1
+})"
+check "real package-upgrade renders the miner unit" "$([ -s "$RIG/etc-systemd/xmrig.service" ] && echo 0 || echo 1)"
+check "real package-upgrade rewrites the generated config" "$([ "$(jq -r '.pools[0].url' "$RIG/home/worker/xmrig/build/config.json")" = poolbox.lan:3333 ] && echo 0 || echo 1)"
+check "real package-upgrade bakes the existing operator, not root, into rendered units" "$(grep -q '^Environment=RIGFORGE_OPERATOR=nobody$' "$RIG/etc-systemd/rigforge-watchdog.service" && ! grep -q StaleMarker "$RIG/etc-systemd/rigforge-watchdog.service" && ! grep -rq 'RIGFORGE_OPERATOR=root' "$RIG/etc-systemd" && echo 0 || echo 1)"
+check "real package-upgrade hands the tree back to the operator" "$(grep -q '^\[chown\] .*nobody' "$RIG/calls.log" && ! grep -q '^\[chown\] .*root' "$RIG/calls.log" && echo 0 || echo 1)"
+check "real package-upgrade restarts the miner once and clears the marker" "$([ "$(grep -c 'systemctl\] restart xmrig.service' "$RIG/calls.log")" -eq 1 ] && [ ! -e "$RIG/state/upgrade-pending" ] && echo 0 || echo 1)"
 
 [ "$fail" -eq 0 ] && echo "package upgrade: all checks passed"
 exit "$fail"
