@@ -5,8 +5,18 @@ D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
 mkdir "$D/bin"
 printf '#!/usr/bin/env bash\necho "SUDO: $*"\nexec env -i PATH="$PATH" "$@"\n' >"$D/bin/sudo"
-printf '#!/usr/bin/env bash\nenv | sort\necho "ARGS: $*"\n' >"$D/target"
-chmod +x "$D/bin/sudo" "$D/target"
+cat >"$D/rig" <<DRIVER
+#!/usr/bin/env bash
+if [ -z "\${RIGFORGE_FORCE_ELEVATE:-}" ]; then
+    env | sort
+    echo "ARGS: \$*"
+    exit 0
+fi
+source "$SCRIPT"
+OS_TYPE=Linux
+"\$@"
+DRIVER
+chmod +x "$D/bin/sudo" "$D/rig"
 fail=0
 check() {
     if [ "$2" = "$3" ]; then echo "  ok   $1"; else
@@ -14,15 +24,12 @@ check() {
         fail=1
     fi
 }
-elevate() {
-    PATH="$D/bin:$PATH" RIGFORGE_HOME="$D" RIGFORGE_FORCE_ELEVATE=1 \
-        bash -c 'source "$1"; OS_TYPE=Linux; "${@:2}"' "$D/target" "$SCRIPT" "$@" 2>&1
-}
+elevate() { PATH="$D/bin:$PATH" RIGFORGE_HOME="$D" RIGFORGE_FORCE_ELEVATE=1 bash "$D/rig" "$@" 2>&1; }
 count() { printf '%s\n' "$out" | grep -c "$1"; }
 
 for v in $(compgen -e | grep -E '^(TUNE|AUTOTUNE)_'); do unset "$v"; done
 out=$(elevate tune --live)
-check "with nothing to forward the sudo command is unchanged" 1 "$(count "^SUDO: $D/target tune --live\$")"
+check "with nothing to forward the sudo command is unchanged" 1 "$(count "^SUDO: $D/rig tune --live\$")"
 
 export TUNE_BENCH=1M AUTOTUNE_X='a b' OTHER_VAR=leak
 out=$(elevate tune --live)
