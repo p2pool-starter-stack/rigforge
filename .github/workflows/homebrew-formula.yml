@@ -52,7 +52,8 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
-          git clone --quiet --branch main "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" clone --quiet --branch main "https://github.com/${GITHUB_REPOSITORY}.git" main
           cd main
           git checkout -q -B "$BRANCH"
           cp ../formula.rb Formula/rigforge.rb
@@ -63,7 +64,7 @@ jobs:
           fi
           git -c user.name='rigforge-formula-bot' -c user.email='rigforge-formula-bot@users.noreply.github.com' \
             commit -q -m "Bump Homebrew formula to ${RELEASE_TAG}"
-          git push --force origin "$BRANCH"
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" push --force-with-lease origin "$BRANCH"
           if [[ -z "$(gh pr list --head "$BRANCH" --base main --state open --json number -q '.[0].number')" ]]; then
             gh pr create --base main --head "$BRANCH" \
               --title "Bump Homebrew formula to ${RELEASE_TAG}" \

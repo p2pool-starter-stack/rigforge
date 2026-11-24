@@ -58,7 +58,7 @@ printf 'PASS: formula wraps rigforge.sh, marks the tree and defines no service\n
 
 wf=.github/workflows/homebrew-formula.yml
 grep -q 'release.draft' "$wf" && grep -q 'release.prerelease' "$wf" && grep -q "FORMULA_BOT_APP_ID != ''" "$wf" || fail "bump job must skip drafts, prereleases and an unconfigured bot"
-grep -q 'push --force origin "\$BRANCH"' "$wf" && grep -q 'BRANCH: homebrew/formula-bump' "$wf" || fail "bump must push the fixed branch"
+grep -q 'push --force-with-lease origin "\$BRANCH"' "$wf" && grep -q 'BRANCH: homebrew/formula-bump' "$wf" || fail "bump must push the fixed branch"
 grep -Eq 'push[^|]*origin (HEAD:)?main' "$wf" && fail "bump must never push main directly"
 grep -q 'gh pr create --base main' "$wf" || fail "bump must open a PR against main"
 grep -q 'rigforge.rb' .github/workflows/release.yml || fail "release must upload the generated rigforge.rb"

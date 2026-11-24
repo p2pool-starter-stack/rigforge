@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROG=${0##*/}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-REPO_URL=${RIGFORGE_REPO_URL:-https://github.com/p2pool-starter-stack/rigforge}
+REPO_URL=https://github.com/p2pool-starter-stack/rigforge
 
 die() {
     printf '%s: %s\n' "$PROG" "$1" >&2
