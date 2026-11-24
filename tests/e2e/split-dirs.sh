@@ -9,7 +9,7 @@ cat >"$SPLIT_STATE/config.json" <<EOF
 EOF
 chmod -R a-w "$SPLIT_LIB"
 split_hash() { (cd "$SPLIT_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum); }
-split_rf() { RIGFORGE_LIB="$SPLIT_LIB" RIGFORGE_STATE="$SPLIT_STATE" "$SPLIT_LIB/rigforge.sh" "$@" </dev/null; }
+split_rf() { RIGFORGE_LIB="$SPLIT_LIB" RIGFORGE_STATE="$SPLIT_STATE" "$SPLIT_LIB/rigforge.sh" --no-root-guard "$@" </dev/null; }
 split_before="$(split_hash)"
 sout="$(split_rf 2>&1)"
 src=$?
