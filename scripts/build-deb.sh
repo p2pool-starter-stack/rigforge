@@ -198,7 +198,7 @@ EOF
 
 DEB_NAME="rigforge_${VERSION}_all.deb"
 DEB_PATH="$(pwd)/$DEB_NAME"
-dpkg-deb --build --root-owner-group --zstd \
+dpkg-deb --build --root-owner-group -Zxz \
     "$DEB_DIR" "$DEB_PATH"
 
 echo "---"
