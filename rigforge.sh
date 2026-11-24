@@ -4026,7 +4026,7 @@ svc_disable() {
 # `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
 # (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
 # dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
-# verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
+# verbs (api-refresh, msr-apply, control-apply, control-upgrade, package-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
 _rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios stress status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
