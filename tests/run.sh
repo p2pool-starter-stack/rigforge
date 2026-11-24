@@ -2714,6 +2714,7 @@ bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
 assert_rc "thermal watchdog command retries (#631)" "$?" 0
 bash "$ROOT/tests/test-watchdog-shared-host-guard.sh"
 assert_rc "watchdog shared-host guard ordering (#665)" "$?" 0
+bash "$ROOT/tests/test-watchdog-fail-safe.sh" "$SCRIPT" >/dev/null 2>&1 && ok "thermal watchdog still protects when something else is wrong (#812)" || bad "thermal watchdog still protects when something else is wrong (#812)" "regression failed"
 
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
@@ -2737,7 +2738,6 @@ run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]
     )
 }
 wd_calls() { grep -c "$1" "$WDR/calls.log" 2>/dev/null || true; }
-# Healthy: counter stays clear, no restart.
 : >"$WDR/calls.log"
 out="$(run_watchdog 'echo 60' 'echo 12345.6' '')"
 assert_contains "healthy check logs the hashrate" "$out" "healthy (12345.6 H/s)"
