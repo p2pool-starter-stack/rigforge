@@ -69,7 +69,7 @@ assert_fails "one arg exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/missin
 
 assert_fails "missing archive exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/nope.tar.gz" "1.0.0" "$ROOT/packaging/apt/fingerprint"
 
-mkdir -p "$WORK/archive"
+mkdir -p "$WORK/archive/util" "$WORK/archive/systemd" "$WORK/archive/docs" "$WORK/archive/images"
 cp "$ROOT/rigforge.sh" "$WORK/archive/"
 cp "$ROOT/util/"* "$WORK/archive/util/"
 cp "$ROOT/systemd/"* "$WORK/archive/systemd/"
