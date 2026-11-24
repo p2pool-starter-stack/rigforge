@@ -1260,43 +1260,40 @@ summary() {
     fi
 }
 
-# Judge a measurement against the committed baseline AND the best-ever history entry (#186).
-# Prints the ok/bad verdict lines and returns 1 on any regression — shared by judge mode and
-# record mode (#214), so the two can never disagree about what "regressed" means.
-_perf_judge() { # <hr> <baseline.json> <history.jsonl> <tolerance_pct>
-    local hr="$1" bl="$2" hist="$3" tol="$4" base best rcj=0
-    base=$(jq -r '.bench_1m_hs // empty' "$bl" 2>/dev/null || true)
-    if [ -z "$base" ]; then
-        bad "perf: baseline $bl is unreadable"
+_perf_check() {
+    [ -n "$2" ] || return 0
+    if awk -v h="$1" -v b="$2" -v t="$5" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
+        ok "perf: $1 H/s within ${5}% of $4 $2"
+    elif [ "$6" = 1 ]; then
+        bad "perf $3: $1 H/s vs $4 $2 H/s (tolerance ${5}%) — investigate before releasing"
+        return 1
+    else
+        printf '  \033[1;33m∙\033[0m perf %s (report only): %s H/s vs %s %s H/s (tolerance %s%%)\n' "$3" "$1" "$4" "$2" "$5"
         return 1
     fi
-    if awk -v h="$hr" -v b="$base" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
-        ok "perf: $hr H/s within ${tol}% of baseline $base ($(jq -r '.recorded' "$bl" 2>/dev/null))"
-    else
-        bad "perf REGRESSION: $hr H/s vs baseline $base H/s (tolerance ${tol}%) — investigate before releasing"
-        rcj=1
-    fi
-    if [ -f "$hist" ]; then
-        best=$(jq -s 'map(.bench_1m_hs) | max // empty' "$hist" 2>/dev/null || true)
-        if [ -n "$best" ]; then
-            if awk -v h="$hr" -v b="$best" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
-                ok "perf: $hr H/s within ${tol}% of this host's best-ever $best"
-            else
-                bad "perf RATCHET: $hr H/s vs best-ever $best H/s (tolerance ${tol}%) — slow drift across releases; investigate before releasing"
-                rcj=1
-            fi
-        fi
-    fi
+}
+
+_perf_cmp() {
+    local rcj=0
+    _perf_check "$1" "$2" REGRESSION baseline "$4" "$5" || rcj=1
+    _perf_check "$1" "$3" RATCHET best-ever "$4" "$5" || rcj=1
     return "$rcj"
 }
 
+_perf_class() {
+    local c
+    c=$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1 | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+    printf '%s' "${E2E_PERF_CLASS:-${c:-$(hostname)}}"
+}
+
 perf() {
-    phase "perf — verified bench vs the committed $(hostname) baseline"
-    local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}"
+    phase "perf — verified bench by hardware class"
+    local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}" class pid=bench_1m_hs enf="${E2E_PERF_GATE:-0}"
     [ "${E2E_PERF_SUBMIT:-0}" != 1 ] || submit=--submit
+    class="$(_perf_class)"
     bl="$HERE/tests/perf-baselines/$(hostname).json"
     hist="$HERE/tests/perf-baselines/$(hostname).history.jsonl"
-    "$RIGFORGE" stop >/dev/null 2>&1 || true # take the whole machine for a clean reading
+    "$RIGFORGE" stop >/dev/null 2>&1 || true
     if ! out="$(BENCH=1M "$RIGFORGE" bench ${submit:+"$submit"} 2>&1)"; then
         bad "perf: bench failed"
         printf '%s\n' "$out" | tail -3 >&2
@@ -1319,11 +1316,16 @@ perf() {
             return
         fi
     fi
+    jq -cn --arg c "$class" --arg i "$pid" --arg hs "$hr" --arg id "$id" '{($c): ({($i): ($hs | tonumber)} + (if $id == "" then {} else {benchmark_id: $id} end))}'
+    base="" best=""
+    if [ -n "${E2E_PERF_HISTORY:-}" ] && [ -z "${E2E_PERF_RECORD:-}" ]; then
+        [ ! -r "$E2E_PERF_HISTORY" ] || read -r base best < <(jq -rs --arg c "$class" --arg i "$pid" '[.[] | .[$c][$i]? | select(type == "number")] | "\(last) \(max)"' "$E2E_PERF_HISTORY" 2>/dev/null | sed 's/null//g') || true
+    elif [ -f "$bl" ]; then
+        base=$(jq -r '.bench_1m_hs // empty' "$bl" 2>/dev/null || true)
+        best=$(jq -s 'map(.bench_1m_hs) | max // empty' "$hist" 2>/dev/null || true)
+    fi
     if [ -n "${E2E_PERF_RECORD:-}" ]; then
-        # #214: judge BEFORE writing — recording is the only perf run most rigs ever get, and a
-        # regressed number must never become the new baseline by default. E2E_PERF_FORCE=1 is the
-        # conscious "re-record anyway" override from RELEASING.md's investigate-or-re-record flow.
-        if [ -f "$bl" ] && ! _perf_judge "$hr" "$bl" "$hist" "$tol"; then
+        if [ -f "$bl" ] && { [ -z "$base" ] || ! _perf_cmp "$hr" "$base" "$best" "$tol" 1; }; then
             if [ -z "${E2E_PERF_FORCE:-}" ]; then
                 bad "perf: NOT recorded — the measurement regressed (see above). Fix the regression, or consciously re-record with E2E_PERF_FORCE=1."
                 summary "perf"
@@ -1335,20 +1337,20 @@ perf() {
         jq -n --arg hs "$hr" --arg id "$id" --arg cpu "$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1)" --arg when "$(date '+%Y-%m-%d')" '{bench_1m_hs: ($hs | tonumber), cpu: $cpu, recorded: $when} + (if $id == "" then {} else {benchmark_id:$id} end)' >"$bl"
         jq -cn --arg hs "$hr" --arg id "$id" --arg tag "${E2E_PERF_TAG:-}" --arg when "$(date '+%Y-%m-%d')" '{tag: $tag, recorded: $when, bench_1m_hs: ($hs | tonumber)} + (if $id == "" then {} else {benchmark_id:$id} end)' >>"$hist"
         ok "perf: baseline recorded — $hr H/s -> $bl + history (commit both files)"
-        # #206: the recording dirties this checkout, and a later `git checkout <tag>` ABORTS on
-        # dirty tracked files — say so now, not at the next deploy.
         printf '  \033[1;33m∙\033[0m collect: %s and %s\n' "$bl" "$hist"
         printf '  \033[1;33m∙\033[0m after they are committed upstream, reset this rig or the next tag deploy aborts: git checkout -- tests/perf-baselines/\n'
         summary "perf"
         return
     fi
-    if [ ! -f "$bl" ]; then
-        printf '  \033[1;33m∙\033[0m no baseline for %s — measured %s H/s; record with E2E_PERF_RECORD=1 and commit tests/perf-baselines/\n' "$(hostname)" "$hr"
-        summary "perf"
-        return
+    if [ -z "$base" ]; then
+        if [ "$enf" = 1 ]; then
+            bad "perf: E2E_PERF_GATE=1 but no history for class $class — pass E2E_PERF_HISTORY with earlier results"
+        else
+            printf '  \033[1;33m∙\033[0m no history for class %s — measured %s H/s; keep the JSON line above and pass the history as E2E_PERF_HISTORY\n' "$class" "$hr"
+        fi
+    else
+        _perf_cmp "$hr" "$base" "$best" "$tol" "$enf" || true
     fi
-    # The bad lines inside the judge already counted any failure; nothing more to decide here.
-    _perf_judge "$hr" "$bl" "$hist" "$tol" || true
     summary "perf"
 }
 

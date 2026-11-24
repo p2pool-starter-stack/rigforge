@@ -50,7 +50,7 @@ CI median/p90, failures and occupied hours; missing evidence leaves rollout acce
 |---|---|---|---|---|
 | **Unit + black-box suite** | [`run.sh`](run.sh) + [`test-contract-credentials.sh`](test-contract-credentials.sh) | Any host (macOS/Linux), no Docker; credential regression needs Python 3. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `make test-suite` |
 | **Linux container e2e** | [`e2e/linux.sh`](e2e/linux.sh) → [`e2e/in-container.sh`](e2e/in-container.sh) | Disposable Ubuntu container, **needs Docker**. **In CI.** | The genuine Linux deploy path against a real (throwaway) `/etc` with real GNU tools (`sed -i`, `tee`, `envsubst`) + idempotency on re-run. Only the heavy/privileged bits (compile, package install, `systemctl`/`mount`) are stubbed. A second pass re-runs the container with `RIGFORGE_APPLIANCE=1` (#348) and proves the appliance contracts on that real `/etc`: units land in `/run/systemd/system`, no package installs, no fstab/limits.conf/logrotate writes, every enable carries `--runtime`. A third script, [`e2e/isolation.sh`](e2e/isolation.sh) (#668), puts the rig on a Docker `--internal` network whose only reachable peer is a SOCKS5 proxy fronting a stand-in GitHub (a TLS git smart-HTTP server plus the releases API). With `tor_socks5` set it runs `upgrade --check`, `setup`, a local `upgrade` with an XMRig pin change and the `control-upgrade` oneshot in its own empty environment, and proves from the proxy's log that every connection named a hostname. It also proves the block is real (a direct connection and a keyless `upgrade --check` fail), that an unreachable proxy fails closed without reaching the upstream, and that the live build survives the failed upgrade. | `make test-e2e` |
-| **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is deprecated, #493). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
+| **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is best effort). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
 | **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` and its shell helpers by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
 | **Package upgrade** | [`test-package-upgrade.sh`](test-package-upgrade.sh) | Any host, no Docker. **In CI** (`make test-suite`). | [`../packaging/debian/postinst`](../packaging/debian/postinst) queues only on a greater version with a config, never fails dpkg; `package-upgrade` re-renders units and clears the marker on success, and on failure keeps it, records it for status/doctor and does not restart. | `bash tests/test-package-upgrade.sh` |
 | **APT feed** | [`test-apt-feed.sh`](test-apt-feed.sh) | Ubuntu 24.04 runner, **root**, no Docker (needs `apt-utils`). **In CI.** (`ci.yml` job) | [`../scripts/build-apt.sh`](../scripts/build-apt.sh) end to end with throwaway keys: refusal of missing/bad fingerprints and keyrings without the secret key; a signed flat feed that `apt-get update` and `download` accept from `file://`; refusal of tampered `Release`/`InRelease`/`.deb` and of a feed signed by another key. | CI only (`sudo bash tests/test-apt-feed.sh`) |
@@ -87,7 +87,7 @@ raw journal entries and credentials are excluded.
 
 The unit + black-box suite, the Linux container e2e, and the coverage gate run automatically on every
 push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). The native macOS e2e is
-manual and local-only — macOS is deprecated (#493), so it never runs in CI. The last two are
+manual and local-only — macOS is best effort, so it never runs in CI. The last two are
 deliberately kept out of hosted CI because they mine against live pools and exercise hardware
 performance on reserved rigs. The hosted stock-home setup has no mining jobs and does not replace
 those manual pre-tag release gates.
@@ -252,8 +252,8 @@ holds it from off-box: `ssh miner-0 'flock -n -x /var/lock/rig-e2e.lock true || 
   paths up top, so the same run exercises EPYC / Ryzen-X3D / macOS inputs back to back and gives the
   same result on any host. Don't read real `/sys` or `/proc`; drive behaviour through the stubs.
 - The suite should still pass under Apple's bash 3.2, not just modern bash — that's no longer CI-
-  enforced (macOS is deprecated, #493, and no CI job runs `/bin/bash tests/run.sh` anymore), just a
-  courtesy for the deprecated Darwin path. Avoid bash-4-only syntax.
+  enforced (macOS is best effort and no CI job runs `/bin/bash tests/run.sh` anymore), just a
+  courtesy for the best-effort Darwin path. Avoid bash-4-only syntax.
   `bash tests/test-suite-liveness.sh` runs the actual timer-refresh fixtures and checks premature
   exit handling without running the host-dependent black-box suite; use `/bin/bash` on macOS
   to exercise the native Bash 3.2 runtime parser as well as the completion guard.
@@ -267,12 +267,12 @@ performance unnoticed:
 
 | Measurement | Where | Standard | Knobs |
 |---|---|---|---|
-| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine, compared against the **committed per-host baseline** in [`perf-baselines/`](perf-baselines/). No baseline → the phase reports the measurement and how to record one. | `E2E_PERF_TOLERANCE_PCT` (default 5); `E2E_PERF_RECORD=1` writes/updates the baseline — commit the file. |
+| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine. The phase prints one JSON line keyed by hardware class and perf id (`{"<class>":{"bench_1m_hs":<H/s>}}`) and reads its history from the caller (`E2E_PERF_HISTORY`, JSON lines of earlier results). It reports by default and never fails on a regression; `E2E_PERF_GATE=1` makes a drop vs the latest or best entry for the class fail. The legacy per-host files in [`perf-baselines/`](perf-baselines/) still work when no history is passed. | `E2E_PERF_CLASS` (default: the CPU model, slugified); `E2E_PERF_HISTORY`; `E2E_PERF_GATE=1`; `E2E_PERF_TOLERANCE_PCT` (default 5); legacy `E2E_PERF_RECORD=1`. |
 | **Hashrate under API load** | `e2e-pithead.sh` `api-impact` phase | Live 10s-window hashrate, 6×5s samples, baseline vs 4 clients hammering the sister API back-to-back. The handler unit's `Nice=19`/`IOSchedulingClass=idle` is the mechanism; this proves it. | `E2E_API_IMPACT_TOLERANCE_PCT` (default 3). |
 | **Tune improvement** | `e2e-real.sh` `verify` phase (existing) | The short real tune must produce a winner that beats or ties the baseline candidate (#62–#64 machinery: sustained-clock sampling, variance-aware acceptance, live A/B confirm). | `TUNE_BENCH`, `TUNE_ITERS` (see the phase comments). |
 
-Baselines are per-host on purpose: hashrate is hardware. When a rig's hardware or BIOS tuning
-changes deliberately, re-record its baseline in the same PR that documents the change.
+Results are keyed by hardware class on purpose: hashrate is hardware. Keep the history outside the
+repo (the caller appends each emitted JSON line to its own store), so a run never dirties the checkout.
 
 ## XMRig self-test regressions
 
