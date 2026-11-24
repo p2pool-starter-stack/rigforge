@@ -233,7 +233,7 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
           set -euo pipefail
-          if [ "$(uname)" = Linux ]; then eval "$("$(getent passwd linuxbrew | cut -d: -f6)/.linuxbrew/bin/brew" shellenv)"; fi
+          if [ "$(uname)" = Linux ]; then eval "$("$(compgen -G "/home/*/.linuxbrew/bin/brew")" shellenv)"; fi
           eval "$(brew shellenv)"
           brew tap p2pool-starter-stack/rigforge "$GITHUB_WORKSPACE"
           brew install p2pool-starter-stack/rigforge/rigforge
@@ -246,6 +246,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          eval "$("$(getent passwd linuxbrew | cut -d: -f6)/.linuxbrew/bin/brew" shellenv)"
+          eval "$("$(compgen -G "/home/*/.linuxbrew/bin/brew")" shellenv)"
           if sudo -n sh -c 'command -v rigforge'; then echo "sudo resolves rigforge"; else echo "sudo does not resolve rigforge"; fi
           sudo -n "$(command -v rigforge)" --version
