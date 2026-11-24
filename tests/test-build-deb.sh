@@ -55,9 +55,9 @@ assert_contains() {
     esac
 }
 assert_field() {
-    local desc=$1 deb=$2 field=$3 want=$4
-    got=$(dpkg-deb -f "$deb" "$field" 2>/dev/null) || fail "$desc: dpkg-deb -f failed"
-    assert_eq "$got" "$want" "$desc: $field == $want"
+    local deb=$1 field=$2 want=$3 got
+    got=$(dpkg-deb -f "$deb" "$field" 2>/dev/null) || fail "dpkg-deb -f $field failed"
+    assert_eq "$got" "$want" "control $field == $want"
 }
 
 WORK=$(mktemp -d)
@@ -89,7 +89,7 @@ printf '%s\n' "$(cat "$ROOT/VERSION")" >"$WORK/archive/VERSION"
 tar -czf "$WORK/bundle.tar.gz" -C "$WORK" archive
 
 VER="$(tr -d '[:space:]' <"$ROOT/VERSION")"
-bash "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "v$VER" "$ROOT/packaging/apt/fingerprint"
+(cd "$WORK" && bash "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "v$VER" "$ROOT/packaging/apt/fingerprint" >/dev/null)
 DEB="$WORK/rigforge_${VER}_all.deb"
 assert_ok "build-deb produces a .deb" test -f "$DEB"
 
@@ -99,7 +99,7 @@ assert_field "$DEB" Architecture all
 
 CONTENT_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK" "$CONTENT_DIR"' EXIT
-dpkg-deb --extract "$DEB" "$CONTENT_DIR"
+dpkg-deb --raw-extract "$DEB" "$CONTENT_DIR"
 
 assert_eq "$([ -f "$CONTENT_DIR/usr/lib/rigforge/rigforge.sh" ] && echo yes || echo no)" "yes" "rigforge.sh in /usr/lib/rigforge/"
 assert_eq "$([ -d "$CONTENT_DIR/usr/lib/rigforge/util" ] && echo yes || echo no)" "yes" "util/ in /usr/lib/rigforge/"
