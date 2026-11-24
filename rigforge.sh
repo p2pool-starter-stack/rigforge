@@ -4709,13 +4709,13 @@ control_upgrade() {
 
 _watchdog_thermal_floor() {
     local m t
-    m=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON" 2>/dev/null) && _uint_in_range "$m" 40 110 && t=$(_read_temp) && [ -n "$t" ] || return 0
+    m=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON" 2>/dev/null || true) && _uint_in_range "$m" 40 110 && t=$(_read_temp) && [ -n "$t" ] || return 0
     awk -v t="$t" -v m="$m" 'BEGIN { exit !(t > m) }' && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0
     sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || {
         warn "watchdog: the config does not validate and temp ${t}°C is above max_temp_c=${m}°C, but stopping $SERVICE_NAME failed — will retry."
         return 0
     }
-    [ -n "${WORKER_ROOT:-}" ] && touch "$WORKER_ROOT/watchdog.thermal-hold" 2>/dev/null || warn "watchdog: could not write the thermal-hold marker; start $SERVICE_NAME by hand once the config is fixed."
+    [ -n "${WORKER_ROOT:-}" ] && touch "$WORKER_ROOT/watchdog.thermal-hold" 2>/dev/null || warn "watchdog: no thermal-hold marker written; start $SERVICE_NAME by hand once the config is fixed."
     warn "watchdog: the config does not validate, but temp ${t}°C is above max_temp_c=${m}°C — miner stopped."
 }
 
