@@ -62,7 +62,7 @@ stress() {
     [ "$OS_TYPE" = Linux ] || error "stress runs XMRig against Linux hardware and is only supported on Linux."
     if _tune_should_elevate; then
         log "stress needs root — re-running with sudo..."
-        exec sudo "$0" stress "$@"
+        _exec_sudo_self stress "$@"
     fi
 
     local minutes=30 seconds deadline now temp peak="" peak_label rc=0 reason=""

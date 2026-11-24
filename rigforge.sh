@@ -75,6 +75,8 @@ source "$(_script_dir)/util/upgrade-check.sh"
 source "$(_script_dir)/util/package-mode.sh"
 # shellcheck source=util/fetch-proxy.sh
 source "$(_script_dir)/util/fetch-proxy.sh"
+# shellcheck source=util/package-upgrade.sh
+source "$(_script_dir)/util/package-upgrade.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
@@ -209,30 +211,37 @@ xmrig_already_built() {
     [ ! -f "$sums" ] || [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$WORKER_ROOT/xmrig/build/xmrig")" ]
 }
 
-# Merge the HugePage/MSR kernel params we manage into an existing GRUB cmdline, preserving every
-# other parameter and replacing only the ones we own (so re-runs don't accumulate). Echoes the merged
-# cmdline. Usage: grub_merge_cmdline "<managed params>" "<current cmdline>"
+grub_cmdline_editable() {
+    local lines re='^GRUB_CMDLINE_LINUX_DEFAULT="[^"]*"$'
+    lines=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$1") || return 0
+    [[ "$lines" =~ $re ]] && return 0
+    warn "GRUB_CMDLINE_LINUX_DEFAULT in $1 is not one plain double-quoted line; left untouched. Edit the kernel parameters by hand."
+    return 1
+}
+
 grub_merge_cmdline() {
     local managed="$1" current="$2" preserved="" tok
+    set -f
     for tok in $current; do
         case "$tok" in
-        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop, re-added below
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;;
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
+    set +f
     echo "${preserved:+$preserved }$managed"
 }
 
-# Drop only the kernel params RigForge manages (HugePages/MSR), preserving everything else. The inverse
-# of what tune_kernel adds — used by `uninstall` to revert the GRUB cmdline.
 grub_strip_managed() { # <current cmdline>
     local current="$1" preserved="" tok
+    set -f
     for tok in $current; do
         case "$tok" in
-        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;;
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
+    set +f
     printf '%s' "$preserved"
 }
 
@@ -1518,17 +1527,6 @@ _rx_setup_threads() {
     case "$RX_SETUP_THREADS" in -1 | 0 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
 }
 
-# Read-only GRUB computation shared by tune_kernel (the mutation half) and the setup --dry-run plan
-# (#146): sets MANAGED (params we manage), CURRENT (the live cmdline), MERGED (#19 merge — never
-# clobbers params the user/distro set). Callers guard on proposed-grub.sh + $GRUB_DEFAULT existing.
-#
-# POOL_CEILING_MB (#410): the declared hugepages_pool_ceiling_mb reaches the PERSISTED reservation
-# here, not only the runtime write in _ensure_hugepages. Without it the boot pool comes up above the
-# ceiling and the grow-only runtime guard can never bring it back down — a declared ceiling that
-# holds until the next reboot and then silently stops holding. Passed to the cmdline-generating call
-# ONLY: the two --runtime calls below and in tune_kernel ask for the miner's REQUIREMENT, which
-# _ensure_hugepages weighs against availability before clamping the write, so clamping it there
-# would move that decision instead of bounding the pool.
 _grub_proposed() {
     MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
@@ -1682,18 +1680,14 @@ tune_kernel() {
         # (pithead#797 R0 item 2).
         log "Appliance mode: skipping GRUB updates — the kernel cmdline is image-owned."
     elif [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
-        # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
-        # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
-        # clobber other kernel parameters the user/distro set (#19 — boot-safety).
         _grub_proposed
 
-        if [ "$CURRENT" = "$MERGED" ]; then
-            # Either already optimal, or _grub_proposed's co-resident keep-existing guard (#305) set
-            # MERGED := CURRENT because the ambient reservation already covers miner + headroom — either
-            # way there's nothing to write and no reboot.
+        if ! grub_cmdline_editable "$GRUB_DEFAULT"; then
+            warn "Kernel parameters RigForge would have set: $MANAGED"
+        elif [ "$CURRENT" = "$MERGED" ]; then
             log "GRUB is already configured for the required HugePages reservation (no reboot)."
         else
-            sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+            [ -e "$GRUB_DEFAULT.bak" ] || sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
             sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$MERGED")\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
@@ -1919,7 +1913,9 @@ _setup_plan() {
             _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
             if [ "$RIGFORGE_APPLIANCE" != 1 ] && [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
-                if [ "$CURRENT" = "$MERGED" ]; then
+                if ! grub_cmdline_editable "$GRUB_DEFAULT" 2>/dev/null; then
+                    _grubline="GRUB line is not one plain double-quoted line: left untouched, set by hand: $MANAGED"
+                elif [ "$CURRENT" = "$MERGED" ]; then
                     _grubline="GRUB already configured (no reboot needed for it)"
                 else
                     _grubline="GRUB cmdline: '$CURRENT' -> '$MERGED'"
@@ -2107,9 +2103,6 @@ _upgrade_restart() { # <was-active: yes|no>
     sudo systemctl restart "$SERVICE_NAME.service"
 }
 
-# Upgrade redeploys this release: regenerate config, reinstall every unit, re-tune, re-own, and restart. The COMPILE is
-# what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
-# (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
     local arg _api_rc=0 _control_rc=0
     for arg in "$@"; do
@@ -2126,7 +2119,6 @@ upgrade() {
     parse_config
     _shared_host_prepare
     decide_rebuild
-    # #413: reinstall the whole release even when the XMRig pin (and therefore build) is unchanged.
     local was_active=no
     if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         was_active=yes
@@ -2147,13 +2139,13 @@ upgrade() {
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) was already built — regenerated the config and reinstalled the units."
     fi
     _reown_worker
-    _upgrade_restart "$was_active"
+    { _pkg_restart_gate "$_api_rc" "$_control_rc" && _upgrade_restart "$was_active"; } || return 1
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
     _reown_worker
     [ "$_control_rc" -eq 0 ] || _control_failed upgrade
     [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
-    [ "$_api_rc:$_control_rc" = 0:0 ]
+    [ "$_api_rc:$_control_rc" = 0:0 ] && _pkg_upgrade_clear
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -2222,12 +2214,11 @@ uninstall() {
     fi
 
     # Work out the worker root the same way parse_config would, without requiring a valid config.
-    local worker_root
+    local worker_root _d
     worker_root=$(_worker_root_from_config)
     local preserve_host=no
     _shared_host_preserves_tuning "$worker_root" && preserve_host=yes
 
-    # 1. systemd service (+ the optional autotune timer, #46)
     local _mu
     _mu=$(jq -r '.miner_user // empty' "$CONFIG_JSON" 2>/dev/null || true)
     if [ -n "$_mu" ] && id -u "$_mu" >/dev/null 2>&1; then
@@ -2246,6 +2237,10 @@ uninstall() {
         sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path" \
             "$SYSTEMD_DIR/rigforge-control-upgrade.service" "$SYSTEMD_DIR/rigforge-control-upgrade.path"
     fi
+    for _d in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" "${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"; do
+        _d=${_d%/}
+        case "$_d" in /*[!/]) sudo rm -rf -- "$_d" ;; esac
+    done
     command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-autotune.timer 2>/dev/null || true
@@ -2263,7 +2258,6 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    # 2. logrotate policy
     sudo rm -f "$LOGROTATE_DIR/xmrig"
 
     _shared_host_remove
@@ -2273,8 +2267,6 @@ uninstall() {
 
         remove_line "$LIMITS_CONF" "$REAL_USER soft memlock unlimited"
         remove_line "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
-        remove_line "$LIMITS_CONF" "* soft memlock unlimited"
-        remove_line "$LIMITS_CONF" "* hard memlock unlimited"
 
         sudo rm -f "$MODULES_LOAD_DIR/msr.conf"
         remove_line "$MODULES_FILE" "msr"
@@ -2284,12 +2276,12 @@ uninstall() {
         fi
         sudo rmdir "$HUGEPAGES_1G_DIR" 2>/dev/null || true
 
-        if [ -f "$GRUB_DEFAULT" ]; then
+        if [ -f "$GRUB_DEFAULT" ] && grub_cmdline_editable "$GRUB_DEFAULT"; then
             local cur stripped
             cur=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
             stripped=$(grub_strip_managed "$cur")
             if [ "$cur" != "$stripped" ]; then
-                sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+                [ -e "$GRUB_DEFAULT.bak" ] || sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
                 sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$stripped")\"|" "$GRUB_DEFAULT"
                 if command -v update-grub >/dev/null; then
                     sudo update-grub
@@ -2570,9 +2562,6 @@ _bench_once() {
     fi
 }
 
-# Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
-# few API samples over steady state and return their median. Heavier than --bench (it restarts the
-# service per candidate) but reflects real-world conditions. Linux-only; reuses _read_api_hashrate.
 _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
     local tmp
     tmp=$(mktemp)
@@ -2581,8 +2570,6 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     _apply_runtime >/dev/null 2>&1 || true
     sleep "${TUNE_LIVE_WARMUP:-60}"
     local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
-    # #81: bracket the steady-state window for power — RAPL energy delta over the window, or the mean of
-    # instantaneous TUNE_POWER_CMD samples taken alongside the hashrate samples. Written to BENCH_WATTS_FILE.
     local wsamples="" pe0="" pt0="" pmax="" w
     if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -z "${TUNE_POWER_CMD:-}" ]; then
         # `|| true` (#290/#301, same idiom as _autotune_sample's #81 guard): no powercap sysfs is an
@@ -2614,7 +2601,7 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
         fi
         printf '%s' "$wout" >"$BENCH_WATTS_FILE"
     fi
-    _median "${samples[@]}"
+    printf '%s\n' "${samples[*]}"
 }
 
 # Measure one candidate (memoized): median over TUNE_ITERS bench runs, or one live window. On a cache
@@ -2630,9 +2617,9 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     local med samples=() s i cfg minfk="" bf watts="" wsamps=() wv
     if [ "$TUNE_MODE" = live ]; then
         : >"$TUNE_TMP/watts" # #81: _measure_live writes the under-load average watts here
-        med=$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
-        [ -n "$med" ] || med=0
-        samples=("$med")
+        read -ra samples <<<"$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")"
+        [ "${#samples[@]}" -gt 0 ] || samples=(0)
+        med=$(_median "${samples[@]}")
         watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
@@ -2647,9 +2634,6 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
-            # The freq writer above already floors to whole kHz (awk's OFMT prints large medians in
-            # scientific notation, e.g. 4.6275e+06, which this floor would otherwise mangle into "4").
-            # This is now just a belt-and-suspenders trim of a stray fractional part.
             bf=${bf%.*}
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
             wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
@@ -2669,8 +2653,6 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     fi
     if [ "$throttled" = 1 ]; then warn "  tune: candidate throttled to ${minfmhz} MHz (< ${TUNE_MIN_FREQ_MHZ} MHz min) — reading unreliable, skipping it." >&2; fi
 
-    # #65: did this candidate's thread count exceed the HugePages reservation? Recorded per-candidate and
-    # summarized at the end of tune. Only meaningful for a concrete count ("-1" lets XMRig auto-size to fit).
     local hpcapped=false
     if [ -n "${HP_CAP_THREADS:-}" ] && [ "$t" != "-1" ] && [ "$t" -gt "$HP_CAP_THREADS" ] 2>/dev/null; then hpcapped=true; fi
 
@@ -2900,7 +2882,7 @@ _seed_auto() {
 _seed_guess() {
     S_p="${TUNE_GUESS_PREFETCH:-2}"
     S_y=false
-    S_pr=2
+    S_pr=$(jq -r '.cpu.priority // 2' "$TUNE_BASE")
     S_g=$(_seed_g)
     S_t="${TUNE_GUESS_THREADS:-${THREAD_CENTER:--1}}"
     [ -n "$S_t" ] || S_t="-1"
@@ -2975,25 +2957,24 @@ _tune_history() { # <overrides_file> <log_file>
     fi
 }
 
-# Whether `tune` should re-exec itself under sudo: non-root + interactive (TTY) only, so sudo can actually
-# prompt and we never surprise non-interactive callers (tests/cron/pipes). RIGFORGE_FORCE_ELEVATE=1 forces
-# it regardless (the coverage test drives this path from a real child process).
 _tune_should_elevate() {
     [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] && return 0
     [ "$(id -u)" -ne 0 ] && [ -t 0 ]
 }
 
+_exec_sudo_self() {
+    local v e=()
+    for v in $(compgen -e | grep -E '^(TUNE|AUTOTUNE)_'); do e+=("$v=${!v}"); done
+    [ "${#e[@]}" -eq 0 ] && exec sudo "$0" "$@"
+    exec sudo env "${e[@]}" "$0" "$@"
+}
+
 tune() {
-    # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
-    # when run without sudo — a plain `rigforge tune` then just works (sudo prompts) instead of failing
-    # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
-    # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
-    # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
     local _hist=0 clear=0 target_set=0 now=0 now_long=0
     case " $* " in *" --history "*) _hist=1 ;; esac
     if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
         log "tune needs root — re-running with sudo..."
-        exec sudo "$0" tune "$@"
+        _exec_sudo_self tune "$@"
     fi
     TUNE_MODE="${TUNE_MODE:-bench}"
     TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
@@ -3225,17 +3206,15 @@ tune() {
         error "Benchmarks produced no hashrate — check that the worker is built correctly."
     fi
 
-    # Build the overrides snippet from the winning state. Always pin prefetch + yield; pin threads only
-    # if a concrete count won (not auto), and priority / 1gb-pages only if they were actually swept — so
-    # we never freeze a knob the search didn't explore.
-    local ovr
+    local ovr pins
+    pins=" $ACTIVE_KNOBS $(jq -r '[("cpu", "randomx") as $s | .[$s] | objects | keys[] | select(test("\\s") | not) | "\($s).\(.)"] | join(" ")' <<<"$pre_overrides" 2>/dev/null || true) "
     ovr=$(jq -n --argjson p "$G_p" --argjson y "$G_y" '{randomx:{scratchpad_prefetch_mode:$p}, cpu:{yield:$y}}')
     [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = (if ($t | type) == "number" then {mode: 0, threads: $t, max_threads_cnt: $t, intensity: 1, affinity: -1} else $t end)')
-    case " $ACTIVE_KNOBS " in *" priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
-    case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
-    case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
-    case " $ACTIVE_KNOBS " in *" cacheqos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
-    case " $ACTIVE_KNOBS " in *" wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
+    case "$pins" in *" priority "* | *" cpu.priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
+    case "$pins" in *" onegb "* | *" randomx.1gb-pages "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
+    case "$pins" in *" hpjit "* | *" cpu.huge-pages-jit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
+    case "$pins" in *" cacheqos "* | *" randomx.cache_qos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
+    case "$pins" in *" wrmsr "* | *" randomx.wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
     ovr=$(_xmrig_unpinned <<<"$ovr")
     printf '%s\n' "$ovr" >"$TUNE_TMP/ovr.json" && sudo cp "$TUNE_TMP/ovr.json" "$TUNE_OVERRIDES"
     _TUNE_LIVE_DIRTY=0 # #347: the winner — a completed decision — now owns the file; the abort-restore stands down
@@ -3383,6 +3362,13 @@ _autotune_score() { # <target> <hr> <watts>
         printf '%s' "${2:-0}"
     fi
 }
+_autotune_vs_base() {
+    if [ "$1" = efficiency ] && ! awk -v a="$3" -v b="$5" 'BEGIN{exit !(a > 0 && b > 0)}'; then
+        awk -v h="$2" -v s="$6" -v b="$4" 'BEGIN{if (b > 0) printf "%.4f", h * s / b; else printf "%s", h}'
+    else
+        _autotune_score "$1" "$2" "$3"
+    fi
+}
 # Human-readable sample for the log line: "10700 H/s" or "10700 H/s, 83.10 W, 128.84 H/s/W".
 _autotune_fmt() { # <target> <hr> <watts>
     if [ "$1" = efficiency ] && [ -n "$3" ] && awk -v w="$3" 'BEGIN{exit !(w > 0)}'; then
@@ -3408,9 +3394,6 @@ autotune() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "autotune drives the live systemd service and is only supported on Linux."
     fi
-    # The scheduled run gets AUTOTUNE_TARGET from the systemd unit's env (baked at setup); capture it
-    # before parse_config re-derives one from config.json so the unit's choice wins. An interactive run
-    # (no unit env) falls through to the config value.
     local target_env="${AUTOTUNE_TARGET:-}"
     parse_config
     _shared_host_start_guard
@@ -3426,22 +3409,18 @@ autotune() {
     local n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}"
     local margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
     local target="${target_env:-${AUTOTUNE_TARGET:-perf}}"
-    local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s unit
+    local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s
 
-    # #95: efficiency ranks by hashrate-per-watt, which needs a power source; without one, optimize raw
-    # H/s instead (same fallback as `tune --efficiency`).
     if [ "$target" = efficiency ] && ! _power_supported; then
         warn "autotune: efficiency target needs a power source (RAPL or TUNE_POWER_CMD) — none available; falling back to performance (raw hashrate) instead."
         target=perf
     fi
-    [ "$target" = efficiency ] && unit="H/s/W" || unit="H/s"
     cur=$(jq -r '.randomx.scratchpad_prefetch_mode // 1' "$overrides" 2>/dev/null || echo 1)
 
-    # Baseline = the mode running right now (no restart needed to measure it).
     s=$(_autotune_sample "$n" "$iv" "$target")
     base_hr=${s%%$'\t'*}
     base_w=${s#*$'\t'}
-    [ -n "$base_hr" ] && [ "$base_hr" != 0 ] || {
+    awk -v h="$base_hr" 'BEGIN{exit !(h + 0 > 0)}' || {
         warn "autotune: could not read a live hashrate from the API — is the miner running? Skipping."
         return 0
     }
@@ -3457,7 +3436,6 @@ autotune() {
     _AUTOTUNE_DIRTY=1
     trap '_autotune_cleanup' EXIT
 
-    # Try every OTHER mode once, live; track the running best by the target's score.
     for m in $modes; do
         [ "$m" = "$cur" ] && continue
         _autotune_set_prefetch "$overrides" "$m"
@@ -3468,7 +3446,7 @@ autotune() {
         hr=${s%%$'\t'*}
         w=${s#*$'\t'}
         [ -n "$hr" ] || hr=0
-        sc=$(_autotune_score "$target" "$hr" "$w")
+        sc=$(_autotune_vs_base "$target" "$hr" "$w" "$base_hr" "$base_w" "$base_score")
         log "autotune: prefetch_mode=$m measured $(_autotune_fmt "$target" "$hr" "$w")."
         if awk -v sc="$sc" -v b="$best_score" 'BEGIN{exit !(sc > b)}'; then
             best_mode="$m"
@@ -3476,12 +3454,23 @@ autotune() {
         fi
     done
 
-    # Adopt the winner only if it beats the baseline by the margin (noise guard); else keep the current mode.
     if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
-        log "autotune: best is prefetch_mode=$best_mode at $best_score $unit (vs $base_score baseline) — applying it."
+        if [ "$last_applied" != "$best_mode" ]; then
+            _autotune_settle "$best_mode"
+            last_applied="$best_mode"
+            sleep "$warm"
+        fi
+        s=$(_autotune_sample "$n" "$iv" "$target")
+        hr=${s%%$'\t'*}
+        w=${s#*$'\t'}
+        best_score=$(_autotune_vs_base "$target" "${hr:-0}" "$w" "$base_hr" "$base_w" "$base_score")
+        log "autotune: re-measured prefetch_mode=$best_mode at $(_autotune_fmt "$target" "${hr:-0}" "$w") to confirm it."
+    fi
+    if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
+        log "autotune: best is prefetch_mode=$best_mode at $(_autotune_fmt "$target" "${hr:-0}" "$w") (vs $(_autotune_fmt "$target" "$base_hr" "$base_w") baseline) — applying it."
     else
         best_mode="$cur"
-        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($base_score $unit)."
+        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($(_autotune_fmt "$target" "$base_hr" "$base_w"))."
     fi
     # Leave the chosen mode running (the sweep may have ended on a different one).
     if [ "$last_applied" != "$best_mode" ]; then
@@ -3939,14 +3928,14 @@ _render_duration() {
 svc_status() {
     _shared_host_status_report
     _config_apply_check
+    _pkg_upgrade_status
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
         (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
     (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
-    # Read-only: `systemctl status` is world-readable, so no sudo (don't prompt for a password to look).
-    systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
+    systemctl status "$SERVICE_NAME" || true
 }
 svc_logs() {
     [ "$OS_TYPE" = "Linux" ] || {
@@ -3997,12 +3986,7 @@ svc_disable() {
     sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
 }
 # --- Commands: version, apply & bench ---
-
 # Tab completion (#145): PRINT a completion script, install nothing — the operator opts in with
-# `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
-# (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
-# dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
-# verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
 _rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios stress status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
@@ -5313,7 +5297,7 @@ doctor() {
         ;;
     esac
 
-    # Service active?
+    _pkg_upgrade_doctor || issues=$((issues + 1))
     local svc_up=n
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         svc_up=y
@@ -5987,7 +5971,7 @@ bios() {
     # dmidecode (the memory-profile probe) needs root — auto-elevate exactly like tune.
     if _tune_should_elevate; then
         log "bios needs root for the firmware probes — re-running with sudo..."
-        exec sudo "$0" bios "$@"
+        _exec_sudo_self bios "$@"
     fi
     local target_set=0
     if [ -n "${TUNE_TARGET:-}" ]; then target_set=1; fi
@@ -6105,6 +6089,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         upgrade "$@"
         ;;
+    package-upgrade) package_upgrade ;;
     uninstall)
         shift
         uninstall "$@"
