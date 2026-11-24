@@ -26,6 +26,16 @@ jobs:
           # Releasing goes through `gh` with GH_TOKEN below, not `git push`, so the checkout never
           # needs the token left in .git/config (zizmor: artipacked).
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require the tag to be on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::Tag '$TAG' is not on main. Tag from main and retag."
+            exit 1
+          fi
 
       - name: Verify the tag matches VERSION
         run: |
