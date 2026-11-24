@@ -6222,7 +6222,6 @@ assert_eq "wrmsr recorded per candidate (#66)" "$(J "$TLOG" '.results[0] | has("
 # fixed value (false happened to be the last candidate in the case above).
 out="$(wrmsr_run true "true false")"
 assert_eq "wrmsr: measured winner (true) is pinned (#66)" "$(J "$OVR" '.randomx.wrmsr')" "true"
-# A single explicit value -> knob inactive -> not pinned (#7-style isolation).
 out="$(wrmsr_run false "true")"
 assert_eq "wrmsr not pinned when single-valued (#66)" "$(J "$OVR" '.randomx.wrmsr // "absent"')" "absent"
 # OFF BY DEFAULT: with TUNE_WRMSR unset (arg omitted), _seed_wr yields a single token (the base value),
@@ -6230,6 +6229,7 @@ assert_eq "wrmsr not pinned when single-valued (#66)" "$(J "$OVR" '.randomx.wrms
 out="$(wrmsr_run false)"
 assert_eq "wrmsr OFF by default (unset -> not swept/pinned) (#66)" "$(J "$OVR" '.randomx.wrmsr // "absent"')" "absent"
 assert_absent "wrmsr default isn't in the active-knob set (#66)" "$out" "wrmsr="
+bash "$ROOT/tests/test-tune-pins.sh" "$SCRIPT" >/dev/null 2>&1 && ok "a plain tune keeps knobs an earlier tune pinned (#815)" || bad "a plain tune keeps knobs an earlier tune pinned (#815)" "regression failed"
 
 # #65: reservation-aware thread exploration. With a small HugePages reservation, a thread count whose
 # 2MB-page need exceeds it is recorded as hugepages_capped (ran without full backing = a floor reading),

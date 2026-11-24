@@ -2900,7 +2900,7 @@ _seed_auto() {
 _seed_guess() {
     S_p="${TUNE_GUESS_PREFETCH:-2}"
     S_y=false
-    S_pr=2
+    S_pr=$(jq -r '.cpu.priority // 2' "$TUNE_BASE")
     S_g=$(_seed_g)
     S_t="${TUNE_GUESS_THREADS:-${THREAD_CENTER:--1}}"
     [ -n "$S_t" ] || S_t="-1"
@@ -3225,17 +3225,15 @@ tune() {
         error "Benchmarks produced no hashrate — check that the worker is built correctly."
     fi
 
-    # Build the overrides snippet from the winning state. Always pin prefetch + yield; pin threads only
-    # if a concrete count won (not auto), and priority / 1gb-pages only if they were actually swept — so
-    # we never freeze a knob the search didn't explore.
-    local ovr
+    local ovr pins
+    pins=" $ACTIVE_KNOBS $(jq -r '[("cpu", "randomx") as $s | .[$s] | objects | keys[] | select(test("\\s") | not) | "\($s).\(.)"] | join(" ")' <<<"$pre_overrides" 2>/dev/null || true) "
     ovr=$(jq -n --argjson p "$G_p" --argjson y "$G_y" '{randomx:{scratchpad_prefetch_mode:$p}, cpu:{yield:$y}}')
     [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = (if ($t | type) == "number" then {mode: 0, threads: $t, max_threads_cnt: $t, intensity: 1, affinity: -1} else $t end)')
-    case " $ACTIVE_KNOBS " in *" priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
-    case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
-    case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
-    case " $ACTIVE_KNOBS " in *" cacheqos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
-    case " $ACTIVE_KNOBS " in *" wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
+    case "$pins" in *" priority "* | *" cpu.priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
+    case "$pins" in *" onegb "* | *" randomx.1gb-pages "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
+    case "$pins" in *" hpjit "* | *" cpu.huge-pages-jit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
+    case "$pins" in *" cacheqos "* | *" randomx.cache_qos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
+    case "$pins" in *" wrmsr "* | *" randomx.wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
     ovr=$(_xmrig_unpinned <<<"$ovr")
     printf '%s\n' "$ovr" >"$TUNE_TMP/ovr.json" && sudo cp "$TUNE_TMP/ovr.json" "$TUNE_OVERRIDES"
     _TUNE_LIVE_DIRTY=0 # #347: the winner — a completed decision — now owns the file; the abort-restore stands down
