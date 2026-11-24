@@ -4590,15 +4590,21 @@ control_apply() {
 }
 
 _control_upgrade_steps() {
-    local ref="$1" cobj
-    ! _package_install && _root_guard_check "" || return 1
+    local ref="$1" cobj udir="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
+    RIGFORGE_UPGRADE_UNMOVED="this install is package-owned"
+    ! _package_install || return 1
+    RIGFORGE_UPGRADE_UNMOVED="the root guard refused this tree"
+    _root_guard_check "" || return 1
+    RIGFORGE_UPGRADE_UNMOVED="could not fetch from origin"
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    RIGFORGE_UPGRADE_UNMOVED=""
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
+    _control_upgrade_mark "$udir" || return 1
     git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null
+    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null && rm -f "$udir/upgrade-pending"
 }
 
 # control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
@@ -4649,13 +4655,10 @@ control_upgrade() {
         return 0
     fi
     installed=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
-    # D10 monotonic anti-rollback: never install a version <= the one running. A compromised trigger
-    # can't pin a rig to an older, known-vulnerable release (reachability + immutable releases cover
-    # tag-moving / dangling commits; this covers downgrade and no-op).
+    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     if [ -n "$installed" ]; then
         local want="${target#v}" highest
-        if [ "$want" = "$installed" ]; then
-            # #320: an idempotent no-op, not a failure — the rig is exactly where the operator wants it.
+        if [ "$want" = "$installed" ] && [ ! -e "$throttle/upgrade-pending" ] && [ ! -L "$throttle/upgrade-pending" ]; then
             _control_status "$status" noop "$cid" version "already on $target — nothing to upgrade" ""
             log "control-upgrade: already on $target."
             return 0
@@ -4672,7 +4675,6 @@ control_upgrade() {
         warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
         return 0
     }
-    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
         _control_status "$status" failed "$cid" version "throttle state unavailable under $throttle — refused (fail-closed)" ""
@@ -4686,18 +4688,14 @@ control_upgrade() {
     fi
     old_tag=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
-    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
+    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid" RIGFORGE_UPGRADE_UNMOVED=""
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-        # #320: echo the landed version — the poller shouldn't have to cross-read the miner API for it.
         _control_status "$status" applied "$cid" version "upgraded to $target" ""
         log "control-upgrade: $cid applied — now on $target."
+    elif [ -n "${RIGFORGE_UPGRADE_UNMOVED:-}" ]; then
+        _control_status "$status" failed "$cid" version "upgrade to $target failed before checkout: $RIGFORGE_UPGRADE_UNMOVED; nothing was changed" ""
+        warn "control-upgrade: $cid failed before checkout ($RIGFORGE_UPGRADE_UNMOVED); nothing to roll back."
     else
-        # ANY forward failure rolls back — a reachability/build error OR the miner not returning to a live
-        # hashrate. Rollback re-runs _control_upgrade_do, which checks out AND rebuilds the old ref, so a
-        # failed forward attempt never leaves the tree pinned to an unbuilt $target: that would make
-        # VERSION read $target, short-circuit every future retry ("already on"), and run unverified code
-        # on every later invocation. A build failure after checkout is a real on-disk change, not "no
-        # change applied" — this reverts it (#308 security review, the build-failed branch was the gap).
         warn "control-upgrade: $target did not come up cleanly — rolling back to ${old_tag:-previous}."
         if [ -n "$old_tag" ] && _control_upgrade_do "$old_tag" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
             _control_status "$status" rolled_back "$cid" version "upgrade to $target failed; rolled back to $old_tag and live" ""

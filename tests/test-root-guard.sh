@@ -191,6 +191,8 @@ f1=$FAIL
 (
     git() { printf 'git %s\n' "$*" >>"$R/git.calls"; }
     _fetch_git() { printf 'fetch %s\n' "$*" >>"$R/git.calls"; }
+    RIGFORGE_CONTROL_UPGRADE_STATE="$R/upgrade-state"
+    mkdir -p "$RIGFORGE_CONTROL_UPGRADE_STATE"
     rm -f "$R/git.calls"
     reset "$TREE/.git/hooks/post-checkout 1000:1000:755"
     mkdir -p "$TREE/.git/hooks"

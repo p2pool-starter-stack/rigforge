@@ -37,6 +37,16 @@ _control_upgrade_reown() {
     done < <(find "$dir" -xdev -path "$skip" -prune -o \( ! -user "$uid" -o ! -group "$gid" \) -print0 2>/dev/null)
 }
 
+_control_upgrade_mark() {
+    local m="$1/upgrade-pending"
+    RIGFORGE_UPGRADE_UNMOVED="upgrade state unavailable under $1"
+    if [ -e "$m" ] || [ -L "$m" ]; then
+        [ ! -L "$m" ] && [ -f "$m" ] && [ "$(stat -c '%u:%g:%a:%h' "$m" 2>/dev/null)" = "0:0:600:1" ] || return 2
+    fi
+    # shellcheck disable=SC2034
+    (umask 077 && : >"$m") && RIGFORGE_UPGRADE_UNMOVED=""
+}
+
 _control_upgrade_do() {
     local rc=0
     _control_upgrade_steps "$1" || rc=$?
