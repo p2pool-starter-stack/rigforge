@@ -568,7 +568,7 @@ A first install, a reinstall of the same version and a host without a config que
 
 The one-shot runs `rigforge package-upgrade`, which is `upgrade` outside dpkg: it rebuilds XMRig
 only when the pin, compiled minimum or checksum requires it, re-renders every unit, and restarts
-the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator who owns the install from the already-rendered watchdog unit and hands the tree and units back to them. Follow it with `journalctl -u rigforge-upgrade`.
+the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and hands the tree and units back to them. Follow it with `journalctl -u rigforge-upgrade`.
 
 If it fails, the previous build keeps running, the marker stays, `/var/lib/rigforge/upgrade-failed`
 records the failure, and both `rigforge status` and `rigforge doctor` report it. dpkg is never

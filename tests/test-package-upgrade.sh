@@ -163,12 +163,9 @@ cp -R "$ROOT/systemd" "$RIG/"
 chmod +x "$RIG/home/worker/xmrig/build/xmrig"
 printf 'ABC\n' >"$RIG/home/worker/xmrig/.rigforge-commit"
 printf '0\n' >"$RIG/home/worker/xmrig/.rigforge-donate-min"
-printf '{"HOME_DIR": "%s/home", "DONATION": 1, "watchdog": "enabled", "pools": [{"url": "poolbox.lan:3333"}]}\n' "$RIG" >"$RIG/config.json"
-printf '[Service]\nEnvironment=RIGFORGE_OPERATOR=nobody\nStaleMarker=1\n' >"$RIG/etc-systemd/rigforge-watchdog.service"
-printf '#!/usr/bin/env bash\n[ "$*" = "-u" ] && echo 0 && exit 0\nexec /usr/bin/id "$@"\n' >"$RS/own/id"
+printf '#!/usr/bin/env bash\ncase "$*" in -u) echo 0 ;; -un) echo root ;; *) exec /usr/bin/id "$@" ;; esac\n' >"$RS/own/id"
 printf '#!/usr/bin/env bash\necho "[chown] $*" >>"$CALL_LOG"\n' >"$RS/own/chown"
 chmod +x "$RS/own"/*
-echo 2.0.0 >"$RIG/state/upgrade-pending"
 rig_run() {
     (
         cd "$RIG"
@@ -177,20 +174,31 @@ rig_run() {
             RIGFORGE_HOME="$RIG" bash "$SCRIPT" package-upgrade </dev/null 2>&1
     )
 }
-: >"$RIG/calls.log"
-set +e
-rig_out=$(rig_run)
-rc=$?
-set -e
-check "real package-upgrade exits 0" "$([ "$rc" -eq 0 ] && echo 0 || {
-    echo "$rig_out" >&2
-    echo 1
-})"
-check "real package-upgrade renders the miner unit" "$([ -s "$RIG/etc-systemd/xmrig.service" ] && echo 0 || echo 1)"
-check "real package-upgrade rewrites the generated config" "$([ "$(jq -r '.pools[0].url' "$RIG/home/worker/xmrig/build/config.json")" = poolbox.lan:3333 ] && echo 0 || echo 1)"
-check "real package-upgrade bakes the existing operator, not root, into rendered units" "$(grep -q '^Environment=RIGFORGE_OPERATOR=nobody$' "$RIG/etc-systemd/rigforge-watchdog.service" && ! grep -q StaleMarker "$RIG/etc-systemd/rigforge-watchdog.service" && ! grep -rq 'RIGFORGE_OPERATOR=root' "$RIG/etc-systemd" && echo 0 || echo 1)"
-check "real package-upgrade hands the tree back to the operator" "$(grep -q '^\[chown\] .*nobody' "$RIG/calls.log" && ! grep -q '^\[chown\] .*root' "$RIG/calls.log" && echo 0 || echo 1)"
-check "real package-upgrade restarts the miner once and clears the marker" "$([ "$(grep -c 'systemctl\] restart xmrig.service' "$RIG/calls.log")" -eq 1 ] && [ ! -e "$RIG/state/upgrade-pending" ] && echo 0 || echo 1)"
+for wd in disabled enabled; do
+    printf '{"HOME_DIR": "%s/home", "DONATION": 1, "watchdog": "%s", "pools": [{"url": "poolbox.lan:3333"}]}\n' "$RIG" "$wd" >"$RIG/config.json"
+    OP=$(id -un)
+    if [ "$OP" = root ]; then
+        chown nobody "$RIG/config.json"
+        OP=nobody
+    fi
+    rm -f "$RIG/etc-systemd"/*
+    echo 2.0.0 >"$RIG/state/upgrade-pending"
+    : >"$RIG/calls.log"
+    set +e
+    rig_out=$(rig_run)
+    rc=$?
+    set -e
+    check "watchdog $wd: real package-upgrade exits 0" "$([ "$rc" -eq 0 ] && echo 0 || {
+        echo "$rig_out" >&2
+        echo 1
+    })"
+    check "watchdog $wd: renders the miner unit" "$([ -s "$RIG/etc-systemd/xmrig.service" ] && echo 0 || echo 1)"
+    check "watchdog $wd: rewrites the generated config" "$([ "$(jq -r '.pools[0].url' "$RIG/home/worker/xmrig/build/config.json")" = poolbox.lan:3333 ] && echo 0 || echo 1)"
+    check "watchdog $wd: hands the tree back to the config owner, not root" "$(grep -qF "$OP:$OP" "$RIG/calls.log" && ! grep -qF 'root:root' "$RIG/calls.log" && echo 0 || echo 1)"
+    check "watchdog $wd: bakes no root operator into rendered units" "$(grep -rq 'RIGFORGE_OPERATOR=root' "$RIG/etc-systemd" && echo 1 || echo 0)"
+    check "watchdog $wd: restarts the miner once and clears the marker" "$([ "$(grep -c 'systemctl\] restart xmrig.service' "$RIG/calls.log")" -eq 1 ] && [ ! -e "$RIG/state/upgrade-pending" ] && echo 0 || echo 1)"
+done
+check "watchdog enabled: the rendered watchdog unit bakes the config owner" "$(grep -qx "Environment=RIGFORGE_OPERATOR=$OP" "$RIG/etc-systemd/rigforge-watchdog.service" && echo 0 || echo 1)"
 
 [ "$fail" -eq 0 ] && echo "package upgrade: all checks passed"
 exit "$fail"

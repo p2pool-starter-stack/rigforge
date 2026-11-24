@@ -6,7 +6,7 @@ _pkg_upgrade_clear() { rm -f "$(_pkg_state)/upgrade-pending" "$(_pkg_state)/upgr
 
 _pkg_operator() {
     local u
-    u=$(sed -n 's/^Environment=RIGFORGE_OPERATOR=//p' "$SYSTEMD_DIR/rigforge-watchdog.service" 2>/dev/null | head -n 1)
+    u=$(stat -c '%U' "$CONFIG_JSON" 2>/dev/null || stat -f '%Su' "$CONFIG_JSON" 2>/dev/null || true)
     [ -n "$u" ] && [ "$u" != root ] && id -u "$u" >/dev/null 2>&1 && printf '%s' "$u"
 }
 
