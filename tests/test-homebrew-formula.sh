@@ -23,7 +23,9 @@ grep -q '@' "$T/out.rb" && fail "unrendered placeholder left in the formula"
 printf 'PASS: formula renders url and sha256 from SHA256SUMS\n'
 
 printf 'other\n' >"$T/bad.tar.gz"
-bash "$BUILD" v1.2.3 "$T/SHA256SUMS" "$T/bad.rb" "$T/bad.tar.gz" 2>/dev/null && fail "a tarball that disagrees with SHA256SUMS was accepted"
+rc=0
+bash "$BUILD" v1.2.3 "$T/SHA256SUMS" "$T/bad.rb" "$T/bad.tar.gz" 2>"$T/err" || rc=$?
+[ "$rc" = 1 ] && grep -q disagrees "$T/err" || fail "a tarball that disagrees with SHA256SUMS was not refused for that reason"
 printf 'PASS: tarball/SHA256SUMS disagreement fails\n'
 
 grep -v tar.gz "$T/SHA256SUMS" >"$T/nosum"

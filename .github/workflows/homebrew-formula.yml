@@ -62,7 +62,7 @@ jobs:
             echo "Formula already at ${RELEASE_TAG}"
             exit 0
           fi
-          git -c user.name='rigforge-formula-bot' -c user.email='rigforge-formula-bot@users.noreply.github.com' \
+          git -c user.name='rigforge-formula-bot' -c "user.email=rigforge-formula-bot@${GITHUB_SERVER_URL#https://}" \
             commit -q -m "Bump Homebrew formula to ${RELEASE_TAG}"
           git -c "http.extraheader=AUTHORIZATION: basic ${auth}" push --force-with-lease origin "$BRANCH"
           if [[ -z "$(gh pr list --head "$BRANCH" --base main --state open --json number -q '.[0].number')" ]]; then
