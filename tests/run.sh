@@ -9530,7 +9530,7 @@ assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.ap
 assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
 (set -- && source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
 source "$ROOT/tests/daemon-pools.sh"
-# ---------------------------------------------------------------------------
+bash "$ROOT/tests/test-l3-units.sh" "$SCRIPT" >/dev/null 2>&1 && ok "L3 size units and the extra-reserve warning (#819)" || bad "L3 size units and the extra-reserve warning (#819)" "regression failed"
 echo ""
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
 if [ "$PYCACHE_PRE" = present ]; then
