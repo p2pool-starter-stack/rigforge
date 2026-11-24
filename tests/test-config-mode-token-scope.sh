@@ -162,4 +162,44 @@ mkdir -p "$STATE"
     exit "$FAIL"
 ) || FAIL=1
 
+CC="$TEST_DIR/commit"
+mkdir -p "$CC"
+printf '{"pools":[{"url":"h:3333","pass":"tok"}],"DONATION":1}\n' >"$CC/config.json"
+chmod 600 "$CC/config.json"
+printf '{"DONATION":4}' >"$CC/s.json"
+(
+    source "$SCRIPT"
+    umask 022
+    CONFIG_JSON="$CC/config.json"
+    parse_config() { mode_of "$CONFIG_JSON" >"$CC/seen"; }
+    out=$(_control_commit "$CC/s.json" "$CC/backups")
+    assert_has "commit under umask 022 lands the change" "$out" "committed "
+    assert_eq "the candidate is owner-only while parse_config validates it" "$(cat "$CC/seen")" 600
+    assert_eq "the committed config.json is owner-only" "$(mode_of "$CC/config.json")" 600
+    exit "$FAIL"
+) || FAIL=1
+
+RB="$TEST_DIR/rollback"
+mkdir -p "$RB/state/spool"
+printf '{"pools":[{"url":"h:3333","pass":"tok"}],"DONATION":1}\n' >"$RB/config.json"
+chmod 600 "$RB/config.json"
+printf '{"DONATION":4}' >"$RB/state/spool/pending-abc123.json"
+(
+    source "$SCRIPT"
+    umask 022
+    OS_TYPE=Linux
+    SCRIPT_DIR="$RB"
+    CONFIG_JSON="$RB/config.json"
+    RIGFORGE_CONTROL_STATE="$RB/state"
+    parse_config() { :; }
+    _control_claim_staged() { cp "$1" "$RB/staged.json" && printf '%s' "$RB/staged.json"; }
+    _control_do_apply_fast() { return 1; }
+    _control_do_apply() { return 1; }
+    control_apply >/dev/null 2>&1
+    assert_eq "the control change is rolled back" "$(jq -r .status "$RB/state/status.json")" rolled_back
+    assert_eq "the rollback restores the old config" "$(jq -r .DONATION "$RB/config.json")" 1
+    assert_eq "config.json stays owner-only after the rollback" "$(mode_of "$RB/config.json")" 600
+    exit "$FAIL"
+) || FAIL=1
+
 exit "$FAIL"

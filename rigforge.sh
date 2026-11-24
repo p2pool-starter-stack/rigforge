@@ -4267,7 +4267,7 @@ _control_commit() { # <staged.json> <backups-dir>
     # Build the candidate: current config with ONLY the allowlisted staged keys overlaid (pools and
     # other arrays replace, scalars replace). Filter again so a stray key can never ride in.
     cand="$CONFIG_JSON.control.$$"
-    if ! jq -n --slurpfile base "$CONFIG_JSON" --argjson chg "$change" --argjson a "$allow" '$base[0] * ($chg | with_entries(select(.key as $k | $a | index($k))))' >"$cand" 2>/dev/null; then
+    if ! (umask 077 && jq -n --slurpfile base "$CONFIG_JSON" --argjson chg "$change" --argjson a "$allow" '$base[0] * ($chg | with_entries(select(.key as $k | $a | index($k))))' >"$cand" 2>/dev/null); then
         rm -f "$cand"
         echo "rejected merge-failed"
         return 1
