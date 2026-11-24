@@ -4021,7 +4021,6 @@ svc_disable() {
     sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
 }
 # --- Commands: version, apply & bench ---
-
 # Tab completion (#145): PRINT a completion script, install nothing — the operator opts in with
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
