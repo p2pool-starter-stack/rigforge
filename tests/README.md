@@ -266,12 +266,12 @@ performance unnoticed:
 
 | Measurement | Where | Standard | Knobs |
 |---|---|---|---|
-| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine, compared against the **committed per-host baseline** in [`perf-baselines/`](perf-baselines/). No baseline → the phase reports the measurement and how to record one. | `E2E_PERF_TOLERANCE_PCT` (default 5); `E2E_PERF_RECORD=1` writes/updates the baseline — commit the file. |
+| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine. The phase prints one JSON line keyed by hardware class and perf id (`{"<class>":{"bench_1m_hs":<H/s>}}`) and reads its history from the caller (`E2E_PERF_HISTORY`, JSON lines of earlier results). It reports by default and never fails on a regression; `E2E_PERF_GATE=1` makes a drop vs the latest or best entry for the class fail. The legacy per-host files in [`perf-baselines/`](perf-baselines/) still work when no history is passed. | `E2E_PERF_CLASS` (default: the CPU model, slugified); `E2E_PERF_HISTORY`; `E2E_PERF_GATE=1`; `E2E_PERF_TOLERANCE_PCT` (default 5); legacy `E2E_PERF_RECORD=1`. |
 | **Hashrate under API load** | `e2e-pithead.sh` `api-impact` phase | Live 10s-window hashrate, 6×5s samples, baseline vs 4 clients hammering the sister API back-to-back. The handler unit's `Nice=19`/`IOSchedulingClass=idle` is the mechanism; this proves it. | `E2E_API_IMPACT_TOLERANCE_PCT` (default 3). |
 | **Tune improvement** | `e2e-real.sh` `verify` phase (existing) | The short real tune must produce a winner that beats or ties the baseline candidate (#62–#64 machinery: sustained-clock sampling, variance-aware acceptance, live A/B confirm). | `TUNE_BENCH`, `TUNE_ITERS` (see the phase comments). |
 
-Baselines are per-host on purpose: hashrate is hardware. When a rig's hardware or BIOS tuning
-changes deliberately, re-record its baseline in the same PR that documents the change.
+Results are keyed by hardware class on purpose: hashrate is hardware. Keep the history outside the
+repo (the caller appends each emitted JSON line to its own store), so a run never dirties the checkout.
 
 ## XMRig self-test regressions
 

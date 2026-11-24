@@ -143,6 +143,6 @@ default. RigForge prints the ID only after a separate verification run succeeds.
 
 Record that returned ID here alongside the CPU, release tag, XMRig version and measured H/s when
 publishing a new benchmark. Anyone can check it with `bench --verify ID`. The release perf gate also
-stores `benchmark_id` in its baseline and history records; see
-[the baseline procedure](../tests/perf-baselines/README.md). No new hardware result or ID is claimed
+includes `benchmark_id` in the JSON line it prints; see
+[the perf procedure](../tests/README.md#performance-testing-standardized). No new hardware result or ID is claimed
 by adding this procedure.

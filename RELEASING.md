@@ -39,7 +39,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh control     # the writable control path (#236) against real systemd: enable, POST a change, poll to applied, revert
    sudo bash tests/e2e-real.sh upgrade     # the remote-upgrade chain (#308/#322) with REAL git: noop + refused-tag rollback legs, plus a mandatory forward leg that auto-derives the previous real release tag -> current and proves it, then reverts (skip with a reason: E2E_UPGRADE_SKIP_REASON="...")
    sudo bash tests/e2e-real.sh watchdog    # the thermal-hold path (#349) against the real sensor and real systemd: lowers max_temp_c below the live reading, runs the verb once, asserts the stop + hold marker + journal evidence, restores on every exit path (skips explicitly when no temperature reading is available)
-   sudo bash tests/e2e-real.sh perf        # offline bench vs the committed per-host baseline + best-ever history (the release perf gate)
+   sudo E2E_PERF_GATE=1 E2E_PERF_HISTORY=<history.jsonl> bash tests/e2e-real.sh perf   # offline bench; prints JSON keyed by hardware class and fails on a regression vs that history (drop E2E_PERF_GATE=1 to only report)
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
 
@@ -53,10 +53,10 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    ```
 
    Both gates carry the standardized performance checks (see `tests/README.md` › Performance
-   testing): `e2e-real`'s `perf` phase compares the offline bench against the committed per-host
-   baseline in `tests/perf-baselines/`, and `e2e-pithead`'s `api-impact` phase proves the sister
-   API doesn't shave live hashrate. A perf regression fails the gate — investigate or consciously
-   re-record the baseline before tagging.
+   testing): `e2e-real`'s `perf` phase emits JSON keyed by hardware class and compares the offline
+   bench against the history you pass in `E2E_PERF_HISTORY`, and `e2e-pithead`'s `api-impact` phase
+   proves the sister API doesn't shave live hashrate. Report mode is the default and never fails on a
+   regression; run the release gate with `E2E_PERF_GATE=1`, and investigate any drop before tagging.
 
    Each phase must report `E2E-REAL (<phase>): PASS`. This proves a release bundle actually
    builds, tunes, and hashes on real hardware, which the suites can't since they all stub XMRig.
@@ -205,35 +205,34 @@ test "$(gh api "repos/$repo/releases/latest" --jq .tag_name)" = vX.Y.Z \
 The `Release latest marker` workflow repeats that read after every non-prerelease publish and fails
 loudly if the marker differs. It is a guard, not a substitute for the explicit publish step above.
 
-For a publicly verifiable perf baseline, explicitly opt into submission:
+For a publicly verifiable perf result, explicitly opt into submission:
 
 ```bash
-sudo env E2E_PERF_SUBMIT=1 E2E_PERF_RECORD=1 E2E_PERF_TAG=vX.Y.Z bash tests/e2e-real.sh perf
+sudo env E2E_PERF_SUBMIT=1 E2E_PERF_HISTORY=<history.jsonl> bash tests/e2e-real.sh perf | tee <run.log>
 ```
 
-This publishes hardware and performance information. The gate verifies the submitted result and
-stores its `benchmark_id` in both the baseline and release history. Copy the returned ID into
+This publishes hardware and performance information. The gate verifies the submitted result; a missing
+ID or failed verification fails the phase. Copy the returned ID into
 [`docs/benchmarks.md`](./docs/benchmarks.md) beside the release and CPU. Without this opt-in, the
-gate remains offline and records no ID. A failed verification or missing ID fails the recording.
+gate remains offline.
 
-After a rig is re-tagged, record its benchmark for the release
-(`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
-the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
-catch slow drift across releases (see `tests/perf-baselines/README.md`). It is whichever rig ran the
-gate, which is **not** always miner-0 despite [`tests/README.md`](./tests/README.md#the-shared-rig-miner-0)
-calling it the shared rig: v1.15.0 was gated on miner-2 and v1.15.1 on miner-3, and miner-0 currently
-cannot pass the gate at all — it dual-boots Windows, so Secure Boot is enabled, kernel lockdown
-(`integrity`) denies every MSR write, and `doctor` counts that as an issue and exits non-zero. Pick a
-rig with Secure Boot off. The rest of the fleet isn't re-tagged on every release, so its baselines are
-only as fresh as the last time each rig was actually touched. `tests/perf-baselines/` legitimately
-carries gaps between releases for rigs that went untouched — it is not a promise that every rig has
-an entry for every tag. The recording is also the per-rig perf gate (#214): it judges against the
-committed baseline and best-ever history before writing, refuses to record a regressed number (fix
-it, or consciously override with `E2E_PERF_FORCE=1`), so a failed rig means investigate before
-calling it healthy. Once a rig's baseline is merged, reset its copy
-(`sudo git checkout -- tests/perf-baselines/` in `/opt/rigforge`): the recording dirties the rig's
-checkout, and the *next* release's
-`git checkout <tag>` aborts on exactly those files (this bit both the v1.4.0 and v1.5.0 deploys).
+After a rig is re-tagged, run `perf` on it and append the JSON line it prints
+(`{"<class>":{"bench_1m_hs":<H/s>}}`, plus `benchmark_id` when submitted; `grep '^{'` of the output) to the history file you keep outside
+the repo; that history, passed back as `E2E_PERF_HISTORY`, is what lets the gate catch slow drift
+across releases. The class is the CPU model unless `E2E_PERF_CLASS` overrides it, so any rig of the
+same hardware shares one history. Recording no longer touches the checkout, so there is nothing to
+commit or reset. It is whichever rig ran the gate, which is **not** always miner-0 despite
+[`tests/README.md`](./tests/README.md#the-shared-rig-miner-0) calling it the shared rig: v1.15.0 was
+gated on miner-2 and v1.15.1 on miner-3, and miner-0 currently cannot pass the gate at all — it
+dual-boots Windows, so Secure Boot is enabled, kernel lockdown (`integrity`) denies every MSR write,
+and `doctor` counts that as an issue and exits non-zero. Pick a rig with Secure Boot off.
+
+The default changed from failing to reporting. With `E2E_PERF_GATE=1` (and no history, the gate fails rather than pass silently) a result more than the tolerance below the
+latest or the best entry for its class fails as `perf REGRESSION` / `perf RATCHET`. Existing per-host
+files in `tests/perf-baselines/` keep working, as the history, until `E2E_PERF_HISTORY` is set. They
+are retired by deleting them once the history exists (see `tests/perf-baselines/README.md`); the old
+`E2E_PERF_RECORD=1` / `E2E_PERF_FORCE=1` / `E2E_PERF_TAG` flow still writes them and still dirties the
+checkout until then.
 
 To verify a downloaded bundle: `sha256sum -c SHA256SUMS` (see
 [SECURITY.md › Release integrity](./SECURITY.md#release-integrity)).
