@@ -222,7 +222,7 @@ grub_merge_cmdline() {
     set -f
     for tok in $current; do
         case "$tok" in
-        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop, re-added below
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;;
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
@@ -235,7 +235,7 @@ grub_strip_managed() { # <current cmdline>
     set -f
     for tok in $current; do
         case "$tok" in
-        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;;
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
@@ -1678,17 +1678,11 @@ tune_kernel() {
         # (pithead#797 R0 item 2).
         log "Appliance mode: skipping GRUB updates — the kernel cmdline is image-owned."
     elif [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
-        # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
-        # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
-        # clobber other kernel parameters the user/distro set (#19 — boot-safety).
         _grub_proposed
 
         if ! grub_cmdline_editable "$GRUB_DEFAULT"; then
             warn "Kernel parameters RigForge would have set: $MANAGED"
         elif [ "$CURRENT" = "$MERGED" ]; then
-            # Either already optimal, or _grub_proposed's co-resident keep-existing guard (#305) set
-            # MERGED := CURRENT because the ambient reservation already covers miner + headroom — either
-            # way there's nothing to write and no reboot.
             log "GRUB is already configured for the required HugePages reservation (no reboot)."
         else
             [ -e "$GRUB_DEFAULT.bak" ] || sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"

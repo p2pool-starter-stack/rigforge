@@ -220,6 +220,9 @@ fi
 [ ! -e "$D/unsafe-allocation" ] || fail 'light mode allocated the generic HugePages fallback'
 has "$(SCRIPT_DIR="$D/no-proposed" RX_MODE=light _setup_plan 2>&1)" 'RandomX light mode requires util/proposed-grub.sh'
 if RX_MODE=bogus bash "$PROPOSED" -q >/dev/null 2>&1; then fail 'proposed-grub accepted an invalid RandomX mode'; fi
+# F830-1: _setup_plan refuses a single-quoted GRUB line and names the params to set by hand
+printf "GRUB_CMDLINE_LINUX_DEFAULT='quiet hugepagesz=2M hugepages=4 msr.allow_writes=on'\n" >"$D/grub2"
+GRUB_DEFAULT="$D/grub2" RIGFORGE_APPLIANCE=0 RX_MODE=fast _setup_plan 2>/dev/null | grep -q 'not one plain double-quoted line' || fail '_setup_plan accepted single-quoted GRUB line'
 
 _ck_info() { printf 'INFO:%s\n' "$*"; }
 _ck_warn() { printf 'WARN:%s\n' "$*"; }
