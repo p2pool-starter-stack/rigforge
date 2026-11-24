@@ -16,7 +16,6 @@ test: lint test-suite ## Lint + the dependency-free suite (runs on macOS or Linu
 test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simulated
 	bash tests/run.sh
 	bash tests/test-doctor-json.sh
-	bash tests/test-sudo-env-forward.sh
 	bash tests/test-contract-credentials.sh
 	bash tests/test-access-token-readiness.sh
 	bash tests/test-docs-clone-pin.sh

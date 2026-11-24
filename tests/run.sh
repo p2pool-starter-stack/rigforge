@@ -5567,7 +5567,6 @@ tt_ovr="$(tune_target performance --efficiency)"
 assert_contains "--efficiency overrides config performance (#tunefix)" "$tt_ovr" "Optimization target: efficiency"
 assert_eq "an explicit target has no 'from config' note (#tunefix)" "$(printf '%s' "$tt_ovr" | grep -c 'from your autotune config')" "0"
 assert_contains "--perf overrides config efficiency (#tunefix)" "$(tune_target efficiency --perf)" "Optimization target: performance"
-# the sudo auto-elevate is gated on an interactive TTY, so a non-interactive (</dev/null) tune never re-execs.
 assert_eq "non-interactive tune does not auto-elevate (#tunefix)" "$(tune_target performance | grep -c 're-running with sudo')" "0"
 # Cover the interactive auto-elevate path. Run it as a real child process (so coverage sees the exec) with
 # RIGFORGE_FORCE_ELEVATE=1 forcing the gate regardless of the runner's uid, and a PATH `sudo` stub so exec
@@ -5579,6 +5578,7 @@ elev_out="$(cd "$TT" && PATH="$ELB:$STUBS:$PATH" RIGFORGE_FORCE_ELEVATE=1 STUB_U
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_contains "tune auto-elevates with sudo when interactive (#tunefix)" "$elev_out" "REEXEC:"
 assert_contains "tune re-execs the same tune command (#tunefix)" "$elev_out" "tune --live"
+bash "$ROOT/tests/test-sudo-env-forward.sh" "$SCRIPT" >/dev/null 2>&1 && ok "tune, bios and stress keep TUNE_ settings across sudo (#823)" || bad "tune, bios and stress keep TUNE_ settings across sudo (#823)" "regression failed"
 
 # tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
 # above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
