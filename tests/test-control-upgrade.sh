@@ -354,7 +354,7 @@ else
         rg_owner=1234:1234
         chown -R "$rg_owner" "$rg_d/co"
     elif PATH="$rg_path" sudo -n true 2>/dev/null; then
-        rg_sudo=(sudo -n env "PATH=$rg_path")
+        rg_sudo=(sudo -n env "PATH=$rg_path" "RIGFORGE_CONTROL_UPGRADE_STATE=$rg_d")
     fi
     rg_rc=$(PATH="$rg_path" ${rg_sudo[@]+"${rg_sudo[@]}"} bash -c 'source "$1"; set +e; SCRIPT_DIR="$2" CONFIG_JSON="$3"; _control_upgrade_do v9.9.9 >/dev/null 2>&1; echo $?' _ "$SCRIPT" "$rg_d/co" "$rg_d/none.json")
     assert_eq "real-git upgrade to a tag that adds a directory succeeds ($([ "${#rg_sudo[@]}" -gt 0 ] || [ "$(id -u)" -eq 0 ] && echo as root || echo as the owner))" "$rg_rc" "0"
@@ -363,3 +363,38 @@ else
         "$(find "$rg_d/co" -path "$rg_d/co/data" -prune -o \( ! -user "${rg_owner%%:*}" -o ! -group "${rg_owner##*:}" \) -print)" ""
     [ "${#rg_sudo[@]}" -eq 0 ] || PATH="$rg_path" "${rg_sudo[@]}" chown -R "$rg_owner" "$rg_d"
 fi
+
+echo "== unit: control_upgrade fails cleanly before checkout and re-runs a pending install (#816) =="
+pending_run() {
+    local d
+    d=$(mktemp -d "$SANDBOX/pending.XXXXXX")
+    mkdir -p "$d/state/spool" && mkdir -m 700 "$d/upgrade-state" && printf '%s' "$2" >"$d/VERSION" && printf 'keep' >"$d/target"
+    printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json" && printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
+    printf '#!/usr/bin/env bash\necho REINSTALL >>"%s/work.log"\n' "$d" >"$d/rigforge.sh" && chmod +x "$d/rigforge.sh"
+    case "$1" in pending) : >"$d/upgrade-state/upgrade-pending" ;; owner) printf 'orig' >"$d/upgrade-state/upgrade-pending" ;; link) ln -s "$d/target" "$d/upgrade-state/upgrade-pending" ;; esac
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux SCRIPT_DIR="$d" CONFIG_JSON="$d/config.json" RIGFORGE_CONTROL_STATE="$d/state" RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state" CONTROL_UPGRADE_MIN_INTERVAL=0 MODE="$1"
+        _wait_miner_live() { return 0; }
+        stat() { case "$MODE:$*" in owner:*upgrade-pending*) echo 1000:1000:600:1 ;; *) command stat "$@" ;; esac }
+        git() { case "$*" in *fetch*) [ "$MODE" != fetch ] ;; *describe*) echo v0.0.1 ;; *checkout*) echo checkout >>"$d/work.log" ;; *"is-ancestor unreach "*) return 1 ;; *"tags/v9.9.9"*) [ "$MODE" = tag ] && echo unreach || echo c0ffee ;; *rev-parse*) echo c0ffee ;; esac }
+        set +e
+        PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    )
+    printf '%s|%s|%s|%s|%s' "$(cat "$d/state/status.json" 2>/dev/null)" "$(cat "$d/work.log" 2>/dev/null)" "$([ -e "$d/upgrade-state/upgrade-pending" ] && echo marker-left)" "$(cat "$d/target")" "$(cat "$d/upgrade-state/upgrade-pending" 2>/dev/null)"
+}
+s="$(pending_run fetch 1.0.0)"
+assert_eq "fetch failure -> failed (#816)" "$(st "${s%%|*}")" "failed"
+assert_contains "fetch failure reason names the fetch and says nothing was changed (#816)" "$s" "could not fetch from origin; nothing was changed"
+assert_absent "fetch failure never claims manual intervention (#816)" "$s" "manual intervention"
+assert_eq "fetch failure neither checks out, reinstalls nor marks (#816)" "${s#*|}" "||keep|"
+s="$(pending_run tag 1.0.0)"
+assert_eq "tag not reachable from origin/main still rolls back with the rollback checkout (#816)" "$(st "${s%%|*}")|$(printf '%s' "${s%%|*}" | jq -r .reason)|${s#*|}" "rolled_back|upgrade to v9.9.9 failed; rolled back to v0.0.1 and live|checkout"$'\n'"REINSTALL||keep|"
+s="$(pending_run ok 1.0.0)"
+assert_eq "clean upgrade applies and clears its pending marker (#816)" "$(st "${s%%|*}")|${s#*|}" "applied|checkout"$'\n'"REINSTALL||keep|"
+s="$(pending_run pending 9.9.9)"
+assert_eq "same version with a pending marker re-runs instead of noop (#816)" "$(st "${s%%|*}")|${s#*|}" "applied|checkout"$'\n'"REINSTALL||keep|"
+s="$(pending_run link 9.9.9)"
+assert_eq "unsafe pending marker refused before checkout, target untouched (#816)" "$(st "${s%%|*}")|${s#*|}" "failed||marker-left|keep|keep"
+s="$(pending_run owner 9.9.9)"
+assert_eq "pending marker with a foreign owner refused before checkout, marker untouched (#816)" "$(st "${s%%|*}")|${s#*|}" "failed||marker-left|keep|orig"

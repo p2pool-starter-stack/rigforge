@@ -815,8 +815,11 @@ the intent (so a poller can tell "mid-build" from "queued"), then one terminal o
 idempotent, not an error), `throttled` (inside the anti-beacon window — retry later), or `failed`
 (with `reason`). A run that dies after claiming the intent (an abort, or systemd stopping the unit)
 still records `failed`, with a `reason` saying the run was lost, the checkout may be half-updated
-and the upgrade will not be retried: check the installed version and request it again (#535). Only a
-`SIGKILL` or a power loss can leave `started` as the last record. The
+and the upgrade will not be retried: check the installed version and request it again (#535). After
+such a run, a request for the same version is carried out again and is not answered `noop`; it is
+still subject to the throttle window. When the fetch fails, the outcome is `failed`, with a `reason`
+that says nothing was changed. Only a `SIGKILL` or a power loss can leave `started` as the last
+record. The
 oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent and can run well past
 ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt rebuilds the rollback ref
 in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
