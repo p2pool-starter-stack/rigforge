@@ -81,6 +81,7 @@ pkg_run() {
         warn() { :; }
         _persist_appliance_mode() { :; }
         check_prerequisites() { :; }
+        _root_guard_check() { :; }
         parse_config() { XMRIG_REBUILD=false; }
         _shared_host_prepare() { :; }
         decide_rebuild() { echo decide_rebuild >>"$CALLS"; }
