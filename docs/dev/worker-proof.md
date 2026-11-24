@@ -29,7 +29,7 @@ count, and `proof_preflight` refuses it with that reason whenever a proof contex
 is set. It runs only unbound (`bash tests/e2e-pithead.sh shared-host`).
 
 Each replay group (`control-replay-thermal`, `control-replay-pools`) retains its
-fixture/reservation, nested connect assertions (8), scalar apply
+fixture and rig reservation, nested connect assertions (8), scalar apply
 sequence, pools mutation, optional thermal mutation, publication window and final
 assertion (1). Nested connect belongs to that replay row, not a separate group.
 Neither replay is added to or removed from `all`.
@@ -110,14 +110,3 @@ unapproved skips; malformed/truncated data; nonzero exit; and failed cleanup.
 It must receive the trusted plan, never derive expectations from the artifacts it
 is checking. Receipts are not signed attestations: trust remains with the party
 that owns the checkout, plan, fixtures and artifact collection.
-
-## Open acceptance requirements
-
-An independent verification step must wire this required AND
-into the same current-head product/release status. Until then, local receipt
-validation alone does not establish the full gate. Keep all existing required
-statuses and per-PR proofs, including any independent CI checks.
-The shared proof manifest and rank-7 immutable inputs remain coordinated work;
-review complete before/after behavior, assertion, input and platform inventories
-by hand until that manifest is available. Unknown or truncated evidence blocks
-acceptance, and existing row ownership remains authoritative.

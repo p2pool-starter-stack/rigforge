@@ -221,13 +221,27 @@ docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/test
 The image — alpine pinned by tag and digest, with the nftables probe's packages baked in — lives in
 [`docker/Dockerfile`](docker/Dockerfile); Dependabot bumps the pin.
 
-### The shared rig
+### Running the worker-to-stack phases directly
 
-This rig is the e2e target for both RigForge's release gates and Pithead's e2e testing, and the two
-must not run concurrently: the gates mutate the rig, Pithead's tests assume a steadily-hashing
-miner. Both harnesses therefore take a kernel `flock` on `/var/lock/rig-e2e.lock` at entry — a
-second arrival exits 75 naming the holder (set `RIG_LOCK_WAIT=1` to queue instead). Check who
-holds it from off-box: `ssh <rig> 'flock -n -x /var/lock/rig-e2e.lock true || cat /var/lock/rig-e2e.lock.holder'` (#183).
+Each phase of [`e2e-pithead.sh`](e2e-pithead.sh) runs on its own as `sudo -E bash tests/e2e-pithead.sh <phase>` on a
+dedicated, uncontended rig with a live stack at `PITHEAD_URL=host:3333`. Optional inputs default to a clean skip, never a failure.
+
+| Phase | What it does | Inputs beyond `PITHEAD_URL` |
+| --- | --- | --- |
+| `connect`, `worker-api`, `api-impact`, `network`, `network-sequence` | Mining round trip, the worker API posture, the hashrate-impact guard under polling load, and the network summary and key contract. `network-sequence` runs the first four in one process. | none |
+| `stratum-auth` | Stratum auth accept/reject and rotation against a temporary plain-Stratum pool. | `E2E_STRATUM_PASS`; `all` skips without it, the explicit phase fails |
+| `dashboard` | Dashboard visibility and drop-off. | `E2E_DASH_URL`, optional `E2E_DASH_AUTH`; skipped without the URL |
+| `dev-fee` | Dev-fee build and reported donation. | none |
+| `control` | The writable control path's DONATION apply round trip. | none |
+| `access-tokens` | A named `ACCESS_TOKENS` entry authenticates and is refused after revocation. | none |
+| `thread-profile`, `config-ownership`, `selftest`, `shared-host` | Opt-in, outside `all`: XMRig thread profiles, generated-config ownership, `bench` plus `stress`, and [shared-host](../docs/shared-host.md) behaviour. | `E2E_STRESS_MINUTES` for `selftest` (default 1) |
+| `control-replay-thermal`, `control-replay-pools` | Opt-in replay of the thermal and pools control sequences. Refused unless the replay context variables are supplied. | `E2E_PITHEAD_CONTROL_FIXTURE`, `E2E_PITHEAD_CONTROL_CONTEXT`, `IT_RIG_POOLS_PROBE`, `E2E_RIG_LOCK_UNIT` |
+
+### The rig lock
+
+Release gates and the stack's own e2e tests must not run on one rig at the same time: the gates mutate the rig, the stack's tests
+assume a steadily-hashing miner. Both take a kernel `flock` on `/var/lock/rig-e2e.lock` at entry; a second arrival exits 75 naming
+the holder (set `RIG_LOCK_WAIT=1` to queue instead). `RIG_LOCK_FILE` and `RIG_LOCK_HOLDER` relocate the lock and its holder file (#183).
 
 ## Where does my test go?
 
