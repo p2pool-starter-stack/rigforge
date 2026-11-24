@@ -272,5 +272,18 @@ rm -rf "$TEST_ANC"
     rm -f "$TEST_TMP/util/extra.py"
 )
 
+(
+    set +e
+    _persist_appliance_mode() { :; }
+    check_prerequisites() { :; }
+    _root_guard_check() { return 1; }
+    for verb in main upgrade; do
+        unset RIGFORGE_ROOT_GUARD_ALLOW
+        "$verb" --no-root-guard >/dev/null 2>&1
+        rc=$?
+        assert_eq "$rc:${RIGFORGE_ROOT_GUARD_ALLOW:-}" "1:1" "$verb --no-root-guard sets the allowance (#783)"
+    done
+)
+
 echo "root guard: PASS (passed $PASS, failed $FAIL)"
 [ "$FAIL" -eq 0 ]
