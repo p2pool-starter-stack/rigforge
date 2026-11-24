@@ -351,13 +351,11 @@ uninstall --yes >/dev/null
 grep -qFx 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' "$GRUB_DEFAULT" || fail 'dedicated uninstall left managed boot tuning'
 [ ! -f "$MODULES_LOAD_DIR/msr.conf" ] || fail 'dedicated uninstall kept MSR module policy'
 
-# F830-1(a): pre-existing .bak with sentinel survives uninstall --yes
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet hugepagesz=2M hugepages=4 msr.allow_writes=on"\n' >"$GRUB_DEFAULT"
 printf 'SENTINEL_BAK_LINE\n' >"$GRUB_DEFAULT.bak"
 uninstall --yes >/dev/null
 grep -qFx 'SENTINEL_BAK_LINE' "$GRUB_DEFAULT.bak" || fail 'uninstall overwrote pre-existing .bak'
 
-# F830-1(b): single-quoted line stays byte-identical, no .bak
 printf "GRUB_CMDLINE_LINUX_DEFAULT='quiet hugepagesz=2M hugepages=4 msr.allow_writes=on'\n" >"$GRUB_DEFAULT"
 rm -f "$GRUB_DEFAULT.bak"
 uninstall --yes >/dev/null
