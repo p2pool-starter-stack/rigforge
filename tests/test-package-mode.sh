@@ -46,22 +46,34 @@ for ch in apt brew; do
     assert_contains "$ch: status names the channel command (#782)" "$pk_st" "$ch upgrade rigforge"
     assert_eq "$ch: control_upgrade never invokes git (#782)" "$(cat "$PK/git.log" 2>/dev/null)" ""
     pk_rc=0
-    (source "$SCRIPT"; SCRIPT_DIR="$PK" PATH="$PK/stubs:$PATH" _control_upgrade_steps v9.9.9 >/dev/null 2>&1) || pk_rc=$?
+    (
+        source "$SCRIPT"
+        SCRIPT_DIR="$PK" PATH="$PK/stubs:$PATH" _control_upgrade_steps v9.9.9 >/dev/null 2>&1
+    ) || pk_rc=$?
     assert_eq "$ch: a tag upgrade refuses (#782)" "$pk_rc" "1"
     assert_eq "$ch: a tag upgrade never invokes git (#782)" "$(cat "$PK/git.log" 2>/dev/null)" ""
-    pk_out=$(source "$SCRIPT"; SCRIPT_DIR="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1)
+    pk_out=$(
+        source "$SCRIPT"
+        SCRIPT_DIR="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1
+    )
     assert_contains "$ch: upgrade --check prints the channel command (#782)" "$pk_out" "$ch upgrade rigforge"
     assert_absent "$ch: upgrade --check prints no git steps (#782)" "$pk_out" "git checkout"
 done
 mark ""
-pk_out=$(source "$SCRIPT"; SCRIPT_DIR="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1)
+pk_out=$(
+    source "$SCRIPT"
+    SCRIPT_DIR="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1
+)
 assert_contains "no marker: upgrade --check still prints the git recipe (#782)" "$pk_out" "git checkout v9.9.9"
 assert_absent "no marker: upgrade --check prints no channel command (#782)" "$pk_out" "upgrade rigforge"
 
 for ch in "" apt; do
     mark "$ch"
     rm -f "$PK/bin/rigforge"
-    (source "$SCRIPT"; SCRIPT_DIR="$PK" BIN_DIR="$PK/bin" ADD_TO_PATH=true link_cli >/dev/null 2>&1)
+    (
+        source "$SCRIPT"
+        SCRIPT_DIR="$PK" BIN_DIR="$PK/bin" ADD_TO_PATH=true link_cli >/dev/null 2>&1
+    )
     pk_want=present
     [ -z "$ch" ] || pk_want=absent
     assert_eq "link_cli with marker '${ch:-none}' (#782)" "$([ -L "$PK/bin/rigforge" ] && echo present || echo absent)" "$pk_want"
