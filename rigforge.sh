@@ -2965,25 +2965,24 @@ _tune_history() { # <overrides_file> <log_file>
     fi
 }
 
-# Whether `tune` should re-exec itself under sudo: non-root + interactive (TTY) only, so sudo can actually
-# prompt and we never surprise non-interactive callers (tests/cron/pipes). RIGFORGE_FORCE_ELEVATE=1 forces
-# it regardless (the coverage test drives this path from a real child process).
 _tune_should_elevate() {
     [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] && return 0
     [ "$(id -u)" -ne 0 ] && [ -t 0 ]
 }
 
+_exec_sudo_self() {
+    local v e=()
+    for v in $(compgen -e | grep -E '^(TUNE|AUTOTUNE)_'); do e+=("$v=${!v}"); done
+    [ "${#e[@]}" -eq 0 ] && exec sudo "$0" "$@"
+    exec sudo env "${e[@]}" "$0" "$@"
+}
+
 tune() {
-    # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
-    # when run without sudo — a plain `rigforge tune` then just works (sudo prompts) instead of failing
-    # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
-    # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
-    # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
     local _hist=0 clear=0 target_set=0 now=0 now_long=0
     case " $* " in *" --history "*) _hist=1 ;; esac
     if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
         log "tune needs root — re-running with sudo..."
-        exec sudo "$0" tune "$@"
+        _exec_sudo_self tune "$@"
     fi
     TUNE_MODE="${TUNE_MODE:-bench}"
     TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
@@ -5985,7 +5984,7 @@ bios() {
     # dmidecode (the memory-profile probe) needs root — auto-elevate exactly like tune.
     if _tune_should_elevate; then
         log "bios needs root for the firmware probes — re-running with sudo..."
-        exec sudo "$0" bios "$@"
+        _exec_sudo_self bios "$@"
     fi
     local target_set=0
     if [ -n "${TUNE_TARGET:-}" ]; then target_set=1; fi
