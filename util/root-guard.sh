@@ -1,173 +1,88 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
-_root_guard_check() {
-    [ "${RIGFORGE_ROOT_GUARD_ALLOW:-}" = 1 ] && return 0
-    [ "${ROOT_GUARD_ALLOW:-}" = true ] && return 0
-    [ "$OS_TYPE" = Linux ] || return 0
-    [ -n "${SCRIPT_DIR:-}" ] || return 0
-    [ -d "$SCRIPT_DIR" ] || return 0
+ROOT_GUARD_STAMP="${RIGFORGE_ROOT_GUARD_STAMP:-/etc/rigforge-root-guard}"
 
-    local dir="$SCRIPT_DIR" owner gid
-    while true; do
-        owner=$(stat -c '%u' "$dir" 2>/dev/null) || {
-            warn "root-guard: stat failed on $dir — refusing"
-            return 1
-        }
-        [ "$owner" = "0" ] || {
-            owner=$(stat -c '%U' "$dir" 2>/dev/null || owner="(unknown)")
-            gid=$(stat -c '%g' "$dir" 2>/dev/null || gid="(unknown)")
-            local perms
-            perms=$(stat -c '%A' "$dir" 2>/dev/null || perms="???")
-            warn "root-guard: $dir (uid=$owner gid=$gid perms=$perms) is not root-owned — refusing"
-            return 1
-        }
-        local mode
-        mode=$(stat -c '%a' "$dir" 2>/dev/null) || {
-            warn "root-guard: stat failed on $dir — refusing"
-            return 1
-        }
-        local g_digit="${mode: -2:1}"
-        case "$g_digit" in 2 | 3 | 6 | 7)
-            warn "root-guard: $dir is group-writable (mode=$mode) — refusing"
-            return 1
-            ;;
-        esac
-        local o_digit="${mode: -1}"
-        case "$o_digit" in 2 | 3 | 6 | 7)
-            warn "root-guard: $dir is other-writable (mode=$mode) — refusing"
-            return 1
-            ;;
-        esac
-        local parent
-        parent=$(dirname "$dir")
-        [ "$parent" = "$dir" ] && break
-        dir="$parent"
-    done
-
-    local f path owner mode g_digit o_digit
-    f=rigforge.sh
-    path="$SCRIPT_DIR/$f"
-    [ -e "$path" ] || {
-        warn "root-guard: $path not found — refusing"
-        return 1
+_rg_unsafe() {
+    local s uid gid mode
+    s=$(stat -L -c '%u:%g:%a' "$1" 2>/dev/null) || {
+        printf '%s cannot be inspected' "$1"
+        return 0
     }
-    owner=$(stat -c '%u' "$path" 2>/dev/null) || {
-        warn "root-guard: stat failed on $path — refusing"
-        return 1
-    }
-    if [ "$owner" != "0" ]; then
-        owner=$(stat -c '%U' "$path" 2>/dev/null || owner="(unknown)")
-        warn "root-guard: $path is owned by $owner, not root — refusing"
-        return 1
+    IFS=: read -r uid gid mode <<<"$s"
+    if [ "$uid" != 0 ]; then
+        printf '%s is owned by uid %s' "$1" "$uid"
+        return 0
     fi
-    mode=$(stat -c '%a' "$path" 2>/dev/null) || {
-        warn "root-guard: stat failed on $path — refusing"
-        return 1
-    }
-    g_digit="${mode: -2:1}"
-    case "$g_digit" in 2 | 3 | 6 | 7)
-        warn "root-guard: $path is group-writable (mode=$mode) — refusing"
-        return 1
-        ;;
-    esac
-    o_digit="${mode: -1}"
-    case "$o_digit" in 2 | 3 | 6 | 7)
-        warn "root-guard: $path is other-writable (mode=$mode) — refusing"
-        return 1
-        ;;
-    esac
-
-    if [ -d "$SCRIPT_DIR/util" ]; then
-        for f in "$SCRIPT_DIR"/util/*.py; do
-            [ -e "$f" ] || continue
-            path="$f"
-            owner=$(stat -c '%u' "$path" 2>/dev/null) || {
-                warn "root-guard: stat failed on $path — refusing"
-                return 1
-            }
-            if [ "$owner" != "0" ]; then
-                owner=$(stat -c '%U' "$path" 2>/dev/null || owner="(unknown)")
-                warn "root-guard: $path is owned by $owner, not root — refusing"
-                return 1
-            fi
-            mode=$(stat -c '%a' "$path" 2>/dev/null) || {
-                warn "root-guard: stat failed on $path — refusing"
-                return 1
-            }
-            g_digit="${mode: -2:1}"
-            case "$g_digit" in 2 | 3 | 6 | 7)
-                warn "root-guard: $path is group-writable (mode=$mode) — refusing"
-                return 1
-                ;;
-            esac
-            o_digit="${mode: -1}"
-            case "$o_digit" in 2 | 3 | 6 | 7)
-                warn "root-guard: $path is other-writable (mode=$mode) — refusing"
-                return 1
-                ;;
-            esac
-        done
-    fi
-
-    local cred_files
-    cred_files=(config.json util/api-server.py util/control-server.py)
-    for f in "${cred_files[@]}"; do
-        path="$SCRIPT_DIR/$f"
-        [ -e "$path" ] || continue
-        owner=$(stat -c '%u' "$path" 2>/dev/null) || {
-            warn "root-guard: stat failed on $path — refusing"
-            return 1
-        }
-        if [ "$owner" != "0" ]; then
-            owner=$(stat -c '%U' "$path" 2>/dev/null || owner="(unknown)")
-            warn "root-guard: $path is owned by $owner, not root — refusing"
-            return 1
-        fi
-        mode=$(stat -c '%a' "$path" 2>/dev/null) || {
-            warn "root-guard: stat failed on $path — refusing"
-            return 1
-        }
-        g_digit="${mode: -2:1}"
-        case "$g_digit" in 2 | 3 | 6 | 7)
-            warn "root-guard: $path is group-writable (mode=$mode) — refusing"
-            return 1
-            ;;
-        esac
-        o_digit="${mode: -1}"
-        case "$o_digit" in 2 | 3 | 6 | 7)
-            warn "root-guard: $path is other-writable (mode=$mode) — refusing"
-            return 1
-            ;;
-        esac
-    done
-
-    return 0
-}
-
-_persist_root_guard_allow() {
-    [ "${RIGFORGE_ROOT_GUARD_ALLOW:-}" = 1 ] || [ "${ROOT_GUARD_ALLOW:-}" = true ] || return 0
-    [ "$OS_TYPE" = Linux ] || return 0
-
-    if [ -d "$SCRIPT_DIR/.git" ]; then
-        local has_package_marker=false
-        [ -d "/homebrew/Cellar/rigforge" ] && has_package_marker=true
-        [ -d "/opt/rigforge" ] && has_package_marker=true
-        if [ "$has_package_marker" = true ]; then
-            warn "root-guard: $SCRIPT_DIR/.git found alongside package marker — refusing auto-allowance; pass --no-root-guard explicitly"
+    case "${mode: -2:1}" in 2 | 3 | 6 | 7)
+        if [ "$gid" != 0 ]; then
+            printf '%s is writable by group %s' "$1" "$gid"
             return 0
         fi
-    fi
+        ;;
+    esac
+    case "${mode: -1}" in 2 | 3 | 6 | 7)
+        printf '%s is writable by every user' "$1"
+        return 0
+        ;;
+    esac
+    return 1
+}
 
-    local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service"
-    if [ -f "$usvc" ]; then
-        if ! grep -q 'Environment=ROOT_GUARD_ALLOW=true' "$usvc" 2>/dev/null; then
-            sudo sed -i '/^\[Service\]/a Environment=ROOT_GUARD_ALLOW=true' "$usvc" 2>/dev/null || true
-            sudo systemctl daemon-reload 2>/dev/null || true
-            if [ -d "$SCRIPT_DIR/.git" ]; then
-                warn "root-guard: persisted allowance into $usvc — the tree $SCRIPT_DIR is now trusted for root-run units; pass --no-root-guard on future upgrades to silence this warning"
-            fi
-        fi
+_rg_chain_unsafe() {
+    local p="$1"
+    while :; do
+        _rg_unsafe "$p" && return 0
+        [ "$p" != / ] || return 1
+        p=$(dirname "$p")
+    done
+}
+
+_rg_tree_unsafe() {
+    local d f
+    for d in "$1" "$(dirname "${BASH_SOURCE[0]}")/.."; do
+        d=$(cd -P "$d" 2>/dev/null && pwd -P) || {
+            printf '%s cannot be resolved' "$d"
+            return 0
+        }
+        _rg_chain_unsafe "$d" && return 0
+        for f in "$d/rigforge.sh" "$d/util" "$d"/util/* "$d/systemd" "$d"/systemd/*; do
+            _rg_unsafe "$f" && return 0
+        done
+    done
+    return 1
+}
+
+_rg_allowed() {
+    [ -f "$ROOT_GUARD_STAMP" ] && [ "$(cat "$ROOT_GUARD_STAMP" 2>/dev/null)" = "allow $1" ] &&
+        ! _rg_chain_unsafe "$ROOT_GUARD_STAMP" >/dev/null
+}
+
+_rg_record() {
+    [ "$(cat "$ROOT_GUARD_STAMP" 2>/dev/null)" != "allow $1" ] || return 0
+    if printf 'allow %s\n' "$1" | sudo tee "$ROOT_GUARD_STAMP" >/dev/null && sudo chmod 644 "$ROOT_GUARD_STAMP"; then
+        warn "root-guard: recorded the allowance for $1 in $ROOT_GUARD_STAMP; remote upgrades will accept this tree."
+    else
+        warn "root-guard: could not record the allowance in $ROOT_GUARD_STAMP; remote upgrades will refuse this tree until 'sudo $0 upgrade --no-root-guard' succeeds."
     fi
+}
+
+_root_guard_check() {
+    [ "$OS_TYPE" = Linux ] || return 0
+    local reason dir fix
+    reason=$(_rg_tree_unsafe "$SCRIPT_DIR") || return 0
+    dir=$(cd -P "$SCRIPT_DIR" 2>/dev/null && pwd -P) || dir="$SCRIPT_DIR"
+    fix="make the tree root-owned (sudo chown -R root:root $dir && sudo chmod -R go-w $dir)"
+    if [ "${1:-}" = 1 ]; then
+        warn "root-guard: $reason, so a non-root user can change code that root runs; continuing because --no-root-guard was given. To close this, $fix."
+    elif _rg_allowed "$dir"; then
+        warn "root-guard: $reason; continuing under the allowance recorded in $ROOT_GUARD_STAMP. To close this, $fix and delete that file."
+        return 0
+    elif [ -d "$dir/.git" ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ] && [ ! -e "$ROOT_GUARD_STAMP" ] && ! _package_install; then
+        warn "root-guard: WARNING: $reason, so a non-root user can change code that root runs. This install predates the root guard, so it is allowed once and the allowance is recorded. To close this, $fix and delete $ROOT_GUARD_STAMP."
+    else
+        warn "root-guard: refusing to install root-run units: $reason, so a non-root user could change code that root runs. Either $fix, or pass --no-root-guard to accept this tree."
+        return 1
+    fi
+    _rg_record "$dir"
 }

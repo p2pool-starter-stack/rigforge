@@ -1992,21 +1992,21 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
+    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false no_guard=""
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
             _setup_plan
             return 0
             ;;
-        --no-root-guard) export RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
+        --no-root-guard) no_guard=1 ;;
         *) error "Unknown option for setup: '$_arg' (use --dry-run, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
-    _root_guard_check || return 1
+    _root_guard_check "$no_guard" || return 1
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
     _seed_appliance_tor_default
@@ -2045,7 +2045,7 @@ main() {
     CURRENT_STEP="linking the rigforge command"
     link_cli
     CURRENT_STEP="reconciling file ownership"
-    _reown_worker && _persist_root_guard_allow
+    _reown_worker
     CURRENT_STEP="finishing up"
     finish_deployment
     [ "$_control_rc" -eq 0 ] || _control_failed setup
@@ -2110,20 +2110,20 @@ _upgrade_restart() { # <was-active: yes|no>
 }
 
 upgrade() {
-    local arg _api_rc=0 _control_rc=0
+    local arg _api_rc=0 _control_rc=0 no_guard=""
     for arg in "$@"; do
         case "$arg" in
         --check)
             _upgrade_check
             return 0
             ;;
-        --no-root-guard) export RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
+        --no-root-guard) no_guard=1 ;;
         *) error "Unknown option for upgrade: '$arg' (use --check, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     check_prerequisites
-    _root_guard_check || return 1
+    _root_guard_check "$no_guard" || return 1
     parse_config
     _shared_host_prepare
     decide_rebuild
@@ -2150,7 +2150,7 @@ upgrade() {
     _upgrade_restart "$was_active"
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
-    _reown_worker && _persist_root_guard_allow
+    _reown_worker
     [ "$_control_rc" -eq 0 ] || _control_failed upgrade
     [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
     [ "$_api_rc:$_control_rc" = 0:0 ]
@@ -2258,7 +2258,7 @@ uninstall() {
     if [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" 2>/dev/null || true
-        sudo rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service"
+        sudo rm -f "$SYSTEMD_DIR/$SERVICE_NAME.service" "$ROOT_GUARD_STAMP"
         sudo systemctl daemon-reload 2>/dev/null || true
         log "Removed the $SERVICE_NAME service."
     fi
@@ -6026,7 +6026,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
-  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists; --no-root-guard: skip the root-owned tree check and persist the allowance into the systemd units)
+  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   doctor     check worker health (doctor --json: machine report on stdout, human report on stderr)
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
@@ -6054,7 +6054,7 @@ Tuning:
              writes BIOS itself
 
 Provision & lifecycle:
-  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo; --no-root-guard: skip the root-owned tree check and persist the allowance into the systemd units)
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   uninstall  remove the service and revert all system changes (add -y|--yes to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically

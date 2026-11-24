@@ -4,7 +4,7 @@
 # The checker ignores globals consumed by the dynamically sourced script.
 # shellcheck disable=SC1090,SC2034
 set -uo pipefail
-export RIGFORGE_ROOT_GUARD_ALLOW=1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/rigforge.sh"
 PASS=0

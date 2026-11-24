@@ -1,289 +1,173 @@
 #!/usr/bin/env bash
-# shellcheck shell=bash disable=SC1090,SC2034,SC2317
-set -euo pipefail
+# shellcheck disable=SC1090,SC2034
+set -uo pipefail
 
-echo "== unit: root-guard refuses root-run units on non-root-owned tree (#783) =="
-
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT=${1:-"$ROOT/rigforge.sh"}
-TEST_TMP=$(mktemp -d)
-trap 'rm -rf "$TEST_TMP"' EXIT
-
-fail() {
-    printf 'FAIL: %s\n' "$1" >&2
-    exit 1
-}
-ok() { printf '  \033[1;32m✓\033[0m %s\n' "$1"; }
-bad() {
-    printf '  \033[1;31m✗\033[0m %s\n      %s\n' "$1" "$2"
-    exit 1
-}
-assert_eq() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected [$2], got [$1]"; fi; }
-assert_rc() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected rc $2, got $1"; fi; }
-
-unset RIGFORGE_ROOT_GUARD_ALLOW ROOT_GUARD_ALLOW
-source "$SCRIPT"
 PASS=0
 FAIL=0
+ok() {
+    PASS=$((PASS + 1))
+    printf '  \033[1;32m✓\033[0m %s\n' "$1"
+}
+bad() {
+    FAIL=$((FAIL + 1))
+    printf '  \033[1;31m✗\033[0m %s\n      %s\n' "$1" "$2"
+}
+assert_eq() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3" "expected [$2], got [$1]"; fi; }
+assert_has() { case "$1" in *"$2"*) ok "$3" ;; *) bad "$3" "missing [$2] in [$1]" ;; esac }
 
-mkdir -p "$TEST_TMP/util"
-cp "$ROOT/util/root-guard.sh" "$TEST_TMP/util/root-guard.sh"
-printf '#!/usr/bin/env bash\ntrue\n' >"$TEST_TMP/rigforge.sh"
-chmod +x "$TEST_TMP/rigforge.sh"
-printf 'print("api")\n' >"$TEST_TMP/util/api-server.py"
-printf 'print("control")\n' >"$TEST_TMP/util/control-server.py"
-printf '{}\n' >"$TEST_TMP/config.json"
+echo "== unit: root-guard refuses root-run units on a tree a non-root user can write (#783) =="
 
-_test_root_guard() {
-    local uid="${1:-0}" uname="${2:-root}" os="${3:-Linux}"
-    (
-        set +e
-        SCRIPT_DIR="$TEST_TMP"
-        OS_TYPE="$os"
-        RIGFORGE_ROOT_GUARD_ALLOW=""
-        ROOT_GUARD_ALLOW=""
-        stat() {
-            case "$*" in
-            *'-c'*'%U'*) echo "$uname" ;;
-            *'-c'*'%u'* | *'-c'*'%g'*) echo "$uid" ;;
-            *'-c'*'%a'* | *'-c'*'%A'*) echo "755" ;;
-            *) /usr/bin/stat "$@" ;;
-            esac
-        }
-        source "$TEST_TMP/util/root-guard.sh"
-        _root_guard_check >/dev/null 2>&1
-        echo $?
-    )
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+R=$(cd -P "$T" && pwd -P)
+TREE="$R/home/op/rigforge"
+mkdir -p "$TREE/util" "$TREE/systemd" "$R/etc-systemd" "$R/etc"
+cp "$ROOT/util/root-guard.sh" "$TREE/util/root-guard.sh"
+: >"$TREE/rigforge.sh"
+: >"$TREE/util/helper.sh"
+: >"$TREE/util/server.py"
+: >"$TREE/systemd/xmrig.service.template"
+: >"$TREE/config.json"
+
+source "$SCRIPT"
+source "$TREE/util/root-guard.sh"
+set +eu
+OS_TYPE=Linux
+SCRIPT_DIR="$TREE"
+SYSTEMD_DIR="$R/etc-systemd"
+SERVICE_NAME=xmrig
+ROOT_GUARD_STAMP="$R/etc/rigforge-root-guard"
+TAB="$R/stat.tab"
+SUDO_OK=1
+sudo() { [ "$SUDO_OK" = 1 ] && "$@"; }
+stat() {
+    local p="${!#}" v
+    v=$(awk -v p="$p" '$1 == p { print $2; exit }' "$TAB")
+    case "$v" in fail) return 1 ;; '') echo 0:0:755 ;; *) echo "$v" ;; esac
+}
+reset() {
+    printf '%s\n' "$@" >"$TAB"
+    rm -rf "$ROOT_GUARD_STAMP" "$TREE/.git" "$TREE/.rigforge-package" "$SYSTEMD_DIR/xmrig.service"
+}
+guard() {
+    out=$(_root_guard_check "$@" 2>&1)
+    rc=$?
 }
 
-rc=$(_test_root_guard 0 root)
-assert_eq "$rc" "0" "root-owned tree passes (#783)"
+reset
+guard ""
+assert_eq "$rc:$out" "0:" "root-owned tree passes silently"
 
-rc=$(_test_root_guard 1000 vijit)
-assert_eq "$rc" "1" "non-root-owned tree refused (#783)"
+reset "$TREE/config.json 1000:1000:600"
+guard ""
+assert_eq "$rc:$out" "0:" "operator-owned config.json is data and passes on the next run"
 
+reset "$TREE/util/helper.sh 1000:1000:644"
+guard ""
+assert_eq "$rc" 1 "user-owned sourced util/*.sh refused"
+assert_has "$out" "$TREE/util/helper.sh is owned by uid 1000" "refusal names the path"
+
+reset "$TREE/util 0:1000:775"
+guard ""
+assert_eq "$rc" 1 "util/ writable by a non-root group refused"
+assert_has "$out" "$TREE/util is writable by group 1000" "group refusal names the directory"
+
+reset "$TREE/rigforge.sh 0:0:775"
+guard ""
+assert_eq "$rc" 0 "group-writable by root's group passes"
+
+reset "$TREE/util/server.py 0:0:646"
+guard ""
+assert_eq "$rc" 1 "other-writable unit-loaded util/*.py refused"
+
+reset "$TREE/systemd/xmrig.service.template 0:1000:664"
+guard ""
+assert_eq "$rc" 1 "group-writable unit template refused"
+
+reset "$R/home/op 1000:1000:755"
+guard ""
+assert_eq "$rc" 1 "user-owned ancestor of a root-owned tree refused"
+assert_has "$out" "$R/home/op is owned by uid 1000" "ancestor refusal names the ancestor"
+
+reset "$R/home 0:0:1557"
+guard ""
+assert_eq "$rc" 1 "other-writable ancestor with a special bit refused"
+
+reset "$TREE/systemd fail"
+guard ""
+assert_eq "$rc" 1 "a stat failure refuses"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+guard ""
+assert_eq "$rc" 1 "user-owned checkout refused without the flag"
+RIGFORGE_ROOT_GUARD_ALLOW=1 ROOT_GUARD_ALLOW=true guard ""
+assert_eq "$rc" 1 "environment variables are not an allowance"
+
+guard 1
+assert_eq "$rc" 0 "--no-root-guard allows a user-owned checkout"
+assert_has "$out" "continuing because --no-root-guard was given" "--no-root-guard prints a warning"
+assert_eq "$(cat "$ROOT_GUARD_STAMP")" "allow $TREE" "--no-root-guard records the allowance"
+
+guard ""
+assert_eq "$rc" 0 "recorded allowance is honoured without the flag"
+assert_has "$out" "allowance recorded in $ROOT_GUARD_STAMP" "recorded allowance prints a warning"
+
+printf '%s\n' "$TREE/rigforge.sh 1000:1000:755" "$R/etc 1000:1000:755" >"$TAB"
+guard ""
+assert_eq "$rc" 1 "allowance in a user-writable place is ignored"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+printf 'allow %s\n' "$R/elsewhere" >"$ROOT_GUARD_STAMP"
+guard ""
+assert_eq "$rc" 1 "allowance for another tree is ignored"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+mkdir "$TREE/.git"
+: >"$SYSTEMD_DIR/xmrig.service"
+guard ""
+assert_eq "$rc" 0 "existing git install without an allowance is allowed once"
+assert_has "$out" "predates the root guard" "the one-time allowance warns"
+assert_eq "$(cat "$ROOT_GUARD_STAMP")" "allow $TREE" "the one-time allowance is recorded"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+mkdir "$TREE/.git"
+guard ""
+assert_eq "$rc" 1 "fresh git checkout is not grandfathered"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+mkdir "$TREE/.git"
+: >"$SYSTEMD_DIR/xmrig.service"
+printf 'brew\n' >"$TREE/.rigforge-package"
+guard ""
+assert_eq "$rc" 1 "packaged tree is never grandfathered"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+SUDO_OK=0 guard 1
+assert_eq "$rc" 0 "a failed allowance write does not stop a flagged run"
+assert_has "$out" "could not record the allowance" "a failed allowance write warns"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+OS_TYPE=Darwin guard ""
+assert_eq "$rc" 0 "Darwin installs no root-run units and is skipped"
+
+f0=$FAIL
 (
-    set +e
-    SCRIPT_DIR="$TEST_TMP"
-    OS_TYPE=Linux
-    ROOT_GUARD_DISABLED=true
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "1" "ROOT_GUARD_DISABLED env var is rejected (#783)"
-)
-
-(
-    set +e
-    SCRIPT_DIR="$TEST_TMP"
-    OS_TYPE=Linux
-    RIGFORGE_ROOT_GUARD_ALLOW=1
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "0" "CLI flag allows non-root (#783)"
-)
-
-(
-    set +e
-    SCRIPT_DIR="$TEST_TMP"
-    OS_TYPE=Linux
-    RIGFORGE_ROOT_GUARD_ALLOW=""
-    ROOT_GUARD_ALLOW=true
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "0" "persisted allowance honours non-root (#783)"
-)
-
-rc=$(_test_root_guard 1000 vijit Darwin)
-assert_eq "$rc" "0" "Darwin skips guard (#783)"
-
-(
-    set +e
-    OS_TYPE=Linux
-    stat() {
-        case "$*" in
-        *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'* | *'-c'*'%g'* | *'-c'*'%a'* | *'-c'*'%A'*) echo "0" ;;
-        *) /usr/bin/stat "$@" ;;
-        esac
-    }
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "0" "missing SCRIPT_DIR passes (#783)"
-)
-
-(
-    set +e
-    SCRIPT_DIR="/nonexistent/path"
-    OS_TYPE=Linux
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "0" "non-existent SCRIPT_DIR passes (#783)"
-)
-
-TEST_ANC=$(mktemp -d)
-mkdir -p "$TEST_ANC/parent/child"
-cp "$TEST_TMP/rigforge.sh" "$TEST_ANC/parent/child/rigforge.sh"
-mkdir -p "$TEST_ANC/parent/child/util"
-cp "$TEST_TMP/util/root-guard.sh" "$TEST_ANC/parent/child/util/root-guard.sh"
-cp "$TEST_TMP/util/api-server.py" "$TEST_ANC/parent/child/util/api-server.py"
-cp "$TEST_TMP/util/control-server.py" "$TEST_ANC/parent/child/util/control-server.py"
-cp "$TEST_TMP/config.json" "$TEST_ANC/parent/child/config.json"
-
-(
-    set +e
-    chmod 775 "$TEST_ANC/parent/child"
-    SCRIPT_DIR="$TEST_ANC/parent/child"
-    OS_TYPE=Linux
-    stat() {
-        case "$*" in
-        *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'* | *'-c'*'%A'*) /usr/bin/stat "$@" ;;
-        *) /usr/bin/stat "$@" ;;
-        esac
-    }
-    source "$TEST_ANC/parent/child/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "1" "group-writable dir refused even if root-owned (#783)"
-)
-
-(
-    set +e
-    chmod 774 "$TEST_ANC/parent/child"
-    chmod 1557 "$TEST_ANC/parent"
-    SCRIPT_DIR="$TEST_ANC/parent/child"
-    OS_TYPE=Linux
-    stat() {
-        case "$*" in
-        *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'* | *'-c'*'%A'*) /usr/bin/stat "$@" ;;
-        *) /usr/bin/stat "$@" ;;
-        esac
-    }
-    source "$TEST_ANC/parent/child/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "1" "other-writable ancestor refused (#783)"
-    chmod 755 "$TEST_ANC/parent"
-)
-
-(
-    set +e
-    chmod 774 "$TEST_ANC/parent/child/util/api-server.py"
-    SCRIPT_DIR="$TEST_ANC/parent/child"
-    OS_TYPE=Linux
-    stat() {
-        case "$*" in
-        *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'* | *'-c'*'%A'*) /usr/bin/stat "$@" ;;
-        *) /usr/bin/stat "$@" ;;
-        esac
-    }
-    source "$TEST_ANC/parent/child/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "1" "group-writable util file refused (#783)"
-)
-
-rm -rf "$TEST_ANC"
-
-(
-    set +e
-    stat() { return 1; }
-    SCRIPT_DIR="$TEST_TMP"
-    OS_TYPE=Linux
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "1" "stat failure fails closed (#783)"
-)
-
-(
-    set +e
-    SCRIPT_DIR="$TEST_TMP"
-    OS_TYPE=Linux
-    ROOT_GUARD_ALLOW=true
-    RIGFORGE_ROOT_GUARD_ALLOW=""
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "0" "systemd-baked ROOT_GUARD_ALLOW honours allowance (#783)"
-)
-
-(
-    set +e
-    SCRIPT_DIR="$TEST_TMP"
-    OS_TYPE=Linux
-    stat() {
-        case "$*" in
-        *'-c'*'%U'*) echo "root" ;;
-        *'-c'*'%u'* | *'-c'*'%g'*) echo "0" ;;
-        *'-c'*'%a'* | *'-c'*'%A'*) echo "755" ;;
-        *) /usr/bin/stat "$@" ;;
-        esac
-    }
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "0" "ancestor walk completes successfully (#783)"
-)
-
-(
-    set +e
-    printf 'print("extra")\n' >"$TEST_TMP/util/extra.py"
-    stat() {
-        local arg="$1" fpath="${3:-}"
-        case "$arg" in
-        *-c*)
-            case "$2" in
-            *%U*)
-                case "$fpath" in
-                *extra.py*) echo "nonroot" ;;
-                *) echo "${RG_UNAME:-root}" ;;
-                esac
-                ;;
-            *%u*)
-                case "$fpath" in
-                *extra.py*) echo "1000" ;;
-                *) echo "${RG_UID:-0}" ;;
-                esac
-                ;;
-            *) echo "${RG_UID:-0}" ;;
-            esac
-            ;;
-        *) /usr/bin/stat "$@" ;;
-        esac
-    }
-    RG_UID=0 RG_UNAME=root
-    SCRIPT_DIR="$TEST_TMP"
-    OS_TYPE=Linux
-    source "$TEST_TMP/util/root-guard.sh"
-    _root_guard_check >/dev/null 2>&1
-    rc=$?
-    assert_eq "$rc" "1" "non-root util/extra.py refused (#783)"
-    rm -f "$TEST_TMP/util/extra.py"
-)
-
-(
-    set +e
     _persist_appliance_mode() { :; }
     check_prerequisites() { :; }
-    _root_guard_check() { return 1; }
+    _root_guard_check() {
+        printf '%s' "$1" >"$R/flag"
+        return 1
+    }
     for verb in main upgrade; do
-        unset RIGFORGE_ROOT_GUARD_ALLOW
         "$verb" --no-root-guard >/dev/null 2>&1
-        rc=$?
-        assert_eq "$rc:${RIGFORGE_ROOT_GUARD_ALLOW:-}" "1:1" "$verb --no-root-guard sets the allowance (#783)"
+        assert_eq "$?:$(cat "$R/flag")" "1:1" "$verb --no-root-guard passes the flag to the guard"
+        "$verb" >/dev/null 2>&1
+        assert_eq "$?:$(cat "$R/flag")" "1:" "$verb without the flag passes none"
     done
-)
+    [ "$FAIL" -eq "$f0" ]
+) || FAIL=$((FAIL + 1))
 
-echo "root guard: PASS (passed $PASS, failed $FAIL)"
+echo "root guard: passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

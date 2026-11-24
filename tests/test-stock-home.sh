@@ -18,7 +18,7 @@ apply_rc=not-run
 http_code=not-probed
 setup_attempted=0
 run_cli() {
-    env HOME="$home_dir" bash -c 'cd "$1" && shift && sudo -n env RIGFORGE_ROOT_GUARD_ALLOW=1 ./rigforge.sh "$@"' bash "$checkout" "$@"
+    env HOME="$home_dir" bash -c 'cd "$1" && shift && sudo -n ./rigforge.sh "$@"' bash "$checkout" "$@"
 }
 report_failure() {
     printf 'stock-home failure: stage=%s line=%s setup_rc=%s apply_rc=%s http_code=%s\n' "$stage" "$1" "$setup_rc" "$apply_rc" "$http_code" >&2
@@ -56,7 +56,9 @@ stage=operator-access
 [ ! -e "$build" ]
 stage=setup
 setup_attempted=1
-if run_cli setup >"$TEST_DIR/setup.log" 2>&1; then setup_rc=0; else setup_rc=$?; fi
+guard_flag=()
+grep -q -- --no-root-guard "$checkout/rigforge.sh" && guard_flag=(--no-root-guard)
+if run_cli setup "${guard_flag[@]}" >"$TEST_DIR/setup.log" 2>&1; then setup_rc=0; else setup_rc=$?; fi
 [ "$setup_rc" = 0 ]
 stage=real-worker-installation
 [ -x "$build/xmrig" ]

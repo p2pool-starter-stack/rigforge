@@ -51,10 +51,22 @@ Not every verb needs root — the design, in four lines:
 - `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
   root.
 
-`setup` and `upgrade` refuse to render root-run systemd units from a checkout that is not root-owned (any
-ancestor directory owned by another user, or group/other-writable), since that user could then edit what
-root executes (#783). `--no-root-guard` accepts the tree for that run and persists the allowance into the
-control-upgrade unit; a checkout that also looks package-installed is never auto-allowed.
+On Linux, `setup` and `upgrade` refuse to install the root-run units when a non-root user could change
+the code those units run (#783). They check `rigforge.sh`, the `util/` and `systemd/` directories and every
+file in them, and every directory from the code tree up to `/`. Each path must be owned by root, writable by
+no group other than root's, and not writable by every user. A path that cannot be inspected counts as a
+refusal, and the message names the first path that fails. `config.json` is operator data, not code, and is
+not checked. A root-owned tree passes silently.
+
+- `--no-root-guard` accepts the tree anyway and prints a warning. It also records the allowance in the
+  root-owned `/etc/rigforge-root-guard` (it names the tree), so later remote upgrades through the control
+  path, which pass no flags, accept the same tree with a warning. An allowance file that a non-root user
+  could write, or one that names another tree, is ignored. `uninstall` removes it.
+- An install that predates the guard (a git checkout with the miner unit installed and no allowance file)
+  is allowed once with a loud warning and the allowance is recorded, so its remote upgrades keep working.
+  A packaged tree (with a `.rigforge-package` marker) is never allowed this way.
+- To close the gap instead, make the tree root-owned: `sudo chown -R root:root <tree> && sudo chmod -R
+  go-w <tree>`, then delete `/etc/rigforge-root-guard`. Afterwards, update the checkout with `sudo git`.
 
 | Command | What it does |
 |---|---|
