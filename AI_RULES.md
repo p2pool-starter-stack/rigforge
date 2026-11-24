@@ -38,8 +38,8 @@ Docker. `make ci` adds the yaml, markdown and workflow linters and, when Docker
 is up, the container e2e. `make coverage` enforces the kcov floor (Docker). The
 file-budget freeze check is `FILE_BUDGET_REQUIRE_BASE=1 bash
 scripts/lint-file-budget.sh`, that exact singular path. The worker-to-coordinator
-contract gate runs on real hardware against the coordinator stack. Report skipped, unavailable or failed checks explicitly; a started command
-is not a PASS.
+contract gate runs on real hardware against the coordinator stack. Report skipped,
+unavailable or failed checks explicitly; a started command is not a PASS.
 
 ## Merge rule
 
