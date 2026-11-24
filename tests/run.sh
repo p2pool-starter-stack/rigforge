@@ -2714,7 +2714,8 @@ bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
 assert_rc "thermal watchdog command retries (#631)" "$?" 0
 bash "$ROOT/tests/test-watchdog-shared-host-guard.sh"
 assert_rc "watchdog shared-host guard ordering (#665)" "$?" 0
-bash "$ROOT/tests/test-watchdog-fail-safe.sh" "$SCRIPT" >/dev/null 2>&1 && ok "thermal watchdog still protects when something else is wrong (#812)" || bad "thermal watchdog still protects when something else is wrong (#812)" "regression failed"
+bash "$ROOT/tests/test-watchdog-fail-safe.sh" "$SCRIPT"
+assert_rc "thermal watchdog still protects when something else is wrong (#812)" "$?" 0
 
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"

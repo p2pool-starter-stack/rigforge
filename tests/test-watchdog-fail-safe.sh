@@ -34,10 +34,11 @@ run_real() {
         SERVICE_NAME=xmrig
         CONFIG_JSON="$TEST_DIR/config.json"
         _ACT="$5"
+        _STOP="${7:-0}"
         sudo() { "$@"; }
         systemctl() {
             echo "[systemctl] $*" >>"$TEST_DIR/calls.log"
-            case "$*" in *is-active*) [ "$_ACT" = y ] ;; *) return 0 ;; esac
+            case "$*" in *is-active*) [ "$_ACT" = y ] ;; stop*) return "$_STOP" ;; *) return 0 ;; esac
         }
         _read_api_hashrate() { echo 100; }
         TUNE_TEMP_CMD="echo $4" watchdog
@@ -56,6 +57,12 @@ check "a cool miner is left running" 0 "$(calls 'stop xmrig')"
 check "no hold marker without a stop" n "$(held b)"
 rc=$(run_real c 90 nohostport 99 n)
 check "a stopped miner is not stopped again" 0 "$(calls 'stop xmrig')"
+rc=$(run_real g 90 nohostport 99 y "" 1)
+check "a failed stop under an invalid config still exits non-zero" "rc=1" "$rc"
+check "a failed stop is tried" 1 "$(calls 'stop xmrig')"
+check "a failed stop writes no hold marker" n "$(held g)"
+check "a failed stop is reported" 1 "$(grep -c 'stopping xmrig failed' "$TEST_DIR/out.log")"
+check "a failed stop does not claim the miner stopped" 0 "$(grep -c 'miner stopped' "$TEST_DIR/out.log")"
 rc=$(run_real d 300 nohostport 99 y)
 check "an out-of-range max_temp_c stops nothing" 0 "$(calls 'stop xmrig')"
 
