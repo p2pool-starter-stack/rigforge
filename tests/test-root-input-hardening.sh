@@ -113,7 +113,7 @@ run_restore() {
     local fr="$TEST_DIR/fr-$1"
     mkdir -p "$fr" "$TEST_DIR/tmp-$1"
     cp "$ROOT/VERSION" "$fr/"
-    printf '{ "DONATION": 3, "pools": [{"url": "keep.lan:3333"}] }\n' >"$fr/config.json"
+    [ -n "${NO_LIVE_CONFIG:-}" ] || printf '{ "DONATION": 3, "pools": [{"url": "keep.lan:3333"}] }\n' >"$fr/config.json"
     RC=0
     OUT=$(cd "$fr" && TMPDIR="$TEST_DIR/tmp-$1" PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$2" </dev/null 2>&1) || RC=$?
 }
@@ -135,6 +135,19 @@ run_restore good "$TEST_DIR/good.tar.gz"
 [ "$(jq -r .DONATION "$TEST_DIR/fr-good/config.json")" = 7 ] || bad "good: config.json was not restored"
 [ "$(jq -r .cpu.rx "$TEST_DIR/fr-good/data/worker/tune-overrides.json")" = 4 ] || bad "good: tuning was not restored"
 [ "$(stat -c %a "$TEST_DIR/fr-good/data/worker/tune-overrides.json" 2>/dev/null || stat -f %Lp "$TEST_DIR/fr-good/data/worker/tune-overrides.json")" != 777 ] || bad "good: archive permissions were restored"
+
+fresh_mode_case() {
+    new_archive "fresh-$1"
+    chmod "$1" "$SRC/config.json"
+    tar -czf "$TEST_DIR/fresh-$1.tar.gz" -C "$SRC" config.json tune-overrides.json
+    NO_LIVE_CONFIG=1 run_restore "fresh-$1" "$TEST_DIR/fresh-$1.tar.gz"
+    [ "$RC" = 0 ] || bad "fresh-$1: restore with no live config was refused: $OUT"
+    local f="$TEST_DIR/fr-fresh-$1/config.json"
+    [ "$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")" = 600 ] || bad "fresh-$1: restored config.json is not mode 600"
+}
+
+fresh_mode_case 644
+fresh_mode_case 600
 
 new_archive dirs
 mkdir -p "$SRC/sub/deeper"

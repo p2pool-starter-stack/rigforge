@@ -3639,6 +3639,7 @@ restore() {
     tar -xzf "$archive" -C "$STAGE_DIR" --no-same-owner --no-same-permissions 2>/dev/null || error "Could not extract $archive — is it a RigForge backup?"
     [ -z "$(find "$STAGE_DIR" \( ! -type f ! -type d \) -o \( -type f -links +1 \))" ] || error "Archive has a member that is not a regular file or directory; refusing it."
     [ -f "$STAGE_DIR/config.json" ] || error "Archive has no config.json — not a RigForge backup."
+    chmod 600 "$STAGE_DIR/config.json"
     (CONFIG_JSON="$STAGE_DIR/config.json" && parse_config) >/dev/null 2>&1 || error "Backup's config.json failed validation — existing config left untouched."
     if [ -f "$STAGE_DIR/rigforge-backup.json" ]; then
         local src
