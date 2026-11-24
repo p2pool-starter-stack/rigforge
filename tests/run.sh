@@ -6004,7 +6004,6 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_rc "live power tune exits 0 (#81)" "$?" "0"
 assert_eq "live mode records watts via TUNE_POWER_CMD (#81)" "$(J "$TLOG" '.results[0].watts == 90')" "true"
-# tune --live is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_rc "tune --live rejected on non-Linux" "$?" "1"
 assert_contains "tune --live non-Linux message" "$out" "only supported on Linux"
@@ -6025,7 +6024,7 @@ CL347="$TN/calls347.log"
 rm -f "$FLAG347"
 : >"$CL347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CL347" LOGROTATE_DIR="$TN/logrotate" \
-    FLAG347="$FLAG347" API_CMD='touch "$FLAG347"; sleep 60; echo 1500' \
+    FLAG347="$FLAG347" API_CMD='sleep 60 & echo $! >"$FLAG347"; wait; echo 1500' \
     TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
     TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
     exec bash "$SCRIPT" tune --live </dev/null >"$TN/abort347.out" 2>&1) &
@@ -6042,6 +6041,7 @@ assert_eq "mid-sweep: overrides hold the candidate, not the pre-state (#347)" \
 RESTARTS_PRE347="$(grep -c '\[systemctl\] restart' "$CL347")"
 kill "$PID347" 2>/dev/null
 wait "$PID347" 2>/dev/null
+kill "$(cat "$FLAG347")" 2>/dev/null
 assert_contains "aborted live sweep announces the restore (#347)" "$(cat "$TN/abort347.out")" "restoring the pre-tune overrides"
 assert_eq "aborted live sweep: overrides byte-identical to pre-sweep (#347)" "$(cat "$OVR")" "$PRE347"
 RESTARTS_POST347="$(grep -c '\[systemctl\] restart' "$CL347")"
@@ -6773,7 +6773,6 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
 assert_rc "autotune (flat) exits 0 (#46)" "$?" "0"
 assert_contains "autotune keeps current mode when nothing wins (#46)" "$out" "no mode beat the baseline"
 assert_eq "autotune left prefetch at the current mode (#46)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
-# autotune is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" autotune </dev/null 2>&1)"
 assert_rc "autotune rejected on non-Linux" "$?" "1"
 
@@ -6794,7 +6793,7 @@ rm -f "$FLAGAT347" "$ACTR347"
 : >"$CLAT347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CLAT347" LOGROTATE_DIR="$TN/logrotate" \
     FLAGAT347="$FLAGAT347" ACTR347="$ACTR347" \
-    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then touch "$FLAGAT347"; sleep 60; fi; echo 1200' \
+    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then sleep 60 & echo $! >"$FLAGAT347"; wait; fi; echo 1200' \
     AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 \
     exec bash "$SCRIPT" autotune </dev/null >"$TN/abortat347.out" 2>&1) &
 PIDAT347=$!
@@ -6808,6 +6807,7 @@ assert_eq "mid-sweep: overrides hold the candidate mode, not the baseline (#347)
 RESTARTS_PREAT347="$(grep -c '\[systemctl\] restart' "$CLAT347")"
 kill "$PIDAT347" 2>/dev/null
 wait "$PIDAT347" 2>/dev/null
+kill "$(cat "$FLAGAT347")" 2>/dev/null
 assert_contains "aborted autotune announces the restore (#347)" "$(cat "$TN/abortat347.out")" "sweep interrupted — restoring prefetch_mode=1"
 assert_eq "aborted autotune: prefetch back at the pre-sweep mode (#347)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
 assert_eq "aborted autotune: merged threads survive the abort restore (#347)" "$(J "$OVR" '.cpu.rx')" "4"
@@ -7468,7 +7468,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     printf '{broken' >"$APISRV/config.json"
     python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" 2>/dev/null &
     BROKEN_PID=$!
-    sleep 1
+    for _ in $(seq 1 50); do kill -0 "$BROKEN_PID" 2>/dev/null && sleep 0.2 || break; done
     if kill -0 "$BROKEN_PID" 2>/dev/null; then
         bad "server started despite an unreadable config (token posture unknown)" ""
         kill "$BROKEN_PID" 2>/dev/null || true
