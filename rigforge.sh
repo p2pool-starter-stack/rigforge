@@ -1679,9 +1679,6 @@ tune_kernel() {
         # (pithead#797 R0 item 2).
         log "Appliance mode: skipping GRUB updates — the kernel cmdline is image-owned."
     elif [ -f "$(_lib_dir)/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
-        # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
-        # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
-        # clobber other kernel parameters the user/distro set (#19 — boot-safety).
         _grub_proposed
 
         if ! grub_cmdline_editable "$GRUB_DEFAULT"; then
