@@ -590,7 +590,9 @@ sudo ./rigforge.sh setup            # rebuild + apply (or 'apply' if XMRig is al
 ```
 
 Restore overwrites `config.json` and the tuning on the current machine (so it prompts first), then tells
-you to run `setup`/`apply` to put the restored config into effect.
+you to run `setup`/`apply` to put the restored config into effect. Before it overwrites, restore saves the
+current config to `config-backups/`, the same folder the control path uses, and the newest 20 files are
+kept. Restore therefore needs to be able to write next to `config.json`.
 
 ### Two reasons to use it
 

@@ -6928,7 +6928,6 @@ assert_rc "restore exits 0" "$?" "0"
 assert_eq "restore brought back config.json" "$(J "$FR/config.json" '.DONATION')" "7"
 assert_eq "restore brought back the tuning" "$(J "$FR/data/worker/tune-overrides.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_contains "restore warns tuning is CPU-specific" "$out" "CPU-specific"
-# Validation + safety.
 out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y </dev/null 2>&1)"
 assert_rc "restore without an archive fails" "$?" "1"
 out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$BK/nope.tar.gz" </dev/null 2>&1)"
@@ -6960,6 +6959,7 @@ out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" resto
 assert_rc "restore of a semantically invalid config fails" "$?" "1"
 assert_contains "restore of a semantically invalid config is reported" "$out" "validation"
 assert_eq "invalid config did not clobber the existing config" "$(cksum "$FR/config.json")" "$before_sum"
+bash "$ROOT/tests/test-config-write-safety.sh" "$SCRIPT" >/dev/null 2>&1 && ok "restore snapshots and atomically replaces config.json; api-refresh reports failed writes (#820)" || bad "restore snapshots and atomically replaces config.json; api-refresh reports failed writes (#820)" "regression failed"
 # backup needs a config to snapshot.
 NOC="$(mktemp -d "$SANDBOX/noc.XXXXXX")"
 cp "$ROOT/VERSION" "$NOC/"
