@@ -202,4 +202,5 @@ grep -q 'unit=rigforge-control active=failed' "$TEST_DIR/diagnostics"
 grep -q 'receiver-startup: Permission denied' "$TEST_DIR/diagnostics"
 grep -q 'receiver-startup: Traceback' "$TEST_DIR/diagnostics"
 ! grep -q 'fixture-private-value' "$TEST_DIR/diagnostics"
+bash "$ROOT/tests/test-e2e-effective-payout.sh" || exit 1
 printf 'sister API reconcile regressions: PASS\n'
