@@ -69,8 +69,14 @@ SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 source "$(_script_dir)/util/xmrig-overlay.sh"
 # shellcheck source=util/daemon-pools.sh
 source "$(_script_dir)/util/daemon-pools.sh"
+# shellcheck source=util/upgrade-check.sh
+source "$(_script_dir)/util/upgrade-check.sh"
+# shellcheck source=util/package-mode.sh
+source "$(_script_dir)/util/package-mode.sh"
 # shellcheck source=util/fetch-proxy.sh
 source "$(_script_dir)/util/fetch-proxy.sh"
+# shellcheck source=util/package-upgrade.sh
+source "$(_script_dir)/util/package-upgrade.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$SCRIPT_DIR/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
@@ -205,30 +211,37 @@ xmrig_already_built() {
     [ ! -f "$sums" ] || [ "$(cat "$sums" 2>/dev/null)" = "$(_sha256 "$WORKER_ROOT/xmrig/build/xmrig")" ]
 }
 
-# Merge the HugePage/MSR kernel params we manage into an existing GRUB cmdline, preserving every
-# other parameter and replacing only the ones we own (so re-runs don't accumulate). Echoes the merged
-# cmdline. Usage: grub_merge_cmdline "<managed params>" "<current cmdline>"
+grub_cmdline_editable() {
+    local lines re='^GRUB_CMDLINE_LINUX_DEFAULT="[^"]*"$'
+    lines=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$1") || return 0
+    [[ "$lines" =~ $re ]] && return 0
+    warn "GRUB_CMDLINE_LINUX_DEFAULT in $1 is not one plain double-quoted line; left untouched. Edit the kernel parameters by hand."
+    return 1
+}
+
 grub_merge_cmdline() {
     local managed="$1" current="$2" preserved="" tok
+    set -f
     for tok in $current; do
         case "$tok" in
-        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop, re-added below
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;;
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
+    set +f
     echo "${preserved:+$preserved }$managed"
 }
 
-# Drop only the kernel params RigForge manages (HugePages/MSR), preserving everything else. The inverse
-# of what tune_kernel adds — used by `uninstall` to revert the GRUB cmdline.
 grub_strip_managed() { # <current cmdline>
     local current="$1" preserved="" tok
+    set -f
     for tok in $current; do
         case "$tok" in
-        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;; # ours — drop
+        hugepagesz=* | hugepages=* | default_hugepagesz=* | msr.allow_writes=*) ;;
         *) preserved="${preserved:+$preserved }$tok" ;;
         esac
     done
+    set +f
     printf '%s' "$preserved"
 }
 
@@ -943,6 +956,7 @@ install_dependencies() {
         log "Appliance mode: dependencies are baked into the image — skipping package install."
         return 0
     fi
+    _package_install && { log "Package install ($(_package_channel)): the package manager owns the dependencies — skipping package install." && return 0; }
     if [ "$OS_TYPE" == "Darwin" ]; then
         log "Installing macOS dependencies..."
         if command -v brew &>/dev/null; then
@@ -1513,17 +1527,6 @@ _rx_setup_threads() {
     case "$RX_SETUP_THREADS" in -1 | 0 | '' | *[!0-9]*) RX_SETUP_THREADS="" ;; esac
 }
 
-# Read-only GRUB computation shared by tune_kernel (the mutation half) and the setup --dry-run plan
-# (#146): sets MANAGED (params we manage), CURRENT (the live cmdline), MERGED (#19 merge — never
-# clobbers params the user/distro set). Callers guard on proposed-grub.sh + $GRUB_DEFAULT existing.
-#
-# POOL_CEILING_MB (#410): the declared hugepages_pool_ceiling_mb reaches the PERSISTED reservation
-# here, not only the runtime write in _ensure_hugepages. Without it the boot pool comes up above the
-# ceiling and the grow-only runtime guard can never bring it back down — a declared ceiling that
-# holds until the next reboot and then silently stops holding. Passed to the cmdline-generating call
-# ONLY: the two --runtime calls below and in tune_kernel ask for the miner's REQUIREMENT, which
-# _ensure_hugepages weighs against availability before clamping the write, so clamping it there
-# would move that decision instead of bounding the pool.
 _grub_proposed() {
     MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
@@ -1677,18 +1680,14 @@ tune_kernel() {
         # (pithead#797 R0 item 2).
         log "Appliance mode: skipping GRUB updates — the kernel cmdline is image-owned."
     elif [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
-        # proposed-grub.sh prints a generic "quiet splash" prefix plus the HugePage/MSR params we
-        # manage. Keep only the params we manage and MERGE them into the existing cmdline so we don't
-        # clobber other kernel parameters the user/distro set (#19 — boot-safety).
         _grub_proposed
 
-        if [ "$CURRENT" = "$MERGED" ]; then
-            # Either already optimal, or _grub_proposed's co-resident keep-existing guard (#305) set
-            # MERGED := CURRENT because the ambient reservation already covers miner + headroom — either
-            # way there's nothing to write and no reboot.
+        if ! grub_cmdline_editable "$GRUB_DEFAULT"; then
+            warn "Kernel parameters RigForge would have set: $MANAGED"
+        elif [ "$CURRENT" = "$MERGED" ]; then
             log "GRUB is already configured for the required HugePages reservation (no reboot)."
         else
-            sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+            [ -e "$GRUB_DEFAULT.bak" ] || sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
             sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$MERGED")\"|" "$GRUB_DEFAULT"
             if command -v update-grub >/dev/null; then
                 sudo update-grub
@@ -1743,12 +1742,9 @@ configure_limits() {
     append_once "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
 }
 
-# Put a `rigforge` command on PATH: a symlink in BIN_DIR pointing at this script, so the operator can
-# run `sudo rigforge <cmd>` from anywhere instead of `./rigforge.sh`. OPT-IN via `add_to_path` in
-# config.json (off by default). Best-effort and idempotent — it never fails the deploy. `uninstall`
-# removes it regardless, but only while it's still our symlink.
 link_cli() {
     [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
+    _package_install && { log "Package install ($(_package_channel)): the package owns the 'rigforge' command — skipping add_to_path." && return 0; }
     local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge"
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
@@ -1761,8 +1757,6 @@ link_cli() {
         warn "Didn't add the 'rigforge' command — $link already exists and isn't a RigForge symlink."
         return 0
     fi
-    # Use sudo only when BIN_DIR isn't writable (it is when setup runs as root on Linux); empty prefix
-    # otherwise. shellcheck SC2086: the unquoted prefix is intentional (it must vanish when empty).
     local sudo_pfx=""
     [ -w "$BIN_DIR" ] || sudo_pfx="sudo"
     # shellcheck disable=SC2086
@@ -1877,6 +1871,8 @@ _setup_plan() {
         else
             _p "installing dependencies" "appliance mode: baked into the image — no package install"
         fi
+    elif _package_install; then
+        _p "installing dependencies" "package install ($(_package_channel)): the package manager owns the dependencies — no package install"
     elif [ "$OS_TYPE" = "Darwin" ]; then
         _p "installing dependencies" "install/verify via brew: cmake libuv openssl hwloc"
     elif _detect_pkg_manager; then
@@ -1917,7 +1913,9 @@ _setup_plan() {
             _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
             if [ "$RIGFORGE_APPLIANCE" != 1 ] && [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
-                if [ "$CURRENT" = "$MERGED" ]; then
+                if ! grub_cmdline_editable "$GRUB_DEFAULT" 2>/dev/null; then
+                    _grubline="GRUB line is not one plain double-quoted line: left untouched, set by hand: $MANAGED"
+                elif [ "$CURRENT" = "$MERGED" ]; then
                     _grubline="GRUB already configured (no reboot needed for it)"
                 else
                     _grubline="GRUB cmdline: '$CURRENT' -> '$MERGED'"
@@ -1970,7 +1968,9 @@ _setup_plan() {
     else
         _p "configuring the API firewall" "no api_allow_from — no firewall scoping (an installed table would be removed)"
     fi
-    if [ "$ADD_TO_PATH" = true ]; then
+    if _package_install; then
+        _p "linking the rigforge command" "package install ($(_package_channel)): the package owns the command — no symlink"
+    elif [ "$ADD_TO_PATH" = true ]; then
         _p "linking the rigforge command" "symlink $BIN_DIR/rigforge -> $SCRIPT_DIR/rigforge.sh"
     else
         _p "linking the rigforge command" "add_to_path is off — no symlink"
@@ -1988,19 +1988,21 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
+    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false no_guard=""
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
             _setup_plan
             return 0
             ;;
-        *) error "Unknown option for setup: '$_arg' (use --dry-run). Run '$0 help'." ;;
+        --no-root-guard) no_guard=1 ;;
+        *) error "Unknown option for setup: '$_arg' (use --dry-run, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
+    _root_guard_check "$no_guard" || return 1
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
     _seed_appliance_tor_default
@@ -2037,9 +2039,9 @@ main() {
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
     CURRENT_STEP="linking the rigforge command"
-    link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
+    link_cli
     CURRENT_STEP="reconciling file ownership"
-    _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
+    _reown_worker
     CURRENT_STEP="finishing up"
     finish_deployment
     [ "$_control_rc" -eq 0 ] || _control_failed setup
@@ -2103,69 +2105,29 @@ _upgrade_restart() { # <was-active: yes|no>
     sudo systemctl restart "$SERVICE_NAME.service"
 }
 
-_upgrade_check() {
-    local local_v remote_v url body highest via=""
-    local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true) # guard inside the $() (#210)
-    if [ -z "$local_v" ]; then
-        warn "No VERSION file at $SCRIPT_DIR/VERSION — can't compare against the latest release."
-        return 0
-    fi
-    via=$(_tor_socks5) || return 0
-    [ -z "$via" ] || via=" through tor_socks5 (no direct fallback)"
-    body=$(_fetch_curl -fsS --max-time 5 "https://api.github.com/repos/p2pool-starter-stack/rigforge/releases/latest" 2>/dev/null || true)
-    if [ -z "$body" ]; then
-        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
-        return 0
-    fi
-    remote_v=$(printf '%s' "$body" | jq -r '.tag_name // empty' 2>/dev/null || true)
-    url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null || true)
-    remote_v="${remote_v#v}"
-    if [ -z "$remote_v" ]; then
-        warn "Couldn't reach GitHub$via to check for a newer release — try again later."
-        return 0
-    fi
-    if [ "$local_v" = "$remote_v" ]; then
-        log "RigForge $local_v is the latest release."
-        return 0
-    fi
-    highest=$(printf '%s\n%s\n' "$local_v" "$remote_v" | sort -V | tail -n1)
-    if [ "$highest" = "$remote_v" ]; then
-        log "A newer RigForge is available: $remote_v (you have $local_v)."
-        if [ -n "$url" ]; then
-            log "Release notes: $url"
-        fi
-        log "Update: cd $SCRIPT_DIR && git fetch --tags && git checkout v$remote_v && sudo $0 upgrade  (development checkouts on a branch: git pull && sudo $0 upgrade)"
-    else
-        log "RigForge $local_v is ahead of the latest release ($remote_v) — development build."
-    fi
-    return 0
-}
-
-# Upgrade redeploys this release: regenerate config, reinstall every unit, re-tune, re-own, and restart. The COMPILE is
-# what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
-# (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
-    local arg _api_rc=0 _control_rc=0
+    local arg _api_rc=0 _control_rc=0 no_guard=""
     for arg in "$@"; do
         case "$arg" in
         --check)
             _upgrade_check
             return 0
             ;;
-        *) error "Unknown option for upgrade: '$arg' (use --check). Run '$0 help'." ;;
+        --no-root-guard) no_guard=1 ;;
+        *) error "Unknown option for upgrade: '$arg' (use --check, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     check_prerequisites
+    _root_guard_check "$no_guard" || return 1
     parse_config
     _shared_host_prepare
     decide_rebuild
-    # #413: reinstall the whole release even when the XMRig pin (and therefore build) is unchanged.
     local was_active=no
     if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         was_active=yes
     fi
-    SERVICE_NO_START=true # _upgrade_restart below owns the restart decision, not install_service
+    SERVICE_NO_START=true
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
@@ -2181,13 +2143,13 @@ upgrade() {
         log "XMRig $XMRIG_VERSION (commit ${XMRIG_COMMIT:0:12}) was already built — regenerated the config and reinstalled the units."
     fi
     _reown_worker
-    _upgrade_restart "$was_active"
+    { _pkg_restart_gate "$_api_rc" "$_control_rc" && _upgrade_restart "$was_active"; } || return 1
     [ "$OS_TYPE" != Linux ] || [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     _post_upgrade_retune
     _reown_worker
     [ "$_control_rc" -eq 0 ] || _control_failed upgrade
     [ "$_api_rc" -eq 0 ] || _sister_api_failed upgrade || true
-    [ "$_api_rc:$_control_rc" = 0:0 ]
+    [ "$_api_rc:$_control_rc" = 0:0 ] && _pkg_upgrade_clear
 }
 
 # Map a HOME_DIR value to its worker root, validating it first. HOME_DIR becomes a filesystem path we
@@ -2256,12 +2218,11 @@ uninstall() {
     fi
 
     # Work out the worker root the same way parse_config would, without requiring a valid config.
-    local worker_root
+    local worker_root _d
     worker_root=$(_worker_root_from_config)
     local preserve_host=no
     _shared_host_preserves_tuning "$worker_root" && preserve_host=yes
 
-    # 1. systemd service (+ the optional autotune timer, #46)
     local _mu
     _mu=$(jq -r '.miner_user // empty' "$CONFIG_JSON" 2>/dev/null || true)
     if [ -n "$_mu" ] && id -u "$_mu" >/dev/null 2>&1; then
@@ -2280,6 +2241,10 @@ uninstall() {
         sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path" \
             "$SYSTEMD_DIR/rigforge-control-upgrade.service" "$SYSTEMD_DIR/rigforge-control-upgrade.path"
     fi
+    for _d in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" "${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"; do
+        _d=${_d%/}
+        case "$_d" in /*[!/]) sudo rm -rf -- "$_d" ;; esac
+    done
     command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-autotune.timer 2>/dev/null || true
@@ -2297,8 +2262,7 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    # 2. logrotate policy
-    sudo rm -f "$LOGROTATE_DIR/xmrig"
+    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP"
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
@@ -2307,8 +2271,6 @@ uninstall() {
 
         remove_line "$LIMITS_CONF" "$REAL_USER soft memlock unlimited"
         remove_line "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
-        remove_line "$LIMITS_CONF" "* soft memlock unlimited"
-        remove_line "$LIMITS_CONF" "* hard memlock unlimited"
 
         sudo rm -f "$MODULES_LOAD_DIR/msr.conf"
         remove_line "$MODULES_FILE" "msr"
@@ -2318,12 +2280,12 @@ uninstall() {
         fi
         sudo rmdir "$HUGEPAGES_1G_DIR" 2>/dev/null || true
 
-        if [ -f "$GRUB_DEFAULT" ]; then
+        if [ -f "$GRUB_DEFAULT" ] && grub_cmdline_editable "$GRUB_DEFAULT"; then
             local cur stripped
             cur=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
             stripped=$(grub_strip_managed "$cur")
             if [ "$cur" != "$stripped" ]; then
-                sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
+                [ -e "$GRUB_DEFAULT.bak" ] || sudo cp "$GRUB_DEFAULT" "$GRUB_DEFAULT.bak"
                 sudo sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$(_sed_escape_replacement "$stripped")\"|" "$GRUB_DEFAULT"
                 if command -v update-grub >/dev/null; then
                     sudo update-grub
@@ -2437,50 +2399,31 @@ _median() {
         END{ if(NR==0) exit; print (NR%2) ? a[(NR+1)/2] : (a[NR/2]+a[NR/2+1])/2 }'
 }
 
-# Tiny file-backed memo (bash 3.2 has no associative arrays). Keyed by the candidate tuple so the
-# hill-climb — which revisits the current point as it sweeps each knob — never re-benchmarks a combo.
-_memo_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_FILE" 2>/dev/null; }
-_memo_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_FILE"; }
-# Parallel store for each candidate's sample stddev (kept out of the median memo so its value stays a
-# bare number for every existing caller), and the state's memo key (#63).
-_memo_sd_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_SD_FILE" 2>/dev/null; }
-_memo_sd_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_SD_FILE"; }
-_memo_hpw_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_HPW_FILE" 2>/dev/null; } # #79
-_memo_hpw_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_HPW_FILE"; }
-# #79: efficiency mode needs a power source. True if TUNE_POWER_CMD is set or RAPL is readable.
+_memo_get() { awk -F'\t' -v k="$2" '$1==k{print $2; exit}' "$1" 2>/dev/null; }
+_memo_put() { printf '%s\t%s\n' "$2" "$3" >>"$1"; }
 _power_supported() {
     [ -n "${TUNE_POWER_CMD:-}" ] && return 0
     [ -n "$(_rapl_sum energy_uj)" ] && return 0
     return 1
 }
-_memo_thr_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_THROTTLE_FILE" 2>/dev/null; } # #62
-_memo_thr_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_THROTTLE_FILE"; }
 _state_key() { printf '%s|%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq" "$S_wr"; }
-# Population stddev of the args (0 with fewer than 2).
 _stddev() {
     printf '%s\n' "$@" | awk '{ s += $1; ss += $1 * $1; n++ } END { if (n < 2) { print 0; exit } m = s / n; v = ss / n - m * m; if (v < 0) v = 0; printf "%.4f", sqrt(v) }'
 }
-# Variance-aware acceptance (#63): the candidate wins only if its median beats the best by BOTH the
-# TUNE_MIN_DELTA floor AND more than the combined sample-noise band (TUNE_SIGMA × √(sd_cand²+sd_best²)),
-# so jitter on noisy hardware can't trigger a phantom adoption. sd is looked up by each combo's memo key.
-_accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
-    # #62: a throttled candidate's reading is unreliable — never adopt it.
-    if [ "$(_memo_thr_get "$2")" = 1 ]; then return 1; fi
-    # #79: the efficiency target ranks by hashrate-per-watt instead of raw H/s. The variance band (#63)
-    # carries over proportionally — each candidate's relative H/s spread applied to its hs_per_watt. Any
-    # pair missing a power reading falls back to the raw-H/s comparison so the search still progresses.
+_accept_better() {
+    if [ "$(_memo_get "$MEMO_THROTTLE_FILE" "$2")" = 1 ]; then return 1; fi
     if [ "${TUNE_TARGET:-perf}" = efficiency ]; then
         local chpw bhpw
-        chpw=$(_memo_hpw_get "$2")
-        bhpw=$(_memo_hpw_get "$4")
+        chpw=$(_memo_get "$MEMO_HPW_FILE" "$2")
+        bhpw=$(_memo_get "$MEMO_HPW_FILE" "$4")
         if [ -n "$chpw" ] && [ -n "$bhpw" ]; then
-            awk -v c="$chpw" -v b="$bhpw" -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+            awk -v c="$chpw" -v b="$bhpw" -v cm="$1" -v best="$3" -v csd="$(_memo_get "$MEMO_SD_FILE" "$2")" -v bsd="$(_memo_get "$MEMO_SD_FILE" "$4")" \
                 -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
                 'BEGIN { crel = (cm > 0 ? csd / cm : 0); brel = (best > 0 ? bsd / best : 0); band = sig * sqrt((c * crel) ^ 2 + (b * brel) ^ 2); exit !(c > b * (1 + delta) && (c - b) > band) }'
             return
         fi
     fi
-    awk -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+    awk -v cm="$1" -v best="$3" -v csd="$(_memo_get "$MEMO_SD_FILE" "$2")" -v bsd="$(_memo_get "$MEMO_SD_FILE" "$4")" \
         -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
         'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
 }
@@ -2604,9 +2547,6 @@ _bench_once() {
     fi
 }
 
-# Live measurement (#54): apply a candidate to the RUNNING miner, discard a warmup window, then take a
-# few API samples over steady state and return their median. Heavier than --bench (it restarts the
-# service per candidate) but reflects real-world conditions. Linux-only; reuses _read_api_hashrate.
 _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr>
     local tmp
     tmp=$(mktemp)
@@ -2615,8 +2555,6 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     _apply_runtime >/dev/null 2>&1 || true
     sleep "${TUNE_LIVE_WARMUP:-60}"
     local i s samples=() n="${TUNE_LIVE_SAMPLES:-3}"
-    # #81: bracket the steady-state window for power — RAPL energy delta over the window, or the mean of
-    # instantaneous TUNE_POWER_CMD samples taken alongside the hashrate samples. Written to BENCH_WATTS_FILE.
     local wsamples="" pe0="" pt0="" pmax="" w
     if [ -n "${BENCH_WATTS_FILE:-}" ] && [ -z "${TUNE_POWER_CMD:-}" ]; then
         # `|| true` (#290/#301, same idiom as _autotune_sample's #81 guard): no powercap sysfs is an
@@ -2648,14 +2586,12 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
         fi
         printf '%s' "$wout" >"$BENCH_WATTS_FILE"
     fi
-    _median "${samples[@]}"
+    printf '%s\n' "${samples[*]}"
 }
 
-# Measure one candidate (memoized): median over TUNE_ITERS bench runs, or one live window. On a cache
-# miss it also records the candidate — samples, median, and any temp/watts — to the results log.
-_measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr> -> median H/s
+_measure() {
     local p="$1" y="$2" t="$3" g="$4" pr="$5" hj="$6" cq="$7" wr="$8" key="$1|$2|$3|$4|$5|$6|$7|$8" cached
-    cached=$(_memo_get "$key")
+    cached=$(_memo_get "$MEMO_FILE" "$key")
     if [ -n "$cached" ]; then
         printf '%s' "$cached"
         return 0
@@ -2664,9 +2600,9 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     local med samples=() s i cfg minfk="" bf watts="" wsamps=() wv
     if [ "$TUNE_MODE" = live ]; then
         : >"$TUNE_TMP/watts" # #81: _measure_live writes the under-load average watts here
-        med=$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")
-        [ -n "$med" ] || med=0
-        samples=("$med")
+        read -ra samples <<<"$(BENCH_WATTS_FILE="$TUNE_TMP/watts" _measure_live "$p" "$y" "$t" "$g" "$pr" "$hj" "$cq" "$wr")"
+        [ "${#samples[@]}" -gt 0 ] || samples=(0)
+        med=$(_median "${samples[@]}")
         watts=$(cat "$TUNE_TMP/watts" 2>/dev/null)
     else
         cfg="$TUNE_TMP/cand.json"
@@ -2681,9 +2617,6 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
             [ -n "$s" ] || s=0
             samples+=("$s")
             bf=$(cat "$TUNE_TMP/freq" 2>/dev/null)
-            # The freq writer above already floors to whole kHz (awk's OFMT prints large medians in
-            # scientific notation, e.g. 4.6275e+06, which this floor would otherwise mangle into "4").
-            # This is now just a belt-and-suspenders trim of a stray fractional part.
             bf=${bf%.*}
             case "$bf" in '' | *[!0-9]*) ;; *) if [ -z "$minfk" ] || [ "$bf" -lt "$minfk" ]; then minfk="$bf"; fi ;; esac
             wv=$(cat "$TUNE_TMP/watts" 2>/dev/null)
@@ -2703,8 +2636,6 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
     fi
     if [ "$throttled" = 1 ]; then warn "  tune: candidate throttled to ${minfmhz} MHz (< ${TUNE_MIN_FREQ_MHZ} MHz min) — reading unreliable, skipping it." >&2; fi
 
-    # #65: did this candidate's thread count exceed the HugePages reservation? Recorded per-candidate and
-    # summarized at the end of tune. Only meaningful for a concrete count ("-1" lets XMRig auto-size to fit).
     local hpcapped=false
     if [ -n "${HP_CAP_THREADS:-}" ] && [ "$t" != "-1" ] && [ "$t" -gt "$HP_CAP_THREADS" ] 2>/dev/null; then hpcapped=true; fi
 
@@ -2723,13 +2654,12 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
           temp_c: (if $temp=="" then null else ($temp|tonumber) end),
           hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
         >>"$RESULTS_FILE"
-    # #79: store hashrate-per-watt for the efficiency-target gate (empty when there's no power reading).
     local hpw
     hpw=$(awk -v m="$med" -v w="${watts:-0}" 'BEGIN{if(w+0>0)printf "%.4f",m/w}')
-    _memo_put "$key" "$med"
-    _memo_sd_put "$key" "${sd:-0}"
-    _memo_thr_put "$key" "$throttled"
-    _memo_hpw_put "$key" "$hpw"
+    _memo_put "$MEMO_FILE" "$key" "$med"
+    _memo_put "$MEMO_SD_FILE" "$key" "${sd:-0}"
+    _memo_put "$MEMO_THROTTLE_FILE" "$key" "$throttled"
+    _memo_put "$MEMO_HPW_FILE" "$key" "$hpw"
     printf '%s' "$med"
 }
 
@@ -2934,7 +2864,7 @@ _seed_auto() {
 _seed_guess() {
     S_p="${TUNE_GUESS_PREFETCH:-2}"
     S_y=false
-    S_pr=2
+    S_pr=$(jq -r '.cpu.priority // 2' "$TUNE_BASE")
     S_g=$(_seed_g)
     S_t="${TUNE_GUESS_THREADS:-${THREAD_CENTER:--1}}"
     [ -n "$S_t" ] || S_t="-1"
@@ -3009,25 +2939,24 @@ _tune_history() { # <overrides_file> <log_file>
     fi
 }
 
-# Whether `tune` should re-exec itself under sudo: non-root + interactive (TTY) only, so sudo can actually
-# prompt and we never surprise non-interactive callers (tests/cron/pipes). RIGFORGE_FORCE_ELEVATE=1 forces
-# it regardless (the coverage test drives this path from a real child process).
 _tune_should_elevate() {
     [ "${RIGFORGE_FORCE_ELEVATE:-0}" = 1 ] && return 0
     [ "$(id -u)" -ne 0 ] && [ -t 0 ]
 }
 
+_exec_sudo_self() {
+    local v e=()
+    for v in $(compgen -e | grep -E '^(TUNE|AUTOTUNE)_'); do e+=("$v=${!v}"); done
+    [ "${#e[@]}" -eq 0 ] && exec sudo "$0" "$@"
+    exec sudo env "${e[@]}" "$0" "$@"
+}
+
 tune() {
-    # tune mutates system + worker state as root (stops the service, writes tuning as root), so auto-elevate
-    # when run without sudo — a plain `rigforge tune` then just works (sudo prompts) instead of failing
-    # partway with a cryptic error. Interactive-only (_tune_can_elevate): it keeps non-interactive callers
-    # (the test suite, cron, pipes) on their existing path — no surprise elevation, and no re-exec loop if
-    # `sudo` is a passthrough stub. `--history` is read-only, so it never needs root.
     local _hist=0 clear=0 target_set=0 now=0 now_long=0
     case " $* " in *" --history "*) _hist=1 ;; esac
     if [ "$_hist" = 0 ] && [ "$OS_TYPE" = Linux ] && _tune_should_elevate; then
         log "tune needs root — re-running with sudo..."
-        exec sudo "$0" tune "$@"
+        _exec_sudo_self tune "$@"
     fi
     TUNE_MODE="${TUNE_MODE:-bench}"
     TUNE_CONFIRM="${TUNE_CONFIRM:-0}" # #64: A/B-confirm the winner against the previous config, live
@@ -3259,17 +3188,15 @@ tune() {
         error "Benchmarks produced no hashrate — check that the worker is built correctly."
     fi
 
-    # Build the overrides snippet from the winning state. Always pin prefetch + yield; pin threads only
-    # if a concrete count won (not auto), and priority / 1gb-pages only if they were actually swept — so
-    # we never freeze a knob the search didn't explore.
-    local ovr
+    local ovr pins
+    pins=" $ACTIVE_KNOBS $(jq -r '[("cpu", "randomx") as $s | .[$s] | objects | keys[] | select(test("\\s") | not) | "\($s).\(.)"] | join(" ")' <<<"$pre_overrides" 2>/dev/null || true) "
     ovr=$(jq -n --argjson p "$G_p" --argjson y "$G_y" '{randomx:{scratchpad_prefetch_mode:$p}, cpu:{yield:$y}}')
     [ "$G_t" != "-1" ] && ovr=$(printf '%s' "$ovr" | jq --argjson t "$G_t" '.cpu.rx = (if ($t | type) == "number" then {mode: 0, threads: $t, max_threads_cnt: $t, intensity: 1, affinity: -1} else $t end)')
-    case " $ACTIVE_KNOBS " in *" priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
-    case " $ACTIVE_KNOBS " in *" onegb "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
-    case " $ACTIVE_KNOBS " in *" hpjit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
-    case " $ACTIVE_KNOBS " in *" cacheqos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
-    case " $ACTIVE_KNOBS " in *" wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
+    case "$pins" in *" priority "* | *" cpu.priority "*) ovr=$(printf '%s' "$ovr" | jq --argjson pr "$G_pr" '.cpu.priority = $pr') ;; esac
+    case "$pins" in *" onegb "* | *" randomx.1gb-pages "*) ovr=$(printf '%s' "$ovr" | jq --argjson g "$G_g" '.randomx."1gb-pages" = $g') ;; esac
+    case "$pins" in *" hpjit "* | *" cpu.huge-pages-jit "*) ovr=$(printf '%s' "$ovr" | jq --argjson hj "$G_hj" '.cpu."huge-pages-jit" = $hj') ;; esac
+    case "$pins" in *" cacheqos "* | *" randomx.cache_qos "*) ovr=$(printf '%s' "$ovr" | jq --argjson cq "$G_cq" '.randomx.cache_qos = $cq') ;; esac
+    case "$pins" in *" wrmsr "* | *" randomx.wrmsr "*) ovr=$(printf '%s' "$ovr" | jq --argjson wr "$G_wr" '.randomx.wrmsr = $wr') ;; esac
     ovr=$(_xmrig_unpinned <<<"$ovr")
     printf '%s\n' "$ovr" >"$TUNE_TMP/ovr.json" && sudo cp "$TUNE_TMP/ovr.json" "$TUNE_OVERRIDES"
     _TUNE_LIVE_DIRTY=0 # #347: the winner — a completed decision — now owns the file; the abort-restore stands down
@@ -3417,6 +3344,13 @@ _autotune_score() { # <target> <hr> <watts>
         printf '%s' "${2:-0}"
     fi
 }
+_autotune_vs_base() {
+    if [ "$1" = efficiency ] && ! awk -v a="$3" -v b="$5" 'BEGIN{exit !(a > 0 && b > 0)}'; then
+        awk -v h="$2" -v s="$6" -v b="$4" 'BEGIN{if (b > 0) printf "%.4f", h * s / b; else printf "%s", h}'
+    else
+        _autotune_score "$1" "$2" "$3"
+    fi
+}
 # Human-readable sample for the log line: "10700 H/s" or "10700 H/s, 83.10 W, 128.84 H/s/W".
 _autotune_fmt() { # <target> <hr> <watts>
     if [ "$1" = efficiency ] && [ -n "$3" ] && awk -v w="$3" 'BEGIN{exit !(w > 0)}'; then
@@ -3442,9 +3376,6 @@ autotune() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "autotune drives the live systemd service and is only supported on Linux."
     fi
-    # The scheduled run gets AUTOTUNE_TARGET from the systemd unit's env (baked at setup); capture it
-    # before parse_config re-derives one from config.json so the unit's choice wins. An interactive run
-    # (no unit env) falls through to the config value.
     local target_env="${AUTOTUNE_TARGET:-}"
     parse_config
     _shared_host_start_guard
@@ -3460,22 +3391,18 @@ autotune() {
     local n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}"
     local margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
     local target="${target_env:-${AUTOTUNE_TARGET:-perf}}"
-    local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s unit
+    local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s
 
-    # #95: efficiency ranks by hashrate-per-watt, which needs a power source; without one, optimize raw
-    # H/s instead (same fallback as `tune --efficiency`).
     if [ "$target" = efficiency ] && ! _power_supported; then
         warn "autotune: efficiency target needs a power source (RAPL or TUNE_POWER_CMD) — none available; falling back to performance (raw hashrate) instead."
         target=perf
     fi
-    [ "$target" = efficiency ] && unit="H/s/W" || unit="H/s"
     cur=$(jq -r '.randomx.scratchpad_prefetch_mode // 1' "$overrides" 2>/dev/null || echo 1)
 
-    # Baseline = the mode running right now (no restart needed to measure it).
     s=$(_autotune_sample "$n" "$iv" "$target")
     base_hr=${s%%$'\t'*}
     base_w=${s#*$'\t'}
-    [ -n "$base_hr" ] && [ "$base_hr" != 0 ] || {
+    awk -v h="$base_hr" 'BEGIN{exit !(h + 0 > 0)}' || {
         warn "autotune: could not read a live hashrate from the API — is the miner running? Skipping."
         return 0
     }
@@ -3491,7 +3418,6 @@ autotune() {
     _AUTOTUNE_DIRTY=1
     trap '_autotune_cleanup' EXIT
 
-    # Try every OTHER mode once, live; track the running best by the target's score.
     for m in $modes; do
         [ "$m" = "$cur" ] && continue
         _autotune_set_prefetch "$overrides" "$m"
@@ -3502,7 +3428,7 @@ autotune() {
         hr=${s%%$'\t'*}
         w=${s#*$'\t'}
         [ -n "$hr" ] || hr=0
-        sc=$(_autotune_score "$target" "$hr" "$w")
+        sc=$(_autotune_vs_base "$target" "$hr" "$w" "$base_hr" "$base_w" "$base_score")
         log "autotune: prefetch_mode=$m measured $(_autotune_fmt "$target" "$hr" "$w")."
         if awk -v sc="$sc" -v b="$best_score" 'BEGIN{exit !(sc > b)}'; then
             best_mode="$m"
@@ -3510,12 +3436,23 @@ autotune() {
         fi
     done
 
-    # Adopt the winner only if it beats the baseline by the margin (noise guard); else keep the current mode.
     if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
-        log "autotune: best is prefetch_mode=$best_mode at $best_score $unit (vs $base_score baseline) — applying it."
+        if [ "$last_applied" != "$best_mode" ]; then
+            _autotune_settle "$best_mode"
+            last_applied="$best_mode"
+            sleep "$warm"
+        fi
+        s=$(_autotune_sample "$n" "$iv" "$target")
+        hr=${s%%$'\t'*}
+        w=${s#*$'\t'}
+        best_score=$(_autotune_vs_base "$target" "${hr:-0}" "$w" "$base_hr" "$base_w" "$base_score")
+        log "autotune: re-measured prefetch_mode=$best_mode at $(_autotune_fmt "$target" "${hr:-0}" "$w") to confirm it."
+    fi
+    if [ "$best_mode" != "$cur" ] && awk -v b="$best_score" -v base="$base_score" -v m="$margin" 'BEGIN{exit !(b > base * (1 + m))}'; then
+        log "autotune: best is prefetch_mode=$best_mode at $(_autotune_fmt "$target" "${hr:-0}" "$w") (vs $(_autotune_fmt "$target" "$base_hr" "$base_w") baseline) — applying it."
     else
         best_mode="$cur"
-        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($base_score $unit)."
+        log "autotune: no mode beat the baseline by the margin — keeping prefetch_mode=$cur ($(_autotune_fmt "$target" "$base_hr" "$base_w"))."
     fi
     # Leave the chosen mode running (the sweep may have ended on a different one).
     if [ "$last_applied" != "$best_mode" ]; then
@@ -3682,9 +3619,17 @@ restore() {
         [ -n "$src" ] && log "Backup was made on host: $src"
     fi
 
-    # config.json -> repo root; tuning -> the worker root resolved from the RESTORED config (so it lands
-    # correctly even if this machine's paths differ from the source's).
-    cp "$STAGE_DIR/config.json" "$CONFIG_JSON"
+    local backups="$SCRIPT_DIR/config-backups" snap
+    if [ -f "$CONFIG_JSON" ]; then
+        snap="$backups/config-$(date -u +%Y%m%d-%H%M%S)-restore-$$.json"
+        if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$snap"); then
+            rm -f "$snap"
+            error "Could not snapshot config.json to $backups — existing config left untouched."
+        fi
+        _sweep_config_backups "$backups" || true
+        log "Previous config saved to $snap"
+    fi
+    _config_replace "$STAGE_DIR/config.json" || error "Could not write $CONFIG_JSON."
     _stamp_config_meta restore # #254: attribute this config to a restore (bumps revision if it differs)
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
@@ -3965,14 +3910,14 @@ _render_duration() {
 svc_status() {
     _shared_host_status_report
     _config_apply_check
+    _pkg_upgrade_status
     [ "$OS_TYPE" = "Linux" ] || {
         mac_status
         (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
         return
     }
     (RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null 2>&1 && _status_api_summary) || true
-    # Read-only: `systemctl status` is world-readable, so no sudo (don't prompt for a password to look).
-    systemctl status "$SERVICE_NAME" || true # `status` exits non-zero when stopped; not an error
+    systemctl status "$SERVICE_NAME" || true
 }
 svc_logs() {
     [ "$OS_TYPE" = "Linux" ] || {
@@ -4023,12 +3968,7 @@ svc_disable() {
     sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} "$SERVICE_NAME" && log "Disabled $SERVICE_NAME (won't start on boot)."
 }
 # --- Commands: version, apply & bench ---
-
 # Tab completion (#145): PRINT a completion script, install nothing — the operator opts in with
-# `source <(rigforge completion bash)` or by writing it to the completions dir. Static on purpose
-# (zero deps, no callback into rigforge at tab-time); the suite diffs _rigforge_verbs against the
-# dispatch case, so adding a verb without updating this list fails CI. The internal hyphenated
-# verbs (api-refresh, msr-apply, control-apply, control-upgrade) and the -v/-h flag spellings are deliberately not completed.
 _completion_bash() {
     cat <<'RIGFORGE_COMPLETION'
 _rigforge_verbs="setup upgrade uninstall tune autotune watchdog doctor bios stress status logs start up stop down restart enable disable apply bench backup restore support-bundle version help completion"
@@ -4234,6 +4174,12 @@ for path in sys.argv[1:]:
 PY
 }
 
+_config_replace() {
+    local tmp="$CONFIG_JSON.new.$$"
+    (umask 077 && cp "$1" "$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$CONFIG_JSON" && return 0
+    rm -f "$tmp"
+    return 1
+}
 # Merge an allowlisted, parse-valid staged change into config.json after snapshotting the old one.
 # rc 0 = committed, 1 = invalid/rejected, 2 = install failed with old config restored, and 3 =
 # storage failed after rename and recovery is uncertain. The caller records the matching terminal.
@@ -4581,11 +4527,9 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
-    # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
     rm -f "$staged"
-    # A valid change whose install failed is `failed`, not an invalid-input `rejected` (#434/#438).
     if [ "$rc" -eq 2 ]; then
         _sweep_config_backups "$backups" || true # never abort before the terminal status (#434)
         _control_status "$status" failed "$cid" "$change_keys" "$result" ""
@@ -4605,15 +4549,8 @@ control_apply() {
     fi
     backup="${result#committed }"
     _sweep_config_backups "$backups" || true # same guard; pre-existing exposure on this path
-    # #254: attribute this (and the rollback re-apply) to the control path with its change_id, which the
-    # nested apply()'s _stamp_config_meta reads via dynamic scope.
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
-    # #381: dispatch on the closed fast-path allowlist. Only the CLASSIFICATION differs — both write the
-    # same "applied", and EITHER failing falls through to the same full-pipeline rollback, so a wrong
-    # "eligible" verdict (or a fast path failing for an unrelated reason) stays restart-safe.
     local fast=0 apply_ok=0 fail_reason=""
-    # #395: cleared before the attempt (no stale cause from an earlier change) and snapshotted straight
-    # after (the ROLLBACK's own apply must not overwrite why this change failed).
     RIGFORGE_APPLY_FAIL_REASON=""
     if _control_fast_path_eligible "$change_keys"; then
         fast=1
@@ -4633,24 +4570,17 @@ control_apply() {
         fi
     else
         warn "control-apply: change $cid ${fail_reason:-did not come back live} — rolling back to $backup."
-        # #276: guard the cp explicitly (not just -e/ERR) — an unreadable backup must still write a
-        # terminal status, not ERR-trap the oneshot into serving the stale previous outcome forever.
-        if ! cp "$backup" "$CONFIG_JSON" 2>/dev/null; then
+        if ! _config_replace "$backup" 2>/dev/null; then
             _control_status "$status" failed "$cid" "$change_keys" "rollback backup unreadable: $backup" "$backup"
             return 0
         fi
         # #276: both restore config.json; only one leaves the miner hashing. The reason pins which.
         local why="${fail_reason:-miner did not return to a live hashrate}"
         if _control_do_apply; then
-            # #396: the re-apply leaves a deliberately stopped rig stopped (and succeeds by design), so
-            # unconditional "and live" would assert a liveness nobody checked — the #395 lie, again.
             local back="rolled back and live"
             _miner_deliberately_stopped && back="rolled back; the rig was already stopped and stays stopped"
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; $back" "$backup"
         elif [ -n "$fail_reason" ]; then
-            # #395: the re-apply failed for the SAME reason the change did (units that still will not
-            # write). A failed apply short-circuits before _wait_miner_live, so the miner may be hashing
-            # fine throughout: say what is known. The arm below keeps the liveness wording it earned.
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; config rolled back, but the re-apply hit the same failure" "$backup"
         else
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; rollback re-apply also failed to restore liveness" "$backup"
@@ -4660,14 +4590,21 @@ control_apply() {
 }
 
 _control_upgrade_steps() {
-    local ref="$1" cobj
+    local ref="$1" cobj udir="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
+    RIGFORGE_UPGRADE_UNMOVED="this install is package-owned"
+    ! _package_install || return 1
+    RIGFORGE_UPGRADE_UNMOVED="the root guard refused this tree"
+    _root_guard_check "" || return 1
+    RIGFORGE_UPGRADE_UNMOVED="could not fetch from origin"
     _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    RIGFORGE_UPGRADE_UNMOVED=""
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
         git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
+    _control_upgrade_mark "$udir" || return 1
     git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null 2>&1
+    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null && rm -f "$udir/upgrade-pending"
 }
 
 # control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
@@ -4705,22 +4642,23 @@ control_upgrade() {
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" version "the upgrade run ended before recording an outcome (aborted or killed mid-fetch/build); the checkout may be half-updated and this upgrade will not be retried — check the installed version and re-request the upgrade")
     trap _control_run_incomplete EXIT # #535: the spool entry is claimed; nothing else will retry it
     _control_status "$status" started "$cid" version "" ""
-    # Strict field whitelist (D4): exactly {"version":"vX.Y.Z"}. Never sourced/evaled; anything else refused.
     target=$(jq -r 'if (type == "object" and (keys | sort) == ["version"] and (.version | type == "string")) then .version else empty end' "$staged" 2>/dev/null)
     rm -f "$staged"
+    if _package_install; then
+        _control_status "$status" failed "$cid" version "package-owned install: upgrade with $(_package_upgrade_cmd)" ""
+        warn "control-upgrade: package-owned install — refused; run $(_package_upgrade_cmd)."
+        return 0
+    fi
     if ! [[ "$target" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         _control_status "$status" failed "$cid" version "staged upgrade target malformed (want vX.Y.Z)" ""
         warn "control-upgrade: malformed target for $cid — refused."
         return 0
     fi
     installed=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
-    # D10 monotonic anti-rollback: never install a version <= the one running. A compromised trigger
-    # can't pin a rig to an older, known-vulnerable release (reachability + immutable releases cover
-    # tag-moving / dangling commits; this covers downgrade and no-op).
+    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     if [ -n "$installed" ]; then
         local want="${target#v}" highest
-        if [ "$want" = "$installed" ]; then
-            # #320: an idempotent no-op, not a failure — the rig is exactly where the operator wants it.
+        if [ "$want" = "$installed" ] && [ ! -e "$throttle/upgrade-pending" ] && [ ! -L "$throttle/upgrade-pending" ]; then
             _control_status "$status" noop "$cid" version "already on $target — nothing to upgrade" ""
             log "control-upgrade: already on $target."
             return 0
@@ -4737,7 +4675,6 @@ control_upgrade() {
         warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
         return 0
     }
-    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
         _control_status "$status" failed "$cid" version "throttle state unavailable under $throttle — refused (fail-closed)" ""
@@ -4751,18 +4688,14 @@ control_upgrade() {
     fi
     old_tag=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
-    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
+    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid" RIGFORGE_UPGRADE_UNMOVED=""
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-        # #320: echo the landed version — the poller shouldn't have to cross-read the miner API for it.
         _control_status "$status" applied "$cid" version "upgraded to $target" ""
         log "control-upgrade: $cid applied — now on $target."
+    elif [ -n "${RIGFORGE_UPGRADE_UNMOVED:-}" ]; then
+        _control_status "$status" failed "$cid" version "upgrade to $target failed before checkout: $RIGFORGE_UPGRADE_UNMOVED; nothing was changed" ""
+        warn "control-upgrade: $cid failed before checkout ($RIGFORGE_UPGRADE_UNMOVED); nothing to roll back."
     else
-        # ANY forward failure rolls back — a reachability/build error OR the miner not returning to a live
-        # hashrate. Rollback re-runs _control_upgrade_do, which checks out AND rebuilds the old ref, so a
-        # failed forward attempt never leaves the tree pinned to an unbuilt $target: that would make
-        # VERSION read $target, short-circuit every future retry ("already on"), and run unverified code
-        # on every later invocation. A build failure after checkout is a real on-disk change, not "no
-        # change applied" — this reverts it (#308 security review, the build-failed branch was the gap).
         warn "control-upgrade: $target did not come up cleanly — rolling back to ${old_tag:-previous}."
         if [ -n "$old_tag" ] && _control_upgrade_do "$old_tag" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
             _control_status "$status" rolled_back "$cid" version "upgrade to $target failed; rolled back to $old_tag and live" ""
@@ -5209,7 +5142,7 @@ _api_rigforge_block() {                                                         
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null
-    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at
+    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at rc=0
     mkdir -p "$dir"
     generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     sum=$(_read_api_summary || true)
@@ -5221,9 +5154,11 @@ api_refresh() {
     fi
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
-    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json"
-    printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
-    printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
+    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json" || rc=1
+    printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json" || rc=1
+    printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json" || rc=1
+    rm -f "$dir"/*.tmp."$$"
+    return "$rc"
 }
 _api_refresh_status() {
     local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last refresh_state stamp mtime now age i
@@ -5342,7 +5277,7 @@ doctor() {
         ;;
     esac
 
-    # Service active?
+    _pkg_upgrade_doctor || issues=$((issues + 1))
     local svc_up=n
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         svc_up=y
@@ -6016,7 +5951,7 @@ bios() {
     # dmidecode (the memory-profile probe) needs root — auto-elevate exactly like tune.
     if _tune_should_elevate; then
         log "bios needs root for the firmware probes — re-running with sudo..."
-        exec sudo "$0" bios "$@"
+        _exec_sudo_self bios "$@"
     fi
     local target_set=0
     if [ -n "${TUNE_TARGET:-}" ]; then target_set=1; fi
@@ -6055,7 +5990,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
-  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
+  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   doctor     check worker health (doctor --json: machine report on stdout, human report on stderr)
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
@@ -6083,7 +6018,7 @@ Tuning:
              writes BIOS itself
 
 Provision & lifecycle:
-  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo)
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   uninstall  remove the service and revert all system changes (add -y|--yes to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically
@@ -6134,6 +6069,7 @@ if [ "$_RIGFORGE_SOURCED" = "0" ]; then
         shift
         upgrade "$@"
         ;;
+    package-upgrade) package_upgrade ;;
     uninstall)
         shift
         uninstall "$@"

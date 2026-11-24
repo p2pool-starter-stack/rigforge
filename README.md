@@ -17,8 +17,8 @@ Ubuntu/Debian machine. It installs the toolchain, compiles XMRig from source, ap
 kernel- and CPU-level tuning for RandomX hashrate, and runs it as a managed service. Point it at a
 pool to start mining.
 
-macOS support is **deprecated as of 2026-09-14**: unsupported and untested going forward (no CI
-coverage, no bench). The Darwin code paths still work but get no further investment — see
+Support policy: **Ubuntu 24.04 is fully supported**. **macOS is best effort**: most of RigForge
+works there and some features are degraded (no kernel tuning, no systemd service) — see
 [Running on macOS](docs/operations.md#running-on-macos).
 
 It works against any RandomX Stratum pool, and it's the companion miner for
@@ -147,7 +147,7 @@ sudo apt update && sudo apt install rigforge
 ```
 
 `sudo apt upgrade rigforge` keeps the worker current and first-run setup is unchanged
-(`rigforge --version` confirms the install). What the signature proves, and how the key is held,
+(`rigforge --version` confirms the install). An upgrade of a configured host is queued outside dpkg and restarts the miner only after it succeeds; `apt-mark hold rigforge` defers it ([operations](docs/operations.md#upgrading-through-apt)). What the signature proves, and how the key is held,
 is in [SECURITY.md › Release integrity](SECURITY.md#release-integrity). Until the first signed
 release is published the feed URL is not live and the pinned fingerprint file is a placeholder.
 
@@ -226,7 +226,7 @@ CI jobs, so `make test` locally is what CI checks.
 make lint        # shellcheck + shfmt the script, utilities, and test scripts
 make test        # lint + the dependency-free suite (runs on macOS or Linux, no Docker)
 make test-e2e    # full end-to-end in disposable Linux containers (needs Docker)
-make test-e2e-macos # native macOS e2e: real rigforge.sh, real launchctl/nohup/BSD tools (macOS only, deprecated, not run in CI)
+make test-e2e-macos # native macOS e2e: real rigforge.sh, real launchctl/nohup/BSD tools (macOS only, best effort, not run in CI)
 make coverage    # measure rigforge.sh + util coverage via kcov, enforce the floor (needs Docker)
 make smoke       # release pre-tag gate (quick): real xmrig --bench proves the built worker hashes (manual)
 make e2e-real    # release pre-tag gate (full): real build+tune+bench+doctor+uninstall on a rig (root)
@@ -237,7 +237,7 @@ every external/privileged command (`git`, `make`, `cmake`, `sudo`, `systemctl`, 
 `apt-get`, …) and all hardware detection (`uname`, `lscpu`, `sysctl`, `nproc`, `hostname`) replaced by
 fakes on `PATH`. Because the hardware is faked, one run on any machine simulates every supported
 platform. It asserts the generated XMRig config for EPYC / Ryzen X3D / generic-Linux inputs and the
-deprecated macOS path, plus config parsing, `DONATION` validation, host resolution, and a full stubbed
+best-effort macOS path, plus config parsing, `DONATION` validation, host resolution, and a full stubbed
 deployment run (executed twice to prove idempotency).
 
 **What `make test-e2e` adds.** It runs the *real* `rigforge.sh` end-to-end inside a throwaway

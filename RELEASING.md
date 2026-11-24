@@ -181,7 +181,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
 
-- verifies the tag matches `VERSION` (the build fails otherwise),
+- verifies the tagged commit is on `main` and that the tag matches `VERSION` (the build fails otherwise),
 - packages the deploy bundle (`rigforge.sh`, `util/`, `systemd/`, `config.minimal.json`,
   `config.reference.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`) as
   `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev files are excluded),
@@ -288,6 +288,20 @@ re-verifies the tag against `main`, requires both release assets to be unmodifie
 release was published, and republishes. Every deploy re-verifies each archived feed it keeps
 against the pinned key; an archive that does not verify (for example one signed with a rotated
 key) is dropped from `apt/versions`, while its `.deb` stays on its GitHub release.
+
+## The Homebrew formula
+
+Every release uploads a generated `rigforge.rb` beside the tarball (`scripts/build-homebrew-formula.sh`
+renders `Formula/rigforge.rb.in` with the tarball URL and the sha256 from `SHA256SUMS`, and fails if
+they disagree). Publishing a stable release then starts `Bump Homebrew formula`
+(`homebrew-formula.yml`), which re-derives the formula from the published assets and opens or
+updates a pull request from the fixed branch `homebrew/formula-bump` against `main`; it never
+pushes to `main`. The formula is live for `brew tap` users only after that PR merges. Drafts,
+prereleases and a repository without the bot configured skip the job.
+
+Owner-only steps before the first bump (one time): create a GitHub App with contents and pull
+requests write access on this repository only, install it here, then add the repository variable
+`FORMULA_BOT_APP_ID` and the secret `FORMULA_BOT_PRIVATE_KEY`.
 
 ## Notes
 

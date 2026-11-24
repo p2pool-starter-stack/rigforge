@@ -213,7 +213,7 @@ provision() {
     require_linux_root provision
     ensure_config
     phase "provision — ./rigforge.sh setup (real deps + build + tuning + service)"
-    "$RIGFORGE" setup 2>&1 | tee /tmp/e2e-provision.log
+    "$RIGFORGE" setup --no-root-guard 2>&1 | tee /tmp/e2e-provision.log
 
     # #cpu: as root, lscpu also prints a "BIOS Model name:" DMI line; setup's detected-CPU line must show
     # the clean model, not concatenate that line's "… Unknown CPU @ …" garbage.

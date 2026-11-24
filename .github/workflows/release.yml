@@ -26,6 +26,16 @@ jobs:
           # Releasing goes through `gh` with GH_TOKEN below, not `git push`, so the checkout never
           # needs the token left in .git/config (zizmor: artipacked).
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require the tag to be on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::Tag '$TAG' is not on main. Tag from main and retag."
+            exit 1
+          fi
 
       - name: Verify the tag matches VERSION
         run: |
@@ -47,6 +57,7 @@ jobs:
           tar -czf "$stage.tar.gz" "$stage"
           sha256sum "$stage.zip" "$stage.tar.gz" > SHA256SUMS
           echo "--- SHA256SUMS ---"; cat SHA256SUMS
+          bash scripts/build-homebrew-formula.sh "$TAG" SHA256SUMS rigforge.rb "$stage.tar.gz"
 
       - name: Extract release notes from CHANGELOG.md
         run: |
@@ -75,7 +86,7 @@ jobs:
           # go back to publishing automatically on tag push.
           # Checksums only, by decision (2026-07-11): release signing was removed — see
           # SECURITY.md > Release integrity. SHA256SUMS proves the bundle matches what CI built.
-          assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS)
+          assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS rigforge.rb)
           gh release create "$TAG" $pre --draft \
             --title "RigForge $TAG" \
             --notes-file RELEASE_NOTES.md \
