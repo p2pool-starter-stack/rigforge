@@ -600,7 +600,7 @@ verify() {
 # Poll the authed receiver until it serves: 200 = a prior change's record, 503 = "no change applied
 # yet" — both mean it's up. On a rig whose every core the miner pins, a freshly-(re)started
 # DynamicUser python server can take >3s to bind; a single-shot check after `sleep 3` read as
-# connection-refused on real miner-0 runs (the upgrade phase's first run, then the control phase on
+# connection-refused on real-rig runs (the upgrade phase's first run, then the control phase on
 # the v1.12.0 gate). Sets RCV_CODE/RCV_TRY for the caller's ok/bad line.
 _auth_curl() { # <token> <curl args...>; keep the bearer out of process argv
     local token=$1
@@ -859,7 +859,7 @@ _control_cleanup() {
 # snapshot/cleanup machinery (CTL_ globals + _control_cleanup) — config is snapshotted and BOTH
 # control flags are forced off again on ANY exit, plus the upgrade-phase leftovers (probe tag,
 # throttle stamp, and #350's checkout rewind) are removed. Also the producer half of pithead#597's
-# cross-repo tier-4 gate.
+# cross-repo gate.
 
 # POST /upgrade {"version":<target>} and poll /status?change_id= to a terminal status (echoed).
 # `started` (#320) is non-terminal — keep polling through it. Echoes "post-failed:<http-code>" when

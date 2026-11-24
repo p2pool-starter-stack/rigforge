@@ -108,10 +108,10 @@ rejects missing, duplicate, substituted or stale rows; wrong platform or context
 missing, reordered, duplicated or unknown phases; partial assertion counts;
 unapproved skips; malformed/truncated data; nonzero exit; and failed cleanup.
 It must receive the trusted plan, never derive expectations from the artifacts it
-is checking. Receipts are not signed attestations: trust remains with the runner
+is checking. Receipts are not signed attestations: trust remains with the party
 that owns the checkout, plan, fixtures and artifact collection.
 
-## Acceptance still required before rollout
+## Open acceptance requirements
 
 An independent verification step must wire this required AND
 into the same current-head product/release status. Until then, local receipt

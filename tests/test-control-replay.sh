@@ -119,7 +119,7 @@ PITHEAD_URL='fixture.invalid:3333'
 RIGFORGE=true # Bash's builtin fixture does not depend on a container's external true path.
 printf '{"control_port":8082,"api_port":8081,"pools":[{"url":"original.invalid:3333","user":"synthetic-user","pass":"SOURCE-SECRET"},{"url":"fixture.invalid:3333","user":"synthetic-user","pass":"BENCH-SECRET"}]}' >"$CFG"
 E2E_PITHEAD_CONTROL_FIXTURE=pithead-control
-E2E_RIG_LOCK_UNIT=harness-riglock-synthetic-123
+E2E_RIG_LOCK_UNIT=bench-ci-riglock-synthetic-123
 E2E_PITHEAD_CONTROL_CONTEXT='{"version":1,"fixture":"pithead-control","thermal":{"feed_deadline_s":90,"starting_scalars":{"max_temp_c":100,"DONATION":0,"watchdog_interval_min":5}},"unknown":["historical timing"]}'
 IT_RIG_POOLS_PROBE='[{"url":"fixture.invalid:3333","user":"synthetic-user","pass":"SECRET $(never-execute) `never-execute`"}]'
 case "$mode" in
@@ -223,7 +223,6 @@ expected='{"max_temp_c":101}
 {\"max_temp_c\":102}"
 [ "$(cat "$CALLS")" = "$expected" ] || die 'recorded apply order differs'
 ! grep -q 'SECRET' "$CALLS" || die 'pool credentials escaped into log'
-# Exercise the real cleanup function: the harness marker survives, the ordinary marker does not.
 source "$ROOT/tests/e2e-hammer.sh"
 eval "$(sed -n '/^_cleanup()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 _restore_xmrig() { return 0; }
