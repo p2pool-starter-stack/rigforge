@@ -98,10 +98,14 @@ pkg_run() {
         _post_upgrade_retune() { :; }
         _control_failed() { :; }
         _sister_api_failed() { :; }
-        if [ "$1" = fail ]; then
+        case "$1" in
+        fail)
             compile_xmrig() { error "build failed"; }
             error() { exit 1; }
-        fi
+            ;;
+        cmdfail) install_watchdog() { false; } ;;
+        apifail) install_api() { return 1; } ;;
+        esac
         package_upgrade
     )
 }
@@ -112,13 +116,18 @@ rc=0
 pkg_run ok || rc=$?
 check "no marker: package-upgrade is a no-op" "$([ "$rc" -eq 0 ] && [ ! -s "$CALLS" ] && echo 0 || echo 1)"
 
-echo 2.0.0 >"$STATE/upgrade-pending"
-: >"$CALLS"
-rc=0
-pkg_run fail || rc=$?
-check "failed upgrade exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
-check "failed upgrade keeps the marker and records the failure" "$([ -f "$STATE/upgrade-pending" ] && [ -s "$STATE/upgrade-failed" ] && echo 0 || echo 1)"
-check "failed upgrade does not restart or re-render units" "$(grep -qE 'restart|unit:' "$CALLS" && echo 1 || echo 0)"
+for mode in fail cmdfail apifail; do
+    rm -f "$STATE/upgrade-failed"
+    echo 2.0.0 >"$STATE/upgrade-pending"
+    : >"$CALLS"
+    set +e
+    pkg_run "$mode" >/dev/null 2>&1
+    rc=$?
+    set -e
+    check "$mode: exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+    check "$mode: keeps the marker and records the failure" "$([ -f "$STATE/upgrade-pending" ] && [ -s "$STATE/upgrade-failed" ] && echo 0 || echo 1)"
+    [ "$mode" = apifail ] || check "$mode: does not restart the miner" "$(grep -qx restart "$CALLS" && echo 1 || echo 0)"
+done
 status_out=$(
     source "$SCRIPT"
     warn() { echo "$*"; }
@@ -133,8 +142,10 @@ doctor_out=$(
 check "doctor reports the failure as an issue" "$(grep -q DOCTOR_ISSUE <<<"$doctor_out" && grep -q 'sudo rigforge upgrade' <<<"$doctor_out" && echo 0 || echo 1)"
 
 : >"$CALLS"
-rc=0
-pkg_run ok || rc=$?
+set +e
+pkg_run ok >/dev/null 2>&1
+rc=$?
+set -e
 check "successful upgrade exits 0" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 check "successful upgrade clears the marker and failure" "$([ ! -e "$STATE/upgrade-pending" ] && [ ! -e "$STATE/upgrade-failed" ] && echo 0 || echo 1)"
 check "successful upgrade re-renders every unit and restarts once" "$(for u in unit:service unit:autotune unit:watchdog unit:api unit:control; do grep -qx "$u" "$CALLS" || exit 1; done && [ "$(grep -cx restart "$CALLS")" -eq 1 ] && echo 0 || echo 1)"

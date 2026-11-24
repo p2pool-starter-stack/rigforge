@@ -4,31 +4,38 @@ _pkg_state() { printf '%s' "${RIGFORGE_PKG_STATE:-/var/lib/rigforge}"; }
 
 _pkg_upgrade_clear() { rm -f "$(_pkg_state)/upgrade-pending" "$(_pkg_state)/upgrade-failed" 2>/dev/null || true; }
 
+_pkg_upgrade_failed() {
+    local st tmp
+    st=$(_pkg_state)
+    [ "$1" -ne 0 ] || return 0
+    tmp=$(mktemp "$st/.upgrade-failed.XXXXXX") || return 0
+    printf '%s upgrade exited %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >"$tmp"
+    mv -f "$tmp" "$st/upgrade-failed"
+    warn "Package upgrade did not finish. Retry with: sudo rigforge upgrade"
+}
+
 package_upgrade() {
-    local st rc
+    local st
     st=$(_pkg_state)
     [ -f "$st/upgrade-pending" ] || {
         log "No package upgrade is pending."
         return 0
     }
     rm -f "$st/upgrade-failed"
-    set +e
-    (upgrade)
-    rc=$?
-    set -e
-    [ "$rc" -ne 0 ] || return 0
-    printf '%s upgrade exited %s; the previous build is still running\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc" >"$st/upgrade-failed"
-    warn "Package upgrade failed; the previous build keeps running. Retry with: sudo rigforge upgrade"
-    return 1
+    (
+        trap '_pkg_upgrade_failed "$?"' EXIT
+        upgrade
+        trap - EXIT
+    )
 }
 
 _pkg_upgrade_status() {
     local st
     st=$(_pkg_state)
     if [ -f "$st/upgrade-failed" ]; then
-        warn "Package upgrade to $(cat "$st/upgrade-pending" 2>/dev/null) failed: $(cat "$st/upgrade-failed"). Retry with: sudo rigforge upgrade"
+        warn "Package upgrade to $(cat "$st/upgrade-pending" 2>/dev/null) did not finish: $(cat "$st/upgrade-failed"). Retry with: sudo rigforge upgrade"
     elif [ -f "$st/upgrade-pending" ]; then
-        log "Package upgrade to $(cat "$st/upgrade-pending") is queued or running (journalctl -u rigforge-upgrade)."
+        log "Package upgrade to $(cat "$st/upgrade-pending") is pending; follow it with: journalctl -u rigforge-upgrade. If it is not running, retry with: sudo rigforge upgrade"
     fi
 }
 
@@ -36,9 +43,9 @@ _pkg_upgrade_doctor() {
     local st
     st=$(_pkg_state)
     if [ -f "$st/upgrade-failed" ]; then
-        _ck_warn "package upgrade to $(cat "$st/upgrade-pending" 2>/dev/null) failed ($(cat "$st/upgrade-failed")) — the previous build is still running; retry with: sudo rigforge upgrade" package-upgrade
+        _ck_warn "package upgrade to $(cat "$st/upgrade-pending" 2>/dev/null) did not finish ($(cat "$st/upgrade-failed")); retry with: sudo rigforge upgrade" package-upgrade
         return 1
     elif [ -f "$st/upgrade-pending" ]; then
-        _ck_info "package upgrade to $(cat "$st/upgrade-pending") is queued or running (journalctl -u rigforge-upgrade)" package-upgrade
+        _ck_info "package upgrade to $(cat "$st/upgrade-pending") is pending; follow it with: journalctl -u rigforge-upgrade" package-upgrade
     fi
 }
