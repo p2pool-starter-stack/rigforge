@@ -79,7 +79,7 @@ EOF
 BUILD="$WORK/data-home/worker/xmrig/build"
 
 echo "== setup (real macOS deploy path) =="
-out="$(./rigforge.sh setup </dev/null 2>&1)"
+out="$(./rigforge.sh setup --no-root-guard </dev/null 2>&1)"
 rc=$?
 assert_rc "setup exits 0" "$rc" "0"
 [ "$rc" = 0 ] || printf '%s\n' "$out" | tail -25

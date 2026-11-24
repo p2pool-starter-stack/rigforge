@@ -1987,6 +1987,33 @@ _persist_appliance_mode() {
         rmdir "$APPLIANCE_MARKER" 2>/dev/null || [ ! -e "$APPLIANCE_MARKER" ] || error "Could not clear stale appliance mode at $APPLIANCE_MARKER."
     fi
 }
+
+_persist_root_guard_allow() {
+    [ "${RIGFORGE_ROOT_GUARD_ALLOW:-}" = 1 ] || return 0
+    [ "$OS_TYPE" = Linux ] || return 0
+
+    if [ -d "$SCRIPT_DIR/.git" ]; then
+        local has_package_marker=false
+        [ -d "/homebrew/Cellar/rigforge" ] && has_package_marker=true
+        [ -d "/opt/rigforge" ] && has_package_marker=true
+        if [ "$has_package_marker" = true ]; then
+            warn "root-guard: $SCRIPT_DIR/.git found alongside package marker — refusing auto-allowance; pass --no-root-guard explicitly"
+            return 0
+        fi
+    fi
+
+    local usvc="$SYSTEMD_DIR/rigforge-control-upgrade.service"
+    if [ -f "$usvc" ]; then
+        if ! grep -q 'Environment=ROOT_GUARD_ALLOW' "$usvc" 2>/dev/null; then
+            sudo sed -i '/^\[Service\]/a Environment=ROOT_GUARD_ALLOW' "$usvc" 2>/dev/null || true
+            sudo systemctl daemon-reload 2>/dev/null || true
+            if [ -d "$SCRIPT_DIR/.git" ]; then
+                warn "root-guard: persisted allowance into $usvc — the tree $SCRIPT_DIR is now trusted for root-run units; pass --no-root-guard on future upgrades to silence this warning"
+            fi
+        fi
+    fi
+}
+
 main() {
     local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
     for _arg in "$@"; do
@@ -1995,12 +2022,14 @@ main() {
             _setup_plan
             return 0
             ;;
-        *) error "Unknown option for setup: '$_arg' (use --dry-run). Run '$0 help'." ;;
+        --no-root-guard) RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
+        *) error "Unknown option for setup: '$_arg' (use --dry-run, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
+    source "$SCRIPT_DIR/util/root-guard.sh" && _root_guard_check || return 1
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
     _seed_appliance_tor_default
@@ -2036,10 +2065,12 @@ main() {
     install_control || _control_rc=1
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
+    CURRENT_STEP="persisting root guard allowance"
+    _persist_root_guard_allow
     CURRENT_STEP="linking the rigforge command"
-    link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
+    link_cli
     CURRENT_STEP="reconciling file ownership"
-    _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
+    _reown_worker
     CURRENT_STEP="finishing up"
     finish_deployment
     [ "$_control_rc" -eq 0 ] || _control_failed setup
@@ -2141,9 +2172,6 @@ _upgrade_check() {
     return 0
 }
 
-# Upgrade redeploys this release: regenerate config, reinstall every unit, re-tune, re-own, and restart. The COMPILE is
-# what's conditional (only a changed XMRig pin needs one), not the upgrade. Skips the setup-only steps
-# (dependency install, kernel tuning) — those don't change on a RigForge release.
 upgrade() {
     local arg _api_rc=0 _control_rc=0
     for arg in "$@"; do
@@ -2152,20 +2180,21 @@ upgrade() {
             _upgrade_check
             return 0
             ;;
-        *) error "Unknown option for upgrade: '$arg' (use --check). Run '$0 help'." ;;
+        --no-root-guard) RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
+        *) error "Unknown option for upgrade: '$arg' (use --check, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     check_prerequisites
+    source "$SCRIPT_DIR/util/root-guard.sh" && _root_guard_check || return 1
     parse_config
     _shared_host_prepare
     decide_rebuild
-    # #413: reinstall the whole release even when the XMRig pin (and therefore build) is unchanged.
     local was_active=no
     if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         was_active=yes
     fi
-    SERVICE_NO_START=true # _upgrade_restart below owns the restart decision, not install_service
+    SERVICE_NO_START=true
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
@@ -2175,6 +2204,7 @@ upgrade() {
     install_api || _api_rc=1
     install_control || _control_rc=1
     install_api_firewall
+    _persist_root_guard_allow
     if [ "$XMRIG_REBUILD" = true ]; then
         log "Upgraded to XMRig $XMRIG_VERSION."
     else
@@ -6055,7 +6085,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
-  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
+  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists; --no-root-guard: skip the root-owned tree check and persist the allowance into the systemd units)
   doctor     check worker health (doctor --json: machine report on stdout, human report on stderr)
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
@@ -6083,7 +6113,7 @@ Tuning:
              writes BIOS itself
 
 Provision & lifecycle:
-  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo)
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo; --no-root-guard: skip the root-owned tree check and persist the allowance into the systemd units)
   uninstall  remove the service and revert all system changes (add -y|--yes to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically
