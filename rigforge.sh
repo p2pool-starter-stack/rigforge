@@ -1999,7 +1999,7 @@ main() {
             _setup_plan
             return 0
             ;;
-        --no-root-guard) RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
+        --no-root-guard) export RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
         *) error "Unknown option for setup: '$_arg' (use --dry-run, --no-root-guard). Run '$0 help'." ;;
         esac
     done
@@ -2117,7 +2117,7 @@ upgrade() {
             _upgrade_check
             return 0
             ;;
-        --no-root-guard) RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
+        --no-root-guard) export RIGFORGE_ROOT_GUARD_ALLOW=1 ;;
         *) error "Unknown option for upgrade: '$arg' (use --check, --no-root-guard). Run '$0 help'." ;;
         esac
     done
