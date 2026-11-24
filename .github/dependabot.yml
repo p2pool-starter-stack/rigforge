@@ -35,6 +35,7 @@ updates:
   - package-ecosystem: "docker"
     directories:
       - "/tests/e2e"
+      - "/tests/e2e-24"
       - "/tests/coverage"
       - "/tests/docker"
     schedule:

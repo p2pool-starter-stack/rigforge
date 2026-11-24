@@ -8,17 +8,17 @@
 
 [![CI](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml/badge.svg)](https://github.com/p2pool-starter-stack/rigforge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-![Platform: Ubuntu 22.04+ / Debian 12](https://img.shields.io/badge/Platform-Ubuntu%2022.04%2B%20%2F%20Debian%2012-E95420?logo=ubuntu&logoColor=white)
+![Platform: Ubuntu 24.04 & 26.04](https://img.shields.io/badge/Platform-Ubuntu%2024.04%20%26%2026.04-E95420?logo=ubuntu&logoColor=white)
 [![Miner: XMRig](https://img.shields.io/badge/Miner-XMRig-F26822?logo=monero&logoColor=white)](https://github.com/xmrig/xmrig)
 [![Companion: Pithead](https://img.shields.io/badge/Companion-Pithead-F26822)](https://github.com/p2pool-starter-stack/pithead)
 
 RigForge provisions a tuned [XMRig](https://github.com/xmrig/xmrig) mining worker on a fresh
-Ubuntu/Debian machine. It installs the toolchain, compiles XMRig from source, applies
+Ubuntu machine. It installs the toolchain, compiles XMRig from source, applies
 kernel- and CPU-level tuning for RandomX hashrate, and runs it as a managed service. Point it at a
 pool to start mining.
 
-macOS support is **deprecated as of 2026-09-14**: unsupported and untested going forward (no CI
-coverage, no bench). The Darwin code paths still work but get no further investment — see
+Ubuntu 24.04 LTS and 26.04 LTS are fully supported. macOS is **best effort**: no CI coverage, no
+bench, and the Linux-only tuning is unavailable — see
 [Running on macOS](docs/operations.md#running-on-macos).
 
 It works against any RandomX Stratum pool, and it's the companion miner for
