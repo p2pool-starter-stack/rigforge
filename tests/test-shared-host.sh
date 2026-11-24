@@ -352,4 +352,15 @@ uninstall --yes >/dev/null
 grep -qFx 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' "$GRUB_DEFAULT" || fail 'dedicated uninstall left managed boot tuning'
 [ ! -f "$MODULES_LOAD_DIR/msr.conf" ] || fail 'dedicated uninstall kept MSR module policy'
 
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet hugepagesz=2M hugepages=4 msr.allow_writes=on"\n' >"$GRUB_DEFAULT"
+printf 'SENTINEL_BAK_LINE\n' >"$GRUB_DEFAULT.bak"
+uninstall --yes >/dev/null
+grep -qFx 'SENTINEL_BAK_LINE' "$GRUB_DEFAULT.bak" || fail 'uninstall overwrote pre-existing .bak'
+
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet hugepages=4 msr.allow_writes=on"\nGRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT iommu=pt"\n' >"$GRUB_DEFAULT"
+cp "$GRUB_DEFAULT" "$D/grub-two-lines" && rm -f "$GRUB_DEFAULT.bak"
+uninstall --yes >/dev/null 2>&1
+cmp -s "$GRUB_DEFAULT" "$D/grub-two-lines" || fail 'uninstall rewrote a GRUB file with two cmdline lines'
+[ ! -f "$GRUB_DEFAULT.bak" ] || fail 'uninstall created .bak for a GRUB file it refused'
+
 printf 'shared host parse, config, host tuning and cgroup regressions: PASS\n'
