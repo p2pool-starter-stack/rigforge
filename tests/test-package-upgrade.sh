@@ -45,16 +45,19 @@ postinst() {
 }
 
 postinst first "" 2.0.0 y
-check "first install is inert" "$([ ! -e "$D/first/var/lib/rigforge/upgrade-pending" ] && [ ! -s "$CALLS" ] && echo 0 || echo 1)"
+check "first install queues nothing" "$([ ! -e "$D/first/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && echo 0 || echo 1)"
+check "first install creates the state dir" "$([ -d "$D/first/var/lib/rigforge" ] && echo 0 || echo 1)"
+check "first install reloads systemd only" "$([ "$(cat "$CALLS")" = 'systemctl daemon-reload' ] && echo 0 || echo 1)"
+check "first install prints the first-run step" "$(grep -q 'sudo rigforge setup' "$D/first/out" && echo 0 || echo 1)"
 
 postinst noconf 1.0.0 2.0.0 n
-check "upgrade without a configured miner is inert" "$([ ! -e "$D/noconf/var/lib/rigforge/upgrade-pending" ] && [ ! -s "$CALLS" ] && echo 0 || echo 1)"
+check "upgrade without a configured miner is inert" "$([ ! -e "$D/noconf/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && ! grep -q 'sudo rigforge setup' "$D/noconf/out" && echo 0 || echo 1)"
 
 postinst same 2.0.0 2.0.0 y
-check "same version is inert" "$([ ! -e "$D/same/var/lib/rigforge/upgrade-pending" ] && [ ! -s "$CALLS" ] && echo 0 || echo 1)"
+check "same version is inert" "$([ ! -e "$D/same/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && ! grep -q 'sudo rigforge setup' "$D/same/out" && echo 0 || echo 1)"
 
 postinst older 2.0.0 1.9.0 y
-check "downgrade is inert" "$([ ! -e "$D/older/var/lib/rigforge/upgrade-pending" ] && [ ! -s "$CALLS" ] && echo 0 || echo 1)"
+check "downgrade is inert" "$([ ! -e "$D/older/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && ! grep -q 'sudo rigforge setup' "$D/older/out" && echo 0 || echo 1)"
 
 postinst queue 1.9.0 2.0.0 y
 check "upgrade writes the marker" "$([ "$(cat "$D/queue/var/lib/rigforge/upgrade-pending")" = 2.0.0 ] && echo 0 || echo 1)"
@@ -70,6 +73,35 @@ SYSTEMCTL_FAIL=1 postinst sysfail 1.9.0 2.0.0 y
 rc=$?
 set -e
 check "systemctl failure never fails dpkg" "$([ "$rc" -eq 0 ] && grep -q 'sudo rigforge upgrade' "$D/sysfail/out" && echo 0 || echo 1)"
+
+maint() {
+    local r="$D/$1" script=$2 arg=$3
+    mkdir -p "$r/run/systemd/system" "$r/etc/rigforge" "$r/var/lib/rigforge" "$r/usr/lib/rigforge"
+    echo '{}' >"$r/etc/rigforge/config.json"
+    echo '{}' >"$r/usr/lib/rigforge/config.json"
+    : >"$CALLS"
+    RIGFORGE_PKG_ROOT="$r" PATH="$STUBS:$PATH" sh "$ROOT/packaging/debian/$script" "$arg" >"$r/out" 2>&1
+}
+for arg in upgrade failed-upgrade abort-install abort-upgrade disappear remove purge deconfigure; do
+    for script in prerm postrm; do
+        set +e
+        maint "m-$script-$arg" "$script" "$arg"
+        rc=$?
+        set -e
+        check "$script $arg exits 0" "$rc"
+    done
+done
+maint prerm-remove prerm remove
+for u in xmrig.service rigforge-upgrade.service rigforge-watchdog.timer rigforge-autotune.timer rigforge-control.service rigforge-api.service; do
+    check "prerm remove stops and disables $u" "$(grep -qx "systemctl disable --now $u" "$CALLS" && echo 0 || echo 1)"
+done
+maint prerm-upgrade prerm upgrade
+check "prerm upgrade leaves the miner running" "$([ ! -s "$CALLS" ] && echo 0 || echo 1)"
+maint postrm-remove postrm remove
+check "remove keeps config and state" "$([ -f "$D/postrm-remove/etc/rigforge/config.json" ] && [ -f "$D/postrm-remove/usr/lib/rigforge/config.json" ] && [ -d "$D/postrm-remove/var/lib/rigforge" ] && echo 0 || echo 1)"
+maint postrm-purge postrm purge
+check "purge removes config, state and the tree's leftovers" "$([ ! -e "$D/postrm-purge/etc/rigforge" ] && [ ! -e "$D/postrm-purge/var/lib/rigforge" ] && [ ! -e "$D/postrm-purge/usr/lib/rigforge" ] && echo 0 || echo 1)"
+check "purge never touches tuning" "$(! grep -rqE 'grub|sysctl|hugepages|wrmsr|modprobe' "$ROOT/packaging/debian/postrm" "$ROOT/packaging/debian/prerm" && echo 0 || echo 1)"
 
 STATE="$D/state"
 export RIGFORGE_PKG_STATE="$STATE"

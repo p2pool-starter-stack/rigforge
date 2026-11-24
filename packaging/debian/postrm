@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+ROOT=${RIGFORGE_PKG_ROOT:-}
+
+case "$1" in
+purge)
+    rm -rf "$ROOT/etc/rigforge" "$ROOT/var/lib/rigforge" "$ROOT/usr/lib/rigforge"
+    if [ -d "$ROOT/run/systemd/system" ]; then systemctl daemon-reload || true; fi
+    ;;
+remove)
+    if [ -d "$ROOT/run/systemd/system" ]; then systemctl daemon-reload || true; fi
+    ;;
+esac
+
+exit 0

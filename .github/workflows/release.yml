@@ -62,9 +62,8 @@ jobs:
       - name: Build the .deb package
         run: |
           set -euo pipefail
-          VERSION="$(tr -d '[:space:]' < VERSION)"
-          bash scripts/build-deb.sh rigforge-"$TAG".tar.gz "$TAG" packaging/apt/fingerprint
-          sha256sum rigforge_"$VERSION"_all.deb >> SHA256SUMS
+          deb=$(bash scripts/build-deb.sh "rigforge-$TAG.tar.gz" "$TAG")
+          sha256sum "$deb" >> SHA256SUMS
           echo "--- SHA256SUMS (with .deb) ---"; cat SHA256SUMS
 
       - name: Extract release notes from CHANGELOG.md

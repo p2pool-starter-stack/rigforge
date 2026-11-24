@@ -53,29 +53,15 @@ safe place for code that root-run units execute, so prefer the git route below o
 
 ### Install with apt (Debian / Ubuntu on Linux)
 
-The project publishes a signed `.deb` through a GitHub-hosted apt feed. Install the signing key
-and verify its fingerprint against [`packaging/apt/fingerprint`](../packaging/apt/fingerprint)
-in this repository:
-
-```bash
-sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://p2pool-starter-stack.github.io/rigforge/apt/rigforge.asc |
-  sudo tee /etc/apt/keyrings/rigforge.asc >/dev/null
-gpg --show-keys --with-colons /etc/apt/keyrings/rigforge.asc | awk -F: '/^fpr/{print $10; exit}'
-```
-
-The printed fingerprint must match the pinned one. Then add the source and install:
-
-```bash
-printf 'Types: deb\nURIs: https://p2pool-starter-stack.github.io/rigforge/apt/\nSuites: ./\nSigned-By: /etc/apt/keyrings/rigforge.asc\n' |
-  sudo tee /etc/apt/sources.list.d/rigforge.sources >/dev/null
-sudo apt update && sudo apt install rigforge
-```
-
-`apt upgrade rigforge` keeps the worker current. On Linux the package installs a
-`/usr/bin/rigforge` wrapper that exports `RIGFORGE_LIB` and `RIGFORGE_STATE`. First-run setup
-is the same as the git or Homebrew routes: `sudo rigforge.sh setup` (or `sudo rigforge setup`),
-which installs and enables the systemd units, builds the worker, and tunes the kernel.
+The apt steps (signing key, source entry, `apt install rigforge`) are in the
+[README](../README.md), under **Prefer `apt`?**. Installing changes nothing on the host: the package puts the
+code in `/usr/lib/rigforge`, links `/usr/bin/rigforge` to it and adds the one-shot upgrade unit.
+Provision with `sudo rigforge setup`. Until `RIGFORGE_STATE` lands (#780), `setup` keeps
+`config.json` and the XMRig build inside `/usr/lib/rigforge`; `apt upgrade` and `apt remove` keep
+them, and `apt purge` deletes them with `/var/lib/rigforge`. For the same reason the
+[queued upgrade](operations.md#upgrading-through-apt), which looks for `/etc/rigforge/config.json`,
+does not start yet: run `sudo rigforge upgrade` after `apt upgrade rigforge`. Neither remove nor purge reverts
+system tuning; that is `rigforge uninstall`.
 
 ---
 

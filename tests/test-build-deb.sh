@@ -1,154 +1,70 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-cd "$ROOT"
 
-if [[ $(uname -s) != Linux ]]; then
-    printf 'SKIP: build-deb needs Linux (dpkg-deb)\n'
+if [[ $(uname -s) != Linux ]] || ! command -v dpkg-deb >/dev/null 2>&1; then
+    printf 'SKIP: build-deb needs Linux with dpkg-deb\n'
     exit 0
 fi
-for cmd in dpkg-deb dpkg; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        printf 'SKIP: missing %s\n' "$cmd"
-        exit 0
-    fi
-done
 
-ok() { printf 'ok: %s\n' "$1"; }
-fail() {
-    printf 'FAIL: %s\n' "$1" >&2
-    exit 1
-}
-assert_fails() {
-    local desc=$1
-    shift
-    if "$@" >/dev/null 2>&1; then
-        printf 'FAIL: %s (unexpectedly succeeded)\n' "$desc" >&2
-        exit 1
+fail=0
+check() {
+    if [ "$2" -eq 0 ]; then printf 'ok: %s\n' "$1"; else
+        printf 'FAIL: %s\n' "$1" >&2
+        fail=1
     fi
-    ok "$desc"
-}
-assert_ok() {
-    local desc=$1
-    shift
-    if ! "$@" >/dev/null 2>&1; then
-        printf 'FAIL: %s\n' "$desc" >&2
-        exit 1
-    fi
-    ok "$desc"
-}
-assert_eq() {
-    if [ "$1" != "$2" ]; then
-        printf 'FAIL: %s (expected [%s], got [%s])\n' "$3" "$2" "$1" >&2
-        exit 1
-    fi
-    ok "$3"
-}
-assert_contains() {
-    local desc=$1 haystack=$2 needle=$3
-    case "$haystack" in
-    *"$needle"*) ok "$desc" ;;
-    *)
-        printf 'FAIL: %s (%s not found)\n' "$desc" "$needle" >&2
-        exit 1
-        ;;
-    esac
-}
-assert_field() {
-    local deb=$1 field=$2 want=$3 got
-    got=$(dpkg-deb -f "$deb" "$field" 2>/dev/null) || fail "dpkg-deb -f $field failed"
-    assert_eq "$got" "$want" "control $field == $want"
 }
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK"
+VER=$(tr -d '[:space:]' <"$ROOT/VERSION")
 
-assert_fails "no args exits non-zero" "$ROOT/scripts/build-deb.sh"
-assert_fails "one arg exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/missing.tar.gz" "1.0.0" "$ROOT/packaging/apt/fingerprint"
+bundle() {
+    local out=$1 ver=$2 stage="$WORK/rigforge-v$2"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    (cd "$ROOT" && cp -a rigforge.sh util systemd config.minimal.json config.reference.json README.md docs images LICENSE VERSION "$stage/")
+    printf '%s\n' "$ver" >"$stage/VERSION"
+    tar -czf "$out" -C "$WORK" "rigforge-v$ver"
+}
 
-assert_fails "missing archive exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/nope.tar.gz" "1.0.0" "$ROOT/packaging/apt/fingerprint"
+bundle "$WORK/bundle.tar.gz" "$VER"
+B="$ROOT/scripts/build-deb.sh"
+check "two arguments are required" "$(bash "$B" "$WORK/bundle.tar.gz" >/dev/null 2>&1 && echo 1 || echo 0)"
+check "missing archive fails" "$(bash "$B" "$WORK/nope.tar.gz" "$VER" >/dev/null 2>&1 && echo 1 || echo 0)"
+check "a non-release version fails" "$(bash "$B" "$WORK/bundle.tar.gz" "v$VER-rc1" >/dev/null 2>&1 && echo 1 || echo 0)"
+check "VERSION disagreeing with the tag fails" "$(cd "$WORK" && bash "$B" "$WORK/bundle.tar.gz" 0.0.1 >/dev/null 2>&1 && echo 1 || echo 0)"
 
-mkdir -p "$WORK/archive/util" "$WORK/archive/systemd" "$WORK/archive/docs" "$WORK/archive/images"
-cp "$ROOT/rigforge.sh" "$WORK/archive/"
-cp -R "$ROOT/util/"* "$WORK/archive/util/"
-cp -R "$ROOT/systemd/"* "$WORK/archive/systemd/"
-cp "$ROOT/config.minimal.json" "$WORK/archive/"
-cp "$ROOT/config.reference.json" "$WORK/archive/"
-cp "$ROOT/README.md" "$WORK/archive/"
-cp -R "$ROOT/docs/"* "$WORK/archive/docs/"
-cp -R "$ROOT/images/"* "$WORK/archive/images/"
-cp "$ROOT/LICENSE" "$WORK/archive/"
-cp "$ROOT/VERSION" "$WORK/archive/"
-tar -czf "$WORK/bundle.tar.gz" -C "$WORK" archive
-assert_fails "missing fingerprint file exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "1.0.0" "$WORK/nope"
+mkdir -p "$WORK/a" "$WORK/b"
+(cd "$WORK/a" && bash "$B" "$WORK/bundle.tar.gz" "v$VER" >/dev/null)
+sleep 1
+(cd "$WORK/b" && bash "$B" "$WORK/bundle.tar.gz" "v$VER" >/dev/null)
+DEB="$WORK/a/rigforge_${VER}_all.deb"
+check "builds rigforge_<VERSION>_all.deb" "$([ -f "$DEB" ] && echo 0 || echo 1)"
+check "two builds of one bundle are byte-identical" "$(cmp -s "$DEB" "$WORK/b/rigforge_${VER}_all.deb" && echo 0 || echo 1)"
 
-printf '0.0.0-mismatch\n' >"$WORK/archive/VERSION"
-assert_fails "VERSION mismatch exits non-zero" "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "1.0.0" "$ROOT/packaging/apt/fingerprint"
-printf '%s\n' "$(cat "$ROOT/VERSION")" >"$WORK/archive/VERSION"
-tar -czf "$WORK/bundle.tar.gz" -C "$WORK" archive
-
-VER="$(tr -d '[:space:]' <"$ROOT/VERSION")"
-(cd "$WORK" && bash "$ROOT/scripts/build-deb.sh" "$WORK/bundle.tar.gz" "v$VER" "$ROOT/packaging/apt/fingerprint" >/dev/null)
-DEB="$WORK/rigforge_${VER}_all.deb"
-assert_ok "build-deb produces a .deb" test -f "$DEB"
-
-assert_field "$DEB" Package rigforge
-assert_field "$DEB" Version "$VER"
-assert_field "$DEB" Architecture all
-
-CONTENT_DIR=$(mktemp -d)
-trap 'rm -rf "$WORK" "$CONTENT_DIR"' EXIT
-dpkg-deb --raw-extract "$DEB" "$CONTENT_DIR"
-
-assert_eq "$([ -f "$CONTENT_DIR/usr/lib/rigforge/rigforge.sh" ] && echo yes || echo no)" "yes" "rigforge.sh in /usr/lib/rigforge/"
-assert_eq "$([ -d "$CONTENT_DIR/usr/lib/rigforge/util" ] && echo yes || echo no)" "yes" "util/ in /usr/lib/rigforge/"
-assert_eq "$([ -d "$CONTENT_DIR/usr/lib/rigforge/systemd" ] && echo yes || echo no)" "yes" "systemd/ in /usr/lib/rigforge/"
-assert_eq "$([ -f "$CONTENT_DIR/usr/bin/rigforge" ] && echo yes || echo no)" "yes" "/usr/bin/rigforge wrapper"
-assert_eq "$([ -f "$CONTENT_DIR/etc/rigforge/config.json" ] && echo yes || echo no)" "yes" "config.json as conffile"
-assert_eq "$([ -d "$CONTENT_DIR/var/lib/rigforge" ] && echo yes || echo no)" "yes" "state dir /var/lib/rigforge"
-assert_eq "$([ -f "$CONTENT_DIR/var/lib/rigforge/.rigforge-package" ] && echo yes || echo no)" "yes" "apt marker"
-assert_eq "$(tr -d '[:space:]' <"$CONTENT_DIR/var/lib/rigforge/.rigforge-package")" "apt" "marker value is apt"
-
-assert_contains "wrapper exports RIGFORGE_LIB" "$(cat "$CONTENT_DIR/usr/bin/rigforge")" "RIGFORGE_LIB"
-assert_contains "wrapper exports RIGFORGE_STATE" "$(cat "$CONTENT_DIR/usr/bin/rigforge")" "RIGFORGE_STATE"
-
-assert_eq "$([ -f "$CONTENT_DIR/DEBIAN/postinst" ] && echo yes || echo no)" "yes" "postinst present"
-assert_eq "$([ -f "$CONTENT_DIR/DEBIAN/postrm" ] && echo yes || echo no)" "yes" "postrm present"
-assert_eq "$([ -f "$CONTENT_DIR/DEBIAN/conffiles" ] && echo yes || echo no)" "yes" "conffiles present"
-
-POSTINST="$(cat "$CONTENT_DIR/DEBIAN/postinst")"
-assert_contains "postinst runs daemon-reload" "$POSTINST" "daemon-reload"
-assert_contains "postinst creates state dir" "$POSTINST" "/var/lib/rigforge"
-
-POSTRM="$(cat "$CONTENT_DIR/DEBIAN/postrm")"
-assert_contains "postrm remove stops units" "$POSTRM" "systemctl stop"
-assert_contains "postrm remove disables units" "$POSTRM" "systemctl disable"
-assert_contains "postrm purge removes state" "$POSTRM" "/var/lib/rigforge"
-assert_contains "postrm purge removes config" "$POSTRM" "/etc/rigforge"
-
-CONFFILES="$(cat "$CONTENT_DIR/DEBIAN/conffiles")"
-assert_contains "conffiles lists config.json" "$CONFFILES" "/etc/rigforge/config.json"
-
-for f in "$CONTENT_DIR/usr/lib/rigforge/"* "$CONTENT_DIR/DEBIAN/"*; do
-    [ -f "$f" ] || continue
-    case "$(cat "$f")" in
-    *"pithead-developer"*) fail "internal repo reference found: $f" ;;
-    esac
+check "control Package is rigforge" "$([ "$(dpkg-deb -f "$DEB" Package)" = rigforge ] && echo 0 || echo 1)"
+check "control Version is $VER" "$([ "$(dpkg-deb -f "$DEB" Version)" = "$VER" ] && echo 0 || echo 1)"
+check "control Architecture is all" "$([ "$(dpkg-deb -f "$DEB" Architecture)" = all ] && echo 0 || echo 1)"
+DEPENDS=$(dpkg-deb -f "$DEB" Depends)
+for p in bash jq curl nftables git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3 msr-tools; do
+    check "Depends lists $p" "$(sed 's/[,|]/\n/g; s/ //g' <<<"$DEPENDS" | grep -qx "$p" && echo 0 || echo 1)"
 done
-ok "no internal test-runner repo references"
+check "Maintainer has the Name <email> form" "$(dpkg-deb -f "$DEB" Maintainer | grep -qE '^[^<]+ <[^>]+@[^>]+>$' && echo 0 || echo 1)"
 
-if command -v apt-ftparchive >/dev/null 2>&1 && command -v gpg >/dev/null 2>&1; then
-    apt_out="$WORK/apt-feed"
-    mkdir -p "$apt_out"
-    FINGERPRINT="$(tr -d '[:space:]' <"$ROOT/packaging/apt/fingerprint")"
-    if [ "$FINGERPRINT" != "pending-key-generation" ] && [ -n "$FINGERPRINT" ]; then
-        GNUPGHOME="${GNUPGHOME:-}" apt-ftparchive packages "$apt_out" >/dev/null 2>&1 || true
-    fi
-    pkg=$(dpkg-deb -f "$DEB" Package)
-    ver=$(dpkg-deb -f "$DEB" Version)
-    assert_eq "$pkg" "rigforge" "build-apt: Package field matches"
-    assert_eq "$ver" "$VER" "build-apt: Version field matches"
-fi
+X="$WORK/x"
+dpkg-deb --raw-extract "$DEB" "$X"
+L="$X/usr/lib/rigforge"
+check "code tree under /usr/lib/rigforge" "$([ -f "$L/rigforge.sh" ] && [ -d "$L/util" ] && [ -d "$L/systemd" ] && echo 0 || echo 1)"
+check "/usr/bin/rigforge resolves to the code tree" "$([ "$(readlink "$X/usr/bin/rigforge")" = ../lib/rigforge/rigforge.sh ] && echo 0 || echo 1)"
+check "state dir /var/lib/rigforge" "$([ -d "$X/var/lib/rigforge" ] && echo 0 || echo 1)"
+check "package marker is where util/package-mode.sh reads it" "$(SCRIPT_DIR="$L" bash -c 'source "$SCRIPT_DIR/util/package-mode.sh"; [ "$(_package_channel)" = apt ]' && echo 0 || echo 1)"
+check "ships the upgrade unit" "$(cmp -s "$X/usr/lib/systemd/system/rigforge-upgrade.service" "$ROOT/packaging/debian/rigforge-upgrade.service" && echo 0 || echo 1)"
+for s in postinst prerm postrm; do
+    check "DEBIAN/$s is packaging/debian/$s" "$(cmp -s "$X/DEBIAN/$s" "$ROOT/packaging/debian/$s" && [ -x "$X/DEBIAN/$s" ] && echo 0 || echo 1)"
+done
+check "ships no apt keyring" "$([ ! -e "$X/etc/apt" ] && echo 0 || echo 1)"
+check "no internal repository references" "$(grep -rqE 'pithead-developer|bench-ci|ai-devkit' "$X" && echo 1 || echo 0)"
 
-printf '\nbuild-deb: tests passed\n' 2>/dev/null || true
+[ "$fail" -eq 0 ] && printf 'build-deb: all checks passed\n'
+exit "$fail"
