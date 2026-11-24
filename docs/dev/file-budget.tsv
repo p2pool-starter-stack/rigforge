@@ -6,5 +6,6 @@ tests/e2e-pithead.sh	563
 tests/e2e-real.sh	1388
 tests/run.sh	9552
 tests/test-fetch-proxy.sh	416
+tests/test-randomx-mode.sh	402
 tests/test-xmrig-overlay.sh	413
 util/control-server.py	432

@@ -659,7 +659,7 @@ If you see MSR errors, see Troubleshooting below.
 | `doctor`: "MSR registers don't match the preset" | XMRig's log says the write succeeded but the read-back disagrees: something silently dropped it. When kernel lockdown is active, `doctor` names it as the cause (see the lockdown item it prints first); otherwise a hypervisor is the usual culprit — common on VMs/cloud instances, run RigForge on bare metal. `msr.allow_writes=on` (RigForge sets this) only matters when lockdown is *not* enforced. |
 | `doctor`: "couldn't read the MSRs via rdmsr" | The `msr` module isn't loaded (or `doctor` wasn't run as root). Run `sudo ./rigforge.sh doctor`; if it persists, `sudo modprobe msr` and check `/etc/modules-load.d/msr.conf` — a missing module is a modprobe/packaging problem, not Secure Boot (the in-tree signed module loads fine under it). This is advisory; XMRig's log already confirms the write. |
 | `HugePages_Total` is 0 | The kernel tuning needs a reboot to take effect (GRUB change). Reboot, then re-check `grep Huge /proc/meminfo`. |
-| HugePages still 0 after reboot | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; RigForge merges its kernel parameters into `GRUB_CMDLINE_LINUX_DEFAULT` rather than overwriting, so other params are preserved. |
+| HugePages still 0 after reboot | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; it merges its parameters into `GRUB_CMDLINE_LINUX_DEFAULT` and keeps the others. If that line is not one plain double-quoted value (single quotes, a trailing comment, an escaped double quote, or more than one such line), RigForge leaves the file untouched and prints the parameters to add by hand: edit `/etc/default/grub`, then `sudo update-grub`. |
 | Low hashrate / few threads | RandomX is L3-bound (~2 MB per thread). A CPU with little L3 runs fewer effective threads; this is expected. See [Hardware › L3 cache](hardware.md#a-note-on-l3-cache). |
 | No AVX2 | RandomX still runs but slower. AVX2 is strongly recommended; there's no fix beyond different hardware. |
 | Dashboard can't read the worker | The API is open (no token) by default, so first check the worker is reachable from the stack host on `:8080`. If you set an `ACCESS_TOKEN`, the dashboard must send the same token (`workers.api_auth: token` + `workers.api_token`, or `name` if the token is the rig name). See [Pithead Integration › Troubleshooting](pithead-integration.md#troubleshooting). |
@@ -853,6 +853,6 @@ receiver's writable state. Unsafe ownership, permissions, links, file types, or 
 fail the upgrade before any fetch or build. Existing throttle files in the receiver's state are
 left untouched and never migrated, so the first upgrade after this change starts a fresh cooldown.
 
-`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
+`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too, with both state directories under `/var/lib`. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).
