@@ -51,6 +51,27 @@ Not every verb needs root — the design, in four lines:
 - `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
   root.
 
+On Linux, `setup` and `upgrade` refuse to install the root-run units when a non-root user could change
+the code those units run (#783). They check `rigforge.sh`, the `util/` and `systemd/` directories and every
+file in them, `.git/config` and the git hooks in a git checkout (root runs `git` there for remote
+upgrades), and every directory from the code tree up to `/`, both as given and with symlinks resolved. Each path must be owned by root, writable by
+no group other than root's, and not writable by every user. A path that cannot be inspected counts as a
+refusal, and the message names the first path that fails. `config.json` is operator data, not code, and is
+not checked. A root-owned tree passes silently.
+
+- `--no-root-guard` accepts the tree anyway and prints a warning. It also records the allowance in the
+  root-owned `/etc/rigforge-root-guard` (it names the tree), so later remote upgrades through the control
+  path, which pass no flags, accept the same tree with a warning. An allowance file that a non-root user
+  could write, or one that names another tree, is ignored. `uninstall` removes it.
+- An install that predates the guard (a git checkout with the miner unit installed and no allowance file)
+  is allowed once with a loud warning and the allowance is recorded, so its remote upgrades keep working.
+  A packaged tree (with a `.rigforge-package` marker) is never allowed this way.
+- The guard runs from the tree it checks, so it catches a tree left writable by mistake. It cannot stop a
+  user who already writes the tree before the first guarded run, because that user can change the guard
+  itself or create a `.git` directory to qualify for the one-time allowance.
+- To close the gap instead, make the tree root-owned: `sudo chown -R root:root <tree> && sudo chmod -R
+  go-w <tree>`, then delete `/etc/rigforge-root-guard`. Afterwards, update the checkout with `sudo git`.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
@@ -617,7 +638,9 @@ sudo ./rigforge.sh setup            # rebuild + apply (or 'apply' if XMRig is al
 ```
 
 Restore overwrites `config.json` and the tuning on the current machine (so it prompts first), then tells
-you to run `setup`/`apply` to put the restored config into effect.
+you to run `setup`/`apply` to put the restored config into effect. Before it overwrites, restore saves the
+current config to `config-backups/`, the same folder the control path uses, and the newest 20 files are
+kept. Restore therefore needs to be able to write next to `config.json`.
 
 ### Two reasons to use it
 
@@ -838,13 +861,16 @@ decisions are in [ADR 0002](adr/0002-remote-worker-upgrade.md).
 Polling an upgrade works like polling a config change, with a slightly richer vocabulary (#320):
 `GET :8082/status?change_id=<id>` serves a non-terminal `started` once the root oneshot has claimed
 the intent (so a poller can tell "mid-build" from "queued"), then one terminal outcome: `applied`
-(the `reason` names the landed version), `rolled_back`, `noop` (already on the requested version —
-idempotent, not an error), `throttled` (inside the anti-beacon window — retry later), or `failed`
-(with `reason`). A run that dies after claiming the intent (an abort, or systemd stopping the unit)
-still records `failed`, with a `reason` saying the run was lost, the checkout may be half-updated
-and the upgrade will not be retried: check the installed version and request it again (#535). Only a
-`SIGKILL` or a power loss can leave `started` as the last record. The
-oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent and can run well past
+(the `reason` names the landed version), `rolled_back`, `noop` (already on the requested version
+with no unfinished install — idempotent, not an error), `throttled` (inside the anti-beacon window —
+retry later), or `failed` (with `reason`). A run that dies after claiming the intent (an abort, or
+systemd stopping the unit) still records `failed`, with a `reason` saying the run was lost, the
+checkout may be half-updated and the upgrade will not be retried: check the installed version and
+request it again (#535). After such a run, a request for the same version is carried out again and
+is not answered `noop`; it is still subject to the throttle window. When the fetch fails, the root
+guard refuses the tree or the upgrade state cannot be used, the outcome is `failed`, with a `reason`
+that says nothing was changed. Only a `SIGKILL` or a power loss can leave `started` as the last
+record. The oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent and can run well past
 ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt rebuilds the rollback ref
 in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
 unbounded by it: the D6 throttle is what bounds how often this path fetches and builds at all.

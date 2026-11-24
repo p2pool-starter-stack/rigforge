@@ -1988,19 +1988,21 @@ _persist_appliance_mode() {
     fi
 }
 main() {
-    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false
+    local _arg _api_rc=0 _control_rc=0 config_before="" config_after="" XMRIG_CONFIG_CHANGED=false no_guard=""
     for _arg in "$@"; do
         case "$_arg" in
         --dry-run)
             _setup_plan
             return 0
             ;;
-        *) error "Unknown option for setup: '$_arg' (use --dry-run). Run '$0 help'." ;;
+        --no-root-guard) no_guard=1 ;;
+        *) error "Unknown option for setup: '$_arg' (use --dry-run, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     CURRENT_STEP="verifying prerequisites"
     check_prerequisites
+    _root_guard_check "$no_guard" || return 1
     CURRENT_STEP="ensuring config exists"
     ensure_config_exists
     _seed_appliance_tor_default
@@ -2037,9 +2039,9 @@ main() {
     CURRENT_STEP="configuring the API firewall"
     install_api_firewall
     CURRENT_STEP="linking the rigforge command"
-    link_cli # opt-in (add_to_path): put `rigforge` on PATH so the operator can run it from anywhere
+    link_cli
     CURRENT_STEP="reconciling file ownership"
-    _reown_worker # hand the build/config/logs back to the operator so they can edit + re-run without sudo
+    _reown_worker
     CURRENT_STEP="finishing up"
     finish_deployment
     [ "$_control_rc" -eq 0 ] || _control_failed setup
@@ -2104,18 +2106,20 @@ _upgrade_restart() { # <was-active: yes|no>
 }
 
 upgrade() {
-    local arg _api_rc=0 _control_rc=0
+    local arg _api_rc=0 _control_rc=0 no_guard=""
     for arg in "$@"; do
         case "$arg" in
         --check)
             _upgrade_check
             return 0
             ;;
-        *) error "Unknown option for upgrade: '$arg' (use --check). Run '$0 help'." ;;
+        --no-root-guard) no_guard=1 ;;
+        *) error "Unknown option for upgrade: '$arg' (use --check, --no-root-guard). Run '$0 help'." ;;
         esac
     done
     _persist_appliance_mode
     check_prerequisites
+    _root_guard_check "$no_guard" || return 1
     parse_config
     _shared_host_prepare
     decide_rebuild
@@ -2123,7 +2127,7 @@ upgrade() {
     if [ "$OS_TYPE" = Linux ] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         was_active=yes
     fi
-    SERVICE_NO_START=true # _upgrade_restart below owns the restart decision, not install_service
+    SERVICE_NO_START=true
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
@@ -2258,7 +2262,7 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    sudo rm -f "$LOGROTATE_DIR/xmrig"
+    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP"
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
@@ -2395,50 +2399,31 @@ _median() {
         END{ if(NR==0) exit; print (NR%2) ? a[(NR+1)/2] : (a[NR/2]+a[NR/2+1])/2 }'
 }
 
-# Tiny file-backed memo (bash 3.2 has no associative arrays). Keyed by the candidate tuple so the
-# hill-climb — which revisits the current point as it sweeps each knob — never re-benchmarks a combo.
-_memo_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_FILE" 2>/dev/null; }
-_memo_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_FILE"; }
-# Parallel store for each candidate's sample stddev (kept out of the median memo so its value stays a
-# bare number for every existing caller), and the state's memo key (#63).
-_memo_sd_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_SD_FILE" 2>/dev/null; }
-_memo_sd_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_SD_FILE"; }
-_memo_hpw_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_HPW_FILE" 2>/dev/null; } # #79
-_memo_hpw_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_HPW_FILE"; }
-# #79: efficiency mode needs a power source. True if TUNE_POWER_CMD is set or RAPL is readable.
+_memo_get() { awk -F'\t' -v k="$2" '$1==k{print $2; exit}' "$1" 2>/dev/null; }
+_memo_put() { printf '%s\t%s\n' "$2" "$3" >>"$1"; }
 _power_supported() {
     [ -n "${TUNE_POWER_CMD:-}" ] && return 0
     [ -n "$(_rapl_sum energy_uj)" ] && return 0
     return 1
 }
-_memo_thr_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$MEMO_THROTTLE_FILE" 2>/dev/null; } # #62
-_memo_thr_put() { printf '%s\t%s\n' "$1" "$2" >>"$MEMO_THROTTLE_FILE"; }
 _state_key() { printf '%s|%s|%s|%s|%s|%s|%s|%s' "$S_p" "$S_y" "$S_t" "$S_g" "$S_pr" "$S_hj" "$S_cq" "$S_wr"; }
-# Population stddev of the args (0 with fewer than 2).
 _stddev() {
     printf '%s\n' "$@" | awk '{ s += $1; ss += $1 * $1; n++ } END { if (n < 2) { print 0; exit } m = s / n; v = ss / n - m * m; if (v < 0) v = 0; printf "%.4f", sqrt(v) }'
 }
-# Variance-aware acceptance (#63): the candidate wins only if its median beats the best by BOTH the
-# TUNE_MIN_DELTA floor AND more than the combined sample-noise band (TUNE_SIGMA × √(sd_cand²+sd_best²)),
-# so jitter on noisy hardware can't trigger a phantom adoption. sd is looked up by each combo's memo key.
-_accept_better() { # <cand_median> <cand_key> <best_median> <best_key>
-    # #62: a throttled candidate's reading is unreliable — never adopt it.
-    if [ "$(_memo_thr_get "$2")" = 1 ]; then return 1; fi
-    # #79: the efficiency target ranks by hashrate-per-watt instead of raw H/s. The variance band (#63)
-    # carries over proportionally — each candidate's relative H/s spread applied to its hs_per_watt. Any
-    # pair missing a power reading falls back to the raw-H/s comparison so the search still progresses.
+_accept_better() {
+    if [ "$(_memo_get "$MEMO_THROTTLE_FILE" "$2")" = 1 ]; then return 1; fi
     if [ "${TUNE_TARGET:-perf}" = efficiency ]; then
         local chpw bhpw
-        chpw=$(_memo_hpw_get "$2")
-        bhpw=$(_memo_hpw_get "$4")
+        chpw=$(_memo_get "$MEMO_HPW_FILE" "$2")
+        bhpw=$(_memo_get "$MEMO_HPW_FILE" "$4")
         if [ -n "$chpw" ] && [ -n "$bhpw" ]; then
-            awk -v c="$chpw" -v b="$bhpw" -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+            awk -v c="$chpw" -v b="$bhpw" -v cm="$1" -v best="$3" -v csd="$(_memo_get "$MEMO_SD_FILE" "$2")" -v bsd="$(_memo_get "$MEMO_SD_FILE" "$4")" \
                 -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
                 'BEGIN { crel = (cm > 0 ? csd / cm : 0); brel = (best > 0 ? bsd / best : 0); band = sig * sqrt((c * crel) ^ 2 + (b * brel) ^ 2); exit !(c > b * (1 + delta) && (c - b) > band) }'
             return
         fi
     fi
-    awk -v cm="$1" -v best="$3" -v csd="$(_memo_sd_get "$2")" -v bsd="$(_memo_sd_get "$4")" \
+    awk -v cm="$1" -v best="$3" -v csd="$(_memo_get "$MEMO_SD_FILE" "$2")" -v bsd="$(_memo_get "$MEMO_SD_FILE" "$4")" \
         -v delta="${TUNE_MIN_DELTA:-0.01}" -v sig="${TUNE_SIGMA:-1}" \
         'BEGIN { band = sig * sqrt(csd * csd + bsd * bsd); exit !(cm > best * (1 + delta) && (cm - best) > band) }'
 }
@@ -2604,11 +2589,9 @@ _measure_live() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cac
     printf '%s\n' "${samples[*]}"
 }
 
-# Measure one candidate (memoized): median over TUNE_ITERS bench runs, or one live window. On a cache
-# miss it also records the candidate — samples, median, and any temp/watts — to the results log.
-_measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos> <wrmsr> -> median H/s
+_measure() {
     local p="$1" y="$2" t="$3" g="$4" pr="$5" hj="$6" cq="$7" wr="$8" key="$1|$2|$3|$4|$5|$6|$7|$8" cached
-    cached=$(_memo_get "$key")
+    cached=$(_memo_get "$MEMO_FILE" "$key")
     if [ -n "$cached" ]; then
         printf '%s' "$cached"
         return 0
@@ -2671,13 +2654,12 @@ _measure() { # <prefetch> <yield> <threads> <onegb> <priority> <hpjit> <cacheqos
           temp_c: (if $temp=="" then null else ($temp|tonumber) end),
           hs_per_watt: (if $watts=="" or ($watts|tonumber)==0 then null else ($med/($watts|tonumber)) end) }' \
         >>"$RESULTS_FILE"
-    # #79: store hashrate-per-watt for the efficiency-target gate (empty when there's no power reading).
     local hpw
     hpw=$(awk -v m="$med" -v w="${watts:-0}" 'BEGIN{if(w+0>0)printf "%.4f",m/w}')
-    _memo_put "$key" "$med"
-    _memo_sd_put "$key" "${sd:-0}"
-    _memo_thr_put "$key" "$throttled"
-    _memo_hpw_put "$key" "$hpw"
+    _memo_put "$MEMO_FILE" "$key" "$med"
+    _memo_put "$MEMO_SD_FILE" "$key" "${sd:-0}"
+    _memo_put "$MEMO_THROTTLE_FILE" "$key" "$throttled"
+    _memo_put "$MEMO_HPW_FILE" "$key" "$hpw"
     printf '%s' "$med"
 }
 
@@ -3637,9 +3619,17 @@ restore() {
         [ -n "$src" ] && log "Backup was made on host: $src"
     fi
 
-    # config.json -> repo root; tuning -> the worker root resolved from the RESTORED config (so it lands
-    # correctly even if this machine's paths differ from the source's).
-    cp "$STAGE_DIR/config.json" "$CONFIG_JSON"
+    local backups="$SCRIPT_DIR/config-backups" snap
+    if [ -f "$CONFIG_JSON" ]; then
+        snap="$backups/config-$(date -u +%Y%m%d-%H%M%S)-restore-$$.json"
+        if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$snap"); then
+            rm -f "$snap"
+            error "Could not snapshot config.json to $backups — existing config left untouched."
+        fi
+        _sweep_config_backups "$backups" || true
+        log "Previous config saved to $snap"
+    fi
+    _config_replace "$STAGE_DIR/config.json" || error "Could not write $CONFIG_JSON."
     _stamp_config_meta restore # #254: attribute this config to a restore (bumps revision if it differs)
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
@@ -4184,6 +4174,12 @@ for path in sys.argv[1:]:
 PY
 }
 
+_config_replace() {
+    local tmp="$CONFIG_JSON.new.$$"
+    (umask 077 && cp "$1" "$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$CONFIG_JSON" && return 0
+    rm -f "$tmp"
+    return 1
+}
 # Merge an allowlisted, parse-valid staged change into config.json after snapshotting the old one.
 # rc 0 = committed, 1 = invalid/rejected, 2 = install failed with old config restored, and 3 =
 # storage failed after rename and recovery is uncertain. The caller records the matching terminal.
@@ -4531,11 +4527,9 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
-    # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
     rm -f "$staged"
-    # A valid change whose install failed is `failed`, not an invalid-input `rejected` (#434/#438).
     if [ "$rc" -eq 2 ]; then
         _sweep_config_backups "$backups" || true # never abort before the terminal status (#434)
         _control_status "$status" failed "$cid" "$change_keys" "$result" ""
@@ -4555,15 +4549,8 @@ control_apply() {
     fi
     backup="${result#committed }"
     _sweep_config_backups "$backups" || true # same guard; pre-existing exposure on this path
-    # #254: attribute this (and the rollback re-apply) to the control path with its change_id, which the
-    # nested apply()'s _stamp_config_meta reads via dynamic scope.
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
-    # #381: dispatch on the closed fast-path allowlist. Only the CLASSIFICATION differs — both write the
-    # same "applied", and EITHER failing falls through to the same full-pipeline rollback, so a wrong
-    # "eligible" verdict (or a fast path failing for an unrelated reason) stays restart-safe.
     local fast=0 apply_ok=0 fail_reason=""
-    # #395: cleared before the attempt (no stale cause from an earlier change) and snapshotted straight
-    # after (the ROLLBACK's own apply must not overwrite why this change failed).
     RIGFORGE_APPLY_FAIL_REASON=""
     if _control_fast_path_eligible "$change_keys"; then
         fast=1
@@ -4583,24 +4570,17 @@ control_apply() {
         fi
     else
         warn "control-apply: change $cid ${fail_reason:-did not come back live} — rolling back to $backup."
-        # #276: guard the cp explicitly (not just -e/ERR) — an unreadable backup must still write a
-        # terminal status, not ERR-trap the oneshot into serving the stale previous outcome forever.
-        if ! cp "$backup" "$CONFIG_JSON" 2>/dev/null; then
+        if ! _config_replace "$backup" 2>/dev/null; then
             _control_status "$status" failed "$cid" "$change_keys" "rollback backup unreadable: $backup" "$backup"
             return 0
         fi
         # #276: both restore config.json; only one leaves the miner hashing. The reason pins which.
         local why="${fail_reason:-miner did not return to a live hashrate}"
         if _control_do_apply; then
-            # #396: the re-apply leaves a deliberately stopped rig stopped (and succeeds by design), so
-            # unconditional "and live" would assert a liveness nobody checked — the #395 lie, again.
             local back="rolled back and live"
             _miner_deliberately_stopped && back="rolled back; the rig was already stopped and stays stopped"
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; $back" "$backup"
         elif [ -n "$fail_reason" ]; then
-            # #395: the re-apply failed for the SAME reason the change did (units that still will not
-            # write). A failed apply short-circuits before _wait_miner_live, so the miner may be hashing
-            # fine throughout: say what is known. The arm below keeps the liveness wording it earned.
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; config rolled back, but the re-apply hit the same failure" "$backup"
         else
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; rollback re-apply also failed to restore liveness" "$backup"
@@ -4610,15 +4590,21 @@ control_apply() {
 }
 
 _control_upgrade_steps() {
-    local ref="$1" cobj
+    local ref="$1" cobj udir="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
+    RIGFORGE_UPGRADE_UNMOVED="this install is package-owned"
     ! _package_install || return 1
+    RIGFORGE_UPGRADE_UNMOVED="the root guard refused this tree"
+    _root_guard_check "" || return 1
+    RIGFORGE_UPGRADE_UNMOVED="could not fetch from origin"
     _fetch_git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" fetch --quiet --tags origin 2>/dev/null || return 1
+    RIGFORGE_UPGRADE_UNMOVED=""
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
         cobj=$(git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
         git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
+    _control_upgrade_mark "$udir" || return 1
     git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    "$(_lib_dir)/rigforge.sh" upgrade >/dev/null 2>&1
+    "$(_lib_dir)/rigforge.sh" upgrade >/dev/null && rm -f "$udir/upgrade-pending"
 }
 
 # control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
@@ -4669,13 +4655,10 @@ control_upgrade() {
         return 0
     fi
     installed=$(tr -d '[:space:]' <"$(_lib_dir)/VERSION" 2>/dev/null || true)
-    # D10 monotonic anti-rollback: never install a version <= the one running. A compromised trigger
-    # can't pin a rig to an older, known-vulnerable release (reachability + immutable releases cover
-    # tag-moving / dangling commits; this covers downgrade and no-op).
+    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     if [ -n "$installed" ]; then
         local want="${target#v}" highest
-        if [ "$want" = "$installed" ]; then
-            # #320: an idempotent no-op, not a failure — the rig is exactly where the operator wants it.
+        if [ "$want" = "$installed" ] && [ ! -e "$throttle/upgrade-pending" ] && [ ! -L "$throttle/upgrade-pending" ]; then
             _control_status "$status" noop "$cid" version "already on $target — nothing to upgrade" ""
             log "control-upgrade: already on $target."
             return 0
@@ -4692,7 +4675,6 @@ control_upgrade() {
         warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
         return 0
     }
-    local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     _control_upgrade_throttle_ok "$throttle" || thr_rc=$?
     if [ "$thr_rc" -eq 2 ]; then
         _control_status "$status" failed "$cid" version "throttle state unavailable under $throttle — refused (fail-closed)" ""
@@ -4706,18 +4688,14 @@ control_upgrade() {
     fi
     old_tag=$(git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" describe --tags --exact-match 2>/dev/null || git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" rev-parse HEAD 2>/dev/null || true)
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
-    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
+    local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid" RIGFORGE_UPGRADE_UNMOVED=""
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
-        # #320: echo the landed version — the poller shouldn't have to cross-read the miner API for it.
         _control_status "$status" applied "$cid" version "upgraded to $target" ""
         log "control-upgrade: $cid applied — now on $target."
+    elif [ -n "${RIGFORGE_UPGRADE_UNMOVED:-}" ]; then
+        _control_status "$status" failed "$cid" version "upgrade to $target failed before checkout: $RIGFORGE_UPGRADE_UNMOVED; nothing was changed" ""
+        warn "control-upgrade: $cid failed before checkout ($RIGFORGE_UPGRADE_UNMOVED); nothing to roll back."
     else
-        # ANY forward failure rolls back — a reachability/build error OR the miner not returning to a live
-        # hashrate. Rollback re-runs _control_upgrade_do, which checks out AND rebuilds the old ref, so a
-        # failed forward attempt never leaves the tree pinned to an unbuilt $target: that would make
-        # VERSION read $target, short-circuit every future retry ("already on"), and run unverified code
-        # on every later invocation. A build failure after checkout is a real on-disk change, not "no
-        # change applied" — this reverts it (#308 security review, the build-failed branch was the gap).
         warn "control-upgrade: $target did not come up cleanly — rolling back to ${old_tag:-previous}."
         if [ -n "$old_tag" ] && _control_upgrade_do "$old_tag" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
             _control_status "$status" rolled_back "$cid" version "upgrade to $target failed; rolled back to $old_tag and live" ""
@@ -5164,7 +5142,7 @@ _api_rigforge_block() {                                                         
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null
-    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at
+    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at rc=0
     mkdir -p "$dir"
     generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     sum=$(_read_api_summary || true)
@@ -5176,9 +5154,11 @@ api_refresh() {
     fi
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
-    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json"
-    printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
-    printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
+    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json" || rc=1
+    printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json" || rc=1
+    printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json" || rc=1
+    rm -f "$dir"/*.tmp."$$"
+    return "$rc"
 }
 _api_refresh_status() {
     local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last refresh_state stamp mtime now age i
@@ -6010,7 +5990,7 @@ Most days you only need the first group; the rest are grouped below. Full guide:
 
 Day to day:
   apply      re-read config.json, regenerate the XMRig config, and restart (no rebuild; --dry-run: preview)
-  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists)
+  upgrade    redeploy after checking out a new release: rebuild + restart if the pinned XMRig changed ('--check' just reports whether a newer RigForge release exists; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   doctor     check worker health (doctor --json: machine report on stdout, human report on stderr)
   logs       follow the live miner logs
   status     live summary (hashrate, pool, uptime, shares) + whether the miner is running
@@ -6038,7 +6018,7 @@ Tuning:
              writes BIOS itself
 
 Provision & lifecycle:
-  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo)
+  setup      (default) provision the worker: dependencies, build, kernel tuning, service (--dry-run: preview the plan, no sudo; --no-root-guard: accept a code tree a non-root user can write, and record that for remote upgrades)
   uninstall  remove the service and revert all system changes (add -y|--yes to skip the prompt)
   enable     start the miner automatically (boot on Linux, login on macOS)
   disable    don't start the miner automatically

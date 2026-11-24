@@ -72,7 +72,7 @@ _donation_migration_proof() (
     snapshot_ready=1
     set_cfg '.DONATION=$level | .autotune="disabled"' soft --argjson level 0 || return 1
     rm -f "$tree/.rigforge-donate-min" "$worker/build.log" || return 1
-    KEEP_ARCHIVES=2147483647 "$RIGFORGE" upgrade || return 1
+    KEEP_ARCHIVES=2147483647 "$RIGFORGE" upgrade --no-root-guard || return 1
     grep -Eq 'Building CXX object .*Pools[.]cpp[.]o' "$worker/build.log" &&
         grep -Fq 'Linking CXX executable xmrig' "$worker/build.log" || return 1
     grep -E 'Building CXX object .*Pools[.]cpp[.]o|Linking CXX executable xmrig' "$worker/build.log" || return 1
