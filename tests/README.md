@@ -224,18 +224,24 @@ The image — alpine pinned by tag and digest, with the nftables probe's package
 ### Running the worker-to-stack phases directly
 
 Each phase of [`e2e-pithead.sh`](e2e-pithead.sh) runs on its own as `sudo -E bash tests/e2e-pithead.sh <phase>` on a
-dedicated, uncontended rig with a live stack at `PITHEAD_URL=host:3333`. Optional inputs default to a clean skip, never a failure.
+dedicated, uncontended rig with a live stack at `PITHEAD_URL=host:3333`. `all` runs `connect`, `worker-api`, `api-impact`,
+`network`, `stratum-auth`, `dashboard`, `dev-fee`, `control` and `access-tokens` in that order and stops at the first failure.
+Only `stratum-auth` and `dashboard` skip cleanly when their input is absent; every other phase runs or fails.
 
-| Phase | What it does | Inputs beyond `PITHEAD_URL` |
+| Phase | What it does | Optional inputs |
 | --- | --- | --- |
-| `connect`, `worker-api`, `api-impact`, `network`, `network-sequence` | Mining round trip, the worker API posture, the hashrate-impact guard under polling load, and the network summary and key contract. `network-sequence` runs the first four in one process. | none |
-| `stratum-auth` | Stratum auth accept/reject and rotation against a temporary plain-Stratum pool. | `E2E_STRATUM_PASS`; `all` skips without it, the explicit phase fails |
-| `dashboard` | Dashboard visibility and drop-off. | `E2E_DASH_URL`, optional `E2E_DASH_AUTH`; skipped without the URL |
-| `dev-fee` | Dev-fee build and reported donation. | none |
-| `control` | The writable control path's DONATION apply round trip. | none |
+| `connect`, `worker-api`, `api-impact`, `network` | Mining round trip, the worker API posture, the hashrate-impact guard under polling load, and the network summary and key contract. | `E2E_SHARE_TIMEOUT`, `E2E_API_IMPACT_TOLERANCE_PCT`, `E2E_API_LATENCY_S`; `E2E_ALLOWLIST_HOST_CIDR` and `E2E_ALLOWLIST_NS_CIDR` together enable the API allowlist probe |
+| `network-sequence` | Outside `all`: the first four in one process and one snapshot. | as above |
+| `stratum-auth` | Stratum auth accept/reject and rotation against a temporary plain-Stratum pool. | `E2E_STRATUM_PASS`: `all` skips without it, the explicit phase fails |
+| `dashboard` | Dashboard visibility and drop-off. | `E2E_DASH_URL` (skipped without it), `E2E_DASH_AUTH` |
+| `dev-fee` | Legacy build migration and runtime donation reductions. | none |
+| `control` | The writable control path's DONATION apply round trip. | `E2E_APPLIANCE_POLICY_DROPIN` |
 | `access-tokens` | A named `ACCESS_TOKENS` entry authenticates and is refused after revocation. | none |
-| `thread-profile`, `config-ownership`, `selftest`, `shared-host` | Opt-in, outside `all`: XMRig thread profiles, generated-config ownership, `bench` plus `stress`, and [shared-host](../docs/shared-host.md) behaviour. | `E2E_STRESS_MINUTES` for `selftest` (default 1) |
-| `control-replay-thermal`, `control-replay-pools` | Opt-in replay of the thermal and pools control sequences. Refused unless the replay context variables are supplied. | `E2E_PITHEAD_CONTROL_FIXTURE`, `E2E_PITHEAD_CONTROL_CONTEXT`, `IT_RIG_POOLS_PROBE`, `E2E_RIG_LOCK_UNIT` |
+| `thread-profile` | Outside `all`: XMRig thread profiles against the actual `/2/backends` threads. | none |
+| `config-ownership` | Outside `all`: the generated config stays byte-identical while mining and a hand edit waits for a restart. | `E2E_LIVE_TIMEOUT`, `E2E_AUTOSAVE_WINDOW`, `E2E_RELOAD_WINDOW` |
+| `selftest` | Outside `all`: the real `bench` and `stress`. | `E2E_STRESS_MINUTES` (default 1) |
+| `shared-host` | Outside `all`: [shared-host](../docs/shared-host.md) behaviour. | `E2E_SHARED_SHARE_TIMEOUT` (default 600) |
+| `control-replay-thermal`, `control-replay-pools` | Outside `all`: replay of the thermal and pools control sequences. Exits 2 unless the replay inputs are supplied. | required: `E2E_PITHEAD_CONTROL_FIXTURE`, `E2E_PITHEAD_CONTROL_CONTEXT`, `IT_RIG_POOLS_PROBE`, `E2E_RIG_LOCK_UNIT` |
 
 ### The rig lock
 
