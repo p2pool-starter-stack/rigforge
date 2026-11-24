@@ -21,13 +21,13 @@ class Rigforge < Formula
     <<~EOS
       Installing does nothing to this machine. Configure and provision explicitly:
         cp #{opt_libexec}/config.minimal.json #{opt_libexec}/config.json
-        sudo rigforge setup
+        sudo "$(command -v rigforge)" setup
       The root-run units execute code from this user-writable tree, so any process running as
       you could edit what root later runs: on a Linux rig prefer the git or apt route.
 
       config.json lives in the installed tree and a brew upgrade replaces that tree: run
       `rigforge backup` first and `rigforge restore` afterwards. A running miner is never
-      restarted automatically; run `sudo rigforge apply` yourself after reviewing the release notes.
+      restarted automatically; run `sudo "$(command -v rigforge)" apply` yourself after reviewing the release notes.
     EOS
   end
 

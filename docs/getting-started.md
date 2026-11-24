@@ -45,7 +45,7 @@ brew install p2pool-starter-stack/rigforge/rigforge
 
 Installing is inert: it puts a `rigforge` command on your `PATH` (with `bash`, `jq` and `flock`)
 and changes nothing else. Setup stays explicit: copy `config.minimal.json` to `config.json` in the
-installed tree, then run `sudo rigforge setup`. There is no service block, and `brew upgrade rigforge`
+installed tree, then run `sudo "$(command -v rigforge)" setup` (the full path, because sudo's `secure_path` may not include the Homebrew prefix). There is no service block, and `brew upgrade rigforge`
 never restarts a running miner. `config.json` lives in the installed tree, which an upgrade replaces,
 so run `rigforge backup` before and `rigforge restore` after. Brew cannot do the root tuning (GRUB,
 HugePages, MSR): on Linux, that is `rigforge setup`'s job, and Linuxbrew's user-owned prefix is not a
