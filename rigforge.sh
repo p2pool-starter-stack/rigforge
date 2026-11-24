@@ -3619,9 +3619,17 @@ restore() {
         [ -n "$src" ] && log "Backup was made on host: $src"
     fi
 
-    # config.json -> repo root; tuning -> the worker root resolved from the RESTORED config (so it lands
-    # correctly even if this machine's paths differ from the source's).
-    cp "$STAGE_DIR/config.json" "$CONFIG_JSON"
+    local backups="$SCRIPT_DIR/config-backups" snap
+    if [ -f "$CONFIG_JSON" ]; then
+        snap="$backups/config-$(date -u +%Y%m%d-%H%M%S)-restore-$$.json"
+        if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$snap"); then
+            rm -f "$snap"
+            error "Could not snapshot config.json to $backups — existing config left untouched."
+        fi
+        _sweep_config_backups "$backups" || true
+        log "Previous config saved to $snap"
+    fi
+    _config_replace "$STAGE_DIR/config.json" || error "Could not write $CONFIG_JSON."
     _stamp_config_meta restore # #254: attribute this config to a restore (bumps revision if it differs)
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
@@ -4166,6 +4174,12 @@ for path in sys.argv[1:]:
 PY
 }
 
+_config_replace() {
+    local tmp="$CONFIG_JSON.new.$$"
+    (umask 077 && cp "$1" "$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$CONFIG_JSON" && return 0
+    rm -f "$tmp"
+    return 1
+}
 # Merge an allowlisted, parse-valid staged change into config.json after snapshotting the old one.
 # rc 0 = committed, 1 = invalid/rejected, 2 = install failed with old config restored, and 3 =
 # storage failed after rename and recovery is uncertain. The caller records the matching terminal.
@@ -4513,11 +4527,9 @@ control_apply() {
     change_keys=$(jq -r 'keys | join(",")' "$staged" 2>/dev/null || echo "?")
     RIGFORGE_CONTROL_TERMINAL_WRITTEN="" RIGFORGE_CONTROL_RUN=("$status" "$cid" "$change_keys" "the apply run ended before recording an outcome (aborted or killed mid-apply); config.json may already hold the change — check config-backups/ and re-run apply")
     trap _control_run_incomplete EXIT # #509: the spool entry is claimed; nothing else will retry it
-    # Tested inner/outer failures preserve the commit rc without firing errexit/ERR (#426/#364).
     rc=0
     result=$(_control_commit "$staged" "$backups" || exit $?) || rc=$?
     rm -f "$staged"
-    # A valid change whose install failed is `failed`, not an invalid-input `rejected` (#434/#438).
     if [ "$rc" -eq 2 ]; then
         _sweep_config_backups "$backups" || true # never abort before the terminal status (#434)
         _control_status "$status" failed "$cid" "$change_keys" "$result" ""
@@ -4537,15 +4549,8 @@ control_apply() {
     fi
     backup="${result#committed }"
     _sweep_config_backups "$backups" || true # same guard; pre-existing exposure on this path
-    # #254: attribute this (and the rollback re-apply) to the control path with its change_id, which the
-    # nested apply()'s _stamp_config_meta reads via dynamic scope.
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid"
-    # #381: dispatch on the closed fast-path allowlist. Only the CLASSIFICATION differs — both write the
-    # same "applied", and EITHER failing falls through to the same full-pipeline rollback, so a wrong
-    # "eligible" verdict (or a fast path failing for an unrelated reason) stays restart-safe.
     local fast=0 apply_ok=0 fail_reason=""
-    # #395: cleared before the attempt (no stale cause from an earlier change) and snapshotted straight
-    # after (the ROLLBACK's own apply must not overwrite why this change failed).
     RIGFORGE_APPLY_FAIL_REASON=""
     if _control_fast_path_eligible "$change_keys"; then
         fast=1
@@ -4565,24 +4570,17 @@ control_apply() {
         fi
     else
         warn "control-apply: change $cid ${fail_reason:-did not come back live} — rolling back to $backup."
-        # #276: guard the cp explicitly (not just -e/ERR) — an unreadable backup must still write a
-        # terminal status, not ERR-trap the oneshot into serving the stale previous outcome forever.
-        if ! cp "$backup" "$CONFIG_JSON" 2>/dev/null; then
+        if ! _config_replace "$backup" 2>/dev/null; then
             _control_status "$status" failed "$cid" "$change_keys" "rollback backup unreadable: $backup" "$backup"
             return 0
         fi
         # #276: both restore config.json; only one leaves the miner hashing. The reason pins which.
         local why="${fail_reason:-miner did not return to a live hashrate}"
         if _control_do_apply; then
-            # #396: the re-apply leaves a deliberately stopped rig stopped (and succeeds by design), so
-            # unconditional "and live" would assert a liveness nobody checked — the #395 lie, again.
             local back="rolled back and live"
             _miner_deliberately_stopped && back="rolled back; the rig was already stopped and stays stopped"
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; $back" "$backup"
         elif [ -n "$fail_reason" ]; then
-            # #395: the re-apply failed for the SAME reason the change did (units that still will not
-            # write). A failed apply short-circuits before _wait_miner_live, so the miner may be hashing
-            # fine throughout: say what is known. The arm below keeps the liveness wording it earned.
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; config rolled back, but the re-apply hit the same failure" "$backup"
         else
             _control_status "$status" rolled_back "$cid" "$change_keys" "$why; rollback re-apply also failed to restore liveness" "$backup"
@@ -5146,7 +5144,7 @@ _api_rigforge_block() {                                                         
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null
-    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at
+    local dir="${RIGFORGE_API_DATA:-/run/rigforge-api}" sum hr rf body generated_at rc=0
     mkdir -p "$dir"
     generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     sum=$(_read_api_summary || true)
@@ -5158,9 +5156,11 @@ api_refresh() {
     fi
     if [ -n "$sum" ]; then body=$(jq -n --arg g "$generated_at" --argjson x "$sum" --argjson r "$rf" '$x + {generated_at: $g, rigforge: $r}'); else body=$(jq -n --arg g "$generated_at" --argjson r "$rf" '{generated_at: $g, rigforge: ($r + {xmrig_api: "unreachable"})}'); fi
     if _active_daemon_pool "${sum:-null}" >/dev/null; then body=$(jq '.connection.mode = "daemon"' <<<"$body"); fi
-    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json"
-    printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json"
-    printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json"
+    printf '%s' "$body" >"$dir/summary.json.tmp.$$" && jq -c --argjson identity "$(_api_identity_json)" '.rigforge.identity = $identity' "$dir/summary.json.tmp.$$" >"$dir/summary-authed.json.tmp.$$" && mv -f "$dir/summary.json.tmp.$$" "$dir/summary.json" && mv -f "$dir/summary-authed.json.tmp.$$" "$dir/summary-authed.json" || rc=1
+    printf '%s' "$rf" | jq -c --arg g "$generated_at" '.health + {watchdog: .watchdog, generated_at: $g}' >"$dir/health.json.tmp.$$" && mv -f "$dir/health.json.tmp.$$" "$dir/health.json" || rc=1
+    printf '%s' "$rf" | jq -c '.tune' >"$dir/tune.json.tmp.$$" && mv -f "$dir/tune.json.tmp.$$" "$dir/tune.json" || rc=1
+    rm -f "$dir"/*.tmp."$$"
+    return "$rc"
 }
 _api_refresh_status() {
     local file="${RIGFORGE_API_DATA:-/run/rigforge-api}/summary.json" next last refresh_state stamp mtime now age i
