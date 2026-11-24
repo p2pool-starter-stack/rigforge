@@ -28,14 +28,14 @@ chmod +x "$STUBS"/*
 export CALLS
 
 fail=0
-check() { # <description> <condition-exit-code>
+check() {
     [ "$2" -eq 0 ] || {
         echo "FAIL: $1"
         fail=1
     }
 }
 
-postinst() { # <name> <old> <new> <with-config:y|n> [systemd:y|n]
+postinst() {
     local r="$D/$1"
     mkdir -p "$r/etc/rigforge"
     [ "$4" != y ] || echo '{}' >"$r/etc/rigforge/config.json"
@@ -72,7 +72,7 @@ check "systemctl failure never fails dpkg" "$([ "$rc" -eq 0 ] && grep -q 'sudo r
 
 STATE="$D/state"
 export RIGFORGE_PKG_STATE="$STATE"
-pkg_run() { # <upgrade-outcome:ok|fail>
+pkg_run() {
     (
         source "$SCRIPT"
         OS_TYPE=Linux
