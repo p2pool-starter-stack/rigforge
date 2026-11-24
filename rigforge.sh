@@ -2222,12 +2222,11 @@ uninstall() {
     fi
 
     # Work out the worker root the same way parse_config would, without requiring a valid config.
-    local worker_root
+    local worker_root _d
     worker_root=$(_worker_root_from_config)
     local preserve_host=no
     _shared_host_preserves_tuning "$worker_root" && preserve_host=yes
 
-    # 1. systemd service (+ the optional autotune timer, #46)
     local _mu
     _mu=$(jq -r '.miner_user // empty' "$CONFIG_JSON" 2>/dev/null || true)
     if [ -n "$_mu" ] && id -u "$_mu" >/dev/null 2>&1; then
@@ -2246,6 +2245,10 @@ uninstall() {
         sudo rm -f "$SYSTEMD_DIR/rigforge-control.service" "$SYSTEMD_DIR/rigforge-control-apply.service" "$SYSTEMD_DIR/rigforge-control-apply.path" \
             "$SYSTEMD_DIR/rigforge-control-upgrade.service" "$SYSTEMD_DIR/rigforge-control-upgrade.path"
     fi
+    for _d in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" "${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"; do
+        _d=${_d%/}
+        case "$_d" in /*[!/]) sudo rm -rf -- "$_d" ;; esac
+    done
     command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
     if [ -f "$SYSTEMD_DIR/rigforge-autotune.timer" ]; then
         sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-autotune.timer 2>/dev/null || true
@@ -2263,7 +2266,6 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    # 2. logrotate policy
     sudo rm -f "$LOGROTATE_DIR/xmrig"
 
     _shared_host_remove
@@ -2273,8 +2275,6 @@ uninstall() {
 
         remove_line "$LIMITS_CONF" "$REAL_USER soft memlock unlimited"
         remove_line "$LIMITS_CONF" "$REAL_USER hard memlock unlimited"
-        remove_line "$LIMITS_CONF" "* soft memlock unlimited"
-        remove_line "$LIMITS_CONF" "* hard memlock unlimited"
 
         sudo rm -f "$MODULES_LOAD_DIR/msr.conf"
         remove_line "$MODULES_FILE" "msr"

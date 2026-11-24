@@ -337,6 +337,7 @@ sudo() {
     esac
 }
 systemctl() { :; }
+RIGFORGE_CONTROL_STATE="$D/ctl" RIGFORGE_CONTROL_UPGRADE_STATE="$D/ctlu"
 uninstall --yes >/dev/null
 grep -qFx 'hugetlbfs /dev/hugepages hugetlbfs defaults 0 0' "$FSTAB" || fail 'shared uninstall rewrote existing mounts'
 grep -qFx "$REAL_USER soft memlock unlimited" "$LIMITS_CONF" || fail 'shared uninstall rewrote existing memlock'

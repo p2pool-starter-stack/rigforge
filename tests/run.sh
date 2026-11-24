@@ -5284,7 +5284,7 @@ un_run() {
         FSTAB="$UN/etc/fstab" LIMITS_CONF="$UN/etc/security/limits.conf" \
         MODULES_LOAD_DIR="$UN/etc/modules-load.d" MODULES_FILE="$UN/etc/modules" \
         HUGEPAGES_1G_DIR="$UN/dev/hp1g" GRUB_DEFAULT="$UN/nonexistent-grub" \
-        BIN_DIR="$UN/usr-local-bin" CALL_LOG="$UN/calls.log" \
+        BIN_DIR="$UN/usr-local-bin" CALL_LOG="$UN/calls.log" RIGFORGE_CONTROL_STATE="$UN/ctl" RIGFORGE_CONTROL_UPGRADE_STATE="$UN/ctlu" \
         RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)
 }
 # setup would have linked $BIN_DIR/rigforge -> $UN/rigforge.sh (SCRIPT_DIR=$UN); uninstall must remove
@@ -5310,14 +5310,14 @@ done
 assert_contains "uninstall disables+stops the control server unit (#273)" "$(cat "$UN/calls.log" 2>/dev/null)" "[systemctl] disable --now rigforge-control.service rigforge-control-apply.path"
 assert_eq "fstab hugepage lines gone" "$(grep -c 'hugetlbfs' "$UN/etc/fstab")" "0"
 assert_contains "fstab unrelated line kept" "$(cat "$UN/etc/fstab")" "proc /proc proc"
-assert_eq "limits memlock lines gone" "$(grep -c 'memlock unlimited' "$UN/etc/security/limits.conf")" "0"
+assert_eq "the mining user's memlock lines gone, a wildcard line left alone (#825)" "$(grep 'memlock unlimited' "$UN/etc/security/limits.conf")" "* soft memlock unlimited"
 assert_contains "limits unrelated line kept" "$(cat "$UN/etc/security/limits.conf")" "root hard nofile 1024"
 assert_eq "modules msr line gone" "$(grep -cx 'msr' "$UN/etc/modules")" "0"
 assert_contains "modules unrelated line kept" "$(cat "$UN/etc/modules")" "loop"
 assert_eq "cli: our 'rigforge' symlink removed (#cli)" "$([ -L "$UN/usr-local-bin/rigforge" ] && echo present || echo gone)" "gone"
 # Safety: a `rigforge` we did NOT create (a real file, or a symlink elsewhere) must be left alone.
 : >"$UN/usr-local-bin/rigforge"
-# Idempotent: a second uninstall is a clean no-op.
+bash "$ROOT/tests/test-uninstall-state.sh" "$SCRIPT" >/dev/null 2>&1 && ok "uninstall removes the control state and leaves a wildcard memlock line (#825)" || bad "uninstall removes the control state and leaves a wildcard memlock line (#825)" "regression failed"
 out="$(un_run)"
 assert_rc "second uninstall exits 0" "$?" "0"
 assert_eq "cli: a non-RigForge 'rigforge' is preserved (#cli)" "$([ -f "$UN/usr-local-bin/rigforge" ] && [ ! -L "$UN/usr-local-bin/rigforge" ] && echo kept || echo removed)" "kept"
@@ -5360,7 +5360,7 @@ una_out="$(cd "$UNA" && RIGFORGE_APPLIANCE=1 PATH="$STUBS:$PATH" \
     FSTAB="$UNA/nonexistent-fstab" LIMITS_CONF="$UNA/nonexistent-limits" \
     MODULES_LOAD_DIR="$UNA/nonexistent-modules-load.d" MODULES_FILE="$UNA/nonexistent-modules" \
     HUGEPAGES_1G_DIR="$UNA/dev/hp1g" GRUB_DEFAULT="$UNA/nonexistent-grub" \
-    BIN_DIR="$UNA/usr-local-bin" CALL_LOG="$UNA/calls.log" \
+    BIN_DIR="$UNA/usr-local-bin" CALL_LOG="$UNA/calls.log" RIGFORGE_CONTROL_STATE="$UNA/ctl" RIGFORGE_CONTROL_UPGRADE_STATE="$UNA/ctlu" \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)"
 assert_rc "appliance uninstall exits 0 (#353)" "$?" "0"
 disable_calls="$(grep -F '[systemctl] disable' "$UNA/calls.log" 2>/dev/null)"

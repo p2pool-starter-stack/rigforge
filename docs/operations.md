@@ -832,6 +832,6 @@ receiver's writable state. Unsafe ownership, permissions, links, file types, or 
 fail the upgrade before any fetch or build. Existing throttle files in the receiver's state are
 left untouched and never migrated, so the first upgrade after this change starts a fresh cooldown.
 
-`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
+`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too, with both state directories under `/var/lib`. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).
