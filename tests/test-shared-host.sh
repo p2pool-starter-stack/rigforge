@@ -297,6 +297,7 @@ MODULES_LOAD_DIR="$D/modules-load"
 GRUB_DEFAULT="$D/grub"
 LOGROTATE_DIR="$D/logrotate"
 ROOT_GUARD_STAMP="$D/root-guard"
+printf 'allow %s\n' "$D" >"$ROOT_GUARD_STAMP"
 HUGEPAGES_1G_DIR="$D/hugepages"
 BIN_DIR="$D/bin"
 printf 'hugetlbfs /dev/hugepages hugetlbfs defaults 0 0\n' >"$FSTAB"
@@ -339,6 +340,7 @@ sudo() {
 }
 systemctl() { :; }
 uninstall --yes >/dev/null
+[ ! -e "$ROOT_GUARD_STAMP" ] || fail 'uninstall left the root-guard allowance behind'
 grep -qFx 'hugetlbfs /dev/hugepages hugetlbfs defaults 0 0' "$FSTAB" || fail 'shared uninstall rewrote existing mounts'
 grep -qFx "$REAL_USER soft memlock unlimited" "$LIMITS_CONF" || fail 'shared uninstall rewrote existing memlock'
 grep -qFx 'msr' "$MODULES_FILE" || fail 'shared uninstall rewrote existing MSR policy'

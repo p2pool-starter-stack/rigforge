@@ -155,6 +155,13 @@ assert_eq "$rc" 1 "fresh git checkout is not grandfathered"
 reset "$TREE/rigforge.sh 1000:1000:755"
 mkdir "$TREE/.git"
 : >"$SYSTEMD_DIR/xmrig.service"
+printf 'allow %s\n' "$R/elsewhere" >"$ROOT_GUARD_STAMP"
+guard ""
+assert_eq "$rc:$(cat "$ROOT_GUARD_STAMP")" "1:allow $R/elsewhere" "an allowance for another tree blocks the one-time allowance and is kept"
+
+reset "$TREE/rigforge.sh 1000:1000:755"
+mkdir "$TREE/.git"
+: >"$SYSTEMD_DIR/xmrig.service"
 SUDO_OK=0 guard ""
 assert_eq "$rc" 1 "a one-time allowance that cannot be recorded refuses"
 
@@ -170,9 +177,38 @@ SUDO_OK=0 guard 1
 assert_eq "$rc" 0 "a failed allowance write does not stop a flagged run"
 assert_has "$out" "could not record the allowance" "a failed allowance write warns"
 
+mkdir -p "$R/state"
+reset "$TREE/util/helper.sh 1000:1000:644"
+SCRIPT_DIR="$R/state" guard ""
+assert_eq "$rc" 1 "the lib dir the guard loads from is checked when RIGFORGE_HOME points elsewhere"
+assert_has "$out" "$TREE/util/helper.sh" "the lib dir refusal names the lib path"
+
 reset "$TREE/rigforge.sh 1000:1000:755"
 OS_TYPE=Darwin guard ""
 assert_eq "$rc" 0 "Darwin installs no root-run units and is skipped"
+
+f1=$FAIL
+(
+    git() { printf 'git %s\n' "$*" >>"$R/git.calls"; }
+    _fetch_git() { printf 'fetch %s\n' "$*" >>"$R/git.calls"; }
+    rm -f "$R/git.calls"
+    reset "$TREE/.git/hooks/post-checkout 1000:1000:755"
+    mkdir -p "$TREE/.git/hooks"
+    : >"$TREE/.git/hooks/post-checkout"
+    out=$(_control_upgrade_steps v9.9.9 2>&1)
+    rc=$?
+    assert_eq "$rc:$([ -e "$R/git.calls" ] && echo ran || echo none)" "1:none" "control-upgrade refuses a user-written git hook before root runs git"
+    assert_has "$out" "$TREE/.git/hooks/post-checkout" "control-upgrade's refusal reaches stderr"
+    reset
+    printf '#!/usr/bin/env bash\necho nested-upgrade-refused >&2\nexit 1\n' >"$TREE/rigforge.sh"
+    chmod +x "$TREE/rigforge.sh"
+    out=$(_control_upgrade_steps v9.9.9 2>&1)
+    rc=$?
+    : >"$TREE/rigforge.sh"
+    assert_eq "$rc:$(grep -c checkout "$R/git.calls")" "1:1" "control-upgrade on a root-owned tree checks out and runs the nested upgrade"
+    assert_has "$out" "nested-upgrade-refused" "the nested upgrade's stderr reaches the journal"
+    [ "$FAIL" -eq "$f1" ]
+) || FAIL=$((FAIL + 1))
 
 f0=$FAIL
 (
