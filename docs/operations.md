@@ -965,27 +965,27 @@ A rig owner can update a rig without a Pithead dashboard from any LAN computer. 
    that is used as the token).
 2. Ask the rig what updates are available:
 
-```bash
-curl -s -H "Authorization: Bearer <the-token>" \
-     -H "Content-Type: application/json" \
-     http://<rig-ip>:8082/update-check
-```
+   ```bash
+   curl -s -H "Authorization: Bearer <the-token>" \
+        -H "Content-Type: application/json" \
+        http://<rig-ip>:8082/update-check
+   ```
 
 3. Trigger the update:
 
-```bash
-curl -s -X POST -H "Authorization: Bearer <the-token>" \
-     -H "Content-Type: application/json" \
-     -d '{"tag": "v1.20.0"}' \
-     http://<rig-ip>:8082/update
-```
+   ```bash
+   curl -s -X POST -H "Authorization: Bearer <the-token>" \
+        -H "Content-Type: application/json" \
+        -d '{"tag": "v1.20.0"}' \
+        http://<rig-ip>:8082/update
+   ```
 
 4. Poll the status until terminal:
 
-```bash
-curl -s -H "Authorization: Bearer <the-token>" \
-     http://<rig-ip>:8082/update/status?change_id=<the-id-from-step-3>
-```
+   ```bash
+   curl -s -H "Authorization: Bearer <the-token>" \
+        http://<rig-ip>:8082/update/status?change_id=<the-id-from-step-3>
+   ```
 
 The same token that authenticates the read API (`:8080` / `:8081`) works here. On appliance
 rigs the update runs the image updater; on DIY rigs it requires `tor_socks5` to be configured.
