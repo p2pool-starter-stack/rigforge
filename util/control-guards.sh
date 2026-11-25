@@ -50,6 +50,6 @@ _control_upgrade_mark() {
 _control_upgrade_do() {
     local rc=0
     _control_upgrade_steps "$1" || rc=$?
-    _control_upgrade_reown "$SCRIPT_DIR"
+    _control_upgrade_reown "$RIGFORGE_LIB"
     return "$rc"
 }

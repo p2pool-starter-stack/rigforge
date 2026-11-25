@@ -178,7 +178,7 @@ ProtectKernelModules=true
 RestrictRealtime=true
 OOMPolicy=stop
 Restart=no
-ExecStartPre=+$SCRIPT_DIR/rigforge.sh shared-host-check
+ExecStartPre=+$RIGFORGE_LIB/rigforge.sh shared-host-check
 EOF
 }
 
@@ -217,7 +217,7 @@ _shared_host_run() {
         --setenv="AUTOTUNE_TARGET=${AUTOTUNE_TARGET:-}" \
         --setenv="AUTOTUNE_SAMPLES=${AUTOTUNE_SAMPLES:-}" --setenv="AUTOTUNE_INTERVAL=${AUTOTUNE_INTERVAL:-}" \
         --setenv="AUTOTUNE_WARMUP=${AUTOTUNE_WARMUP:-}" --setenv="AUTOTUNE_MARGIN=${AUTOTUNE_MARGIN:-}" --setenv="AUTOTUNE_MODES=${AUTOTUNE_MODES:-}" \
-        "$SCRIPT_DIR/rigforge.sh" shared-host-run "$@"
+        "$RIGFORGE_LIB/rigforge.sh" shared-host-run "$@"
 }
 
 _shared_host_exec() {

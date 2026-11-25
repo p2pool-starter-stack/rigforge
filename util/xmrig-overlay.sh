@@ -13,7 +13,7 @@ _parse_xmrig_overlay() {
     done < <(jq -r 'keys[] | select(. == "pools" or . == "http" or . == "donate-level" or . == "donate-over-proxy" or . == "opencl" or . == "cuda")' <<<"$XMRIG_OVERLAY")
     while IFS= read -r key; do
         warn "xmrig overlay: undocumented key $key; XMRig may ignore it."
-    done < <(jq -rf "$(_script_dir)/util/xmrig-overlay-keys.jq" <<<"$XMRIG_OVERLAY")
+    done < <(jq -rf "$RIGFORGE_LIB/util/xmrig-overlay-keys.jq" <<<"$XMRIG_OVERLAY")
 }
 
 _placement_cpus() {
@@ -26,7 +26,7 @@ _validate_overlay_cpu_rx() {
     local msg
     while IFS= read -r msg; do
         error "xmrig.cpu.rx: $msg"
-    done < <(jq -r --argjson n "$(_placement_cpus)" -f "$(_script_dir)/util/xmrig-overlay-cpu-rx.jq" <<<"$XMRIG_OVERLAY")
+    done < <(jq -r --argjson n "$(_placement_cpus)" -f "$RIGFORGE_LIB/util/xmrig-overlay-cpu-rx.jq" <<<"$XMRIG_OVERLAY")
 }
 
 _xmrig_overlay_pins() {

@@ -11,4 +11,4 @@ Environment=RIGFORGE_APPLIANCE=$RIGFORGE_APPLIANCE
 # What the scheduled run optimizes for (#95): perf (raw H/s) or efficiency (hashrate-per-watt). Baked in
 # at setup from the `autotune` config value so the timer matches what the operator chose.
 Environment=AUTOTUNE_TARGET=$AUTOTUNE_TARGET
-ExecStart=$SCRIPT_DIR/rigforge.sh autotune
+ExecStart=$RIGFORGE_LIB/rigforge.sh autotune

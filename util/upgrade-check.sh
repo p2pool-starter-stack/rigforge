@@ -3,9 +3,9 @@
 
 _upgrade_check() {
     local local_v remote_v url body highest via=""
-    local_v=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
+    local_v=$(tr -d '[:space:]' <"$RIGFORGE_LIB/VERSION" 2>/dev/null || true)
     if [ -z "$local_v" ]; then
-        warn "No VERSION file at $SCRIPT_DIR/VERSION — can't compare against the latest release."
+        warn "No VERSION file at $RIGFORGE_LIB/VERSION — can't compare against the latest release."
         return 0
     fi
     via=$(_tor_socks5) || return 0

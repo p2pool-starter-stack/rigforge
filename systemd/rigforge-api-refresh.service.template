@@ -6,7 +6,7 @@ Type=oneshot
 # Root for the probes (dmidecode / rdmsr / RAPL). Give control-change publication a normal
 # CPU share during mining; disk I/O remains idle priority.
 Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
-ExecStart=$SCRIPT_DIR/rigforge.sh api-refresh
+ExecStart=$RIGFORGE_LIB/rigforge.sh api-refresh
 TimeoutStartSec=300
 Nice=0
 IOSchedulingClass=idle
