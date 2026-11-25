@@ -43,9 +43,6 @@ run_pass() { # <label> [docker env args...] — one disposable container per pas
 
 STATUS=0
 
-# Deploy and appliance use separate container fixtures (same base image, fresh container each);
-# run them in parallel so a missing Docker prerequisite fails the whole suite at once instead
-# of masking one pass behind the other. Each pass writes to its own log so CI output stays clean.
 LOGA="$(mktemp)"
 LOGB="$(mktemp)"
 trap 'rm -f "$LOGA" "$LOGB"' EXIT
