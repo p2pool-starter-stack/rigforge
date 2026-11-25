@@ -7744,7 +7744,7 @@ assert_eq "status: warnings[] flags a max_temp_c change (#257)" "$(jq -r '.warni
     _control_status "$wst/s3.json" applied cidP "pools,DONATION" "" ""
 ) 2>/dev/null
 assert_eq "status: no warnings for a non-thermal change (#257)" "$(jq -c '.warnings' "$wst/s3.json")" "[]"
-# #255: _control_status also indexes each outcome under changes/<cid>.json so a caller can query it.
+bash "$ROOT/tests/test-control-status-write.sh" "$SCRIPT" >/dev/null 2>&1 && ok "control status records are written through a private temporary folder and replace links at their names" || bad "control status records are written through a private temporary folder and replace links at their names" "regression failed"
 csidx="$(mktemp -d "$SANDBOX/csidx.XXXXXX")"
 (
     source "$SCRIPT"
