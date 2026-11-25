@@ -138,7 +138,7 @@ echo "== black-box: read-only lib, writable state =="
 bundle "$D/ro"
 chmod -R a-w "$D/ro"
 mkdir -p "$D/rostate"
-cp "$ROOT/config.minimal.json" "$D/rostate/config.json"
+printf '{"pools":[{"url":"poolbox.lan:3333"}]}' >"$D/rostate/config.json"
 tree_hash() { (cd "$1" && find . -type f -print0 | sort -z | xargs -0 shasum | shasum | cut -d' ' -f1); }
 before=$(tree_hash "$D/ro")
 { printf 'x\n' >"$D/ro/probe"; } 2>/dev/null && fail "lib dir is read-only" "wrote into it"
@@ -152,8 +152,13 @@ rc=$?
 eq "support-bundle exits 0 with a read-only lib dir" "$rc" "0"
 [ "$rc" = 0 ] || printf '%s\n' "$bb" >&2
 eq "support tarball lands under the state dir" "$(find "$D/rostate" -maxdepth 1 -name 'rigforge-support-*.tar.gz' | wc -l | tr -d ' ')" "1"
+bb=$(env -u RIGFORGE_HOME PATH="$BIN:$PATH" RIGFORGE_LIB="$D/ro" RIGFORGE_STATE="$D/rostate" RIGFORGE_APPLIANCE=0 bash "$D/ro/rigforge.sh" restore -y "$(find "$D/rostate/backups" -name 'rigforge-backup-*.tar.gz' | head -1)" 2>&1)
+rc=$?
+eq "restore exits 0 with a read-only lib dir" "$rc" "0"
+[ "$rc" = 0 ] || printf '%s\n' "$bb" >&2
+eq "restore snapshot lands under the state dir" "$(find "$D/rostate/config-backups" -name 'config-*-restore-*.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 eq "lib dir tree is unchanged" "$(tree_hash "$D/ro")" "$before"
-eq "state dir holds only state" "$(ls -A "$D/rostate" | sort | tr '\n' ' ')" "backups config.json $(cd "$D/rostate" && ls rigforge-support-*.tar.gz | tr '\n' ' ')"
+eq "state dir holds only state" "$(ls -A "$D/rostate" | sort | tr '\n' ' ')" "$(printf '%s\n' .rigforge-config-meta.json .rigforge-revision-key backups config-backups config.json "$(cd "$D/rostate" && ls rigforge-support-*.tar.gz)" | sort | tr '\n' ' ')"
 
 if [ "$FAIL" -ne 0 ]; then
     printf 'state-lib: %s failure(s)\n' "$FAIL" >&2

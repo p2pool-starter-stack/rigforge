@@ -3610,7 +3610,7 @@ restore() {
         [ -n "$src" ] && log "Backup was made on host: $src"
     fi
 
-    local backups="$SCRIPT_DIR/config-backups" snap
+    local backups snap && backups="$(_state_dir)/config-backups"
     if [ -f "$CONFIG_JSON" ]; then
         snap="$backups/config-$(date -u +%Y%m%d-%H%M%S)-restore-$$.json"
         if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$snap"); then
