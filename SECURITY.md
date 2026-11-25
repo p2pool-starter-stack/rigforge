@@ -99,8 +99,10 @@ RigForge is built to be reproducible and tamper-evident:
 - Pinned, verified inputs. XMRig is cloned at a pinned commit and verified against a hardcoded
   hash before it builds; GitHub Actions are SHA-pinned; CI tool installs (shellcheck, shfmt, gitleaks)
   are version- and checksum-verified. Dependabot keeps the action pins current and flags advisories,
-  and a weekly workflow watches upstream XMRig releases — a new version arrives as a bot-opened,
-  build-verified PR (never fetched-and-run; a human merges, the normal gates apply).
+  a weekly workflow watches upstream XMRig releases — a new version arrives as a bot-opened,
+  build-verified PR (never fetched-and-run; a human merges, the normal gates apply), and a daily
+  workflow scans the GitHub Advisory Database for CVEs affecting the pinned version, opening a
+  tracking issue and an advisory bump PR when found (#767).
 - Secret scanning. [gitleaks](https://github.com/gitleaks/gitleaks) scans the full git history on
   every push and PR, and runs as a pre-commit hook, so credentials can't slip into the repo.
   Historical fixture false positives use exact commit/file/rule/line fingerprints in `.gitleaksignore`;

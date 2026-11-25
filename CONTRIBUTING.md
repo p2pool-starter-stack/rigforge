@@ -109,8 +109,9 @@ shellcheck, shfmt, actionlint, gitleaks, lychee and jq, installed by curl with a
 watched by the weekly `tool-bump.yml` watcher; the Rust toolchain pin in `rust-toolchain.toml` and
 cargo-deny are registered there too, and Dependabot's `cargo` entry covers `Cargo.lock`. The watcher
 reports stale pins without changing them; failed or malformed upstream responses remain unchecked
-and fail the watcher. It also confirms that the sibling scheduled workflows ran on their last
-schedule: only a scheduled run counts, and a lookup that finds nothing is unchecked, never a pass.
+and fail the watcher. It also confirms that the sibling scheduled workflows (`xmrig-bump.yml`,
+`security-advisory.yml`, `links.yml`) ran on their last schedule: only a scheduled run counts,
+and a lookup that finds nothing is unchecked, never a pass.
 
 The Rust workspace (`Cargo.toml`, `crates/`) is gated by `make rust-check`: `rust-fmt`, `rust-clippy`,
 `rust-test`, `rust-deny` (needs cargo-deny), `rust-musl` (needs the pinned musl target and readelf) and

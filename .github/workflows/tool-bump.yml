@@ -100,12 +100,13 @@ jobs:
           }
 
           watcher xmrig-bump.yml
+          watcher security-advisory.yml
           watcher links.yml
 
           {
             printf '%s\n\n' "Weekly currency check of the CI tool pins Dependabot cannot see (\`.github/workflows/tool-bump.yml\`). This never bumps anything — bump a stale pin by hand and let its own check verify it."
             printf '| tool | pinned | upstream latest | |\n|---|---|---|---|\n%s\n' "$rows"
-            printf '%s\n' "Watched elsewhere: **XMRig** by \`xmrig-bump.yml\` (it still opens a build-verified PR), and **GitHub Actions**, **.pre-commit-config.yaml**, \`tools/requirements-ci.txt\`, \`package.json\` and the test-image Dockerfiles by Dependabot."
+            printf '%s\n' "Watched elsewhere: **XMRig** by \`xmrig-bump.yml\` (release bumps) and \`security-advisory.yml\` (CVE monitoring, #767); **GitHub Actions**, **.pre-commit-config.yaml**, \`tools/requirements-ci.txt\`, \`package.json\` and the test-image Dockerfiles by Dependabot."
             printf '\n%s\n\n' "### Watcher liveness"
             printf '%s\n\n' "A watcher that silently stops firing looks identical from outside to one with nothing to report. This confirms the sibling scheduled workflows actually ran on their last Monday, not just that they exist in the tree."
             printf '| watcher | last scheduled run | conclusion | status |\n|---|---|---|---|\n%s\n' "$wrows"
