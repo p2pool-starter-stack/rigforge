@@ -81,7 +81,7 @@ REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$RIGFORGE_STATE/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$RIGFORGE_STATE/.rigforge-appliance}"
 LEGACY_APPLIANCE_UNIT="${RIGFORGE_LEGACY_APPLIANCE_UNIT:-/run/systemd/system/xmrig.service}"
-CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$RIGFORGE_STATE/.rigforge-config-meta.json}" # #254 provenance sidecar
+CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$RIGFORGE_STATE/.rigforge-config-meta.json}"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
@@ -4587,14 +4587,14 @@ _control_upgrade_steps() {
     RIGFORGE_UPGRADE_UNMOVED="the root guard refused this tree"
     _root_guard_check "" || return 1
     RIGFORGE_UPGRADE_UNMOVED="could not fetch from origin"
-    _fetch_git -C "$RIGFORGE_LIB" -c safe.directory="$RIGFORGE_LIB" fetch --quiet --tags origin 2>/dev/null || return 1
+    _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
     RIGFORGE_UPGRADE_UNMOVED=""
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        cobj=$(git -C "$RIGFORGE_LIB" -c safe.directory="$RIGFORGE_LIB" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
-        git -C "$RIGFORGE_LIB" -c safe.directory="$RIGFORGE_LIB" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
+        cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
+        git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
     _control_upgrade_mark "$udir" || return 1
-    git -C "$RIGFORGE_LIB" -c safe.directory="$RIGFORGE_LIB" checkout --quiet --force "$ref" 2>/dev/null || return 1
+    git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
     "$RIGFORGE_LIB/rigforge.sh" upgrade >/dev/null && rm -f "$udir/upgrade-pending"
 }
 
