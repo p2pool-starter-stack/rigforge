@@ -11,12 +11,12 @@ chmod -R a-w "$SPLIT_LIB"
 split_hash() { (cd "$SPLIT_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum); }
 split_rf() {
     case "${1:-setup}" in
-        setup|upgrade)
-            RIGFORGE_LIB="$SPLIT_LIB" RIGFORGE_STATE="$SPLIT_STATE" "$SPLIT_LIB/rigforge.sh" "${@:-setup}" --no-root-guard </dev/null
-            ;;
-        *)
-            RIGFORGE_LIB="$SPLIT_LIB" RIGFORGE_STATE="$SPLIT_STATE" "$SPLIT_LIB/rigforge.sh" "$@" </dev/null
-            ;;
+    setup | upgrade)
+        RIGFORGE_LIB="$SPLIT_LIB" RIGFORGE_STATE="$SPLIT_STATE" "$SPLIT_LIB/rigforge.sh" "${@:-setup}" --no-root-guard </dev/null
+        ;;
+    *)
+        RIGFORGE_LIB="$SPLIT_LIB" RIGFORGE_STATE="$SPLIT_STATE" "$SPLIT_LIB/rigforge.sh" "$@" </dev/null
+        ;;
     esac
 }
 split_before="$(split_hash)"
