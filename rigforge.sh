@@ -25,8 +25,7 @@ C_RESET="${_tty:+\033[0m}"
 C_GREEN="${_tty:+\033[1;32m}"
 C_YELLOW="${_tty:+\033[1;33m}"
 C_RED="${_tty:+\033[1;31m}"
-C_BLUE="${_tty:+\033[1;34m}"
-readonly C_RESET C_GREEN C_YELLOW C_RED C_BLUE
+readonly C_RESET C_GREEN C_YELLOW C_RED
 unset _tty
 
 log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
