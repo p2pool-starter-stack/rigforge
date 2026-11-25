@@ -221,13 +221,33 @@ docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/test
 The image — alpine pinned by tag and digest, with the nftables probe's packages baked in — lives in
 [`docker/Dockerfile`](docker/Dockerfile); Dependabot bumps the pin.
 
-### The shared rig
+### Running the worker-to-stack phases directly
 
-This rig is the e2e target for both RigForge's release gates and Pithead's e2e testing, and the two
-must not run concurrently: the gates mutate the rig, Pithead's tests assume a steadily-hashing
-miner. Both harnesses therefore take a kernel `flock` on `/var/lock/rig-e2e.lock` at entry — a
-second arrival exits 75 naming the holder (set `RIG_LOCK_WAIT=1` to queue instead). Check who
-holds it from off-box: `ssh <rig> 'flock -n -x /var/lock/rig-e2e.lock true || cat /var/lock/rig-e2e.lock.holder'` (#183).
+Each phase of [`e2e-pithead.sh`](e2e-pithead.sh) runs on its own as `sudo -E bash tests/e2e-pithead.sh <phase>` on a
+dedicated, uncontended rig with a live stack at `PITHEAD_URL=host:3333`. `all` runs `connect`, `worker-api`, `api-impact`,
+`network`, `stratum-auth`, `dashboard`, `dev-fee`, `control` and `access-tokens` in that order and stops at the first failure.
+Only `stratum-auth` and `dashboard` skip cleanly when their input is absent; every other phase runs or fails.
+
+| Phase | What it does | Optional inputs |
+| --- | --- | --- |
+| `connect`, `worker-api`, `api-impact`, `network` | Mining round trip, the worker API posture, the hashrate-impact guard under polling load, and the network summary and key contract. | `E2E_SHARE_TIMEOUT`, `E2E_API_IMPACT_TOLERANCE_PCT`, `E2E_API_LATENCY_S`; `network` always runs the API allowlist probe on an auto-selected link-local subnet; `E2E_ALLOWLIST_HOST_CIDR` and `E2E_ALLOWLIST_NS_CIDR` override it, must be set together, and setting only one fails the phase |
+| `network-sequence` | Outside `all`: the first four in one process and one snapshot. | as above |
+| `stratum-auth` | Stratum auth accept/reject and rotation against a temporary plain-Stratum pool. | `E2E_STRATUM_PASS`: `all` skips without it, the explicit phase fails |
+| `dashboard` | Dashboard visibility and drop-off. | `E2E_DASH_URL` (skipped without it), `E2E_DASH_AUTH`, `E2E_DROPOFF_TIMEOUT` (default 300) |
+| `dev-fee` | Legacy build migration and runtime donation reductions. | none |
+| `control` | The writable control path's DONATION apply round trip. | `E2E_APPLIANCE_POLICY_DROPIN` |
+| `access-tokens` | A named `ACCESS_TOKENS` entry authenticates and is refused after revocation. | none |
+| `thread-profile` | Outside `all`: XMRig thread profiles against the actual `/2/backends` threads. | none |
+| `config-ownership` | Outside `all`: the generated config stays byte-identical while mining and a hand edit waits for a restart. | `E2E_LIVE_TIMEOUT`, `E2E_AUTOSAVE_WINDOW`, `E2E_RELOAD_WINDOW` |
+| `selftest` | Outside `all`: the real `bench` and `stress`. | `E2E_STRESS_MINUTES` (default 1) |
+| `shared-host` | Outside `all`: [shared-host](../docs/shared-host.md) behaviour. | `E2E_SHARED_SHARE_TIMEOUT` (default 600) |
+| `control-replay-thermal`, `control-replay-pools` | Outside `all`: replay of the thermal and pools control sequences. Exits 2 unless the replay inputs are supplied. | required: `E2E_PITHEAD_CONTROL_FIXTURE=pithead-control`, `E2E_PITHEAD_CONTROL_CONTEXT`, `IT_RIG_POOLS_PROBE`, and `E2E_RIG_LOCK_UNIT` naming an active systemd unit that matches `bench-ci-riglock-<name>-<n>`; a clean clone cannot satisfy the last two until #734/#735 land |
+
+### The rig lock
+
+Release gates and the stack's own e2e tests must not run on one rig at the same time: the gates mutate the rig, the stack's tests
+assume a steadily-hashing miner. Both take a kernel `flock` on `/var/lock/rig-e2e.lock` at entry; a second arrival exits 75 naming
+the holder (set `RIG_LOCK_WAIT=1` to queue instead). `RIG_LOCK_FILE` and `RIG_LOCK_HOLDER` relocate the lock and its holder file (#183).
 
 ## Where does my test go?
 

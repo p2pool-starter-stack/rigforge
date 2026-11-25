@@ -221,7 +221,7 @@ After a rig is re-tagged, run `perf` on it and append the JSON line it prints
 the repo; that history, passed back as `E2E_PERF_HISTORY`, is what lets the gate catch slow drift
 across releases. The class is the CPU model unless `E2E_PERF_CLASS` overrides it, so any rig of the
 same hardware shares one history. Recording no longer touches the checkout, so there is nothing to
-commit or reset. It is whichever rig ran the gate, which is **not** always the shared rig: v1.15.0 was
+commit or reset. The gate may run on a different rig each release: v1.15.0 was
 gated on one rig and v1.15.1 on another. A rig that dual-boots Windows has Secure Boot enabled,
 kernel lockdown (`integrity`) denies every MSR write,
 and `doctor` counts that as an issue and exits non-zero. Pick a rig with Secure Boot off.
