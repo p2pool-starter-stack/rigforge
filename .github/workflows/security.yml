@@ -30,6 +30,9 @@ jobs:
     # The weekly tick exists for zizmor's advisory re-audit; history doesn't change between pushes, so
     # there's nothing new for gitleaks to scan on a schedule.
     if: github.event_name != 'schedule'
+    concurrency:
+      group: "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       # Pinned + checksum-verified, same as the shellcheck/shfmt installs in ci.yml — reproducible and
       # immune to runner-image drift. Keep GITLEAKS_VERSION in lockstep with .pre-commit-config.yaml.
@@ -57,6 +60,9 @@ jobs:
   zizmor:
     name: Workflow audit (zizmor)
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -16,6 +16,9 @@ jobs:
   lint-yaml:
     name: Lint (yamllint)
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +53,9 @@ jobs:
   lint-md:
     name: Lint (markdownlint)
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -64,6 +70,9 @@ jobs:
   lint:
     name: Lint (shellcheck + shfmt)
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       SHELLCHECK_VERSION: "0.11.0"
       SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
@@ -114,6 +123,9 @@ jobs:
   test:
     name: Test suite
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,6 +143,9 @@ jobs:
     name: APT feed (sign, verify, tamper)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-push-${{ github.ref_name }}"
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -144,6 +159,9 @@ jobs:
     name: Stock home setup (${{ matrix.label }})
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    concurrency:
+      group: "${{ github.workflow }}-push-${{ github.ref_name }}"
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -172,6 +190,9 @@ jobs:
   e2e:
     name: End-to-end (Docker)
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-push-${{ github.ref_name }}"
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -191,6 +212,9 @@ jobs:
   coverage:
     name: Coverage (kcov + diff-cover)
     runs-on: ubuntu-24.04
+    concurrency:
+      group: "${{ github.workflow }}-push-${{ github.ref_name }}"
+      cancel-in-progress: true
     env:
       PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
       # Diff the PR against the branch it targets (develop or main). On a push, github.base_ref is empty,
@@ -220,6 +244,9 @@ jobs:
     name: Homebrew formula (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    concurrency:
+      group: "${{ github.workflow }}-push-${{ github.ref_name }}"
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
