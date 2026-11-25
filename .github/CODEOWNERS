@@ -1,6 +1,6 @@
 # Code owners — a PR into main requires review from the owner(s) below; that is
 # the "Main Branch" ruleset's code-owner rule. develop does not require an
-# approval: it requires the adversarial-review status (see CONTRIBUTING.md).
+# approval.
 # https://docs.github.com/articles/about-code-owners
 
 * @VijitSingh97

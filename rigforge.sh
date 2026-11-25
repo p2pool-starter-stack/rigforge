@@ -638,9 +638,8 @@ parse_config() {
     # rig would never restart, above 110 is past any CPU's limit.
     MAX_TEMP_C=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON")
     if [ -n "$MAX_TEMP_C" ]; then
-        if ! _uint_in_range "$MAX_TEMP_C" 40 110; then
-            error "max_temp_c must be empty (no thermal cutoff) or a whole number 40-110 °C (got: $MAX_TEMP_C)."
-        fi
+        _uint_in_range "$MAX_TEMP_C" 40 110 || error "max_temp_c must be empty (no thermal cutoff) or a whole number 40-110 °C (got: $MAX_TEMP_C)."
+        MAX_TEMP_C=$((10#$MAX_TEMP_C))
     fi
 
     # Co-resident reservation headroom (#305): MB of HugePages to leave for another workload on the box
@@ -2430,8 +2429,6 @@ _accept_better() {
 
 # --- Auto-tuning: power & thermal sensing (#81) ---
 
-# Best-effort temperature (°C) for the hashrate-per-watt view (#54). Defaults to the standard Linux
-# thermal zone; TUNE_TEMP_CMD overrides. Read right after the loaded window (the cores are still hot).
 _read_temp() {
     if [ -n "${TUNE_TEMP_CMD:-}" ]; then
         eval "$TUNE_TEMP_CMD"
@@ -4055,7 +4052,7 @@ _apply_runtime() { # [preserve-run-state]
     [ -d "$build" ] || error "No built worker at $build. Run 'setup' first."
     local held=no
     RIGFORGE_RESTART_FAILED=0
-    [ "${1:-}" = preserve-run-state ] && _miner_deliberately_stopped && held=yes
+    { [ "${1:-}" = preserve-run-state ] || [ -f "$WORKER_ROOT/watchdog.thermal-hold" ]; } && _miner_deliberately_stopped && held=yes
     local render_unit=no
     if [ "${1:-}" = preserve-run-state ] && [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         render_unit=yes
@@ -4708,11 +4705,25 @@ control_upgrade() {
     return 0
 }
 
+_watchdog_thermal_floor() {
+    local m t
+    m=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON" 2>/dev/null || true) && _uint_in_range "$m" 40 110 && t=$(_read_temp) && [ -n "$t" ] || return 0
+    awk -v t="$t" -v m="$m" 'BEGIN { exit !(t > m) }' && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0
+    sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || {
+        warn "watchdog: the config does not validate and temp ${t}°C is above max_temp_c=${m}°C, but stopping $SERVICE_NAME failed — will retry."
+        return 0
+    }
+    [ -n "${WORKER_ROOT:-}" ] && touch "$WORKER_ROOT/watchdog.thermal-hold" 2>/dev/null || warn "watchdog: no thermal-hold marker written; start $SERVICE_NAME by hand once the config is fixed."
+    warn "watchdog: the config does not validate, but temp ${t}°C is above max_temp_c=${m}°C — miner stopped."
+}
+
 watchdog() {
     if [ "$OS_TYPE" != "Linux" ]; then
         error "watchdog drives the live systemd service and is only supported on Linux."
     fi
+    trap _watchdog_thermal_floor EXIT
     RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config
+    trap - EXIT
     if [ "${DONATION_TOR_CONFLICT:-0}" = 1 ]; then
         warn "watchdog: DONATION is $DONATION while Tor is in effect, so setup, upgrade and apply refuse this config until DONATION is 0; the thermal stop and wedge recovery still run."
     fi
@@ -4734,6 +4745,10 @@ watchdog() {
             rm -f "$hold_f"
             log "watchdog: $lift_reason — thermal hold lifted, miner started."
         else
+            if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+                warn "watchdog: thermal hold active, but stopping $SERVICE_NAME failed — will retry."
+                return 0
+            fi
             log "watchdog: thermal hold active (temp ${t:-unreadable}°C, resumes below $((MAX_TEMP_C - 5))°C) — miner stays stopped."
         fi
         return 0
@@ -4743,8 +4758,6 @@ watchdog() {
         log "watchdog: $SERVICE_NAME is not active — dead-process recovery is systemd's (Restart=). Nothing to do."
         return 0
     fi
-    # Thermal cutoff (opt-in). An unreadable temp skips this — a missing sensor must not stop a
-    # healthy miner.
     if [ -n "$MAX_TEMP_C" ] && [ -n "$t" ] && awk -v t="$t" -v m="$MAX_TEMP_C" 'BEGIN { exit !(t > m) }'; then
         if ! sudo systemctl stop "$SERVICE_NAME" 2>/dev/null; then
             warn "watchdog: failed to stop $SERVICE_NAME at ${t}°C — will retry while above max_temp_c=${MAX_TEMP_C}°C."
@@ -4754,15 +4767,8 @@ watchdog() {
         warn "watchdog: temp ${t}°C is above max_temp_c=${MAX_TEMP_C}°C — miner stopped (starts again below $((MAX_TEMP_C - 5))°C)."
         return 0
     fi
-    # Wedge check: the API probe returns empty (unreachable) or the live hashrate (a float). An
-    # unreachable API is a STRIKE, not a crash — _read_api_hashrate swallows curl's refused/timeout
-    # exit itself (#364), so this unguarded assignment can't errexit the check (verified on a rig:
-    # the old reader aborted here with exit 7, the current one returns empty). #210 needed a
-    # `|| true` here for exactly that; the reader now owns the guarantee, so the guard is gone.
     hr=$(_read_api_hashrate)
     if [ -z "$hr" ] || awk -v h="$hr" 'BEGIN { exit !(h == 0) }'; then
-        # Guard INSIDE the $( ): on bash 3.2 a caller-side `|| true` does NOT stop the ERR trap
-        # firing in the child, because 3.2 doesn't carry suppressed errexit into it (#210/#364).
         f=$(cat "$fails_f" 2>/dev/null || true)
         [[ "$f" =~ ^[0-9]+$ ]] || f=0
         f=$((f + 1))
