@@ -63,6 +63,7 @@ check "ships the upgrade unit" "$(cmp -s "$X/usr/lib/systemd/system/rigforge-upg
 for s in postinst prerm postrm; do
     check "DEBIAN/$s is packaging/debian/$s" "$(cmp -s "$X/DEBIAN/$s" "$ROOT/packaging/debian/$s" && [ -x "$X/DEBIAN/$s" ] && echo 0 || echo 1)"
 done
+check "no group- or world-writable or setuid file in the package" "$([ -z "$(find "$X/usr" \( -perm -0020 -o -perm -0002 -o -perm -4000 -o -perm -2000 \) ! -type l)" ] && echo 0 || echo 1)"
 check "ships no apt keyring" "$([ ! -e "$X/etc/apt" ] && echo 0 || echo 1)"
 check "no internal repository references" "$(grep -rqE 'pithead-developer|bench-ci|ai-devkit' "$X" && echo 1 || echo 0)"
 

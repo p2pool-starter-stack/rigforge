@@ -82,7 +82,7 @@ maint() {
     mkdir -p "$r/etc/systemd/system"
     printf 'ExecStart=/usr/lib/rigforge/rigforge.sh watchdog\n' >"$r/etc/systemd/system/rigforge-watchdog.service"
     printf 'ExecStart=/usr/lib/rigforge/xmrig/xmrig\n' >"$r/etc/systemd/system/xmrig.service"
-    printf 'ExecStart=/opt/other/xmrig\n' >"$r/etc/systemd/system/rigforge-other.service"
+    printf 'ExecStart=/usr/lib/rigforge/rigforge.sh other\n' >"$r/etc/systemd/system/rigforge-other.service"
     : >"$CALLS"
     RIGFORGE_PKG_ROOT="$r" PATH="$STUBS:$PATH" sh "$ROOT/packaging/debian/$script" "$arg" >"$r/out" 2>&1
 }
@@ -106,7 +106,7 @@ check "remove keeps config and state" "$([ -f "$D/postrm-remove/etc/rigforge/con
 maint postrm-purge postrm purge
 check "purge removes config, state and the tree's leftovers" "$([ ! -e "$D/postrm-purge/etc/rigforge" ] && [ ! -e "$D/postrm-purge/var/lib/rigforge" ] && [ ! -e "$D/postrm-purge/usr/lib/rigforge" ] && echo 0 || echo 1)"
 check "purge removes the units setup rendered for the package tree" "$([ ! -e "$D/postrm-purge/etc/systemd/system/xmrig.service" ] && [ ! -e "$D/postrm-purge/etc/systemd/system/rigforge-watchdog.service" ] && echo 0 || echo 1)"
-check "purge keeps a unit that does not run the package tree" "$([ -f "$D/postrm-purge/etc/systemd/system/rigforge-other.service" ] && echo 0 || echo 1)"
+check "purge keeps a unit it did not render" "$([ -f "$D/postrm-purge/etc/systemd/system/rigforge-other.service" ] && echo 0 || echo 1)"
 check "remove keeps the rendered units" "$([ -f "$D/postrm-remove/etc/systemd/system/xmrig.service" ] && echo 0 || echo 1)"
 set +e
 SYSTEMCTL_FAIL=1 maint prerm-fail prerm remove
