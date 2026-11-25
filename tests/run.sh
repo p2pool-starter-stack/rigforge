@@ -7828,12 +7828,11 @@ assert_eq "config: DONATION + interval carried (#253)" "$(printf '%s' "$blk" | j
 blk2="$(cfgblk '{ "pools":[{"url":"h:3333"}] }')"
 assert_eq "config: max_temp_c null when unset (#253)" "$(printf '%s' "$blk2" | jq -r '.max_temp_c')" "null"
 assert_eq "config: autotune/watchdog default to disabled (#253)" "$(printf '%s' "$blk2" | jq -r '"\(.autotune) \(.watchdog)"')" "disabled disabled"
-# round-trip contract: the config block's keys are EXACTLY the control writable allowlist.
+bash "$ROOT/tests/test-jq-config-input.sh" "$SCRIPT" >/dev/null 2>&1 && ok "config: pool settings and the API token reach jq on a descriptor or the environment" || bad "config: pool settings and the API token reach jq on a descriptor or the environment" "regression failed"
 assert_eq "config: keys == the control writable allowlist, round-trippable (#253)" "$(printf '%s' "$blk2" | jq -r 'keys_unsorted | sort | join(",")')" "DONATION,autotune,max_temp_c,pools,watchdog,watchdog_interval_min"
 
-# #254: config revision + last-change provenance in the feed (rigforge.config_meta).
 echo "== unit: config_meta — revision + last-change provenance (#254) =="
-whash() { # <config-json> -> _writable_config_hash
+whash() {
     local d
     d=$(mktemp -d "$SANDBOX/whash.XXXXXX")
     printf '%s\n' "$1" >"$d/config.json"

@@ -351,18 +351,11 @@ ensure_config_exists() {
                 ;;
             esac
 
-            # Omit unset fields to preserve the LAN config's minimal shape.
-            (umask 077 && jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" --arg socks5 "$IN_SOCKS5" \
-                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end) + (if $socks5 == "" then {} else {socks5: $socks5} end))]}' >"$CONFIG_JSON")
-            # The operator is told (below) to hand-edit this file to add a wallet / ACCESS_TOKEN, and the
-            # first `apply` may be a long way off — chmod now so those secrets are never world-readable
-            # in the interim (generate_xmrig_config's chmod 600 only runs on setup/apply). (#131)
+            (umask 077 && IN_PASS="$IN_PASS" jq -n --arg url "$IN_URL" --arg socks5 "$IN_SOCKS5" \
+                '{pools: [({url: $url} + (if env.IN_PASS == "" then {} else {pass: env.IN_PASS} end) + (if $socks5 == "" then {} else {socks5: $socks5} end))]}' >"$CONFIG_JSON")
             chmod 600 "$CONFIG_JSON"
-            _reown_worker # hand the freshly-created config.json to the operator, even if setup later fails
+            _reown_worker
             log "Created $CONFIG_JSON successfully."
-            # New-user safety net: the minimal config has no wallet, so a PUBLIC-pool miner who stops here
-            # would credit hashes to the hostname, not themselves — and nothing later (doctor included)
-            # flags it, since it's a pool-side auth detail. Pithead users correctly need no wallet.
             warn "Mining to a PUBLIC pool (SupportXMR, etc.)? Add your Monero wallet as the pool \"user\" in"
             warn "$CONFIG_JSON and run 'sudo $0 apply', or your hashes credit '$(hostname)', not you."
             warn "Connecting to a Pithead stack instead? You're all set — no wallet needed."
@@ -470,13 +463,13 @@ parse_config() {
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | {"rig-id": .["rig-id"], nicehash, algo, coin, sni} | with_entries(select(.value != null))]] | transpose | map(.[0] + .[1])' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | {"rig-id": .["rig-id"], nicehash, algo, coin, sni} | with_entries(select(.value != null))]] | transpose | map(.[0] + .[1])' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON") || error "Could not parse daemon pool fields."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse daemon pool fields."
     while IFS= read -r _pool; do
         _u=$(jq -r '.url' <<<"$_pool")
         _user=$(jq -r '.user' <<<"$_pool")
@@ -1132,9 +1125,8 @@ generate_xmrig_config() {
     FULL_USER="$(hostname)"
     local _new _step
     _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
-    jq -n --argjson pools "$POOLS_JSON" \
+    ACCESS_TOKEN="$ACCESS_TOKEN" jq -n --slurpfile pools <(printf '%s' "$POOLS_JSON") \
         --arg user "$FULL_USER" \
-        --arg access_token "$ACCESS_TOKEN" \
         --arg log "$LOG_FILE_PATH" \
         --argjson yield "$YIELD" \
         --argjson prio "$PRIORITY" \
@@ -1153,7 +1145,7 @@ generate_xmrig_config() {
         --argjson donation "$DONATION" \
         --arg host "$HTTP_HOST" \
         --arg os "$OS_TYPE" \
-        '{
+        '($pools[0]) as $pools | env.ACCESS_TOKEN as $access_token | {
             cpu: {
                 enabled: true,
                 "huge-pages": $huge_pages,
@@ -5084,7 +5076,7 @@ _writable_config_canonical() {
     local pools
     pools=$(jq -c '.pools // []' "$CONFIG_JSON" 2>/dev/null || echo '[]')
     [ -n "$pools" ] || pools='[]'
-    jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
+    jq -Sn --slurpfile pools /dev/fd/3 --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools[0], DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}' 3<<<"$pools"
 }
 
 _writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL_USER" "$(_script_dir)/util/revision-key.sh" "${RIGFORGE_REVISION_KEY:-$SCRIPT_DIR/.rigforge-revision-key}" || :; }
