@@ -1,0 +1,240 @@
+name: Security advisory monitor
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Detect current pin
+        id: detect
+        run: |
+          set -Eeuo pipefail
+          version=$(grep -oE 'XMRIG_VERSION:-v[0-9.]+' rigforge.sh | head -1 | sed 's/^XMRIG_VERSION:-//')
+          commit=$(grep -oE 'XMRIG_COMMIT:-[0-9a-f]{40}' rigforge.sh | head -1 | sed 's/^XMRIG_COMMIT:-//')
+          echo "current_version=$version" >>"$GITHUB_OUTPUT"
+          echo "current_commit=$commit" >>"$GITHUB_OUTPUT"
+          echo "pinned: ${version} (${commit:0:12})"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          version_cmp() {
+            local a="${1#v}" b="${2#v}"
+            local IFS='.'
+            # shellcheck disable=SC2206
+            # shellcheck disable=SC2086
+            local -a da=($a) db=($b)
+            local len=${#da[@]}
+            [ "${#db[@]}" -gt "$len" ] && len=${#db[@]}
+            for ((i=0; i<len; i++)); do
+              local a_num=${da[i]:-0} b_num=${db[i]:-0}
+              if [ "$a_num" -lt "$b_num" ]; then echo -1; return; fi
+              if [ "$a_num" -gt "$b_num" ]; then echo 1; return; fi
+            done
+            echo 0
+          }
+          cat > "$RUNNER_TEMP/compare.sh" <<'EOF'
+          version_cmp() {
+            local a="${1#v}" b="${2#v}"
+            local IFS='.'
+            # shellcheck disable=SC2206
+            local -a da=($a) db=($b)
+            local len=${#da[@]}
+            [ ${#db[@]} -gt $len ] && len=${#db[@]}
+            for ((i=0; i<len; i++)); do
+              local a_num=${da[i]:-0} b_num=${db[i]:-0}
+              if [ "$a_num" -lt "$b_num" ]; then echo -1; return; fi
+              if [ "$a_num" -gt "$b_num" ]; then echo 1; return; fi
+            done
+            echo 0
+          }
+          EOF
+          chmod +x "$RUNNER_TEMP/compare.sh"
+
+      - name: Scan GitHub Advisory Database for XMRig advisories
+        id: scan
+        run: |
+          set -Eeuo pipefail
+          source "$RUNNER_TEMP/compare.sh"
+          current="${{ steps.detect.outputs.current_version }}"
+
+          found=0
+          page=1
+          while true; do
+            hits=$(gh api "/advisories?state=published&per_page=100&page=${page}" \
+              --jq 'if . == null then "0" else (. | map(select(
+                (.vulnerabilities | length > 0) and
+                (.vulnerabilities[] | .package.name) | test("xmrig"; "i")
+              )) | length end')
+            [ "$hits" != "0" ] || break
+            gh api "/advisories?state=published&per_page=100&page=${page}" \
+              --jq '.[] | select(
+                (.vulnerabilities | length > 0) and
+                (.vulnerabilities[] | .package.name) | test("xmrig"; "i")
+              )' >>"$GITHUB_WORKSPACE/xmrig_advisories.jsonl"
+            found=$((found + hits))
+            if ! curl -sI -o /dev/null -w '%{http_code}' \
+              "https://api.github.com/advisories?state=published&per_page=100&page=$((page+1))" \
+              -H "Accept: application/vnd.github+json" | grep -q 200; then
+              break
+            fi
+            page=$((page + 1))
+            [ "$page" -lt 20 ] || break
+          done
+          echo "found=$found" >>"$GITHUB_OUTPUT"
+
+          if [ "$found" -eq 0 ]; then
+            echo "No XMRig advisories found in the GitHub Advisory Database."
+            exit 0
+          fi
+
+          while IFS= read -r adv; do
+            ghsa=$(echo "$adv" | jq -r '.ghsa_id')
+            cve=$(echo "$adv" | jq -r '.cve_id // empty')
+            severity=$(echo "$adv" | jq -r '.severity')
+            first_patched=$(echo "$adv" | jq -r '.vulnerabilities[0].first_patched_version // empty')
+
+            [ -n "$first_patched" ] || continue
+
+            cmp=$(version_cmp "$current" "$first_patched")
+            if [ "$cmp" -lt 0 ]; then
+              {
+                echo "GHSA=$ghsa"
+                echo "CVE=$cve"
+                echo "SEVERITY=$severity"
+                echo "PATCHED=$first_patched"
+                echo "---"
+              } >>"$GITHUB_WORKSPACE/vuln_record.txt"
+              echo "VULNERABLE=true" >>"$GITHUB_OUTPUT"
+            fi
+          done < <(cat "$GITHUB_WORKSPACE/xmrig_advisories.jsonl")
+
+      - name: Check existing PR for this advisory
+        if: steps.scan.outputs.vulnerable == 'true'
+        id: prcheck
+        run: |
+          ghsa=$(head -1 "$GITHUB_WORKSPACE/vuln_record.txt" | sed 's/GHSA=//')
+          n=$(gh pr list --state open --search "xmrig-advisory-bump-${ghsa}" --limit 10 --json number --jq 'length' 2>/dev/null || echo "0")
+          echo "existing=$n" >>"$GITHUB_OUTPUT"
+
+      - name: Bump XMRig pin for advisory
+        if: steps.scan.outputs.vulnerable == 'true' && steps.prcheck.outputs.existing == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          source "$RUNNER_TEMP/compare.sh"
+          ghsa=$(head -1 "$GITHUB_WORKSPACE/vuln_record.txt" | sed 's/GHSA=//')
+          cve=$(sed -n '2s/^CVE=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
+          severity=$(sed -n '3s/^SEVERITY=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
+          patched=$(sed -n '5s/^PATCHED=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
+          current="${{ steps.detect.outputs.current_version }}"
+          current_commit="${{ steps.detect.outputs.current_commit }}"
+
+          PATCHED_TAG="v${patched}"
+          commit=$(git ls-remote "https://github.com/xmrig/xmrig.git" "refs/tags/${PATCHED_TAG}^{}" | cut -f1 || true)
+          [ -n "$commit" ] || commit=$(git ls-remote "https://github.com/xmrig/xmrig.git" "refs/tags/${PATCHED_TAG}" | cut -f1 || true)
+          if ! printf '%s' "$commit" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::warning::Could not resolve ${PATCHED_TAG} to a commit, skipping"
+            exit 0
+          fi
+          [ "$(git ls-remote "https://github.com/xmrig/xmrig.git" "refs/tags/${PATCHED_TAG}")" = "$(printf '%s\trefs/tags/%s\n' "$commit" "$PATCHED_TAG")" ] || \
+          [ "$(git ls-remote "https://github.com/xmrig/xmrig.git" "refs/tags/${PATCHED_TAG}^{}")" = "$(printf '%s\trefs/tags/%s^{}\n' "$commit" "$PATCHED_TAG")" ] || \
+          { echo "::warning::Tag/commit mismatch, skipping"; exit 0; }
+
+          branch="fix/xmrig-advisory-bump-${ghsa}"
+          git checkout -b "$branch"
+          sed -i "s|XMRIG_VERSION:-${current#v}|XMRIG_VERSION:-${PATCHED_TAG}|" rigforge.sh
+          sed -i "s|XMRIG_COMMIT:-${current_commit}|XMRIG_COMMIT:-${commit}|" rigforge.sh
+          grep -q "XMRIG_VERSION:-${PATCHED_TAG}" rigforge.sh
+          grep -q "XMRIG_COMMIT:-${commit}" rigforge.sh
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: bump XMRig to ${PATCHED_TAG} for ${ghsa} advisory"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+
+          {
+            printf '%s\n\n' \
+              "Automated advisory bump (#767): XMRig ${current} is affected by ${ghsa}${cve:+ (${cve})}."
+            [ -n "$cve" ] && printf '%s\n' "CVE: ${cve}"
+            # shellcheck disable=SC2016
+            printf 'Advisory: %s\nSeverity: %s\nCurrent pin: %s (%s)\nPatched version: %s\n' \
+              "$ghsa" "$severity" "$current" "${current_commit:0:12}" "$first_patched"
+            # shellcheck disable=SC2016
+            printf 'Commit resolved from release tag and verified: `%s…`\n' "${commit:0:12}"
+            # shellcheck disable=SC2016
+            printf 'Upstream notes: %s\n\n' "https://github.com/advisories/${ghsa}"
+            # shellcheck disable=SC2016
+            printf 'The current pin is below the first patched version; bumping to %s eliminates the vulnerability.\n\n' \
+              "$PATCHED_TAG"
+            # shellcheck disable=SC2016
+            printf 'Deploys via the normal path after merge: `%s` rebuilds only where the pin changed.\nChangelog gets its line at release curation, like every pin bump.\n' \
+              "upgrade"
+          } > /tmp/pr_body.md
+          pr_body=$(cat /tmp/pr_body.md)
+          gh pr create --base develop --head "$branch" --label security \
+            --title "fix: bump XMRig to ${PATCHED_TAG} for ${ghsa}" \
+            --body "$pr_body"
+
+          gh workflow run ci.yml --ref "$branch"
+          gh workflow run security.yml --ref "$branch"
+
+      - name: Create tracking issue for advisory
+        if: steps.scan.outputs.vulnerable == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          ghsa=$(head -1 "$GITHUB_WORKSPACE/vuln_record.txt" | sed 's/GHSA=//')
+          cve=$(sed -n '2s/^CVE=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
+          severity=$(sed -n '3s/^SEVERITY=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
+          patched=$(sed -n '5s/^PATCHED=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
+          current="${{ steps.detect.outputs.current_version }}"
+          current_commit="${{ steps.detect.outputs.current_commit }}"
+
+          title="Security: ${ghsa}${cve:+ (${cve})} — XMRig ${current} is vulnerable"
+          n=$(gh issue list --state open --limit 100 --json number,title \
+            --jq "map(select(.title | contains(\"${ghsa}\"))) | .[0].number // empty" 2>/dev/null || echo "")
+          if [ -n "$n" ]; then
+            echo "Tracking issue #$n for ${ghsa} already exists"
+            exit 0
+          fi
+
+          {
+            printf '## What%s the problem\n\n' "'"
+            printf 'XMRig %s (%s) is affected by %s (severity: %s). The current pinned version falls within the vulnerable range and has not yet been bumped to the patched release.\n\n' \
+              "$current" "${current_commit:0:12}" "$ghsa" "$severity"
+            printf '## Acceptance criteria\n\n'
+            printf '[ ] A PR bumping the XMRig pin to %s is open and build-verified\n' "$patched"
+            printf '[ ] The CI checks on the PR are green\n'
+            printf '[ ] The PR is reviewed and merged\n\n'
+            printf '## Source\n\n'
+            printf 'Advisory: %s\n' "https://github.com/advisories/${ghsa}"
+            printf 'Triggered by: .github/workflows/security-advisory.yml (daily scan, #767)\n'
+            [ -n "$cve" ] && printf '\nCVE: %s\n' "https://nvd.nist.gov/vuln/detail/${cve}"
+          } > /tmp/issue_body.md
+          body=$(cat /tmp/issue_body.md)
+
+          gh issue create --title "$title" --label security --body "$body"
+
+      - name: No XMRig vulnerabilities
+        if: steps.scan.outputs.vulnerable != 'true' && steps.scan.outputs.found != '0'
+        run: |
+          echo "XMRig advisories found but current pin is not in any vulnerable range."
