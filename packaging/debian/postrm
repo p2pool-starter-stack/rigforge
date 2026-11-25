@@ -5,6 +5,9 @@ ROOT=${RIGFORGE_PKG_ROOT:-}
 
 case "$1" in
 purge)
+    for unit in "$ROOT"/etc/systemd/system/xmrig.service "$ROOT"/etc/systemd/system/rigforge-*; do
+        [ -f "$unit" ] && grep -qs /usr/lib/rigforge "$unit" && rm -f "$unit"
+    done
     rm -rf "$ROOT/etc/rigforge" "$ROOT/var/lib/rigforge" "$ROOT/usr/lib/rigforge"
     if [ -d "$ROOT/run/systemd/system" ]; then systemctl daemon-reload || true; fi
     ;;

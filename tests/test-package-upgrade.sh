@@ -22,7 +22,7 @@ STUB
 cat >"$STUBS/systemctl" <<'STUB'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"$CALLS"
-[ -z "${SYSTEMCTL_FAIL:-}" ]
+[ -z "${SYSTEMCTL_FAIL:-}" ] || [ "$1" = cat ]
 STUB
 chmod +x "$STUBS"/*
 export CALLS
@@ -45,19 +45,19 @@ postinst() {
 }
 
 postinst first "" 2.0.0 y
-check "first install queues nothing" "$([ ! -e "$D/first/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && echo 0 || echo 1)"
+check "first install queues nothing" "$([ ! -e "$D/first/var/lib/rigforge/upgrade-pending" ] && echo 0 || echo 1)"
 check "first install creates the state dir" "$([ -d "$D/first/var/lib/rigforge" ] && echo 0 || echo 1)"
 check "first install reloads systemd only" "$([ "$(cat "$CALLS")" = 'systemctl daemon-reload' ] && echo 0 || echo 1)"
 check "first install prints the first-run step" "$(grep -q 'sudo rigforge setup' "$D/first/out" && echo 0 || echo 1)"
 
 postinst noconf 1.0.0 2.0.0 n
-check "upgrade without a configured miner is inert" "$([ ! -e "$D/noconf/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && ! grep -q 'sudo rigforge setup' "$D/noconf/out" && echo 0 || echo 1)"
+check "upgrade without a configured miner is inert" "$([ ! -e "$D/noconf/var/lib/rigforge/upgrade-pending" ] && [ "$(cat "$CALLS")" = 'systemctl daemon-reload' ] && ! grep -q 'sudo rigforge setup' "$D/noconf/out" && echo 0 || echo 1)"
 
 postinst same 2.0.0 2.0.0 y
-check "same version is inert" "$([ ! -e "$D/same/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && ! grep -q 'sudo rigforge setup' "$D/same/out" && echo 0 || echo 1)"
+check "same version is inert" "$([ ! -e "$D/same/var/lib/rigforge/upgrade-pending" ] && [ "$(cat "$CALLS")" = 'systemctl daemon-reload' ] && ! grep -q 'sudo rigforge setup' "$D/same/out" && echo 0 || echo 1)"
 
 postinst older 2.0.0 1.9.0 y
-check "downgrade is inert" "$([ ! -e "$D/older/var/lib/rigforge/upgrade-pending" ] && ! grep -q start "$CALLS" && ! grep -q 'sudo rigforge setup' "$D/older/out" && echo 0 || echo 1)"
+check "downgrade is inert" "$([ ! -e "$D/older/var/lib/rigforge/upgrade-pending" ] && [ "$(cat "$CALLS")" = 'systemctl daemon-reload' ] && ! grep -q 'sudo rigforge setup' "$D/older/out" && echo 0 || echo 1)"
 
 postinst queue 1.9.0 2.0.0 y
 check "upgrade writes the marker" "$([ "$(cat "$D/queue/var/lib/rigforge/upgrade-pending")" = 2.0.0 ] && echo 0 || echo 1)"
@@ -79,6 +79,10 @@ maint() {
     mkdir -p "$r/run/systemd/system" "$r/etc/rigforge" "$r/var/lib/rigforge" "$r/usr/lib/rigforge"
     echo '{}' >"$r/etc/rigforge/config.json"
     echo '{}' >"$r/usr/lib/rigforge/config.json"
+    mkdir -p "$r/etc/systemd/system"
+    printf 'ExecStart=/usr/lib/rigforge/rigforge.sh watchdog\n' >"$r/etc/systemd/system/rigforge-watchdog.service"
+    printf 'ExecStart=/usr/lib/rigforge/xmrig/xmrig\n' >"$r/etc/systemd/system/xmrig.service"
+    printf 'ExecStart=/opt/other/xmrig\n' >"$r/etc/systemd/system/rigforge-other.service"
     : >"$CALLS"
     RIGFORGE_PKG_ROOT="$r" PATH="$STUBS:$PATH" sh "$ROOT/packaging/debian/$script" "$arg" >"$r/out" 2>&1
 }
@@ -101,6 +105,14 @@ maint postrm-remove postrm remove
 check "remove keeps config and state" "$([ -f "$D/postrm-remove/etc/rigforge/config.json" ] && [ -f "$D/postrm-remove/usr/lib/rigforge/config.json" ] && [ -d "$D/postrm-remove/var/lib/rigforge" ] && echo 0 || echo 1)"
 maint postrm-purge postrm purge
 check "purge removes config, state and the tree's leftovers" "$([ ! -e "$D/postrm-purge/etc/rigforge" ] && [ ! -e "$D/postrm-purge/var/lib/rigforge" ] && [ ! -e "$D/postrm-purge/usr/lib/rigforge" ] && echo 0 || echo 1)"
+check "purge removes the units setup rendered for the package tree" "$([ ! -e "$D/postrm-purge/etc/systemd/system/xmrig.service" ] && [ ! -e "$D/postrm-purge/etc/systemd/system/rigforge-watchdog.service" ] && echo 0 || echo 1)"
+check "purge keeps a unit that does not run the package tree" "$([ -f "$D/postrm-purge/etc/systemd/system/rigforge-other.service" ] && echo 0 || echo 1)"
+check "remove keeps the rendered units" "$([ -f "$D/postrm-remove/etc/systemd/system/xmrig.service" ] && echo 0 || echo 1)"
+set +e
+SYSTEMCTL_FAIL=1 maint prerm-fail prerm remove
+rc=$?
+set -e
+check "prerm remove fails when a unit cannot be stopped" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
 check "purge never touches tuning" "$(! grep -rqE 'grub|sysctl|hugepages|wrmsr|modprobe' "$ROOT/packaging/debian/postrm" "$ROOT/packaging/debian/prerm" && echo 0 || echo 1)"
 
 STATE="$D/state"

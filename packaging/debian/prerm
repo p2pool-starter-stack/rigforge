@@ -8,7 +8,8 @@ case "$1" in
 remove | deconfigure)
     if [ -d "$ROOT/run/systemd/system" ]; then
         for unit in $UNITS; do
-            systemctl disable --now "$unit" >/dev/null 2>&1 || true
+            systemctl cat "$unit" >/dev/null 2>&1 || continue
+            systemctl disable --now "$unit"
         done
     fi
     ;;

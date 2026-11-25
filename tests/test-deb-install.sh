@@ -37,6 +37,8 @@ guest() {
     echo "ok: doctor runs its checks from the packaged tree (exit $rc: no miner is provisioned)"
     echo '{}' >/usr/lib/rigforge/config.json
     echo kept >/var/lib/rigforge/state-probe
+    mkdir -p /etc/systemd/system
+    printf '[Service]\nExecStart=/usr/lib/rigforge/xmrig/xmrig\n' >/etc/systemd/system/xmrig.service
     apt-get install -y -qq "/debs/rigforge_${b}_all.deb" >/dev/null
     [ "$(rigforge --version)" = "RigForge $b" ] || {
         echo "FAIL: rigforge --version after upgrade"
@@ -52,13 +54,13 @@ guest() {
         echo "FAIL: remove left the code"
         return 1
     }
-    [ -f /usr/lib/rigforge/config.json ] && [ -f /var/lib/rigforge/state-probe ] || {
-        echo "FAIL: remove dropped config or state"
+    [ -f /usr/lib/rigforge/config.json ] && [ -f /var/lib/rigforge/state-probe ] && [ -f /etc/systemd/system/xmrig.service ] || {
+        echo "FAIL: remove dropped config, state or the rendered unit"
         return 1
     }
     echo "ok: remove deletes the code and keeps config and state"
     apt-get purge -y -qq rigforge >/dev/null
-    [ ! -e /usr/lib/rigforge ] && [ ! -e /var/lib/rigforge ] && [ ! -e /etc/rigforge ] || {
+    [ ! -e /usr/lib/rigforge ] && [ ! -e /var/lib/rigforge ] && [ ! -e /etc/rigforge ] && [ ! -e /etc/systemd/system/xmrig.service ] || {
         echo "FAIL: purge left residue"
         return 1
     }

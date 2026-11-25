@@ -62,7 +62,7 @@ jobs:
       - name: Build the .deb package
         run: |
           set -euo pipefail
-          deb=$(bash scripts/build-deb.sh "rigforge-$TAG.tar.gz" "$TAG")
+          deb=$(SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) bash scripts/build-deb.sh "rigforge-$TAG.tar.gz" "$TAG")
           sha256sum "$deb" >> SHA256SUMS
           echo "--- SHA256SUMS (with .deb) ---"; cat SHA256SUMS
 

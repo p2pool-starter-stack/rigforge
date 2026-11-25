@@ -55,7 +55,7 @@ safe place for code that root-run units execute, so prefer the git route below o
 
 The apt steps (signing key, source entry, `apt install rigforge`) are in the
 [README](../README.md), under **Prefer `apt`?**. Installing changes nothing on the host: the package puts the
-code in `/usr/lib/rigforge`, links `/usr/bin/rigforge` to it and adds the one-shot upgrade unit.
+release bundle in `/usr/lib/rigforge` (without the developer notes under `docs/dev`), links `/usr/bin/rigforge` to it and adds the one-shot upgrade unit.
 Provision with `sudo rigforge setup`. Until `RIGFORGE_STATE` lands (#780), `setup` keeps
 `config.json` and the XMRig build inside `/usr/lib/rigforge`; `apt upgrade` and `apt remove` keep
 them, and `apt purge` deletes them with `/var/lib/rigforge`. For the same reason the
