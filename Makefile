@@ -28,6 +28,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-e2e-docs-guest.sh
 	python3 tests/test-control-readiness.py
 	python3 tests/test-worker-proof.py
+	python3 tests/test-serve-poll.py
 	bash tests/test-worker-proof.sh
 	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
