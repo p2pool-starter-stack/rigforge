@@ -24,6 +24,8 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then _tty=y; fi
 C_RESET="${_tty:+\033[0m}"
 C_GREEN="${_tty:+\033[1;32m}"
 C_YELLOW="${_tty:+\033[1;33m}"
+# shellcheck disable=SC2034
+C_BLUE="${_tty:+\033[1;34m}"
 C_RED="${_tty:+\033[1;31m}"
 readonly C_RESET C_GREEN C_YELLOW C_RED
 unset _tty
