@@ -21,10 +21,16 @@ if [ ! -f "$MANIFEST" ]; then
 fi
 
 version=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('version',''))" "$MANIFEST")
-[ "$version" -ge 1 ] 2>/dev/null || { echo "missing or invalid 'version' >= 1" >&2; exit 1; }
+[ "$version" -ge 1 ] 2>/dev/null || {
+    echo "missing or invalid 'version' >= 1" >&2
+    exit 1
+}
 
 n_suites=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['suites']))" "$MANIFEST")
-[ "$n_suites" -gt 0 ] || { echo "no suites in manifest" >&2; exit 1; }
+[ "$n_suites" -gt 0 ] || {
+    echo "no suites in manifest" >&2
+    exit 1
+}
 
 ok "manifest has version=$version and $n_suites suites"
 
