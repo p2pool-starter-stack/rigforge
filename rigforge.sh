@@ -587,10 +587,8 @@ parse_config() {
             error "api_allow_from must be an IPv4/IPv6 address or CIDR (e.g. 192.168.1.0/24 or fd00::/64); got: '$API_ALLOW_FROM'."
         fi
     fi
-    # When set, the token is sent as an HTTP Authorization header, so keep it to safe, header-clean
-    # characters. Empty is allowed and means "open API" (the default).
     if [ -n "$ACCESS_TOKEN" ] && ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
-        error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
+        error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +)."
     fi
 
     # ACCESS_TOKENS (#516): an OPTIONAL name -> token map, one per consuming Pithead stack, so no stack
@@ -598,7 +596,7 @@ parse_config() {
     ACCESS_TOKENS_JSON=$(jq -c '.ACCESS_TOKENS // {}' "$CONFIG_JSON" 2>/dev/null)
     jq -e 'type == "object" and all(.[]; type == "string")' <<<"$ACCESS_TOKENS_JSON" >/dev/null 2>&1 || error "ACCESS_TOKENS in $CONFIG_JSON must be a JSON object mapping names to string tokens."
     while IFS=$'\t' read -r _atn _att; do
-        [[ "$_att" =~ ^[A-Za-z0-9._:@+-]+$ ]] || error "ACCESS_TOKENS.\"$_atn\" has invalid characters (allowed: letters, digits, . _ - : @ +): '$_att'."
+        [[ "$_att" =~ ^[A-Za-z0-9._:@+-]+$ ]] || error "ACCESS_TOKENS.\"$_atn\" has invalid characters (allowed: letters, digits, . _ - : @ +)."
     done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$ACCESS_TOKENS_JSON")
 
     # Opt-in periodic live auto-tuning (#46, #95): tri-state. "disabled" (default) installs no timer;
