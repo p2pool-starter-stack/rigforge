@@ -2937,15 +2937,13 @@ _exec_sudo_self() {
     exec sudo env "${e[@]}" "$0" "$@"
 }
 
+_tune_busy() { ! log "$1: another tune/autotune sweep is already running — not starting a second one."; }
+_tune_clear() { sudo rm -f "$TUNE_OVERRIDES" "${TUNE_OVERRIDES%.json}-pre.json" "$1" || true && log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config."; }
 _tune_gate() {
-    local f="$WORKER_ROOT/tune.lock" s="$WORKER_ROOT/tune-overrides-pre.json"
-    if command -v flock >/dev/null 2>&1; then
-        { [ -f "$f" ] && exec 9<"$f" || exec 9>"$f"; } 2>/dev/null || return 0
-        flock -n 9 || { log "$1: another tune/autotune sweep is already running — not starting a second one."; return 1; }
-    fi
-    [ -f "$s" ] || return 0
-    if [ -s "$s" ]; then printf '%s\n' "$(cat "$s")" | sudo tee "$WORKER_ROOT/tune-overrides.json" >/dev/null || return 0; else sudo rm -f "$WORKER_ROOT/tune-overrides.json" || return 0; fi
-    sudo rm -f "$s"; _apply_runtime >/dev/null 2>&1 || true; log "$1: restored the overrides an interrupted sweep left in place."
+    local s="$WORKER_ROOT/tune-overrides-pre.json"
+    if command -v flock >/dev/null 2>&1 && { [ -f "$WORKER_ROOT/tune.lock" ] && exec 9<"$WORKER_ROOT/tune.lock" || exec 9>"$WORKER_ROOT/tune.lock"; } 2>/dev/null; then flock -n 9 || _tune_busy "$1" || return 1; fi
+    if [ -s "$s" ]; then printf '%s\n' "$(cat "$s")" | sudo tee "$WORKER_ROOT/tune-overrides.json" >/dev/null || return 0; elif [ -f "$s" ]; then sudo rm -f "$WORKER_ROOT/tune-overrides.json" || return 0; else return 0; fi
+    sudo rm -f "$s" && _apply_runtime >/dev/null 2>&1 || true && log "$1: restored the overrides an interrupted sweep left in place."
 }
 
 tune() {
@@ -3007,8 +3005,9 @@ tune() {
         return 0
     fi
 
-    if [ "$clear" = 1 ]; then sudo rm -f "$TUNE_OVERRIDES" "$logf" "${TUNE_OVERRIDES%.json}-pre.json"; log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config."; return 0; fi
-    [ "${SHARED_HOST:-false}" != true ] || error "Full tuning is unavailable in shared_host; use tune --now for a bounded live prefetch trial."; _tune_gate tune || error "tune: sweep refused — another tune/autotune is running."
+    if [ "$clear" = 1 ]; then _tune_clear "$logf" && return 0; fi
+    [ "${SHARED_HOST:-false}" != true ] || error "Full tuning is unavailable in shared_host; use tune --now for a bounded live prefetch trial."
+    _tune_gate tune || error "tune: sweep refused — another tune/autotune is running."
     local pre_overrides=""
     [ -f "$TUNE_OVERRIDES" ] && pre_overrides=$(cat "$TUNE_OVERRIDES" 2>/dev/null)
 
@@ -3277,8 +3276,7 @@ _autotune_set_prefetch() { # <overrides_file> <mode>
 # diverge. The merge-based restore (_autotune_set_prefetch) preserves any offline-`tune` knobs, exactly
 # like the sweep's own writes.
 _AUTOTUNE_DIRTY=0
-_AUTOTUNE_PRE_MODE=""
-_AUTOTUNE_OVR_FILE=""
+_AUTOTUNE_PRE_MODE="" _AUTOTUNE_OVR_FILE=""
 _autotune_settle() { # <mode> — merge the mode into the overrides and leave the miner running on it
     _autotune_set_prefetch "$_AUTOTUNE_OVR_FILE" "$1"
     _apply_runtime >/dev/null 2>&1 || true
@@ -3378,9 +3376,8 @@ autotune() {
         log "autotune: randomx.scratchpad_prefetch_mode is pinned by the xmrig overlay; skipping."
         return 0
     fi
-    _tune_gate autotune || return 0; local overrides="$WORKER_ROOT/tune-overrides.json"
-    local n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}"
-    local margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
+    _tune_gate autotune || return 0
+    local overrides="$WORKER_ROOT/tune-overrides.json" n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}" margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
     local target="${target_env:-${AUTOTUNE_TARGET:-perf}}"
     local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s
 
@@ -3404,8 +3401,8 @@ autotune() {
     log "autotune: optimizing for $(_autotune_desc "$target"); live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $(_autotune_fmt "$target" "$base_hr" "$base_w") (median of $n)."
 
     # #347: arm the abort-restore before the first candidate lands in the overrides file.
-    _AUTOTUNE_PRE_MODE="$cur"; printf '%s' "$(cat "$overrides" 2>/dev/null)" | sudo tee "${overrides%.json}-pre.json" >/dev/null
-    _AUTOTUNE_OVR_FILE="$overrides"
+    _AUTOTUNE_PRE_MODE="$cur" _AUTOTUNE_OVR_FILE="$overrides"
+    printf '%s' "$(cat "$overrides" 2>/dev/null)" | sudo tee "${overrides%.json}-pre.json" >/dev/null
     _AUTOTUNE_DIRTY=1
     trap '_autotune_cleanup' EXIT
 
@@ -3627,8 +3624,8 @@ restore() {
     for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
         if [ -f "$STAGE_DIR/$f" ]; then
             mkdir -p "$wr" 2>/dev/null || sudo mkdir -p "$wr"
-            cp "$STAGE_DIR/$f" "$wr/$f" 2>/dev/null || sudo cp "$STAGE_DIR/$f" "$wr/$f"
-            restored="$restored $f"; [ "$f" = tune-overrides.json ] && sudo rm -f "$wr/tune-overrides-pre.json" 2>/dev/null || true
+            cp "$STAGE_DIR/$f" "$wr/$f" 2>/dev/null || sudo cp "$STAGE_DIR/$f" "$wr/$f" && [ "$f" = tune-overrides.json ] && sudo rm -f "$wr/tune-overrides-pre.json" 2>/dev/null || true
+            restored="$restored $f"
         fi
     done
 
