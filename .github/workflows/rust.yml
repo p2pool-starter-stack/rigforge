@@ -1,0 +1,119 @@
+name: Rust
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Rust fmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-fmt
+        run: make rust-fmt
+
+  clippy:
+    name: Rust clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-clippy
+        run: make rust-clippy
+
+  test:
+    name: Rust test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-test
+        run: make rust-test
+
+  deny:
+    name: Rust deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install pinned cargo-deny
+        env:
+          CARGO_DENY_VERSION: "0.22.1"
+          CARGO_DENY_SHA256: "13f7e825e9cb811c2f8de63f29b0f45851dfb53004029f0f2501af524728364d"
+        run: |
+          set -euo pipefail
+          dir="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          tarball="${dir}.tar.gz"
+          curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${tarball}" -o "$tarball"
+          echo "${CARGO_DENY_SHA256}  ${tarball}" | sha256sum -c -
+          mkdir unpacked
+          tar -xzf "$tarball" -C unpacked
+          sudo install "$(find unpacked -name cargo-deny -type f | head -n 1)" /usr/local/bin/cargo-deny
+          cargo-deny --version
+      - name: Run make rust-deny
+        run: make rust-deny
+
+  musl:
+    name: Rust musl x86_64 static build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-musl
+        run: make rust-musl
+
+  msrv:
+    name: Rust MSRV
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-msrv
+        run: make rust-msrv
+
+  musl-aarch64:
+    name: Rust musl aarch64 (best effort)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Add the aarch64 musl target
+        run: rustup target add aarch64-unknown-linux-musl
+      - name: Run make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
+        run: make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl

@@ -1,4 +1,6 @@
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci check rust-check rust-fmt rust-clippy rust-test rust-deny rust-musl rust-msrv
+
+MUSL_TARGET ?= x86_64-unknown-linux-musl
 
 SHELL_FILES = $(shell git ls-files '*.sh')
 
@@ -28,6 +30,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-e2e-docs-guest.sh
 	python3 tests/test-control-readiness.py
 	python3 tests/test-worker-proof.py
+	python3 tests/test-serve-poll.py
 	bash tests/test-worker-proof.sh
 	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
@@ -100,3 +103,33 @@ lint-links: ## lychee link-check the docs — uses .lychee.toml (needs lychee; h
 	lychee --config .lychee.toml $(MD_FILES)
 
 lint-all: lint lint-yaml lint-md lint-actions ## run every fast linter (shell + yaml + markdown + workflows; not the link check)
+
+check: lint-all test-suite ## Everything: lint-all, the suite, and the Rust gates (loud skip where cargo is missing)
+	@if command -v cargo >/dev/null 2>&1; then $(MAKE) rust-check; else echo "cargo unavailable — skipped the Rust gates (CI runs them)"; fi
+
+rust-check: rust-fmt rust-clippy rust-test rust-deny rust-musl rust-msrv ## Every Rust gate (needs the pinned toolchain from rust-toolchain.toml and cargo-deny)
+
+rust-fmt: ## cargo fmt --all -- --check
+	cargo fmt --all -- --check
+
+rust-clippy: ## clippy over every target, warnings are errors
+	cargo clippy --workspace --all-targets --locked -- -D warnings
+
+rust-test: ## cargo test --workspace --locked
+	cargo test --workspace --locked
+
+rust-deny: ## cargo deny check (advisories, licenses, bans, sources) from deny.toml (needs cargo-deny)
+	@command -v cargo-deny >/dev/null 2>&1 || { echo "cargo-deny is not installed (see rust.yml for the pinned version)" >&2; exit 1; }
+	cargo deny check advisories licenses bans sources
+
+rust-musl: ## --locked release build for MUSL_TARGET (default x86_64) and assert the binary is statically linked
+	cargo build --release --locked --target $(MUSL_TARGET) -p rigforge-rs
+	@command -v readelf >/dev/null 2>&1 || { echo "readelf is not installed (binutils)" >&2; exit 1; }
+	@bin=target/$(MUSL_TARGET)/release/rigforge-rs; readelf -h "$$bin" >/dev/null || exit 1; \
+	if readelf -lW "$$bin" | grep -q INTERP || readelf -dW "$$bin" | grep -q NEEDED; then echo "$$bin is not statically linked" >&2; exit 1; fi; \
+	echo "$$bin is statically linked"
+
+rust-msrv: ## rust-version in Cargo.toml must equal the pinned toolchain's major.minor, and the workspace must build with it
+	@want=$$(sed -n 's/^rust-version = "\(.*\)"$$/\1/p' Cargo.toml); have=$$(sed -n 's/^channel = "\([0-9]*\.[0-9]*\)\.[0-9]*"$$/\1/p' rust-toolchain.toml); \
+	if [ -z "$$want" ] || [ "$$want" != "$$have" ]; then echo "rust-version [$$want] does not match the rust-toolchain.toml channel [$$have]" >&2; exit 1; fi
+	cargo build --workspace --locked
