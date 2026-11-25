@@ -69,10 +69,12 @@ jobs:
 
       - name: Scan GitHub Advisory Database for XMRig advisories
         id: scan
+        env:
+          CURRENT: ${{ steps.detect.outputs.current_version }}
         run: |
           set -Eeuo pipefail
           source "$RUNNER_TEMP/compare.sh"
-          current="${{ steps.detect.outputs.current_version }}"
+          current="$CURRENT"
 
           found=0
           page=1
@@ -137,6 +139,8 @@ jobs:
         if: steps.scan.outputs.vulnerable == 'true' && steps.prcheck.outputs.existing == '0'
         env:
           GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.detect.outputs.current_version }}
+          CURRENT_COMMIT: ${{ steps.detect.outputs.current_commit }}
         run: |
           set -Eeuo pipefail
           source "$RUNNER_TEMP/compare.sh"
@@ -144,8 +148,8 @@ jobs:
           cve=$(sed -n '2s/^CVE=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
           severity=$(sed -n '3s/^SEVERITY=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
           patched=$(sed -n '5s/^PATCHED=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
-          current="${{ steps.detect.outputs.current_version }}"
-          current_commit="${{ steps.detect.outputs.current_commit }}"
+          current="$CURRENT"
+          current_commit="$CURRENT_COMMIT"
 
           PATCHED_TAG="v${patched}"
           commit=$(git ls-remote "https://github.com/xmrig/xmrig.git" "refs/tags/${PATCHED_TAG}^{}" | cut -f1 || true)
@@ -200,14 +204,16 @@ jobs:
         if: steps.scan.outputs.vulnerable == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.detect.outputs.current_version }}
+          CURRENT_COMMIT: ${{ steps.detect.outputs.current_commit }}
         run: |
           set -Eeuo pipefail
           ghsa=$(head -1 "$GITHUB_WORKSPACE/vuln_record.txt" | sed 's/GHSA=//')
           cve=$(sed -n '2s/^CVE=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
           severity=$(sed -n '3s/^SEVERITY=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
           patched=$(sed -n '5s/^PATCHED=//p' "$GITHUB_WORKSPACE/vuln_record.txt")
-          current="${{ steps.detect.outputs.current_version }}"
-          current_commit="${{ steps.detect.outputs.current_commit }}"
+          current="$CURRENT"
+          current_commit="$CURRENT_COMMIT"
 
           title="Security: ${ghsa}${cve:+ (${cve})} — XMRig ${current} is vulnerable"
           n=$(gh issue list --state open --limit 100 --json number,title \
