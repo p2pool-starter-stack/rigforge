@@ -18,12 +18,12 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if ! command -v docker >/dev/null 2>&1; then
-    echo "SKIP: docker not found — the dependency-free suite (tests/run.sh) covers the rest."
-    exit 0
+    echo "FATAL: docker not found — the dependency-free suite (tests/run.sh) covers unit logic, but the full deploy+appliance contract requires a container runtime." >&2
+    exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
-    echo "SKIP: docker daemon not reachable."
-    exit 0
+    echo "FATAL: docker daemon not reachable — the deploy+appliance contract requires a running container runtime." >&2
+    exit 1
 fi
 
 IMAGE="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e/Dockerfile")"
@@ -42,9 +42,33 @@ run_pass() { # <label> [docker env args...] — one disposable container per pas
 }
 
 STATUS=0
-run_pass "deploy" || STATUS=1
-echo ""
-run_pass "appliance" -e RIGFORGE_APPLIANCE=1 || STATUS=1
+
+# Deploy and appliance use separate container fixtures (same base image, fresh container each);
+# run them in parallel so a missing Docker prerequisite fails the whole suite at once instead
+# of masking one pass behind the other. Each pass writes to its own log so CI output stays clean.
+LOGA="$(mktemp)"
+LOGB="$(mktemp)"
+trap 'rm -f "$LOGA" "$LOGB"' EXIT
+
+run_pass "deploy" >"$LOGA" 2>&1 &
+PID_A=$!
+run_pass "appliance" -e RIGFORGE_APPLIANCE=1 >"$LOGB" 2>&1 &
+PID_B=$!
+
+wait "$PID_A"
+rc_a=$?
+wait "$PID_B"
+rc_b=$?
+
+[ "$rc_a" != 0 ] && {
+    cat "$LOGA"
+    STATUS=1
+}
+[ "$rc_b" != 0 ] && {
+    cat "$LOGB"
+    STATUS=1
+}
+
 echo ""
 bash "$ROOT/tests/e2e/isolation.sh" || STATUS=1
 echo ""

@@ -249,3 +249,22 @@ jobs:
           eval "$("$(compgen -G "/home/*/.linuxbrew/bin/brew")" shellenv)"
           if sudo -n sh -c 'command -v rigforge'; then echo "sudo resolves rigforge"; else echo "sudo does not resolve rigforge"; fi
           sudo -n "$(command -v rigforge)" --version
+
+  docker-modes:
+    name: Docker modes (aggregate)
+    needs: [e2e, coverage]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check Docker job results
+        run: |
+          set -euo pipefail
+          e2e="${{ needs.e2e.result }}"
+          cov="${{ needs.coverage.result }}"
+          echo "e2e=$e2e coverage=$cov"
+          if [ "$e2e" = "success" ] && [ "$cov" = "success" ]; then
+            echo "Docker modes: both passed"
+          else
+            echo "Docker modes: e2e=$e2e coverage=$cov" >&2
+            exit 1
+          fi
