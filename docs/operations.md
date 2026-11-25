@@ -886,3 +886,106 @@ left untouched and never migrated, so the first upgrade after this change starts
 `"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too, with both state directories under `/var/lib`. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).
+
+### Update routes (opt-in, update scope)
+
+The update routes let a Pithead stack or a LAN client trigger an OS update on the rig. They are
+separate from the tuning and remote-upgrade paths and have their own auth, rate limit, and
+single-flight guards. They are off by default — no endpoint listens until the routes are enabled — and
+require `control: "enabled"` on the rig.
+
+The control server validates the request body, stages it in a dedicated update spool, and returns
+`202 Accepted` with a change id; the root oneshot that consumes the intent applies the update. A
+separate `GET /update/status` route reports progress and the terminal outcome.
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/update-check` | `POST` | Ask the rig which OS and RigForge updates are available. Starts the image's Tor helper, reads the release channel, returns available versions and the last-seen listing time, then stops Tor. |
+| `/update` | `POST` | Trigger an update. Defaults to the latest available release. Returns `202 Accepted` with a change id. |
+| `/update/status` | `GET` | Report progress and terminal outcome for an in-flight or completed update. Survives a reboot. |
+
+**Token scope.** Only the control (master) token may call these routes. A derived read bearer
+is always refused with `401`. A named consumer token is refused with `403` unless it is explicitly
+granted an update scope. A missing or wrong token returns `401`.
+
+**Rate limit.** Failed-auth attempts and update requests are rate-limited per source address,
+with a small global cap on top so a spread of sources cannot bypass it. A request over the limit
+returns `429`. The limit resets after a short window.
+
+**Single-flight.** Only one update request may be in flight at a time. A second `POST /update`
+while one is pending returns `409 Conflict`. The single-flight guard is scoped to the update path;
+it does not block the config-apply or remote-upgrade routes.
+
+**Body.** The `/update` body is strict JSON with at most two optional fields. Unknown fields
+are refused with `400`. The `tag` field must match the strict release-tag regex
+(`^v[0-9]+\.[0-9]+\.[0-9]+$`).
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `tag` | string | latest | The release tag to update to. Must match the release-tag regex. |
+| `coordinator_version` | string | none | A semantic version ceiling. Any target above this value is refused with `400`. Equal or unsupported targets are also refused. |
+
+**Refusals.** The route returns `400` for an invalid body, an unsupported target, or a target that
+equals the currently running version. On an appliance rig the request hands off to the image
+updater (`pithead rig-update`); on a standalone DIY install the route is refused unless
+`tor_socks5` is set (the update path requires Tor egress).
+
+**Status values.** `GET /update/status` returns a JSON object with:
+
+| `status` | Meaning |
+|---|---|
+| `pending` | The update has been staged but not yet started. Carries `accepted_at`. |
+| `started` | The root oneshot has claimed the intent and begun fetching/applying. Carries `accepted_at`. |
+| `applied` | The update completed successfully. Carries `applied_at` and `reason` (the landed version). |
+| `rolled_back` | The update failed and the rig was restored to its prior state. Carries `reason`. |
+| `noop` | The rig was already on the requested version; no update was needed. |
+| `throttled` | The request is inside the anti-beacon window; retry later. |
+| `failed` | The update failed for a reason that is not throttle or version-match. Carries `reason`. |
+
+Every response also carries a derived `age_seconds` next to its own timestamp (`accepted_at` while
+pending/started, `applied_at` once terminal), computed fresh on each request.
+
+**Polling.** After `POST /update` returns `202` with a change id, poll
+`GET /update/status?change_id=<the-16-hex-id>` to track progress. The no-arg form
+(`GET /update/status`) returns the most recent outcome.
+
+**Reboot behaviour.** A `202` from `/update` means the request is staged. The connection drops
+when the root oneshot claims it; the poller should reconnect. After a reboot, `GET /update/status`
+returns the latest recorded outcome (`pending`, `started`, or a terminal value) so the caller
+can see where the rig left off. No tokens or paths are exposed.
+
+**No background timers.** With no call, the rig makes no update-related request and runs no
+update timer. Everything is on-demand.
+
+### Standalone update call (no Pithead)
+
+A rig owner can update a rig without a Pithead dashboard from any LAN computer. The steps are:
+
+1. Find the rig's master token (the `ACCESS_TOKEN` value from `config.json`, or the rig name if
+   that is used as the token).
+2. Ask the rig what updates are available:
+
+```bash
+curl -s -H "Authorization: Bearer <the-token>" \
+     -H "Content-Type: application/json" \
+     http://<rig-ip>:8082/update-check
+```
+
+3. Trigger the update:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer <the-token>" \
+     -H "Content-Type: application/json" \
+     -d '{"tag": "v1.20.0"}' \
+     http://<rig-ip>:8082/update
+```
+
+4. Poll the status until terminal:
+
+```bash
+curl -s -H "Authorization: Bearer <the-token>" \
+     http://<rig-ip>:8082/update/status?change_id=<the-id-from-step-3>
+```
+
+The same token that authenticates the read API (`:8080` / `:8081`) works here. On appliance
+rigs the update runs the image updater; on DIY rigs it requires `tor_socks5` to be configured.
