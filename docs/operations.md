@@ -252,7 +252,8 @@ Live sweeps apply each candidate to the running miner as they measure it. If a s
 before the sweep and restarts the miner on it — a half-measured candidate is never left running or
 saved to `tune-overrides.json`. A sweep killed harder than that (SIGKILL, OOM, power loss) is covered
 too: the pre-sweep tuning is snapshotted in `tune-overrides-pre.json`, and the next `tune` or
-`autotune` restores it before reading its baseline; `tune --clear` and `restore` drop the snapshot.
+`autotune` restores it before reading its baseline; `tune --clear`, and `restore` when the backup
+carries tuning, drop the snapshot.
 Sweeps also serialize: only one tune/autotune runs at a time — a second manual `tune` refuses with a
 nonzero exit while one is in progress, and an overlapping `autotune` (timer run included) skips with
 status 0.

@@ -120,8 +120,8 @@ A few design choices keep it reliable and cheap on jittery RandomX hardware:
   the re-tune at the end of `upgrade` still completes. A live sweep also snapshots the current
   `tune-overrides.json` (`tune-overrides-pre.json`) before applying any candidate, so if it is
   killed too hard for the exit-restore to run (SIGKILL, OOM, power loss), the next `tune` or
-  `autotune` restores the pre-sweep tuning before it reads its baseline. A normal exit, `restore`,
-  and `tune --clear` all drop the snapshot.
+  `autotune` restores the pre-sweep tuning before it reads its baseline. A normal exit, `tune --clear`,
+  and a `restore` that brings tuning back all drop the snapshot.
 
 Reboot-bound knobs are handled explicitly. `1gb-pages` only matters once 1G HugePages are reserved (a
 GRUB change plus reboot), so the search sweeps it only when they're actually present and otherwise skips

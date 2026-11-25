@@ -158,6 +158,40 @@ run_autotune 'echo 0.0'
 check "the next autotune restored the pre-sweep overrides" "$PRE" "$(cat "$OVER")"
 check "the killed sweep's lock did not block it" 0 "$(grep -c 'sweep is already running' "$D/at.out")"
 
+echo "== a killed autotune sweep (the timer's shape) is recovered the same way (#842) =="
+printf '%s\n' "$PRE" >"$OVER"
+rm -f "$SNAP" "$D/atkiller" "$D/atcnt"
+(
+    stub_env
+    KILLER="$D/atkiller"
+    CNT="$D/atcnt"
+    API_CMD='c=$(cat "$CNT" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" >"$CNT"; if [ "$c" -ge 2 ]; then sleep 30 9>&- & echo $! >"$KILLER"; wait; fi; echo 1500'
+    cd "$D"
+    autotune </dev/null >"$D/atkill.out" 2>&1
+) &
+ATPID=$!
+for _ in $(seq 1 100); do
+    [ -f "$D/atkiller" ] && break
+    sleep 0.1
+done
+check "the autotune sweep reached a candidate window" y "$([ -f "$D/atkiller" ] && echo y || echo n)"
+check "the running autotune snapshotted the pre-sweep overrides" "$PRE" "$(cat "$SNAP" 2>/dev/null)"
+check "mid-sweep the overrides hold the candidate mode" differs "$([ "$(cat "$OVER")" = "$PRE" ] && echo same || echo differs)"
+kill -9 "$ATPID" 2>/dev/null
+kill "$(cat "$D/atkiller")" 2>/dev/null
+sleep 0.3
+check "SIGKILL left the autotune candidate in place" differs "$([ "$(cat "$OVER")" = "$PRE" ] && echo same || echo differs)"
+check "SIGKILL left the autotune snapshot behind" y "$([ -f "$SNAP" ] && echo y || echo n)"
+run_autotune 'echo 0.0'
+check "the next autotune restored the pre-sweep overrides" "$PRE" "$(cat "$OVER")"
+check "the autotune candidate file survived the restore" y "$([ -f "$OVER" ] && echo y || echo n)"
+printf '%s\n' "$PRE" >"$OVER"
+rm -f "$SNAP"
+run_autotune 'echo 1500'
+check "a completing autotune exits 0" 0 "$(cat "$D/at.rc")"
+check "a completing autotune consumes its own snapshot" n "$([ -f "$SNAP" ] && echo y || echo n)"
+check "a completing autotune keeps the baseline mode" 3 "$(jq -r '.randomx.scratchpad_prefetch_mode' "$OVER" 2>/dev/null || echo x)"
+
 echo "== restore drops the snapshot so it cannot overwrite the restored tuning (#842) =="
 mkdir -p "$D/stage"
 cp "$D/config.json" "$D/stage/config.json"

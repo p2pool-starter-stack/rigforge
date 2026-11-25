@@ -2365,12 +2365,12 @@ _restore_overrides() { # <previous_overrides_json>
 }
 
 _tune_bench_cleanup() {
-    [ -n "${TUNE_OVERRIDES:-}" ] && sudo rm -f "${TUNE_OVERRIDES%.json}-pre.json" 2>/dev/null || true
     if [ "${_TUNE_LIVE_DIRTY:-0}" = 1 ]; then
         _TUNE_LIVE_DIRTY=0
         log "Live sweep interrupted — restoring the pre-tune overrides and restarting the miner on them."
         _restore_overrides "$_TUNE_PRE_OVERRIDES"
     fi
+    [ -n "${TUNE_OVERRIDES:-}" ] && sudo rm -f "${TUNE_OVERRIDES%.json}-pre.json" 2>/dev/null || true
     [ -n "${TUNE_TMP:-}" ] && rm -rf "$TUNE_TMP" 2>/dev/null
     if [ "${_TUNE_SVC_STOPPED:-0}" = 1 ]; then
         _TUNE_SVC_STOPPED=0
@@ -2944,7 +2944,7 @@ _tune_gate() {
         flock -n 9 || { log "$1: another tune/autotune sweep is already running — not starting a second one."; return 1; }
     fi
     [ -f "$s" ] || return 0
-    if [ -s "$s" ]; then printf '%s\n' "$(cat "$s")" | sudo tee "$WORKER_ROOT/tune-overrides.json" >/dev/null; else sudo rm -f "$WORKER_ROOT/tune-overrides.json"; fi
+    if [ -s "$s" ]; then printf '%s\n' "$(cat "$s")" | sudo tee "$WORKER_ROOT/tune-overrides.json" >/dev/null || return 0; else sudo rm -f "$WORKER_ROOT/tune-overrides.json" || return 0; fi
     sudo rm -f "$s"; _apply_runtime >/dev/null 2>&1 || true; log "$1: restored the overrides an interrupted sweep left in place."
 }
 
@@ -3284,6 +3284,7 @@ _autotune_settle() { # <mode> — merge the mode into the overrides and leave th
     _apply_runtime >/dev/null 2>&1 || true
 }
 _autotune_cleanup() {
+    [ -n "${_AUTOTUNE_OVR_FILE:-}" ] && sudo rm -f "${_AUTOTUNE_OVR_FILE%.json}-pre.json" 2>/dev/null || true
     if [ "${_AUTOTUNE_DIRTY:-0}" = 1 ]; then
         _AUTOTUNE_DIRTY=0
         log "autotune: sweep interrupted — restoring prefetch_mode=$_AUTOTUNE_PRE_MODE."
@@ -3403,7 +3404,7 @@ autotune() {
     log "autotune: optimizing for $(_autotune_desc "$target"); live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $(_autotune_fmt "$target" "$base_hr" "$base_w") (median of $n)."
 
     # #347: arm the abort-restore before the first candidate lands in the overrides file.
-    _AUTOTUNE_PRE_MODE="$cur"
+    _AUTOTUNE_PRE_MODE="$cur"; printf '%s' "$(cat "$overrides" 2>/dev/null)" | sudo tee "${overrides%.json}-pre.json" >/dev/null
     _AUTOTUNE_OVR_FILE="$overrides"
     _AUTOTUNE_DIRTY=1
     trap '_autotune_cleanup' EXIT
