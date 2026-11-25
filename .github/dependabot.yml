@@ -32,6 +32,13 @@ updates:
     labels:
       - "infra"
       - "dependencies"
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "infra"
+      - "dependencies"
   - package-ecosystem: "docker"
     directories:
       - "/tests/e2e"

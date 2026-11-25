@@ -193,7 +193,17 @@ mklines "$R/config.json" 900
 commit_all "$R" base
 expect_pass "a 900-line .md and .json are exempt and trip nothing" "$R"
 
-# --- binaries are skipped generically, not by a path list ----------------------------------------
+R=$(mkrepo)
+mklines "$R/Cargo.lock" 900
+commit_all "$R" base
+expect_pass "a 900-line Cargo.lock is exempt and trips nothing" "$R"
+
+R=$(mkrepo)
+mklines "$R/Cargo.lock" 900
+mklines "$R/lib.rs" 500
+commit_all "$R" base
+expect_fail "a 500-line .rs file with no budget row is refused while Cargo.lock stays exempt" "$R" "lib.rs is 500 lines"
+
 R=$(mkrepo)
 printf '\000\001\002\003' >"$R/blob.bin"
 for _ in $(seq 1 900); do printf '\000\n' >>"$R/blob.bin"; done
