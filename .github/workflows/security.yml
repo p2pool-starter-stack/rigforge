@@ -23,7 +23,6 @@ concurrency:
   group: "${{ github.workflow }}-${{ github.event_name == 'pull_request' && 'pr-' || 'push-' }}${{ github.event.pull_request.number || github.ref_name }}"
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Both jobs only read the tree to scan it. Pin the floor to read-only (zizmor: excessive-permissions).
 permissions:
   contents: read
 
