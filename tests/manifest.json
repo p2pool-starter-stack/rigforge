@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "suites": [
+    {
+      "name": "unit",
+      "file": "tests/run.sh",
+      "phases": ["xmrig-overlay", "thread-placement", "xmrig-logging", "config-ownership", "feed-identity", "grub-edit", "config-apply-state", "hugepages-ceiling", "benchmark-verification", "benchmark-support", "stress", "perf-submission", "e2e-selftest", "root-guard", "thread-profile", "suite-liveness", "daemon-pools", "onion", "control-revocation", "control-hardening", "control-spool-cap", "control-upgrade", "donation", "donation-tor", "doctor", "shared-host-lifecycle", "shared-host", "watchdog-thermal-retry", "watchdog-shared-host-guard", "watchdog-fail-safe", "autotune-noise", "uninstall-state", "sudo-env-forward", "tune-pins", "config-write-safety", "sister-reconcile", "control-firewall", "l3-units", "pool-fields", "config-atomic"],
+      "timeout_seconds": 600,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "contract-credentials",
+      "file": "tests/test-contract-credentials.sh",
+      "phases": ["tokens", "stratum", "edit-failed", "apply-failed", "tokens-failed", "stratum-failed"],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "access-token-readiness",
+      "file": "tests/test-access-token-readiness.sh",
+      "phases": ["readiness", "restore"],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "docs-clone-pin",
+      "file": "tests/test-docs-clone-pin.sh",
+      "phases": ["checker", "clone", "pin"],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "staged-rebuild",
+      "file": "tests/test-staged-rebuild.sh",
+      "phases": ["staged", "rebuild", "stage"],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "package-upgrade",
+      "file": "tests/test-package-upgrade.sh",
+      "phases": ["postinst", "upgrade", "fail", "state"],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "dependabot-coverage",
+      "file": "tests/test-dependabot-coverage.sh",
+      "phases": ["dependabot", "manifest"],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "codeql-workflow",
+      "file": "tests/test-codeql-workflow.sh",
+      "phases": ["codeql", "workflow"],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "tool-pin-watch",
+      "file": "tests/test-tool-pin-watch.sh",
+      "phases": ["tool", "current", "stale"],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "api-allowlist-probe",
+      "file": "tests/test-api-allowlist-probe.sh",
+      "phases": ["probe"],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "e2e-docs-guest",
+      "file": "tests/test-e2e-docs-guest.sh",
+      "phases": ["guest", "baseline", "dry-run", "installed", "removed", "verifier"],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "control-readiness",
+      "file": "tests/test-control-readiness.py",
+      "phases": ["readiness", "bind"],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "worker-proof",
+      "file": "tests/test-worker-proof.py",
+      "phases": ["worker-proof", "schema", "context", "receipt", "join", "check"],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "serve-poll",
+      "file": "tests/test-serve-poll.py",
+      "phases": ["poll"],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "worker-proof-script",
+      "file": "tests/test-worker-proof.sh",
+      "phases": ["stale", "dirty", "proof"],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "coverage-cache",
+      "file": "tests/test-coverage-cache.sh",
+      "phases": ["cache"],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "revision-key",
+      "file": "tests/test-revision-key.sh",
+      "phases": ["revision", "key"],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "homebrew-formula",
+      "file": "tests/test-homebrew-formula.sh",
+      "phases": ["formula", "test"],
+      "timeout_seconds": 300,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "e2e-container",
+      "file": "tests/e2e/linux.sh",
+      "phases": ["deploy", "appliance", "isolation"],
+      "timeout_seconds": 1200,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    },
+    {
+      "name": "e2e-real",
+      "file": "tests/e2e-real.sh",
+      "phases": ["all", "verify", "perf"],
+      "timeout_seconds": 2700,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail", "2": "platform-failure", "75": "lock-held"},
+      "needs": ["root", "real-hardware", "systemd"]
+    },
+    {
+      "name": "e2e-pithead",
+      "file": "tests/e2e-pithead.sh",
+      "phases": ["connect", "worker-api", "api-impact", "network", "network-sequence", "stratum-auth", "dashboard", "dev-fee", "selftest", "config-ownership", "control", "control-replay-thermal", "control-replay-pools", "access-tokens", "shared-host", "thread-profile"],
+      "timeout_seconds": 1800,
+      "inputs": ["PITHEAD_URL", "E2E_STRATUM_PASS", "E2E_DASH_URL", "E2E_DASH_AUTH", "E2E_PITHEAD_CONTROL_FIXTURE", "E2E_PITHEAD_CONTROL_CONTEXT", "IT_RIG_POBS_PROBE", "E2E_RIG_LOCK_UNIT", "E2E_SHARE_TIMEOUT", "E2E_API_IMPACT_TOLERANCE_PCT", "E2E_DROPOFF_TIMEOUT", "E2E_STRESS_MINUTES", "E2E_LIVE_TIMEOUT", "E2E_AUTOSAVE_WINDOW", "E2E_RELOAD_WINDOW", "E2E_SHARED_SHARE_TIMEOUT"],
+      "exit_codes": {"0": "pass", "1": "fail", "2": "platform-failure", "75": "lock-held"},
+      "needs": ["real-rig", "live-pithead-stack", "root"]
+    },
+    {
+      "name": "e2e-macos",
+      "file": "tests/e2e/macos.sh",
+      "phases": ["deploy", "backup", "restore", "launchd"],
+      "timeout_seconds": 900,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": ["darwin"]
+    },
+    {
+      "name": "coverage",
+      "file": "tests/coverage.sh",
+      "phases": ["suite", "floor", "patch-coverage"],
+      "timeout_seconds": 1200,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": ["docker", "kcov"]
+    },
+    {
+      "name": "smoke",
+      "file": "tests/smoke.sh",
+      "phases": ["bench"],
+      "timeout_seconds": 600,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": ["real-hardware"]
+    },
+    {
+      "name": "docs-replay",
+      "file": "tests/docs_replay.py",
+      "phases": ["block", "recipes", "replay", "check_config", "main"],
+      "timeout_seconds": 900,
+      "inputs": ["E2E_DOCS_DISPOSABLE", "E2E_DOCS_VM_UUID", "E2E_DOCS_CONFIG"],
+      "exit_codes": {"0": "pass", "1": "fail", "2": "platform-failure"},
+      "needs": ["python3", "virsh"]
+    },
+    {
+      "name": "docs-replay-commands",
+      "file": "tests/docs-replay-commands.sh",
+      "phases": ["quick-start", "clone", "setup", "dry-run", "reboot"],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {"0": "pass", "1": "fail"},
+      "needs": []
+    }
+  ]
+}
