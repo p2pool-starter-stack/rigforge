@@ -2370,7 +2370,7 @@ _tune_bench_cleanup() {
         log "Live sweep interrupted — restoring the pre-tune overrides and restarting the miner on them."
         _restore_overrides "$_TUNE_PRE_OVERRIDES"
     fi
-    [ -n "${TUNE_OVERRIDES:-}" ] && sudo rm -f "${TUNE_OVERRIDES%.json}-pre.json" 2>/dev/null || true
+    [ -n "$TUNE_OVERRIDES" ] && sudo rm -f "${TUNE_OVERRIDES%.json}-pre.json" 2>/dev/null || true
     [ -n "${TUNE_TMP:-}" ] && rm -rf "$TUNE_TMP" 2>/dev/null
     if [ "${_TUNE_SVC_STOPPED:-0}" = 1 ]; then
         _TUNE_SVC_STOPPED=0
