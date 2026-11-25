@@ -5006,16 +5006,16 @@ _api_power_json() { # <hashrate|"">
     jq -n --arg w "$w" --arg hr "$hr" '{watts: (if $w == "" then null else ($w | tonumber) end), hs_per_watt: (if $w == "" or $hr == "" or ($w | tonumber) == 0 then null else (($hr | tonumber) / ($w | tonumber)) end)}'
 }
 
-# Tune/autotune state as JSON — the machine-readable sibling of _tune_history (same sources, same
-# systemctl reads). Every jq program here is single-line: kcov cannot attribute in-string lines.
 _api_tune_json() {
     local ovr="$WORKER_ROOT/tune-overrides.json" logf="$WORKER_ROOT/rigforge-tune.json"
-    local applied=null target=null best=null n=null aten=false atgt="" asched="" anext=""
-    if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then applied=$(cat "$ovr"); fi
-    if [ -s "$logf" ] && jq -e . "$logf" >/dev/null 2>&1; then
-        target=$(jq -c '.target // null' "$logf" 2>/dev/null || echo null)
-        best=$(jq -c '.best.hashrate // null' "$logf" 2>/dev/null || echo null)
-        n=$(jq -c '.results | length' "$logf" 2>/dev/null || echo null)
+    local applied="" target=null best=null n=null aten=false atgt="" asched="" anext="" logc=""
+    [ -f "$ovr" ] && { [ ! -L "$ovr" ] && [ "$ovr" -ef /dev/fd/9 ] && IFS= read -r -d '' applied <&9; } 2>/dev/null 9<"$ovr" || true
+    [ -n "$applied" ] && applied=$(jq -ce . <<<"$applied" 2>/dev/null) || applied=null
+    [ -f "$logf" ] && { [ ! -L "$logf" ] && [ "$logf" -ef /dev/fd/9 ] && IFS= read -r -d '' logc <&9; } 2>/dev/null 9<"$logf" || true
+    if [ -n "$logc" ] && jq -e . <<<"$logc" >/dev/null 2>&1; then
+        target=$(jq -c '.target // null' <<<"$logc" 2>/dev/null || echo null)
+        best=$(jq -c '.best.hashrate // null' <<<"$logc" 2>/dev/null || echo null)
+        n=$(jq -c '.results | length' <<<"$logc" 2>/dev/null || echo null)
     fi
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
         aten=true
