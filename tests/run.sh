@@ -258,7 +258,6 @@ mkconf() { # <name> <json>
 
 # A minimal valid pool, for tests that just need *a* pool present.
 POOL='"pools": [{"url": "h:3333"}]'
-
 # ---------------------------------------------------------------------------
 # PR #15 (#14) removed the .local/mDNS appending: the pool url's host is used verbatim, whether it's a
 # short name, an FQDN, or an IP. The dotless case is the regression guard — it must NOT become
