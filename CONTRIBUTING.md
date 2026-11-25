@@ -67,8 +67,14 @@ make lint-file-budget                    # self-test, then the gate
 scripts/lint-file-budget.sh --generate   # reprint the budget this tree implies; commit it by hand
 ```
 
-Prose (`*.md`), data (`*.json`), and binaries are exempt — the reasons are enumerated one per glob in
-the script. `rigforge.sh` is deliberately *not* exempt.
+Prose (`*.md`), data (`*.json`), the generated `Cargo.lock`, and binaries are exempt. Prose grows by
+nature and is not source to split; JSON here is config and fixtures; `Cargo.lock` is written by
+cargo; binary files are skipped by detection, not by a path list. A glob in `is_exempt` matches `/`
+too. `rigforge.sh` is deliberately *not* exempt.
+
+Rust source (`*.rs`) is ordinary source under this gate: a `.rs` file over 400 lines needs a row, a
+new one never starts above the target, and there is no Rust exemption. Split a growing module
+instead of asking for a row.
 
 **If your change is refused because the ceiling equals the file's current size**, the ratchet has left
 no slack, which is intended. Ask first whether a line-neutral form of the change exists; that question
@@ -100,8 +106,18 @@ read: GitHub Actions, the pre-commit hooks, the Python CI tools in `tools/requir
 npm devDependency, and the container test images pinned by tag and digest in the Dockerfiles under
 `tests/e2e/`, `tests/coverage/` and `tests/docker/`. The tools no manifest can express —
 shellcheck, shfmt, actionlint, gitleaks, lychee and jq, installed by curl with a sha256 check — are
-watched by the weekly `tool-bump.yml` watcher. It reports stale pins without changing them; failed
-or malformed upstream responses remain unchecked and fail the watcher.
+watched by the weekly `tool-bump.yml` watcher; the Rust toolchain pin in `rust-toolchain.toml` and
+cargo-deny are registered there too, and Dependabot's `cargo` entry covers `Cargo.lock`. The watcher
+reports stale pins without changing them; failed or malformed upstream responses remain unchecked
+and fail the watcher. It also confirms that the sibling scheduled workflows ran on their last
+schedule: only a scheduled run counts, and a lookup that finds nothing is unchecked, never a pass.
+
+The Rust workspace (`Cargo.toml`, `crates/`) is gated by `make rust-check`: `rust-fmt`, `rust-clippy`,
+`rust-test`, `rust-deny` (needs cargo-deny), `rust-musl` (needs the pinned musl target and readelf) and
+`rust-msrv`. `make check` fails, not skips, when cargo is present but cargo-deny, readelf or the musl
+target is missing. `make check` runs `lint-all`, the suite and those gates, and prints a skip line where
+cargo is missing. `lint`, `test` and the pre-commit hooks never need cargo. The jobs live in
+`.github/workflows/rust.yml`; the aarch64 build there is best effort and never fails the workflow.
 
 An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final
 newline) so most editors match these checks automatically.
