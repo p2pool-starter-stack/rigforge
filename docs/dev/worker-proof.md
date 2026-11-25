@@ -69,9 +69,9 @@ freeze those inputs before dispatch and retain the corresponding manifest.
 Without context the script emits `worker-proof: {"schema":1,"bound":false}` and
 retains the existing CLI behavior. This is explicitly unavailable bound evidence;
 the receipt checker rejects it. Supplying malformed context fails before rig
-mutation. This compatibility path does not implement the future required status.
+mutation.
 
-## Receipt and required AND
+## Receipt and plan check
 
 A bound invocation emits the prefix `worker-proof:`, a space, and a JSON object:
 `schema`, `context`, `phases`, `cleanup`, and `exit_code`. Each phase has exactly
