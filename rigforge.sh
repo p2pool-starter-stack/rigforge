@@ -400,13 +400,7 @@ _uint_in_range() { # <value> <min> <max> -> 0 iff a whole number bash can evalua
     [ "$_v" -ge "$_min" ] && [ "$_v" -le "$_max" ]
 }
 
-# #400: ONE host:port validator, shared by a pool's `url` and its `socks5` proxy. The issue asks for
-# the socks5 value to get "the same rules the pool URL gets" — a second copy of these four checks
-# would satisfy that on the day it was written and drift the first time either side is touched, so
-# the rules live in one place instead. <value> <label> <example-port>: the label leads the operator
-# -facing message, and the example port makes the hint fit its key (a pool is :3333, a SOCKS5 proxy
-# is :9050). Every check and every regex below is verbatim from the pool-url path it replaces.
-_validate_host_port() { # <value> <label> <example-port>
+_validate_host_port() {
     local _v="$1" _label="$2" _eg="$3" _h _p
     if ! [[ "$_v" =~ :[0-9]+$ ]]; then
         error "$_label '$_v' must include a port, e.g. $_v:$_eg."
