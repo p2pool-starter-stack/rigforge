@@ -210,7 +210,7 @@ curl() {
 phase_name="control-replay-$kind"
 [ "$mode" != other ] || phase_name=control
 replay_lock "$phase_name"
-[ "$REPLAY_RUNNER_LOCK" = 1 ] || die 'reservation bypass not tracked'
+[ "$REPLAY_LOCK" = 1 ] || die 'reservation bypass not tracked'
 phase_control_replay "$kind"
 expected='{"max_temp_c":101}
 {"max_temp_c":100}
@@ -223,7 +223,6 @@ expected='{"max_temp_c":101}
 {\"max_temp_c\":102}"
 [ "$(cat "$CALLS")" = "$expected" ] || die 'recorded apply order differs'
 ! grep -q 'SECRET' "$CALLS" || die 'pool credentials escaped into log'
-# Exercise the real cleanup function: the runner marker survives, the ordinary marker does not.
 source "$ROOT/tests/e2e-hammer.sh"
 eval "$(sed -n '/^_cleanup()/,/^}/p' "$ROOT/tests/e2e-pithead.sh")"
 _restore_xmrig() { return 0; }
@@ -232,10 +231,10 @@ RIGFORGE=true HAMMER_PIDS=''
 RIG_LOCK_HOLDER="$REPLAY_TEST_DIR/holder"
 SAVED_CFG=$(mktemp)
 cp "$CFG" "$SAVED_CFG"
-printf 'runner owns release\n' >"$RIG_LOCK_HOLDER"
+printf 'harness owns release\n' >"$RIG_LOCK_HOLDER"
 _cleanup
-[ "$(cat "$RIG_LOCK_HOLDER")" = 'runner owns release' ] || die 'cleanup removed runner marker'
-REPLAY_RUNNER_LOCK=0
+[ "$(cat "$RIG_LOCK_HOLDER")" = 'harness owns release' ] || die 'cleanup removed harness marker'
+REPLAY_LOCK=0
 SAVED_CFG=$(mktemp)
 cp "$CFG" "$SAVED_CFG"
 _cleanup
