@@ -11,7 +11,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write # create the GitHub Release + upload assets
+  contents: read
 
 jobs:
   build-x86_64:
@@ -74,6 +74,7 @@ jobs:
   release:
     name: Build & publish release
     needs: [build-x86_64, build-aarch64]
+    if: ${{ !cancelled() && needs.build-x86_64.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -114,11 +115,12 @@ jobs:
           if ! gh run download "$GITHUB_RUN_ID" -n release-binary-aarch64; then
             echo "the aarch64 binary did not build; shipping x86_64 only"
           fi
+          chmod 0755 rigforge-"$TAG"-*-unknown-linux-musl
 
       - name: Build the deploy bundle (.zip + .tar.gz + checksums)
         run: |
           set -euo pipefail
-          bash scripts/build-release-bundle.sh "$TAG" rigforge-$TAG-*-unknown-linux-musl
+          bash scripts/build-release-bundle.sh "$TAG" rigforge-"$TAG"-*-unknown-linux-musl
           bash scripts/build-homebrew-formula.sh "$TAG" SHA256SUMS rigforge.rb "rigforge-$TAG.tar.gz"
 
       - name: Extract release notes from CHANGELOG.md

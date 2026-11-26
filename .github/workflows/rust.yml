@@ -111,7 +111,7 @@ jobs:
           set -euo pipefail
           builds=()
           for d in a b; do
-            dir="$(mktemp -d)"
+            dir="$(mktemp -d "repro-$d.XXXXXX")"
             git archive --format=tar HEAD | tar -x -C "$dir"
             (cd "$dir" && cargo build --release --locked --target x86_64-unknown-linux-musl -p rigforge-rs)
             builds+=("$dir/target/x86_64-unknown-linux-musl/release/rigforge-rs")
