@@ -2937,8 +2937,8 @@ _exec_sudo_self() {
     exec sudo env "${e[@]}" "$0" "$@"
 }
 
-_tune_busy() { ! log "$1: another tune/autotune sweep is already running — not starting a second one."; }
-_tune_clear() { sudo rm -f "$TUNE_OVERRIDES" "${TUNE_OVERRIDES%.json}-pre.json" "$1" || true && log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config."; }
+_tune_busy() { log "$1: another tune/autotune sweep is already running — not starting a second one." && false; }
+_tune_clear() { sudo rm -f "$TUNE_OVERRIDES" "${TUNE_OVERRIDES%.json}-pre.json" "$1" || true && log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config." || true; }
 _tune_gate() {
     local s="$WORKER_ROOT/tune-overrides-pre.json"
     if command -v flock >/dev/null 2>&1 && { [ -f "$WORKER_ROOT/tune.lock" ] && exec 9<"$WORKER_ROOT/tune.lock" || exec 9>"$WORKER_ROOT/tune.lock"; } 2>/dev/null; then flock -n 9 || _tune_busy "$1" || return 1; fi
