@@ -88,10 +88,11 @@ to stdout, and a contributor deliberately redirects and reviews it.
 
 ### Config & docs linting
 
-The YAML, Markdown, and link checks gate in CI and have matching Make targets for local runs:
+The YAML, workflow, Markdown, and link checks gate in CI and have matching Make targets for local runs:
 
 ```bash
 make lint-yaml     # yamllint the workflows + configs   (.yamllint)
+make lint-actions  # actionlint the workflows           (bad needs/refs, invalid runners, shell bugs in run blocks)
 make lint-md       # markdownlint the docs              (.markdownlint-cli2.yaml + npm lockfile; needs Node 22+)
 make lint-links    # lychee link-check the docs         (.lychee.toml; needs lychee — runs weekly in CI)
 make lint-all      # shell + yaml + markdown + workflows in one go
@@ -100,6 +101,20 @@ make ci            # everything CI runs that can run locally (adds the container
 
 The Markdown linter is pinned in `package.json` + `package-lock.json`, which `make lint-md` installs
 from with `npm ci`; validate a pin update with `make lint-md`.
+
+### CI failure categories
+
+Every step in `.github/workflows/ci.yml` and `.github/workflows/security.yml` carries a
+`setup:`/`assert:`/`cleanup:`/`scan:` category as the first word of its name and an id prefixed by
+that category, and every job ends with an `if: always()` `assert: categorize outcome` step
+(`scripts/ci-categorize.sh`) that prints each step's outcome under its category to the job summary.
+A red gate therefore names the category that broke: `setup-*` rows mean the toolchain never came
+up, `assert-*` rows are the gate's own verdict, `scan-*` rows are a gitleaks or zizmor finding that
+blocks the merge, and `cleanup-*` rows show what was left after the run. `tests/test-workflow-contract.sh`
+(in `make test-suite`) fails when a step loses its category, id, or categorize coverage, or when a
+preserved gate (the full-history gitleaks scan, the online zizmor advisory audit, the file-budget
+base check, the allowlist kernel-test pair, the stock-home proof, every `make lint*`/`make test*`
+entry point) is weakened.
 
 Dependabot opens bump PRs (labelled `dependencies` so they queue first) for every manifest it can
 read: GitHub Actions, the pre-commit hooks, the Python CI tools in `tools/requirements-ci.txt`, the
