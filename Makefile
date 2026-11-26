@@ -35,6 +35,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
 	bash tests/test-homebrew-formula.sh
+	bash tests/test-release-bundle.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
@@ -121,12 +122,13 @@ rust-deny: ## cargo deny check (advisories, licenses, bans, sources) from deny.t
 	@command -v cargo-deny >/dev/null 2>&1 || { echo "cargo-deny is not installed (see rust.yml for the pinned version)" >&2; exit 1; }
 	cargo deny check advisories licenses bans sources
 
-rust-musl: ## --locked release build for MUSL_TARGET (default x86_64) and assert the binary is statically linked
+rust-musl: ## --locked release build for MUSL_TARGET (default x86_64) and assert the binary is statically linked and stripped
 	cargo build --release --locked --target $(MUSL_TARGET) -p rigforge-rs
 	@command -v readelf >/dev/null 2>&1 || { echo "readelf is not installed (binutils)" >&2; exit 1; }
 	@bin=target/$(MUSL_TARGET)/release/rigforge-rs; readelf -h "$$bin" >/dev/null || exit 1; \
 	if readelf -lW "$$bin" | grep -q INTERP || readelf -dW "$$bin" | grep -q NEEDED; then echo "$$bin is not statically linked" >&2; exit 1; fi; \
-	echo "$$bin is statically linked"
+	if readelf -SW "$$bin" | grep -q '\.symtab'; then echo "$$bin is not stripped" >&2; exit 1; fi; \
+	echo "$$bin is statically linked and stripped"
 
 rust-msrv: ## rust-version in Cargo.toml must equal the pinned toolchain's major.minor, and the workspace must build with it
 	@want=$$(sed -n 's/^rust-version = "\(.*\)"$$/\1/p' Cargo.toml); have=$$(sed -n 's/^channel = "\([0-9]*\.[0-9]*\)\.[0-9]*"$$/\1/p' rust-toolchain.toml); \
