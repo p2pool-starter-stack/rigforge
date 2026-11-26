@@ -53,6 +53,16 @@ if OMIT_ID=1 run_perf 1 >"$D/output" 2>&1; then
     exit 1
 fi
 cmp -s "$D/before" "$D/tests/perf-baselines/.json"
+printf '{"bench_1m_hs":1000.0,"cpu":"x","recorded":"2026-01-01"}\n' >"$D/tests/perf-baselines/.json"
+printf '{"tag":"old","recorded":"2026-01-01","bench_1m_hs":2000.0}\n' >"$D/tests/perf-baselines/.history.jsonl"
+if out=$(run_perf 0 2>&1); then
+    echo 'FAIL: recording passed a result inside baseline but below best-ever'
+    exit 1
+fi
+grep -q 'perf RATCHET' <<<"$out" || {
+    echo 'FAIL: recording did not name the best-ever ratchet (#214)'
+    exit 1
+}
 lscpu() { echo 'Model name: AMD Ryzen 7 7800X3D 8-Core Processor'; }
 class=amd-ryzen-7-7800x3d-8-core-processor
 rm -rf "$D/tests"
@@ -152,6 +162,14 @@ if out=$(E2E_PERF_HISTORY=$H E2E_PERF_GATE=1 run_report 2>&1); then
 fi
 grep -q 'perf REGRESSION' <<<"$out" || {
     echo 'FAIL: legacy gate alias did not judge'
+    exit 1
+}
+out=$(E2E_PERF_HISTORY=$H E2E_PERF_GATE=0 run_report 2>&1) || {
+    echo 'FAIL: E2E_PERF_GATE=0 activated the gate'
+    exit 1
+}
+grep -q 'REGRESSION (report only)' <<<"$out" || {
+    echo 'FAIL: E2E_PERF_GATE=0 did not stay in report mode'
     exit 1
 }
 if out=$(E2E_PERF_MODE=maybe run_report 2>&1); then

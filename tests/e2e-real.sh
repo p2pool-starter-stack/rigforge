@@ -1283,7 +1283,7 @@ _perf_gate() {
 perf() {
     phase "perf — verified bench by hardware class"
     local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}" class pid=bench_1m_hs mode="${E2E_PERF_MODE:-report}"
-    [ -z "${E2E_PERF_GATE:-}" ] || mode=gate
+    [ "${E2E_PERF_GATE:-0}" != 1 ] || mode=gate
     case "$mode" in
     report | gate) ;;
     *) die "perf: E2E_PERF_MODE must be report or gate (got '$mode')" ;;
