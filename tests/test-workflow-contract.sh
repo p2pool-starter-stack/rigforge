@@ -170,29 +170,44 @@ if grep -qF 'continue-on-error' "$CI" "$SEC"; then
     fail "continue-on-error appeared in the CI/Security premerge gates"
 fi
 
+if grep -F '|| true' "$CI" "$SEC" | grep -qvF 'docker rmi rigforge-allowlist || true'; then
+    fail "|| true appeared in the CI/Security premerge gates outside the allowlist image cleanup"
+fi
+
 for want in \
     'run: make lint' \
     'run: make lint-yaml' \
+    'run: make lint-md' \
     'run: make lint-actions' \
     'run: make test-suite' \
     'run: make test-e2e' \
-    'tests/test-stock-home.sh' \
+    'run: make coverage' \
+    'run: sudo bash tests/test-apt-feed.sh' \
+    'run: timeout 1800 bash tests/test-stock-home.sh "$TEST_REVISION" "$TEST_EXPECTATION"' \
+    'run: docker build -q -t rigforge-allowlist tests/docker' \
+    'run: docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh' \
+    'run: diff-cover coverage/cobertura.xml --compare-branch="origin/$BASE_REF" --fail-under="${PATCH_COVERAGE_MIN}"'; do
+    grep -qxF "        $want" "$CI" || fail "ci.yml gate weakened: '$want' is no longer the exact step command"
+done
+
+for want in \
     'FILE_BUDGET_REQUIRE_BASE: "1"' \
     'fetch-depth: 0' \
-    'docker build -q -t rigforge-allowlist tests/docker' \
-    'docker run --rm --privileged' \
     'ACTIONLINT_VERSION: "1.7.12"' \
-    'ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"' \
-    'diff-cover coverage/cobertura.xml'; do
+    'ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"'; do
     grep -qF "$want" "$CI" || fail "ci.yml gate weakened: '$want' is gone"
 done
 
 for want in \
-    'gitleaks git . --redact --no-banner --verbose' \
+    'run: gitleaks git . --redact --no-banner --verbose' \
+    'run: zizmor .github/workflows/'; do
+    grep -qxF "        $want" "$SEC" || fail "security.yml gate weakened: '$want' is no longer the exact step command"
+done
+
+for want in \
     'GITLEAKS_VERSION: "8.30.1"' \
     'GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"' \
     'fetch-depth: 0' \
-    'zizmor .github/workflows/' \
     'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'; do
     grep -qF "$want" "$SEC" || fail "security.yml gate weakened: '$want' is gone"
 done
