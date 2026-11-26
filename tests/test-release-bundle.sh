@@ -21,19 +21,21 @@ bash "$BUILD" v1.2.3 "$x86" "$arm" >/dev/null || fail "bundling two binaries fai
 [ -f rigforge-v1.2.3.zip ] && [ -f rigforge-v1.2.3.tar.gz ] || fail "archives missing"
 printf 'PASS: zip and tar.gz are written\n'
 
-tar -tzf rigforge-v1.2.3.tar.gz | grep -qx "rigforge-v1.2.3/bin/$x86" ||
+tarlist=$(tar -tzf rigforge-v1.2.3.tar.gz)
+ziplist=$(unzip -l rigforge-v1.2.3.zip)
+grep -qx "rigforge-v1.2.3/bin/$x86" <<<"$tarlist" ||
     fail "tarball has no bin/$x86"
-tar -tzf rigforge-v1.2.3.tar.gz | grep -qx "rigforge-v1.2.3/bin/$arm" ||
+grep -qx "rigforge-v1.2.3/bin/$arm" <<<"$tarlist" ||
     fail "tarball has no bin/$arm"
-tar -tzf rigforge-v1.2.3.tar.gz | grep -qx "rigforge-v1.2.3/rigforge.sh" ||
+grep -qx "rigforge-v1.2.3/rigforge.sh" <<<"$tarlist" ||
     fail "tarball lost the deploy tree"
-tar -tzf rigforge-v1.2.3.tar.gz | grep -q '^rigforge-v1.2.3/tests/' &&
+grep -q '^rigforge-v1.2.3/tests/' <<<"$tarlist" &&
     fail "tarball ships tests/"
 [ "$(tar -xzf rigforge-v1.2.3.tar.gz -O "rigforge-v1.2.3/bin/$x86")" = "x86-binary" ] ||
     fail "staged binary differs from the asset"
 printf 'PASS: both binaries land under bin/ beside the deploy tree\n'
 
-unzip -l rigforge-v1.2.3.zip | grep -q "rigforge-v1.2.3/bin/$arm" ||
+grep -q "rigforge-v1.2.3/bin/$arm" <<<"$ziplist" ||
     fail "zip has no bin/$arm"
 printf 'PASS: the zip mirrors the tar.gz layout\n'
 
@@ -89,9 +91,10 @@ bash "$BUILD" v9.9.9 >/dev/null 2>&1 || rc=$?
 printf 'arm9-binary\n' >"$arm9"
 chmod +x "$arm9"
 bash "$BUILD" v9.9.9 "$arm9" >/dev/null || fail "an aarch64-only bundle failed"
-tar -tzf rigforge-v9.9.9.tar.gz | grep -qx "rigforge-v9.9.9/bin/$arm9" ||
+tarlist=$(tar -tzf rigforge-v9.9.9.tar.gz)
+grep -qx "rigforge-v9.9.9/bin/$arm9" <<<"$tarlist" ||
     fail "aarch64-only bundle has no bin/$arm9"
-tar -tzf rigforge-v9.9.9.tar.gz | grep -q "x86_64" &&
+grep -q "x86_64" <<<"$tarlist" &&
     fail "aarch64-only bundle shipped an x86_64 binary"
 printf 'PASS: an aarch64-only bundle ships just the aarch64 binary\n'
 
