@@ -170,7 +170,7 @@ if grep -qF 'continue-on-error' "$CI" "$SEC"; then
     fail "continue-on-error appeared in the CI/Security premerge gates"
 fi
 
-if grep -F '|| true' "$CI" "$SEC" | grep -qvF 'docker rmi rigforge-allowlist || true'; then
+if grep -hF '|| true' "$CI" "$SEC" | grep -qvxF '        run: docker rmi rigforge-allowlist || true'; then
     fail "|| true appeared in the CI/Security premerge gates outside the allowlist image cleanup"
 fi
 
@@ -197,6 +197,10 @@ for want in \
     'ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"'; do
     grep -qF "$want" "$CI" || fail "ci.yml gate weakened: '$want' is gone"
 done
+
+if [ "$(grep -c 'fetch-depth: 0' "$CI")" -lt 3 ]; then
+    fail "ci.yml dropped a full-history checkout (file-budget, stock-home and coverage each need fetch-depth: 0)"
+fi
 
 for want in \
     'run: gitleaks git . --redact --no-banner --verbose' \
