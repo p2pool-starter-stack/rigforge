@@ -112,10 +112,12 @@ A red gate therefore names the category that broke: `setup-*` rows mean the tool
 up, `assert-*` rows are the gate's own verdict, `scan-*` rows are a gitleaks or zizmor finding that
 blocks the merge, and `cleanup-*` rows show what was left after the run. `tests/test-workflow-contract.sh`
 (in `make test-suite`) fails when a step loses its category, id, or categorize coverage, when a step
-or job gains an `if:` condition off the approved allowlist, or when a preserved gate (the full-history
+or job gains an unapproved or misplaced `if:` condition, or when a preserved gate (the full-history
 gitleaks scan and its pinned install, the online zizmor advisory audit, the file-budget base check,
-the allowlist kernel-test pair, the stock-home proof, the Homebrew formula proof, every
-`make lint*`/`make test*` entry point) stops appearing with its exact command.
+the allowlist kernel-test pair, the stock-home matrix, the Homebrew formula proof and its OS matrix,
+every `make lint*`/`make test*` entry point) stops appearing with its exact command. The test pins
+workflow text, not hosted execution: a green hosted run is what proves the environment itself stayed
+honest.
 
 Dependabot opens bump PRs (labelled `dependencies` so they queue first) for every manifest it can
 read: GitHub Actions, the pre-commit hooks, the Python CI tools in `tools/requirements-ci.txt`, the

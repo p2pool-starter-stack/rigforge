@@ -31,10 +31,9 @@ ATTR10_RE = re.compile(r'^          ([\w-]+):(.*)$')
 JOB_RE = re.compile(r'^  ([a-z][a-z0-9_-]*):$')
 JOB_IF_RE = re.compile(r'^    if: (.+)$')
 FULL_HISTORY = {"ci.yml": {"lint", "stock-home", "coverage"}, "security.yml": {"gitleaks"}}
-STEP_IF_OK = (None, "always()", "runner.os == 'Linux'")
-JOB_IF_OK = (None, "github.event_name != 'schedule'",
-             "github.event_name != 'pull_request' || "
-             "github.event.pull_request.head.repo.full_name == github.repository")
+FORK_GUARD = ("github.event_name != 'pull_request' || "
+              "github.event.pull_request.head.repo.full_name == github.repository")
+JOB_IF_ALLOWED = {"apt-feed": FORK_GUARD, "gitleaks": "github.event_name != 'schedule'"}
 problems = []
 
 
@@ -111,8 +110,9 @@ for wf in sys.argv[1:]:
             m = JOB_IF_RE.match(line)
             if m:
                 job_if = m.group(1).strip()
-        if job_if not in JOB_IF_OK:
-            problems.append(f"{wf}:{job}: job if {job_if} is not an approved condition")
+        want_if = JOB_IF_ALLOWED.get(job)
+        if (job_if or want_if) and job_if != want_if:
+            problems.append(f"{wf}:{job}: job if {job_if} is not this job's approved condition")
         if not steps:
             problems.append(f"{wf}:{job}: no steps parsed")
             continue
@@ -122,8 +122,17 @@ for wf in sys.argv[1:]:
             name = s["attrs"].get("name")
             sid = s["attrs"].get("id")
             where = f"{wf}:{job}: step at line {s['line'].strip()[:60]}"
-            if s["if"] not in STEP_IF_OK:
-                problems.append(f"{where} if {s['if']} is not an approved condition")
+            sidv = s["attrs"].get("id")
+            if sidv == "assert_sudo_resolution":
+                allowed_ifs = ("runner.os == 'Linux'",)
+            elif sidv == "assert_categorize":
+                allowed_ifs = ("always()",)
+            elif sidv and sidv.startswith("cleanup_"):
+                allowed_ifs = (None, "always()")
+            else:
+                allowed_ifs = (None,)
+            if s["if"] not in allowed_ifs:
+                problems.append(f"{where} if {s['if']} is not approved for this step")
             if name is None:
                 problems.append(f"{where} has no name")
             elif not NAME_RE.match(name):
@@ -225,8 +234,22 @@ for want in \
     '          echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -' \
     '"$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt' \
     '          brew test p2pool-starter-stack/rigforge/rigforge' \
-    '          test "$(rigforge --version)" = "RigForge $want"'; do
+    '          test "$(rigforge --version)" = "RigForge $want"' \
+    'PATCH_COVERAGE_MIN: "90"'; do
     grep -qF "$want" "$CI" || fail "ci.yml gate weakened: '$want' is gone"
+done
+
+for want in \
+    '  push:' \
+    '  pull_request:' \
+    '          - label: historical' \
+    '            revision: b2d4c3d9ca1da74d0e6d5ccce772d401acc8be03' \
+    '            expect: broken' \
+    '          - label: current' \
+    '            revision: HEAD' \
+    '            expect: working' \
+    '        os: [ubuntu-24.04, macos-15]'; do
+    grep -qxF "$want" "$CI" || fail "ci.yml contract line '$want' is gone"
 done
 
 for want in \
@@ -243,6 +266,17 @@ for want in \
     'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'; do
     grep -qF "$want" "$SEC" || fail "security.yml gate weakened: '$want' is gone"
 done
+
+for want in \
+    '  push:' \
+    '  pull_request:' \
+    '  schedule:'; do
+    grep -qxF "$want" "$SEC" || fail "security.yml trigger '$want' is gone"
+done
+
+if grep -qF 'MAKEFLAGS' "$CI" "$SEC"; then
+    fail "MAKEFLAGS (the make dry-run switch) appeared in the CI/Security premerge gates"
+fi
 
 grep -qF 'CAT_SCAN_GITLEAKS:' "$SEC" || fail "security.yml gitleaks scan outcome is not emitted"
 grep -qF 'CAT_SCAN_ZIZMOR:' "$SEC" || fail "security.yml zizmor scan outcome is not emitted"
