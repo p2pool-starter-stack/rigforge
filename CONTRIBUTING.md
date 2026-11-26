@@ -111,10 +111,11 @@ that category, and every job ends with an `if: always()` `assert: categorize out
 A red gate therefore names the category that broke: `setup-*` rows mean the toolchain never came
 up, `assert-*` rows are the gate's own verdict, `scan-*` rows are a gitleaks or zizmor finding that
 blocks the merge, and `cleanup-*` rows show what was left after the run. `tests/test-workflow-contract.sh`
-(in `make test-suite`) fails when a step loses its category, id, or categorize coverage, or when a
-preserved gate (the full-history gitleaks scan, the online zizmor advisory audit, the file-budget
-base check, the allowlist kernel-test pair, the stock-home proof, every `make lint*`/`make test*`
-entry point) is weakened.
+(in `make test-suite`) fails when a step loses its category, id, or categorize coverage, when a step
+or job gains an `if:` condition off the approved allowlist, or when a preserved gate (the full-history
+gitleaks scan and its pinned install, the online zizmor advisory audit, the file-budget base check,
+the allowlist kernel-test pair, the stock-home proof, the Homebrew formula proof, every
+`make lint*`/`make test*` entry point) stops appearing with its exact command.
 
 Dependabot opens bump PRs (labelled `dependencies` so they queue first) for every manifest it can
 read: GitHub Actions, the pre-commit hooks, the Python CI tools in `tools/requirements-ci.txt`, the

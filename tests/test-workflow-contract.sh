@@ -29,6 +29,12 @@ STEP_RE = re.compile(r'^      - (.*)$')
 ATTR8_RE = re.compile(r'^        ([\w-]+):(.*)$')
 ATTR10_RE = re.compile(r'^          ([\w-]+):(.*)$')
 JOB_RE = re.compile(r'^  ([a-z][a-z0-9_-]*):$')
+JOB_IF_RE = re.compile(r'^    if: (.+)$')
+FULL_HISTORY = {"ci.yml": {"lint", "stock-home", "coverage"}, "security.yml": {"gitleaks"}}
+STEP_IF_OK = (None, "always()", "runner.os == 'Linux'")
+JOB_IF_OK = (None, "github.event_name != 'schedule'",
+             "github.event_name != 'pull_request' || "
+             "github.event.pull_request.head.repo.full_name == github.repository")
 problems = []
 
 
@@ -39,7 +45,7 @@ def parse_steps(start, end, lines, wf, job):
     for line in lines[start:end]:
         m = STEP_RE.match(line)
         if m:
-            cur = {"attrs": {}, "env": {}, "if": None, "run": None, "line": line}
+            cur = {"attrs": {}, "env": {}, "with": {}, "if": None, "run": None, "line": line}
             steps.append(cur)
             mode = None
             fa = re.match(r'^([\w-]+):(.*)$', m.group(1))
@@ -55,6 +61,8 @@ def parse_steps(start, end, lines, wf, job):
         m = ATTR10_RE.match(line)
         if m and mode == "env":
             cur["env"][m.group(1)] = m.group(2).strip()
+        elif m and mode == "with":
+            cur["with"][m.group(1)] = m.group(2).strip()
     return steps
 
 
@@ -79,6 +87,7 @@ def store_attr(step, key, val, wf, job, line):
 
 for wf in sys.argv[1:]:
     lines = open(wf).read().splitlines()
+    full_history = FULL_HISTORY.get(wf.split("/")[-1], set())
     jobs = []
     in_jobs = False
     for i, line in enumerate(lines):
@@ -97,6 +106,13 @@ for wf in sys.argv[1:]:
     for pos, (job, start) in enumerate(jobs):
         end = jobs[pos + 1][1] if pos + 1 < len(jobs) else len(lines)
         steps = parse_steps(start, end, lines, wf, job)
+        job_if = None
+        for line in lines[start:end]:
+            m = JOB_IF_RE.match(line)
+            if m:
+                job_if = m.group(1).strip()
+        if job_if not in JOB_IF_OK:
+            problems.append(f"{wf}:{job}: job if {job_if} is not an approved condition")
         if not steps:
             problems.append(f"{wf}:{job}: no steps parsed")
             continue
@@ -106,6 +122,8 @@ for wf in sys.argv[1:]:
             name = s["attrs"].get("name")
             sid = s["attrs"].get("id")
             where = f"{wf}:{job}: step at line {s['line'].strip()[:60]}"
+            if s["if"] not in STEP_IF_OK:
+                problems.append(f"{where} if {s['if']} is not an approved condition")
             if name is None:
                 problems.append(f"{where} has no name")
             elif not NAME_RE.match(name):
@@ -127,6 +145,14 @@ for wf in sys.argv[1:]:
                 catz.append(s)
         if len(ids) != len(set(ids)):
             problems.append(f"{wf}:{job}: duplicate step ids")
+        if job in full_history:
+            full = False
+            for s in steps:
+                if "actions/checkout" in s["attrs"].get("uses", ""):
+                    if s["with"].get("fetch-depth", "").split(" ")[0] == "0":
+                        full = True
+            if not full:
+                problems.append(f"{wf}:{job}: its actions/checkout must keep fetch-depth: 0 (full history is a gate)")
         if len(catz) != 1:
             problems.append(f"{wf}:{job}: expected exactly one categorize step, found {len(catz)}")
             continue
@@ -170,7 +196,7 @@ if grep -qF 'continue-on-error' "$CI" "$SEC"; then
     fail "continue-on-error appeared in the CI/Security premerge gates"
 fi
 
-if grep -hF '|| true' "$CI" "$SEC" | grep -qvxF '        run: docker rmi rigforge-allowlist || true'; then
+if grep -hE '\|\|[[:space:]]*true' "$CI" "$SEC" | grep -qvxF '        run: docker rmi rigforge-allowlist || true'; then
     fail "|| true appeared in the CI/Security premerge gates outside the allowlist image cleanup"
 fi
 
@@ -192,15 +218,16 @@ done
 
 for want in \
     'FILE_BUDGET_REQUIRE_BASE: "1"' \
-    'fetch-depth: 0' \
     'ACTIONLINT_VERSION: "1.7.12"' \
-    'ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"'; do
+    'ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"' \
+    '          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -' \
+    '          echo "${SHELLCHECK_SHA256}  ${tarball}" | sha256sum -c -' \
+    '          echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -' \
+    '"$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt' \
+    '          brew test p2pool-starter-stack/rigforge/rigforge' \
+    '          test "$(rigforge --version)" = "RigForge $want"'; do
     grep -qF "$want" "$CI" || fail "ci.yml gate weakened: '$want' is gone"
 done
-
-if [ "$(grep -c 'fetch-depth: 0' "$CI")" -lt 3 ]; then
-    fail "ci.yml dropped a full-history checkout (file-budget, stock-home and coverage each need fetch-depth: 0)"
-fi
 
 for want in \
     'run: gitleaks git . --redact --no-banner --verbose' \
@@ -211,7 +238,8 @@ done
 for want in \
     'GITLEAKS_VERSION: "8.30.1"' \
     'GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"' \
-    'fetch-depth: 0' \
+    '          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -' \
+    '"$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt' \
     'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'; do
     grep -qF "$want" "$SEC" || fail "security.yml gate weakened: '$want' is gone"
 done
