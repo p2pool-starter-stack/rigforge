@@ -89,14 +89,7 @@ jobs:
       - name: Run make rust-musl
         run: make rust-musl
       - name: Assert the binary reports the repository VERSION
-        run: |
-          set -euo pipefail
-          want="rigforge-rs $(tr -d '[:space:]' <VERSION)"
-          got="$(target/x86_64-unknown-linux-musl/release/rigforge-rs --version)"
-          if [ "$got" != "$want" ]; then
-            echo "::error::the static binary reports '$got'; expected '$want'"
-            exit 1
-          fi
+        run: make rust-version
       - name: Run the static binary inside the pinned e2e image
         run: |
           set -euo pipefail
@@ -160,11 +153,4 @@ jobs:
       - name: Run make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
         run: make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
       - name: Assert the binary reports the repository VERSION
-        run: |
-          set -euo pipefail
-          want="rigforge-rs $(tr -d '[:space:]' <VERSION)"
-          got="$(target/aarch64-unknown-linux-musl/release/rigforge-rs --version)"
-          if [ "$got" != "$want" ]; then
-            echo "::error::the aarch64 binary reports '$got'; expected '$want'"
-            exit 1
-          fi
+        run: make rust-version MUSL_TARGET=aarch64-unknown-linux-musl

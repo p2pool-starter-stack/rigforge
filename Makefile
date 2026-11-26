@@ -1,4 +1,4 @@
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci check rust-check rust-fmt rust-clippy rust-test rust-deny rust-musl rust-msrv
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci check rust-check rust-fmt rust-clippy rust-test rust-deny rust-musl rust-version rust-msrv
 
 MUSL_TARGET ?= x86_64-unknown-linux-musl
 
@@ -129,6 +129,13 @@ rust-musl: ## --locked release build for MUSL_TARGET (default x86_64) and assert
 	if readelf -lW "$$bin" | grep -q INTERP || readelf -dW "$$bin" | grep -q NEEDED; then echo "$$bin is not statically linked" >&2; exit 1; fi; \
 	if readelf -SW "$$bin" | grep -q '\.symtab'; then echo "$$bin is not stripped" >&2; exit 1; fi; \
 	echo "$$bin is statically linked and stripped"
+
+rust-version: ## assert the musl binary for MUSL_TARGET (default x86_64) reports the repository VERSION
+	@bin=target/$(MUSL_TARGET)/release/rigforge-rs; want="rigforge-rs $$(tr -d '[:space:]' <VERSION)"; \
+	if [ ! -x "$$bin" ]; then echo "$$bin missing; run make rust-musl first" >&2; exit 1; fi; \
+	got="$$($$bin --version)"; \
+	if [ "$$got" != "$$want" ]; then echo "$$bin reports '$$got'; expected '$$want'" >&2; exit 1; fi; \
+	echo "$$bin reports $$got"
 
 rust-msrv: ## rust-version in Cargo.toml must equal the pinned toolchain's major.minor, and the workspace must build with it
 	@want=$$(sed -n 's/^rust-version = "\(.*\)"$$/\1/p' Cargo.toml); have=$$(sed -n 's/^channel = "\([0-9]*\.[0-9]*\)\.[0-9]*"$$/\1/p' rust-toolchain.toml); \
