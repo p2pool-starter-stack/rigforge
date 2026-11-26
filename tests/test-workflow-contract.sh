@@ -235,7 +235,8 @@ for want in \
     '"$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt' \
     '          brew test p2pool-starter-stack/rigforge/rigforge' \
     '          test "$(rigforge --version)" = "RigForge $want"' \
-    'PATCH_COVERAGE_MIN: "90"'; do
+    'PATCH_COVERAGE_MIN: "90"' \
+    '    branches: [main, develop]'; do
     grep -qF "$want" "$CI" || fail "ci.yml gate weakened: '$want' is gone"
 done
 
@@ -263,7 +264,9 @@ for want in \
     'GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"' \
     '          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -' \
     '"$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt' \
-    'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'; do
+    'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' \
+    '    branches: [main, develop]' \
+    '    - cron: "0 7 * * 1"'; do
     grep -qF "$want" "$SEC" || fail "security.yml gate weakened: '$want' is gone"
 done
 
@@ -276,6 +279,14 @@ done
 
 if grep -qF 'MAKEFLAGS' "$CI" "$SEC"; then
     fail "MAKEFLAGS (the make dry-run switch) appeared in the CI/Security premerge gates"
+fi
+
+if grep -qE '^[[:space:]]*(defaults:|shell:|types:|paths(-ignore)?:)' "$CI" "$SEC"; then
+    fail "a defaults/shell/types/paths key (a workflow silencing hook) appeared in the CI/Security gates"
+fi
+
+if grep -qF 'MAKEFLAGS' Makefile; then
+    fail "MAKEFLAGS appeared in the Makefile the gates invoke"
 fi
 
 grep -qF 'CAT_SCAN_GITLEAKS:' "$SEC" || fail "security.yml gitleaks scan outcome is not emitted"
