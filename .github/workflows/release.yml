@@ -80,7 +80,6 @@ jobs:
       contents: write
       actions: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -109,18 +108,23 @@ jobs:
           fi
 
       - name: Download the release binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh run download "$GITHUB_RUN_ID" -n release-binary-x86_64
-          if ! gh run download "$GITHUB_RUN_ID" -n release-binary-aarch64; then
-            echo "the aarch64 binary did not build; shipping x86_64 only"
+          rm -rf relbin
+          mkdir relbin
+          gh run download "$GITHUB_RUN_ID" -n release-binary-x86_64 -D relbin
+          if ! gh run download "$GITHUB_RUN_ID" -n release-binary-aarch64 -D relbin 2>"$RUNNER_TEMP/aarch64.err"; then
+            printf '::warning::aarch64 binary not bundled: %s\n' "$(tr '\n' ' ' <"$RUNNER_TEMP/aarch64.err")"
+            rm -f relbin/rigforge-"$TAG"-aarch64-unknown-linux-musl
           fi
-          chmod 0755 rigforge-"$TAG"-*-unknown-linux-musl
+          chmod 0755 relbin/rigforge-"$TAG"-*-unknown-linux-musl
 
       - name: Build the deploy bundle (.zip + .tar.gz + checksums)
         run: |
           set -euo pipefail
-          bash scripts/build-release-bundle.sh "$TAG" rigforge-"$TAG"-*-unknown-linux-musl
+          bash scripts/build-release-bundle.sh "$TAG" relbin/rigforge-"$TAG"-*-unknown-linux-musl
           bash scripts/build-homebrew-formula.sh "$TAG" SHA256SUMS rigforge.rb "rigforge-$TAG.tar.gz"
 
       - name: Extract release notes from CHANGELOG.md
@@ -140,6 +144,8 @@ jobs:
           echo "--- notes ---"; cat RELEASE_NOTES.md
 
       - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # Mark 0.x tags as pre-releases.
@@ -151,7 +157,7 @@ jobs:
           # Checksums only, by decision (2026-07-11): release signing was removed — see
           # SECURITY.md > Release integrity. SHA256SUMS proves the bundle matches what CI built.
           assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS rigforge.rb)
-          for binary in rigforge-"$TAG"-*-unknown-linux-musl; do
+          for binary in relbin/rigforge-"$TAG"-*-unknown-linux-musl; do
             [ -e "$binary" ] && assets+=("$binary")
           done
           gh release create "$TAG" $pre --draft \
