@@ -17,6 +17,15 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+MODE="${1:-all}"
+case "$MODE" in
+all | deploy | appliance | isolation) ;;
+*)
+    echo "usage: linux.sh [all|deploy|appliance|isolation]" >&2
+    exit 2
+    ;;
+esac
+
 if ! command -v docker >/dev/null 2>&1; then
     echo "FATAL: docker not found — the dependency-free suite (tests/run.sh) covers unit logic, but the full deploy+appliance contract requires a container runtime." >&2
     exit 1
@@ -42,33 +51,19 @@ run_pass() { # <label> [docker env args...] — one disposable container per pas
 }
 
 STATUS=0
-
-LOGA="$(mktemp)"
-LOGB="$(mktemp)"
-trap 'rm -f "$LOGA" "$LOGB"' EXIT
-
-run_pass "deploy" >"$LOGA" 2>&1 &
-PID_A=$!
-run_pass "appliance" -e RIGFORGE_APPLIANCE=1 >"$LOGB" 2>&1 &
-PID_B=$!
-
-wait "$PID_A"
-rc_a=$?
-wait "$PID_B"
-rc_b=$?
-
-cat "$LOGA"
-echo ""
-cat "$LOGB"
-[ "$rc_a" != 0 ] && STATUS=1
-[ "$rc_b" != 0 ] && STATUS=1
-
-echo ""
-bash "$ROOT/tests/e2e/isolation.sh" || STATUS=1
+case "$MODE" in
+all | deploy) run_pass "deploy" || STATUS=1 ;;
+esac
+case "$MODE" in
+all | appliance) run_pass "appliance" -e RIGFORGE_APPLIANCE=1 || STATUS=1 ;;
+esac
+case "$MODE" in
+all | isolation) bash "$ROOT/tests/e2e/isolation.sh" || STATUS=1 ;;
+esac
 echo ""
 if [ "$STATUS" = 0 ]; then
-    echo "rigforge e2e: all passes (deploy + appliance + isolation) passed"
+    echo "rigforge e2e ($MODE): passed"
 else
-    echo "rigforge e2e: FAILED (see the failing pass above)"
+    echo "rigforge e2e ($MODE): FAILED (see the failing pass above)"
 fi
 exit "$STATUS"
