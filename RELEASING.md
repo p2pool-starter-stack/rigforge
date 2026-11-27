@@ -185,10 +185,18 @@ Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
 
 - verifies the tagged commit is on `main` and that the tag matches `VERSION` (the build fails otherwise),
+- builds the release binaries with `make rust-musl` from the pinned toolchain: `--locked` release
+  builds of `x86_64-unknown-linux-musl` (required) and `aarch64-unknown-linux-musl` (a separate
+  non-required job, shipped only if it builds), each statically linked, stripped, and reporting
+  `--version` equal to `VERSION` (#708). CI also runs the static binary inside the pinned e2e
+  image and proves two builds of one commit are byte-identical (the
+  `Rust musl x86_64 static build` check),
 - packages the deploy bundle (`rigforge.sh`, `util/`, `systemd/`, `config.minimal.json`,
-  `config.reference.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`) as
-  `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev files are excluded),
-- generates `SHA256SUMS` for the artifacts,
+  `config.reference.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`, plus every built
+  binary under `bin/`) as `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev
+  files are excluded),
+- generates `SHA256SUMS` for every release asset — both archives and each attached binary —
+  (`scripts/build-release-bundle.sh`),
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
 - creates the GitHub Release as a draft. Review the generated notes and bundles, then click
   Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).

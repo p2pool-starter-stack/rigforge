@@ -88,6 +88,41 @@ jobs:
         run: rustup toolchain install
       - name: Run make rust-musl
         run: make rust-musl
+      - name: Assert the binary reports the repository VERSION
+        run: make rust-version
+      - name: Run the static binary inside the pinned e2e image
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^FROM //p' tests/e2e/Dockerfile)"
+          if [ -z "$image" ]; then
+            echo "::error::cannot read the pinned base image from tests/e2e/Dockerfile"
+            exit 1
+          fi
+          want="rigforge-rs $(tr -d '[:space:]' <VERSION)"
+          got="$(docker run --rm --platform linux/amd64 \
+            -v "$PWD/target/x86_64-unknown-linux-musl/release/rigforge-rs:/rigforge-rs:ro" \
+            "$image" /rigforge-rs --version)"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the binary in the pinned e2e image reported '$got'; expected '$want'"
+            exit 1
+          fi
+      - name: Verify two further builds of this commit match byte-for-byte
+        run: |
+          set -euo pipefail
+          builds=()
+          for d in a b; do
+            dir="$(mktemp -d "repro-$d.XXXXXX")"
+            git archive --format=tar HEAD | tar -x -C "$dir"
+            (cd "$dir" && cargo build --release --locked --target x86_64-unknown-linux-musl -p rigforge-rs)
+            builds+=("$dir/target/x86_64-unknown-linux-musl/release/rigforge-rs")
+          done
+          hashes=$(sha256sum target/x86_64-unknown-linux-musl/release/rigforge-rs \
+            "${builds[@]}" | awk '{print $1}' | sort -u)
+          if [ "$(printf '%s\n' "$hashes" | wc -l | tr -d '[:space:]')" != 1 ]; then
+            echo "::error::builds of the same commit differ; expected one hash, got:"
+            printf '%s\n' "$hashes"
+            exit 1
+          fi
 
   msrv:
     name: Rust MSRV
@@ -117,6 +152,8 @@ jobs:
         run: rustup target add aarch64-unknown-linux-musl
       - name: Run make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
         run: make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
+      - name: Assert the binary reports the repository VERSION
+        run: make rust-version MUSL_TARGET=aarch64-unknown-linux-musl
 
   suite:
     name: Test suite in rust mode
