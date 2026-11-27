@@ -37,4 +37,8 @@ check "API_CMD override applies" "touch $D/api-ran" "$api"
 echo "== a value other than 1 does not open them =="
 IFS='|' read -r ver commit units bin meminfo dmi svc api <<<"$(probe RIGFORGE_TEST_OVERRIDES=yes)"
 check "RIGFORGE_TEST_OVERRIDES=yes keeps the real unit folder" "/etc/systemd/system" "$units"
+
+echo "== RIGFORGE_CONFIG_META is a per-install setting and is not gated =="
+meta=$(env -u RIGFORGE_TEST_OVERRIDES RIGFORGE_HOME="$D" RIGFORGE_CONFIG_META="$D/meta.json" bash -c 'source "$1"; printf "%s" "$CONFIG_META_FILE"' _ "$SCRIPT" 2>/dev/null)
+check "CONFIG_META_FILE honours RIGFORGE_CONFIG_META" "$D/meta.json" "$meta"
 exit "$fail"
