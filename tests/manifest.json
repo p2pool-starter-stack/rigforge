@@ -327,8 +327,7 @@
         "2": "platform-failure"
       },
       "needs": [
-        "needs_vm",
-        "needs_root"
+        "needs_vm"
       ]
     },
     {
@@ -495,7 +494,8 @@
       ],
       "exit_codes": {
         "0": "pass",
-        "1": "fail"
+        "1": "fail",
+        "2": "platform-failure"
       },
       "needs": [
         "needs_docker"
@@ -512,7 +512,8 @@
       ],
       "exit_codes": {
         "0": "pass",
-        "1": "fail"
+        "1": "fail",
+        "2": "platform-failure"
       },
       "needs": [
         "needs_hardware"

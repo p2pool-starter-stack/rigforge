@@ -63,7 +63,7 @@ def header_inputs(text):
             continue
         out.update(re.findall(r'\bE2E_[A-Z0-9_]+\b', line))
         for n in re.findall(r'\b([A-Z][A-Z0-9_]*[A-Z0-9])=', line):
-            if not re.search(r'(?<![\w(])' + n + '=', code):
+            if not re.search(r'(?<![\w(])' + n + r'=(?!"?\$\{' + n + r'\b)', code):
                 out.add(n)
     return out
 
@@ -174,14 +174,24 @@ else
     fail "manifest does not match the harnesses"
 fi
 
-for case in drop-phase invent-phase drop-input bad-needs bad-all-runs drop-suite drop-knob; do
+while IFS='|' read -r case expect; do
     mutate "$case"
-    if validate "$WORK/mutated.json" 2>/dev/null; then
+    if validate "$WORK/mutated.json" 2>"$WORK/err"; then
         fail "selftest accepted the $case mutation"
+    elif ! grep -Fq "$expect" "$WORK/err"; then
+        fail "selftest rejected the $case mutation without: $expect"
     else
         ok "selftest rejects the $case mutation"
     fi
-done
+done <<'CASES'
+drop-phase|suite [e2e-real] phases
+invent-phase|suite [e2e-real] phases
+drop-input|documented input E2E_PERF_TAG missing
+bad-needs|needs 'real-hardware' not in
+bad-all-runs|suite [e2e-pithead] all_runs
+drop-suite|runs tests/run.sh, which has no manifest suite
+drop-knob|documented input SMOKE_RUN_SETUP missing
+CASES
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
