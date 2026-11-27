@@ -122,6 +122,22 @@ cargo is missing. `lint`, `test` and the pre-commit hooks never need cargo. The 
 An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final
 newline) so most editors match these checks automatically.
 
+### Rust golden files
+
+The files under `crates/rigforge-core/tests/golden/jq-1.7.1/` hold what real jq 1.7.1 printed for
+each input row; they are never edited by hand. `scripts/make-goldens.sh jq` regenerates them by
+running the local jq over the corpus in that script and in `scripts/goldens-docs.sh` and
+`scripts/goldens-ops.sh` (each file starts with the jq arguments, then one row per input: hex input,
+jq status, hex output, label). Regenerate with jq 1.7.1 (`jq --version` must print `jq-1.7.1`; the
+Linux test image has it) and commit the result together with the corpus change. `make rust-goldens`
+regenerates and fails on any difference or stray file, and prints a skip line under any other jq;
+the `goldens` job in `.github/workflows/rust.yml` runs it with a pinned jq 1.7.1. jq 1.6 and 1.8
+are not committed as golden sets: the `jq_live*` tests compare against binaries named by `JQ16`
+and `JQ18` and print a `SKIPPED` line when the variable is unset (CI sets both). `make rust-mutants`
+applies each row of `tests/rust/mutants.tsv` (file, exact text, replacement, test filter) to a
+scratch copy and requires the named tests to fail; a row whose text is not found exactly once is
+refused.
+
 ## Branching
 
 RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-starter-stack/pithead)):
