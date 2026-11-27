@@ -57,14 +57,11 @@ rc_a=$?
 wait "$PID_B"
 rc_b=$?
 
-[ "$rc_a" != 0 ] && {
-    cat "$LOGA"
-    STATUS=1
-}
-[ "$rc_b" != 0 ] && {
-    cat "$LOGB"
-    STATUS=1
-}
+cat "$LOGA"
+echo ""
+cat "$LOGB"
+[ "$rc_a" != 0 ] && STATUS=1
+[ "$rc_b" != 0 ] && STATUS=1
 
 echo ""
 bash "$ROOT/tests/e2e/isolation.sh" || STATUS=1
