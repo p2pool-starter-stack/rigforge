@@ -169,63 +169,38 @@ jobs:
           TEST_EXPECTATION: ${{ matrix.expect }}
         run: timeout 1800 bash tests/test-stock-home.sh "$TEST_REVISION" "$TEST_EXPECTATION"
 
-  e2e-deploy:
-    name: End-to-end (Docker deploy)
+  e2e:
+    name: End-to-end (Docker)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # zizmor: artipacked
       - name: Run the deploy pass
+        id: deploy
+        if: ${{ !cancelled() }}
         run: bash tests/e2e/linux.sh deploy
-
-  e2e-appliance:
-    name: End-to-end (Docker appliance)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false # zizmor: artipacked
       - name: Run the appliance pass
+        id: appliance
+        if: ${{ !cancelled() }}
         run: bash tests/e2e/linux.sh appliance
-
-  e2e-isolation:
-    name: End-to-end (Docker isolation)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false # zizmor: artipacked
       - name: Run the isolation pass
+        id: isolation
+        if: ${{ !cancelled() }}
         run: bash tests/e2e/linux.sh isolation
-
-  e2e-allowlist:
-    name: End-to-end (Docker allowlist)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false # zizmor: artipacked
-      - name: Build the API allowlist kernel test image
-        run: docker build -q -t rigforge-allowlist tests/docker
-      - name: Run API allowlist kernel test
-        run: docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh
-
-  e2e:
-    name: End-to-end (Docker)
-    needs: [e2e-deploy, e2e-appliance, e2e-isolation, e2e-allowlist]
-    if: always()
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false # zizmor: artipacked
-      - name: Require every Docker child
+      - name: Run the API allowlist kernel test
+        id: allowlist
+        if: ${{ !cancelled() }}
+        run: |
+          docker build -q -t rigforge-allowlist tests/docker
+          docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh
+      - name: Require every Docker mode
+        if: ${{ always() }}
         env:
-          DEPLOY: ${{ needs.e2e-deploy.result }}
-          APPLIANCE: ${{ needs.e2e-appliance.result }}
-          ISOLATION: ${{ needs.e2e-isolation.result }}
-          ALLOWLIST: ${{ needs.e2e-allowlist.result }}
+          DEPLOY: ${{ steps.deploy.outcome }}
+          APPLIANCE: ${{ steps.appliance.outcome }}
+          ISOLATION: ${{ steps.isolation.outcome }}
+          ALLOWLIST: ${{ steps.allowlist.outcome }}
         run: bash scripts/require-success.sh "deploy=$DEPLOY" "appliance=$APPLIANCE" "isolation=$ISOLATION" "allowlist=$ALLOWLIST"
 
   coverage:
