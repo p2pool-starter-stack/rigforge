@@ -18,7 +18,9 @@ fn expect(row: &common::Row, name: &str, got: Option<String>) -> TestResult {
         }
         None => {
             if row.status == 0 || !row.output.is_empty() {
-                return Err(format!("{name} [{label}]: rejected, but jq printed a value"));
+                return Err(format!(
+                    "{name} [{label}]: rejected, but jq printed a value"
+                ));
             }
         }
     }

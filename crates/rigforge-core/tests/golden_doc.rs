@@ -83,7 +83,9 @@ where
 {
     let (ok, bad) = compare(name, f)?;
     if ok < floor.0 || bad < floor.1 {
-        return Err(format!("{name}: only {ok} accepted and {bad} rejected rows"));
+        return Err(format!(
+            "{name}: only {ok} accepted and {bad} rejected rows"
+        ));
     }
     Ok(())
 }

@@ -141,16 +141,14 @@ pub fn bash_i64(text: &str) -> Option<i64> {
         Some(rest) => (true, rest),
         None => (false, trimmed.strip_prefix('+').unwrap_or(trimmed)),
     };
-    let (radix, digits) = if let Some(hex) = body
-        .strip_prefix("0x")
-        .or_else(|| body.strip_prefix("0X"))
-    {
-        (16u32, hex)
-    } else if body.len() > 1 && body.starts_with('0') {
-        (8u32, body)
-    } else {
-        (10u32, body)
-    };
+    let (radix, digits) =
+        if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+            (16u32, hex)
+        } else if body.len() > 1 && body.starts_with('0') {
+            (8u32, body)
+        } else {
+            (10u32, body)
+        };
     if body.is_empty() && !trimmed.is_empty() {
         return None;
     }

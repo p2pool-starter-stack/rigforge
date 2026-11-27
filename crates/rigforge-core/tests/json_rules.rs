@@ -237,7 +237,12 @@ fn value_accessors_and_debug() -> TestResult {
 
 #[test]
 fn raw_nul_bytes_are_rejected_where_jq_cuts_the_chunk() {
-    for raw in [&b"{\"a\":1}\0\0\0"[..], b"{\"a\":1}\n\0", b"\0{\"a\":1}", b"1\0"] {
+    for raw in [
+        b"{\"a\":1}\0\0\0".as_slice(),
+        b"{\"a\":1}\n\0",
+        b"\0{\"a\":1}",
+        b"1\0",
+    ] {
         assert!(parse_all(raw, &CONFIG).is_err(), "{raw:?}");
     }
 }

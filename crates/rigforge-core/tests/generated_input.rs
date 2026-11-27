@@ -43,13 +43,28 @@ fn bytes(rng: &mut Rng) -> Vec<u8> {
 
 fn lexeme(rng: &mut Rng) -> String {
     const PARTS: [&str; 19] = [
-        "0", "1", "9", "5", "00", "-", "+", ".", "e", "E", "e-", "E+", "inf", "nan", "x", "1000",
-        "999999999", "1147483646", "7",
+        "0",
+        "1",
+        "9",
+        "5",
+        "00",
+        "-",
+        "+",
+        ".",
+        "e",
+        "E",
+        "e-",
+        "E+",
+        "inf",
+        "nan",
+        "x",
+        "1000",
+        "999999999",
+        "1147483646",
+        "7",
     ];
     let len = rng.below(8);
-    (0..len)
-        .filter_map(|_| rng.pick(&PARTS).copied())
-        .collect()
+    (0..len).filter_map(|_| rng.pick(&PARTS).copied()).collect()
 }
 
 #[test]

@@ -83,7 +83,10 @@ fn c_space_is_the_posix_space_class() {
 
 #[test]
 fn repair_keeps_valid_text_and_replaces_each_bad_sequence_once() {
-    assert_eq!(jq_utf8("h\u{e9}llo \u{1F600}".as_bytes()), "h\u{e9}llo \u{1F600}");
+    assert_eq!(
+        jq_utf8("h\u{e9}llo \u{1F600}".as_bytes()),
+        "h\u{e9}llo \u{1F600}"
+    );
     assert_eq!(jq_utf8(b"\xed\xa0\x80"), "\u{FFFD}");
     assert_eq!(jq_utf8(b"\xe2\x28A"), "\u{FFFD}(A");
     assert_eq!(jq_utf8(b"\xff\xff"), "\u{FFFD}\u{FFFD}");

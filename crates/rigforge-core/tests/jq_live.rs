@@ -49,7 +49,9 @@ fn live(var: &str) -> Option<String> {
     match std::env::var(var) {
         Ok(path) if !path.is_empty() => Some(path),
         _ => {
-            skip_line(&format!("SKIPPED: {var} is not set, the live-jq test did not run"));
+            skip_line(&format!(
+                "SKIPPED: {var} is not set, the live-jq test did not run"
+            ));
             None
         }
     }
@@ -68,10 +70,16 @@ fn jq_1_8_differs_only_in_the_pinned_rows() -> TestResult {
             if known_18(file, &row.input) {
                 pinned_seen += 1;
                 if status != 5 || !output.is_empty() {
-                    return Err(format!("{file} [{}]: jq 1.8 no longer rejects it", row.label));
+                    return Err(format!(
+                        "{file} [{}]: jq 1.8 no longer rejects it",
+                        row.label
+                    ));
                 }
                 if row.status == 5 {
-                    return Err(format!("{file} [{}]: pinned row is not a 1.7 value", row.label));
+                    return Err(format!(
+                        "{file} [{}]: pinned row is not a 1.7 value",
+                        row.label
+                    ));
                 }
             } else if status != row.status || output != row.output {
                 return Err(format!(
@@ -85,7 +93,9 @@ fn jq_1_8_differs_only_in_the_pinned_rows() -> TestResult {
         }
     }
     if pinned_seen != 4 * REJECTED_BY_18.len() + REJECTED_BY_18_TONUMBER.len() {
-        return Err(format!("pinned table is stale ({pinned_seen} rows matched)"));
+        return Err(format!(
+            "pinned table is stale ({pinned_seen} rows matched)"
+        ));
     }
     Ok(())
 }

@@ -168,7 +168,10 @@ fn check_value(value: &Value) -> Result<(), String> {
 fn exercise(input: &[u8], limits: &JsonLimits, started: Instant) -> Result<usize, String> {
     let docs = parse_all(input, limits);
     if started.elapsed() > Duration::from_secs(1) {
-        return Err(format!("one input took over a second: {} bytes", input.len()));
+        return Err(format!(
+            "one input took over a second: {} bytes",
+            input.len()
+        ));
     }
     let _ = parse_one(input, limits);
     let Ok(docs) = docs else {
@@ -218,7 +221,9 @@ fn two_thousand_mutated_documents_give_a_value_or_a_typed_error() -> Result<(), 
         }
     }
     if accepted < 400 || rejected < 400 {
-        return Err(format!("mutations accepted {accepted} and rejected {rejected}"));
+        return Err(format!(
+            "mutations accepted {accepted} and rejected {rejected}"
+        ));
     }
     if began.elapsed() > Duration::from_secs(60) {
         return Err(format!("took {:?}", began.elapsed()));

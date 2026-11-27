@@ -46,7 +46,9 @@ fn live(var: &str) -> Option<String> {
     match std::env::var(var) {
         Ok(path) if !path.is_empty() => Some(path),
         _ => {
-            skip_line(&format!("SKIPPED: {var} is not set, the live-jq test did not run"));
+            skip_line(&format!(
+                "SKIPPED: {var} is not set, the live-jq test did not run"
+            ));
             None
         }
     }

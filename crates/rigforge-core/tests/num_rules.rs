@@ -51,7 +51,9 @@ fn literals_keep_their_text_by_the_decimal_rule() {
     for (text, want) in table {
         assert_eq!(lit(text), want, "{text}");
     }
-    for bad in ["", ".", "-", "1e", "1e+", "e5", "1_0", "0x10", "nan1x", "inf5", "--1"] {
+    for bad in [
+        "", ".", "-", "1e", "1e+", "e5", "1_0", "0x10", "nan1x", "inf5", "--1",
+    ] {
         assert!(Num::literal(bad).is_err(), "{bad:?} must be rejected");
         assert!(dec_clean(bad).is_err(), "{bad:?} must be rejected");
     }
@@ -94,7 +96,12 @@ fn doubles_print_the_jq_way() {
 
 #[test]
 fn double_mode_prints_every_number_as_a_double() {
-    let table = [("85.0", "85"), ("1e2", "100"), ("0.10", "0.1"), ("007", "7")];
+    let table = [
+        ("85.0", "85"),
+        ("1e2", "100"),
+        ("0.10", "0.1"),
+        ("007", "7"),
+    ];
     for (text, want) in table {
         let n = Num::literal(text).map_err(|e| e.to_string());
         assert_eq!(n.map(|n| n.text(JqMode::Double)), Ok(want.to_string()));

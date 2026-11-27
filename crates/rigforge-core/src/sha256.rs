@@ -13,12 +13,10 @@ const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-fn compress(state: &mut [u32; 8], block: &[u8]) {
+fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
-    for (slot, chunk) in w.iter_mut().zip(block.chunks_exact(4)) {
-        let mut word = [0u8; 4];
-        word.copy_from_slice(chunk);
-        *slot = u32::from_be_bytes(word);
+    for (slot, chunk) in w.iter_mut().zip(block.as_chunks::<4>().0) {
+        *slot = u32::from_be_bytes(*chunk);
     }
     for i in 16..64 {
         let w15 = w.get(i - 15).copied().unwrap_or(0);
@@ -59,11 +57,10 @@ fn compress(state: &mut [u32; 8], block: &[u8]) {
 
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut state = H0;
-    let mut blocks = data.chunks_exact(64);
-    for block in blocks.by_ref() {
+    let (blocks, rest) = data.as_chunks::<64>();
+    for block in blocks {
         compress(&mut state, block);
     }
-    let rest = blocks.remainder();
     let mut tail = Vec::with_capacity(128);
     tail.extend_from_slice(rest);
     tail.push(0x80);
@@ -72,12 +69,12 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     }
     let bits = (data.len() as u64).wrapping_mul(8);
     tail.extend_from_slice(&bits.to_be_bytes());
-    for block in tail.chunks_exact(64) {
+    for block in tail.as_chunks::<64>().0 {
         compress(&mut state, block);
     }
     let mut out = [0u8; 32];
-    for (chunk, word) in out.chunks_exact_mut(4).zip(state.iter()) {
-        chunk.copy_from_slice(&word.to_be_bytes());
+    for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(state.iter()) {
+        *chunk = word.to_be_bytes();
     }
     out
 }

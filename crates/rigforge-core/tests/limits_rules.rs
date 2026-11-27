@@ -11,7 +11,10 @@ fn every_limit_has_its_exact_value() {
         (FILE, (1_048_576, 64, 100_000)),
     ];
     for (limits, (bytes, depth, nodes)) in table {
-        assert_eq!((limits.bytes, limits.depth, limits.nodes), (bytes, depth, nodes));
+        assert_eq!(
+            (limits.bytes, limits.depth, limits.nodes),
+            (bytes, depth, nodes)
+        );
     }
 }
 
