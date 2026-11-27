@@ -1,0 +1,13 @@
+[Unit]
+Description=RigForge upgrade spool watcher (fires the upgrader when an upgrade is staged)
+
+[Path]
+# Event-driven, zero idle cost: fire the upgrader the instant an upgrade intent appears, and re-arm
+# once it drains the spool. The upgrade-*.json glob is DISTINCT from the apply unit's config-change
+# glob (#308), so an upgrade intent never wakes the config-applier and a config change never wakes the
+# upgrader; both skip the receiver's dot-prefixed temp files.
+PathExistsGlob=/var/lib/rigforge-control/spool/upgrade-*.json
+Unit=rigforge-control-upgrade.service
+
+[Install]
+WantedBy=paths.target

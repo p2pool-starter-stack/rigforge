@@ -397,4 +397,4 @@ assert_eq "uninstall: removed the 'rigforge' command from PATH" "$([ -L /usr/loc
 ./rigforge.sh uninstall --yes </dev/null >/dev/null 2>&1
 assert_rc "uninstall is idempotent" "$?" "0"
 
-summarize
+source "$WORK/tests/e2e/split-dirs.sh"
