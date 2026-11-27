@@ -101,8 +101,8 @@ RigForge is built to be reproducible and tamper-evident:
   are version- and checksum-verified. Dependabot keeps the action pins current and flags advisories,
   and a daily workflow watches upstream XMRig releases — a new version arrives as a bot-opened,
   build-verified PR (never fetched-and-run; a human merges, the normal gates apply). When a
-  release's notes mention CVEs, the bump PR also carries the `security` label and the run opens a
-  tracking issue (#767). Unpinned distro packages (apt, dnf, pacman) take their advisories and
+  release's notes mention CVEs or security fixes, the bump PR also carries the `security` label and the
+  run opens a tracking issue. Unpinned distro packages (apt, dnf, pacman) take their advisories and
   fixes from the distro's own security updates.
 - Secret scanning. [gitleaks](https://github.com/gitleaks/gitleaks) scans the full git history on
   every push and PR, and runs as a pre-commit hook, so credentials can't slip into the repo.

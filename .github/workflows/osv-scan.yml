@@ -1,0 +1,127 @@
+name: OSV dependency sweep
+
+# Daily osv-scanner sweep of the refs Dependabot does not watch. It files one security issue per
+# ref and never runs on pull requests, so it cannot fail a PR. Details: docs/dev/security-scans.md.
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      floor:
+        description: "Lowest CVSS score that files an issue (default 7.0)"
+        default: "7.0"
+
+permissions: {}
+
+jobs:
+  refs:
+    name: Pick refs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          branches=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/branches" --jq '.[].name')
+          latest_vbranch=$(printf '%s\n' "$branches" | grep -E '^develop-v[0-9]+(\.[0-9]+)*$' | sort -V | tail -1 || true)
+          tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)
+          matrix=$(printf '%s\n' develop main "$latest_vbranch" "$tag" |
+            grep -E '^[A-Za-z0-9._-]+$' | awk '!seen[$0]++' |
+            jq -R . | jq -sc '{include: [to_entries[] | {n: .key, ref: .value}]}')
+          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  scan:
+    name: Scan ${{ matrix.ref }}
+    needs: refs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.refs.outputs.matrix) }}
+    env:
+      OSV_SCANNER_VERSION: "2.7.1"
+      OSV_SCANNER_SHA256: "fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false # zizmor: artipacked
+      - name: Install pinned osv-scanner
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" -o osv-scanner
+          echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
+          sudo install osv-scanner /usr/local/bin/osv-scanner
+          osv-scanner --version
+      - name: Scan the lockfiles
+        env:
+          REF: ${{ matrix.ref }}
+        run: |
+          set -Eeuo pipefail
+          mkdir out
+          args=()
+          [ -f package-lock.json ] && args+=(-L package-lock.json)
+          [ -f tools/requirements-ci.txt ] && args+=(-L requirements.txt:tools/requirements-ci.txt)
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo '{"results":[]}' >out/result.json
+          else
+            rc=0
+            osv-scanner scan source "${args[@]}" --format json --output-file out/result.json . || rc=$?
+            [ "$rc" -le 1 ] || exit "$rc"
+          fi
+          printf '%s' "$REF" >out/ref.txt
+          git rev-parse HEAD >out/sha.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-${{ matrix.n }}
+          path: out
+          retention-days: 3
+
+  file:
+    name: File issues
+    needs: [refs, scan]
+    if: ${{ !cancelled() && needs.refs.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: osv-file-issues
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: osv-*
+          path: results
+      - name: File, update or close one issue per ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OSV_FLOOR: ${{ inputs.floor || '7.0' }}
+          SCAN_RESULT: ${{ needs.scan.result }}
+        run: |
+          set -Eeuo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          failed=0
+          for d in results/osv-*/; do
+            [ -f "$d/result.json" ] || continue
+            bash scripts/osv-file-issue.sh "$(cat "$d/ref.txt")" "$d/result.json" "$(cat "$d/sha.txt")" "$run_url" || failed=1
+          done
+          [ "$failed" = 0 ] || exit 1
+          if [ "$SCAN_RESULT" != success ]; then
+            echo "::error::a scan leg failed, so its ref was not checked"
+            exit 1
+          fi

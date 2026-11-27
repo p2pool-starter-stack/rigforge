@@ -811,7 +811,6 @@ prepare_workspace() {
         mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
     fi
 
-    # Fix permissions to ensure the current user can write
     if [ "${EUID:-$(id -u)}" -eq 0 ] || [ ! -w "$WORKER_ROOT" ]; then
         if [ "$OS_TYPE" == "Darwin" ]; then
             sudo chown -R "$REAL_USER" "$WORKER_ROOT"
@@ -825,8 +824,12 @@ prepare_workspace() {
 
 _recover_xmrig_swap() {
     [ -f "$WORKER_ROOT/xmrig.swap" ] || return 0
+    local name
+    name=$(cat "$WORKER_ROOT/xmrig.swap" 2>/dev/null || true)
+    [[ "$name" == xmrig-* && "$name" != *[!A-Za-z0-9_.-]* ]] || name=""
+    [ -n "$name" ] || { warn "Ignoring an invalid XMRig swap marker." && rm -f "$WORKER_ROOT/xmrig.swap" && return 0; }
     [ -d "$WORKER_ROOT/xmrig" ] || {
-        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig" 2>/dev/null || warn "Could not recover the interrupted XMRig swap; rebuilding."
+        { [ -d "$WORKER_ROOT/xmrig.new" ] && [ ! -L "$WORKER_ROOT/xmrig.new" ] && mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null; } || { [ -d "$WORKER_ROOT/$name" ] && [ ! -L "$WORKER_ROOT/$name" ] && mv "$WORKER_ROOT/$name" "$WORKER_ROOT/xmrig" 2>/dev/null; } || warn "Could not recover the interrupted XMRig swap; rebuilding."
     }
     rm -f "$WORKER_ROOT/xmrig.swap"
     decide_rebuild
@@ -1796,11 +1799,6 @@ decide_rebuild() {
     fi
 }
 
-# Re-own everything written as root back to the invoking operator. setup/upgrade/tune/apply/restore write
-# files under WORKER_ROOT as root (the XMRig build, the generated config, logs, tune-overrides), and the
-# first-run config.json is created as root under `sudo` — leaving a tree the operator can't edit, re-run
-# `setup` over without sudo, or `git clean`. Reconcile ownership once at the end of each such command,
-# rather than chmod-ing every individual `sudo cp`/`tee`. No-op unless we're root on Linux/macOS.
 _reown_worker() {
     [ "$(id -u)" -eq 0 ] || return 0
     local owner
@@ -1810,7 +1808,10 @@ _reown_worker() {
     *) return 0 ;;
     esac
     if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
-    if [ -f "$CONFIG_JSON" ]; then sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true; fi
+    if [ -f "$CONFIG_JSON" ]; then
+        sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true
+        sudo chmod 600 "$CONFIG_JSON" 2>/dev/null || true
+    fi
     [ "$OS_TYPE" = Linux ] || return 0
     if [ "${SHARED_HOST:-false}" = true ] && [ "${RIGFORGE_APPLIANCE:-0}" != 1 ] && [ -d "$WORKER_ROOT" ]; then sudo touch "$WORKER_ROOT/xmrig.log" 2>/dev/null || true; fi
     if [ -n "${MINER_USER:-}" ]; then
@@ -3484,6 +3485,7 @@ _read_api_summary() {
     fi
     command -v curl >/dev/null 2>&1 || return 0
     if [ -n "${ACCESS_TOKEN:-}" ]; then
+        if [ "$OS_TYPE" = Darwin ]; then _mac_paths && [ -n "$(_mac_pid)$(_mac_agent_pid)" ] || return 0; else systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || return 0; fi
         _bearer_curl "$ACCESS_TOKEN" -fsS --max-time 5 "$url" 2>/dev/null || true
     else
         curl -fsS --max-time 5 "$url" 2>/dev/null || true
@@ -3554,7 +3556,6 @@ backup() {
             included="$included $f"
         fi
     done
-    # A small manifest for provenance — handy when rolling a tune out across a fleet.
     jq -n --arg v "$(cmd_version)" --arg host "$(hostname 2>/dev/null)" --arg files "$included" \
         '{rigforge: $v, source_host: $host, files: ($files | split(" "))}' >"$STAGE_DIR/rigforge-backup.json" 2>/dev/null || true
 
@@ -3572,7 +3573,7 @@ backup() {
 
 # restore [-y|--yes] <archive>: put config.json + tuning back from a backup archive.
 restore() {
-    local assume_yes=0 archive="" arg
+    local assume_yes=0 archive="" arg names
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
@@ -3593,16 +3594,13 @@ restore() {
     fi
 
     STAGE_DIR=$(mktemp -d)
-    # Cleanup is armed the moment the temp dir exists — a set -e abort anywhere below (an error() call
-    # included: EXIT traps fire for those same as any other exit) must not leak this secret-bearing
-    # staging content. Same EXIT-trap treatment tune() got in #135. (#353)
     trap 'rm -rf "$STAGE_DIR"' EXIT
-    tar -xzf "$archive" -C "$STAGE_DIR" 2>/dev/null || error "Could not extract $archive — is it a RigForge backup?"
+    names=$(tar -tzf "$archive" 2>/dev/null) || error "Could not extract $archive — is it a RigForge backup?"
+    ! grep -Eq '(^|/)\.\.(/|$)|^/' <<<"$names" || error "Archive has a member path that is absolute or contains '..'; refusing it."
+    tar -xzf "$archive" -C "$STAGE_DIR" --no-same-owner --no-same-permissions 2>/dev/null || error "Could not extract $archive — is it a RigForge backup?"
+    [ -z "$(find "$STAGE_DIR" \( ! -type f ! -type d \) -o \( -type f -links +1 \))" ] || error "Archive has a member that is not a regular file or directory; refusing it."
     [ -f "$STAGE_DIR/config.json" ] || error "Archive has no config.json — not a RigForge backup."
-    # Validate the staged config BEFORE it ever touches the live one — same subshell idiom as
-    # _control_commit (rigforge.sh:~3652): parse_config's error() only exits the subshell, so a bad
-    # backup can be rejected without corrupting this shell's CONFIG_JSON. shellcheck flags this as
-    # SC2031 (info), same as there — intentional, not suppressed.
+    chmod 600 "$STAGE_DIR/config.json"
     (CONFIG_JSON="$STAGE_DIR/config.json" && parse_config) >/dev/null 2>&1 || error "Backup's config.json failed validation — existing config left untouched."
     if [ -f "$STAGE_DIR/rigforge-backup.json" ]; then
         local src
@@ -3753,7 +3751,7 @@ _mac_pid() { # echo the live ad-hoc miner PID (empty if not running)
 _mac_label() { echo "com.rigforge.$SERVICE_NAME"; }
 _mac_plist() { echo "${HOME:-/tmp}/Library/LaunchAgents/$(_mac_label).plist"; }
 _mac_enabled() { [ -f "$(_mac_plist)" ]; } # the login agent is installed => launchd owns the miner
-_mac_agent_pid() { launchctl list "$(_mac_label)" 2>/dev/null | awk -F'= ' '/"PID"/{gsub(/[^0-9]/,"",$2); print $2; exit}'; }
+_mac_agent_pid() { launchctl list "$(_mac_label)" 2>/dev/null | awk -F'= ' '/"PID"/{gsub(/[^0-9]/,"",$2); print $2; exit}' || true; }
 
 mac_start() {
     _mac_paths
@@ -4239,7 +4237,7 @@ _control_commit() { # <staged.json> <backups-dir>
     # Build the candidate: current config with ONLY the allowlisted staged keys overlaid (pools and
     # other arrays replace, scalars replace). Filter again so a stray key can never ride in.
     cand="$CONFIG_JSON.control.$$"
-    if ! jq -n --slurpfile base "$CONFIG_JSON" --argjson chg "$change" --argjson a "$allow" '$base[0] * ($chg | with_entries(select(.key as $k | $a | index($k))))' >"$cand" 2>/dev/null; then
+    if ! (umask 077 && jq -n --slurpfile base "$CONFIG_JSON" --argjson chg "$change" --argjson a "$allow" '$base[0] * ($chg | with_entries(select(.key as $k | $a | index($k))))' >"$cand" 2>/dev/null); then
         rm -f "$cand"
         echo "rejected merge-failed"
         return 1
@@ -5445,10 +5443,8 @@ EOF
         fi
     fi
 
-    # Combined exposure posture: open (tokenless) AND unscoped is the designed LAN default, but it
-    # deserves one loud advisory line. Advisory, not a counted issue.
     if [ -f "$CONFIG_JSON" ]; then
-        local cfg_tok cfg_scope cfg_extra_n
+        local cfg_tok cfg_scope cfg_extra_n cfg_mode
         cfg_tok=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON" 2>/dev/null || true)
         cfg_scope=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON" 2>/dev/null || true)
         cfg_extra_n=$(jq -r '(.ACCESS_TOKENS // {}) | length' "$CONFIG_JSON" 2>/dev/null || echo 0)
@@ -5457,13 +5453,16 @@ EOF
         else
             _ck_ok "API exposure is limited (${cfg_tok:+token}${cfg_tok:+${cfg_scope:+ + }}${cfg_scope:+firewall scope})" api-exposure
         fi
-        # #516: xmrig's :8080 is master-only; :8081/:8082 take any configured token. Never interpolate
-        # cfg_tok itself here — this line is a NAME/COUNT report, not a value one.
         _ck_info "$(($([ -n "$cfg_tok" ] && echo 1 || echo 0) + cfg_extra_n)) access token(s) configured ($([ -n "$cfg_tok" ] && echo 1 || echo 0) master + $cfg_extra_n named in ACCESS_TOKENS); xmrig's own :8080 API carries $([ -n "$cfg_tok" ] && echo "ACCESS_TOKEN (the master)" || echo "no token (open)")" access-tokens
+        cfg_mode=$(stat -c '%a' "$CONFIG_JSON" 2>/dev/null || stat -f '%Lp' "$CONFIG_JSON" 2>/dev/null || echo 600)
+        if [ $((8#$cfg_mode & 077)) -ne 0 ]; then
+            _ck_warn "config.json is readable by group or others (mode $cfg_mode) — it holds the access token and pool passwords; fix with: sudo chmod 600 $CONFIG_JSON" config-mode
+            issues=$((issues + 1))
+        else
+            _ck_ok "config.json is owner-only (mode $cfg_mode)" config-mode
+        fi
     fi
 
-    # Control receiver health (#278): probe the writable service when enabled; retry briefly because
-    # systemd marks the Python service active before it binds its socket on a busy miner.
     if [ -f "$CONFIG_JSON" ]; then
         local cfg_control
         cfg_control=$(jq -r '.control // "disabled"' "$CONFIG_JSON" 2>/dev/null || true)
