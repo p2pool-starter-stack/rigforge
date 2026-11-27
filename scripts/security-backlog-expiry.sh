@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Warn (then fail) a PR while a fixable security-baseline issue for its base branch is past its expiry.
 set -euo pipefail
 
 : "${BASE_REF:?}" "${TODAY:?}" "${ENFORCE_FROM:?}"
