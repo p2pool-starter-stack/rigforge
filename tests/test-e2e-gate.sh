@@ -23,6 +23,21 @@ for s in linux isolation; do
     check 1 "$s.sh exits 1 when the container runtime is missing" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/$s.sh"
 done
 check 2 "linux.sh rejects an unknown mode" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" bogus
+check 2 "linux.sh rejects an empty mode" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" ""
+check 2 "linux.sh rejects extra arguments" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" deploy extra
+
+GATE_LINE="$(grep -F 'scripts/require-success.sh' "$ROOT/.github/workflows/ci.yml")"
+for id in deploy appliance isolation allowlist; do
+    check 0 "ci.yml gates the $id step" grep -qE "^ +id: $id\$" "$ROOT/.github/workflows/ci.yml"
+    check 0 "ci.yml passes the $id outcome to the gate" grep -qF "steps.$id.outcome" "$ROOT/.github/workflows/ci.yml"
+    case "$GATE_LINE" in
+    *"\"$id=\$"*) echo "PASS: gate line lists $id" ;;
+    *)
+        echo "FAIL: gate line lists $id"
+        FAIL=1
+        ;;
+    esac
+done
 
 G="$ROOT/scripts/require-success.sh"
 check 0 "gate: all children success" bash "$G" a=success b=success
