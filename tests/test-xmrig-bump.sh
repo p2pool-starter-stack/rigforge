@@ -21,16 +21,23 @@ newer v6.9.0 v6.10.0 || fail "versions must compare numerically, not as text"
 mkdir "$SCRATCH/bin"
 cat >"$SCRATCH/bin/gh" <<'GH'
 #!/usr/bin/env bash
+[ -z "${STUB_FAIL:-}" ] || exit 1
 case "$4" in
 open) printf '%s\n' "$STUB_OPEN" ;;
 closed) printf '%s\n' "$STUB_CLOSED" ;;
-esac
+esac | jq -r "${10}"
 GH
 chmod +x "$SCRATCH/bin/gh"
-declined() { PATH="$SCRATCH/bin:$PATH" GITHUB_REPOSITORY_OWNER=o STUB_OPEN=$1 STUB_CLOSED=$2 bash "$SCRIPT" declined bot/x; }
-declined 0 1 || fail "a closed bump PR with none open is a human decline and must stay declined"
-! declined 0 0 || fail "no PR at all is not a decline"
-! declined 1 1 || fail "an open bump PR is not a decline"
+own='[{"number":1,"headRepositoryOwner":{"login":"o"}}]'
+fork='[{"number":2,"headRepositoryOwner":{"login":"evil"}}]'
+pr_state() { PATH="$SCRATCH/bin:$PATH" GITHUB_REPOSITORY_OWNER=o STUB_OPEN=$1 STUB_CLOSED=$2 bash "$SCRIPT" state bot/x; }
+[ "$(pr_state '[]' "$own")" = declined ] || fail "a closed bump PR with none open is a human decline and must stay declined"
+[ "$(pr_state '[]' '[]')" = none ] || fail "no PR at all is not a decline"
+[ "$(pr_state "$own" "$own")" = open ] || fail "an open bump PR is not a decline"
+[ "$(pr_state "$fork" '[]')" = none ] || fail "a fork PR squatting on the bot branch name must not suppress the bump"
+[ "$(pr_state '[]' "$fork")" = none ] || fail "a closed fork PR must not read as a decline"
+! PATH="$SCRATCH/bin:$PATH" GITHUB_REPOSITORY_OWNER=o STUB_FAIL=1 STUB_OPEN='[]' STUB_CLOSED='[]' bash "$SCRIPT" state bot/x >/dev/null 2>&1 ||
+    fail "a failed gh query must fail the run, not read as no PR or a decline"
 
 OLD=$(printf 'a%.0s' $(seq 40))
 NEW=$(printf 'b%.0s' $(seq 40))
@@ -78,10 +85,22 @@ bash "$SCRIPT" prepare "$BR" v1.0.0 v1.1.0 "$NEW" >/dev/null 2>&1 ||
 [ "$(remote log --format=%s -1 "$BR")" = "$MSG" ] || fail "the bump commit must sit on top of the reused branch"
 [ "$(remote log --format=%s -2 "$BR" | tail -1)" = interrupted ] || fail "the interrupted run's commit must be kept"
 
+git checkout -q trunk
+git branch -q -D "$BR"
+git push -q origin ":refs/heads/$BR"
+git checkout -q -b smuggle
+printf 'x\n' >smuggled.txt
+git add smuggled.txt
+git commit -q -m smuggle
+git push -q origin "smuggle:refs/heads/$BR"
+git checkout -q trunk
+! bash "$SCRIPT" prepare "$BR" v1.0.0 v1.1.0 "$NEW" >/dev/null 2>&1 ||
+    fail "a pre-existing branch carrying changes beyond rigforge.sh must not be built on"
+
 grep -q 'group: xmrig-bump' "$WF" ||
     fail "overlapping runs (cron plus a manual dispatch) must be serialized by a concurrency group"
 grep -q 'xmrig-bump.sh newer' "$WF" || fail "the workflow must use the version-order guard"
-grep -q 'xmrig-bump.sh declined' "$WF" || fail "the workflow must honour a declined bump"
+grep -q 'xmrig-bump.sh state' "$WF" || fail "the workflow must honour a declined bump"
 grep -q 'xmrig-bump.sh prepare' "$WF" || fail "the workflow must prepare the branch through the tested script"
 
 printf 'PASS: xmrig bump guards\n'

@@ -59,13 +59,13 @@ jobs:
           if ! printf '%s' "$commit" | grep -qE '^[0-9a-f]{40}$'; then
             echo "::error::could not resolve ${latest} to a commit"; exit 1
           fi
-          if bash scripts/xmrig-bump.sh declined "bot/xmrig-${latest}"; then
+          pr_state=$(bash scripts/xmrig-bump.sh state "bot/xmrig-${latest}")
+          if [ "$pr_state" = declined ]; then
             echo "bump for ${latest} was declined (PR closed) — leaving the human decision alone"
             echo "stale=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
-          existing=$(gh pr list --state open --head "bot/xmrig-${latest}" --json number --jq length)
-          if [ "$existing" != "0" ]; then
+          if [ "$pr_state" = open ]; then
             echo "PR for ${latest} already open"
             echo "stale=false" >>"$GITHUB_OUTPUT"
             exit 0

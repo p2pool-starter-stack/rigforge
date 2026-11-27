@@ -2,8 +2,10 @@
 set -Eeuo pipefail
 
 own_prs() {
-    gh pr list --state "$1" --head "$2" --json number,headRepositoryOwner \
-        --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\")) | length"
+    local n
+    n=$(gh pr list --state "$1" --head "$2" --json number,headRepositoryOwner \
+        --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\")) | length") || return 1
+    printf '%s\n' "$n"
 }
 
 case "${1:-}" in
@@ -11,13 +13,26 @@ newer)
     [ "$2" != "$3" ] || exit 1
     [ "$(printf '%s\n%s\n' "${2#v}" "${3#v}" | sort -V | tail -1)" = "${3#v}" ]
     ;;
-declined)
-    [ "$(own_prs open "$2")" = 0 ] && [ "$(own_prs closed "$2")" != 0 ]
+state)
+    open=$(own_prs open "$2")
+    closed=$(own_prs closed "$2")
+    if [ "$open" != 0 ]; then
+        echo open
+    elif [ "$closed" != 0 ]; then
+        echo declined
+    else
+        echo none
+    fi
     ;;
 prepare)
     branch=$2 current=$3 tag=$4 commit=$5
-    if [ -n "$(git ls-remote "$ORIGIN_URL" "refs/heads/${branch}" | cut -f1)" ]; then
+    tip=$(git ls-remote "$ORIGIN_URL" "refs/heads/${branch}")
+    if [ -n "$tip" ]; then
         git fetch --depth 1 "$ORIGIN_URL" "$branch"
+        if git diff --name-only HEAD FETCH_HEAD | grep -qvx rigforge.sh; then
+            echo "branch ${branch} carries changes beyond rigforge.sh; refusing to build on it" >&2
+            exit 1
+        fi
         git checkout -b "$branch" FETCH_HEAD
     else
         git checkout -b "$branch"
@@ -36,7 +51,7 @@ prepare)
     git push "$ORIGIN_URL" "$branch"
     ;;
 *)
-    echo "usage: xmrig-bump.sh newer|declined|prepare" >&2
+    echo "usage: xmrig-bump.sh newer|state|prepare" >&2
     exit 2
     ;;
 esac
