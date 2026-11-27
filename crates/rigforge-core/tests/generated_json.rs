@@ -47,7 +47,7 @@ fn bytes(rng: &mut Rng) -> Vec<u8> {
             0 => out.push(u8::try_from(rng.step() & 0xFF).unwrap_or(0)),
             1 => {
                 let run = rng.below(400);
-                let open = rng.pick(&[b'[', b'{']).copied().unwrap_or(b'[');
+                let open = rng.pick(b"[{").copied().unwrap_or(b'[');
                 out.extend(std::iter::repeat_n(open, run));
             }
             _ => out.extend_from_slice(rng.pick(&PIECES).copied().unwrap_or(b"")),

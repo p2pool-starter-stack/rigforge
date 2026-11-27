@@ -49,7 +49,7 @@ fn clippy_deny_list_is_complete() -> Result<(), String> {
         "print_stderr",
     ] {
         let want = format!("{lint} = \"deny\"");
-        if !lines.iter().any(|l| *l == want) {
+        if !lines.contains(&want) {
             return Err(format!("workspace clippy lints lack {want}"));
         }
     }
