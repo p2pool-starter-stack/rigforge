@@ -84,7 +84,7 @@ fp_check() {
     : >"$FP/log"
     printf '1.4.0\n' >"$FP/VERSION"
     env -i PATH="$FP/bin:$STUBS:$PATH" FP_LOG="$FP/log" NO_PROXY=api.github.com no_proxy=github.com ${2:+FP_PROXY_DOWN=1} \
-        bash -c 'S=$1; D=$2; C=$3; set --; source "$S"; SCRIPT_DIR="$D"; CONFIG_JSON="$C"; set +e; _upgrade_check 2>&1; echo "rc=$?"' fp-shell "$SCRIPT" "$FP" "$FP/config.json"
+        bash -c 'S=$1; D=$2; C=$3; set --; source "$S"; RIGFORGE_LIB="$D" RIGFORGE_STATE="$D"; CONFIG_JSON="$C"; set +e; _upgrade_check 2>&1; echo "rc=$?"' fp-shell "$SCRIPT" "$FP" "$FP/config.json"
 }
 out="$(fp_check "{\"tor_socks5\":\"$FP_PROXY\"}")"
 assert_contains "upgrade --check reaches the proxy and reports the release" "$out" "9.9.9 (you have 1.4.0)"
@@ -151,7 +151,7 @@ fp_cu() {
                 set --
                 source "$S"
                 OS_TYPE=Linux
-                SCRIPT_DIR="$D"
+                RIGFORGE_LIB="$D" RIGFORGE_STATE="$D"
                 CONFIG_JSON="$C"
                 RIGFORGE_CONTROL_STATE="$D/state"
                 RIGFORGE_CONTROL_UPGRADE_STATE="$D/upgrade-state"
@@ -196,7 +196,7 @@ fp_cu_inproc() {
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        SCRIPT_DIR="$d"
+        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
         CONFIG_JSON="$FP/config.json"
         RIGFORGE_CONTROL_STATE="$d/state"
         RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state"
@@ -269,7 +269,7 @@ fp_check_app() { # <config> [down] <appliance>
     : >"$FP/log"
     printf '1.4.0\n' >"$FP/VERSION"
     env -i PATH="$FP/bin:$STUBS:$PATH" FP_LOG="$FP/log" RIGFORGE_APPLIANCE="$3" ${2:+FP_PROXY_DOWN=1} \
-        bash -c 'S=$1; D=$2; C=$3; set --; source "$S"; SCRIPT_DIR="$D"; CONFIG_JSON="$C"; set +e; _upgrade_check 2>&1; echo "rc=$?"' fp-shell "$SCRIPT" "$FP" "$FP/config.json"
+        bash -c 'S=$1; D=$2; C=$3; set --; source "$S"; RIGFORGE_LIB="$D" RIGFORGE_STATE="$D"; CONFIG_JSON="$C"; set +e; _upgrade_check 2>&1; echo "rc=$?"' fp-shell "$SCRIPT" "$FP" "$FP/config.json"
 }
 out="$(fp_check_app '{"pools":[{"url":"h:3333"}]}' "" 1)"
 assert_contains "appliance default upgrade --check routes the default proxy and reports the release" "$(cat "$FP/log")" "--proxy socks5h://127.0.0.1:9050"
@@ -302,7 +302,7 @@ fp_cu_app() { # <config> <origin> <reachable yes|no>
                 set --
                 source "$S"
                 OS_TYPE=Linux
-                SCRIPT_DIR="$D"
+                RIGFORGE_LIB="$D" RIGFORGE_STATE="$D"
                 CONFIG_JSON="$C"
                 RIGFORGE_CONTROL_STATE="$D/state"
                 RIGFORGE_CONTROL_UPGRADE_STATE="$D/upgrade-state"

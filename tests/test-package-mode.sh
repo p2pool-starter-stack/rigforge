@@ -12,7 +12,7 @@ printf '{"pools":[{"url":"h:3333"}]}\n' >"$PK/config.json"
 (
     source "$SCRIPT"
     set +e
-    SCRIPT_DIR="$PK"
+    RIGFORGE_LIB="$PK" RIGFORGE_STATE="$PK"
     mark ""
     ! _package_install || echo "none-detected"
     mark apt
@@ -35,7 +35,7 @@ for ch in apt brew; do
         source "$SCRIPT"
         set +e
         OS_TYPE=Linux
-        SCRIPT_DIR="$PK"
+        RIGFORGE_LIB="$PK" RIGFORGE_STATE="$PK"
         CONFIG_JSON="$PK/config.json"
         RIGFORGE_CONTROL_STATE="$PK/state"
         _control_claim_staged() { mv "$1" "$PK/staged.json" && printf '%s' "$PK/staged.json"; }
@@ -48,13 +48,13 @@ for ch in apt brew; do
     pk_rc=0
     (
         source "$SCRIPT"
-        SCRIPT_DIR="$PK" PATH="$PK/stubs:$PATH" _control_upgrade_steps v9.9.9 >/dev/null 2>&1
+        RIGFORGE_LIB="$PK" RIGFORGE_STATE="$PK" PATH="$PK/stubs:$PATH" _control_upgrade_steps v9.9.9 >/dev/null 2>&1
     ) || pk_rc=$?
     assert_eq "$ch: a tag upgrade refuses (#782)" "$pk_rc" "1"
     assert_eq "$ch: a tag upgrade never invokes git (#782)" "$(cat "$PK/git.log" 2>/dev/null)" ""
     pk_out=$(
         source "$SCRIPT"
-        SCRIPT_DIR="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1
+        RIGFORGE_LIB="$PK" RIGFORGE_STATE="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1
     )
     assert_contains "$ch: upgrade --check prints the channel command (#782)" "$pk_out" "$ch upgrade rigforge"
     assert_absent "$ch: upgrade --check prints no git steps (#782)" "$pk_out" "git checkout"
@@ -62,7 +62,7 @@ done
 mark ""
 pk_out=$(
     source "$SCRIPT"
-    SCRIPT_DIR="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1
+    RIGFORGE_LIB="$PK" RIGFORGE_STATE="$PK" PATH="$PK/curlbin:$PATH" _upgrade_check 2>&1
 )
 assert_contains "no marker: upgrade --check still prints the git recipe (#782)" "$pk_out" "git checkout v9.9.9"
 assert_absent "no marker: upgrade --check prints no channel command (#782)" "$pk_out" "upgrade rigforge"
@@ -72,7 +72,7 @@ for ch in "" apt; do
     rm -f "$PK/bin/rigforge"
     (
         source "$SCRIPT"
-        SCRIPT_DIR="$PK" BIN_DIR="$PK/bin" ADD_TO_PATH=true link_cli >/dev/null 2>&1
+        RIGFORGE_LIB="$PK" RIGFORGE_STATE="$PK" BIN_DIR="$PK/bin" ADD_TO_PATH=true link_cli >/dev/null 2>&1
     )
     pk_want=present
     [ -z "$ch" ] || pk_want=absent
@@ -85,7 +85,7 @@ for ch in "" apt brew; do
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        SCRIPT_DIR="$PK"
+        RIGFORGE_LIB="$PK" RIGFORGE_STATE="$PK"
         _detect_pkg_manager() { DEP_INSTALL="echo installed >>$PK/dep.log"; }
         _missing_deps() { echo jq; }
         install_dependencies >/dev/null 2>&1

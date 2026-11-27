@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 ExecStart=/usr/bin/python3 ${CREDENTIALS_DIRECTORY}/server $API_BIND $API_PORT /run/rigforge-api ${CREDENTIALS_DIRECTORY}/config
-LoadCredential=config:$RIGFORGE_LIB/config.json
+LoadCredential=config:$RIGFORGE_STATE/config.json
 LoadCredential=server:$RIGFORGE_LIB/util/api-server.py
 Restart=always
 RestartSec=5

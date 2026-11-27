@@ -62,7 +62,7 @@ _script_dir() {
     cd -P "$(dirname "$src")" &>/dev/null && pwd
 }
 
-RIGFORGE_LIB="${RIGFORGE_LIB:-$(_script_dir)}"; RIGFORGE_STATE="${RIGFORGE_STATE:-$RIGFORGE_LIB}"; SCRIPT_DIR="${RIGFORGE_HOME:-$RIGFORGE_LIB}"
+: "${RIGFORGE_LIB:=${RIGFORGE_HOME:-$(_script_dir)}}" "${RIGFORGE_STATE:=$RIGFORGE_LIB}" "${SCRIPT_DIR:=$RIGFORGE_LIB}"
 # shellcheck source=util/config-apply-state.sh
 source "$RIGFORGE_LIB/util/config-apply-state.sh"
 # shellcheck source=util/xmrig-overlay.sh
@@ -1438,7 +1438,7 @@ install_api() {
         return 1
     }
     log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open); state refreshes every 15s)..."
-    API_BIND="$API_BIND" API_PORT="$API_PORT" RIGFORGE_LIB="$RIGFORGE_LIB" envsubst '$API_BIND $API_PORT $RIGFORGE_LIB' <"$RIGFORGE_LIB/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null || return 1
+    API_BIND="$API_BIND" API_PORT="$API_PORT" RIGFORGE_LIB="$RIGFORGE_LIB" RIGFORGE_STATE="$RIGFORGE_STATE" envsubst '$API_BIND $API_PORT $RIGFORGE_LIB $RIGFORGE_STATE' <"$RIGFORGE_LIB/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_LIB="$RIGFORGE_LIB" envsubst '$RIGFORGE_OPERATOR $RIGFORGE_LIB' <"$RIGFORGE_LIB/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null || return 1
     sudo tee "$rtmr" <"$RIGFORGE_LIB/systemd/rigforge-api-refresh.timer.template" >/dev/null || return 1
     sudo systemctl daemon-reload || return 1
@@ -1475,8 +1475,8 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" RIGFORGE_LIB="$RIGFORGE_LIB" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $RIGFORGE_LIB $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" RIGFORGE_LIB="$RIGFORGE_LIB" RIGFORGE_STATE="$RIGFORGE_STATE" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $RIGFORGE_LIB $RIGFORGE_STATE $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
         <"$RIGFORGE_LIB/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" RIGFORGE_LIB="$RIGFORGE_LIB" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $RIGFORGE_LIB' \

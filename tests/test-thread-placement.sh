@@ -36,7 +36,7 @@ parse_case() {
     (
         source "$SCRIPT"
         CONFIG_JSON="$cfg"
-        SCRIPT_DIR="$ROOT"
+        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
         set +e
         parse_config
     ) 2>&1
@@ -52,7 +52,7 @@ generate_case() {
     (
         source "$script"
         CONFIG_JSON="$cfg"
-        SCRIPT_DIR="$ROOT"
+        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
         OS_TYPE=Linux
         RIGFORGE_APPLIANCE=1
         lscpu() { printf 'Model name: Fixture CPU\n'; }

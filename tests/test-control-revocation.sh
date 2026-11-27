@@ -43,7 +43,7 @@ EOF
     (
         source "$SCRIPT"
         OS_TYPE=Linux CONTROL_MODE=enabled CONTROL_UPGRADE=disabled
-        SYSTEMD_DIR="$d/units" SCRIPT_DIR="$ROOT" REAL_USER=tester
+        SYSTEMD_DIR="$d/units" RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT" REAL_USER=tester
         CONTROL_BIND=local CONTROL_PORT=dynamic API_ALLOW_FROM=local RIGFORGE_APPLIANCE=0
         CALL_LOG="$d/calls" FAIL_STEP="$step" PATH="$d/bin:$PATH"
         export CALL_LOG FAIL_STEP PATH
@@ -141,7 +141,7 @@ chmod +x "$recovery/bin/"*
 (
     source "$SCRIPT"
     OS_TYPE=Linux CONTROL_MODE=enabled CONTROL_UPGRADE=disabled
-    SYSTEMD_DIR="$recovery/units" SCRIPT_DIR="$ROOT" REAL_USER=tester
+    SYSTEMD_DIR="$recovery/units" RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT" REAL_USER=tester
     CONTROL_BIND=local CONTROL_PORT=dynamic API_ALLOW_FROM=local RIGFORGE_APPLIANCE=0
     CALL_LOG="$recovery/calls" STOP_COUNT="$recovery/stops" PATH="$recovery/bin:$PATH"
     export CALL_LOG STOP_COUNT PATH
@@ -233,7 +233,7 @@ chmod +x "$stale/bin/systemctl"
 (
     source "$SCRIPT"
     OS_TYPE=Linux CONTROL_MODE=enabled CONTROL_UPGRADE=disabled
-    SYSTEMD_DIR="$stale/units" SCRIPT_DIR="$ROOT" REAL_USER=tester
+    SYSTEMD_DIR="$stale/units" RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT" REAL_USER=tester
     CONTROL_BIND=local CONTROL_PORT=dynamic API_ALLOW_FROM=local RIGFORGE_APPLIANCE=0
     CALL_LOG="$stale/calls" UNIT_DIR="$stale/units" PATH="$stale/bin:$PATH"
     export CALL_LOG UNIT_DIR PATH

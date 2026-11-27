@@ -107,6 +107,22 @@ The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) 
 and macOS: systemd on Linux, a launchd login agent on macOS (`enable`/`disable`). `doctor`,
 `tune --live`, and `autotune` are Linux-only. See [Running on macOS](#running-on-macos).
 
+### Directory layout
+
+RigForge resolves two directories at startup:
+
+- `RIGFORGE_LIB` — the code directory: `rigforge.sh`, `VERSION`, `util/`, `systemd/`. It is read at
+  runtime and never written, so a packaged install can keep it root-owned or read-only.
+- `RIGFORGE_STATE` — the writable state directory: `config.json`, `backups/`, support bundles, the
+  worker build tree at `data/worker`, and the tuning/revision stamps.
+
+Both default to the directory containing `rigforge.sh`, so a source checkout keeps today's single-directory
+layout and an unset-environment run is unchanged; the legacy `RIGFORGE_HOME` override still redirects
+both. Set the pair when the code is shipped apart from the data, as the brew package does
+(`RIGFORGE_LIB` = the installed tree, `RIGFORGE_STATE` = `$(brew --prefix)/var/rigforge`). `setup` renders
+the systemd units with the split baked in: `ExecStart` and the util scripts the units load come from the
+lib directory, and `config.json` is loaded from the state directory.
+
 ### Health check
 
 After setup (and the reboot), confirm everything took effect:

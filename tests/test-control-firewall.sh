@@ -17,7 +17,7 @@ run_control_fw() {
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        SCRIPT_DIR="$CPS"
+        RIGFORGE_LIB="$CPS" RIGFORGE_STATE="$CPS"
         SYSTEMD_DIR="$CPS/systemd"
         WORKER_ROOT="$CPS/wr"
         mkdir -p "$WORKER_ROOT"

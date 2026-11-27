@@ -74,7 +74,7 @@ run_refresh_doctor() { # <refresh status rc> <message>
     local refresh_rc="$1" refresh_message="$2"
     (
         source "$SCRIPT"
-        OS_TYPE=Linux SCRIPT_DIR="$ROOT" CONFIG_JSON="$RFS/config.json"
+        OS_TYPE=Linux RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT" CONFIG_JSON="$RFS/config.json"
         MEMINFO="$DOC/meminfo_ok" MSR_MODULE_DIR="$DOC/msrmod" GOVERNOR_FILE="$DOC/gov_perf" HUGEPAGES_1G_NR="$DOC/nr1g"
         DMIDECODE=/nonexistent CPUFREQ_MAX=/nonexistent CPU_SYSFS=/nonexistent
         _api_refresh_status() {

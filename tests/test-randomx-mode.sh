@@ -180,7 +180,7 @@ case " $* " in *' --runtime '*) printf '148\n' ;; *) printf 'quiet splash defaul
 EOF
 chmod +x "$CALL_ROOT/util/proposed-grub.sh"
 export RANDOMX_CALL_LOG="$D/calls"
-SCRIPT_DIR="$CALL_ROOT"
+RIGFORGE_LIB="$CALL_ROOT" RIGFORGE_STATE="$CALL_ROOT"
 RX_MODE=light
 RX_SETUP_THREADS=10
 HUGEPAGES_RESERVE_EXTRA_MB=0
@@ -214,11 +214,11 @@ eq "$(printf '%s\n' "$calls" | wc -l | tr -d ' ')" 5
 absent "$calls" 'RX_MODE=[]'
 mkdir -p "$D/no-proposed"
 _ensure_hugepages() { printf 'called\n' >"$D/unsafe-allocation"; }
-if (SCRIPT_DIR="$D/no-proposed" RX_MODE=light tune_kernel >/dev/null 2>&1); then
+if (RIGFORGE_LIB="$D/no-proposed" RIGFORGE_STATE="$D/no-proposed" RX_MODE=light tune_kernel >/dev/null 2>&1); then
     fail 'light mode accepted the generic HugePages fallback'
 fi
 [ ! -e "$D/unsafe-allocation" ] || fail 'light mode allocated the generic HugePages fallback'
-has "$(SCRIPT_DIR="$D/no-proposed" RX_MODE=light _setup_plan 2>&1)" 'RandomX light mode requires util/proposed-grub.sh'
+has "$(RIGFORGE_LIB="$D/no-proposed" RIGFORGE_STATE="$D/no-proposed" RX_MODE=light _setup_plan 2>&1)" 'RandomX light mode requires util/proposed-grub.sh'
 if RX_MODE=bogus bash "$PROPOSED" -q >/dev/null 2>&1; then fail 'proposed-grub accepted an invalid RandomX mode'; fi
 printf "GRUB_CMDLINE_LINUX_DEFAULT='quiet hugepagesz=2M hugepages=4 msr.allow_writes=on'\n" >"$D/grub2"
 has "$(GRUB_DEFAULT="$D/grub2" RIGFORGE_APPLIANCE=0 RX_MODE=fast _setup_plan 2>&1)" 'not one plain double-quoted line'

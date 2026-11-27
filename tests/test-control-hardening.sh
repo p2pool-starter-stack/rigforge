@@ -40,11 +40,11 @@ printf '{"pools":[{"url":"h:3333"}]}' >"$D/config.json"
 printf '{"version":"v9.9.9"}' >"$D/state/spool/upgrade-abc123def4567890.json"
 before=$(ls -ld "$D/target")
 ln -s "$D/target" "$D/processing"
-OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_upgrade >/dev/null 2>&1
+OS_TYPE=Linux RIGFORGE_LIB="$D" RIGFORGE_STATE="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_upgrade >/dev/null 2>&1
 [ "$(jq -r .status "$D/state/status.json")" = failed ]
 [ "$before" = "$(ls -ld "$D/target")" ]
 printf '{"DONATION":2}' >"$D/state/spool/pending-fedcba9876543210.json"
-OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_apply >/dev/null 2>&1
+OS_TYPE=Linux RIGFORGE_LIB="$D" RIGFORGE_STATE="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_apply >/dev/null 2>&1
 [ "$(jq -r '.status + ":" + .change_id' "$D/state/status.json")" = failed:fedcba9876543210 ]
 
 rm "$D/processing"
@@ -52,7 +52,7 @@ mkdir -m 700 "$D/processing"
 for stat_result in 0:0:755 1:0:700; do
     printf '{"version":"v9.9.9"}' >"$D/state/spool/upgrade-abc123def4567890.json"
     stat() { printf '%s\n' "$stat_result"; }
-    OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_upgrade >/dev/null 2>&1
+    OS_TYPE=Linux RIGFORGE_LIB="$D" RIGFORGE_STATE="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_upgrade >/dev/null 2>&1
     [ "$(jq -r .status "$D/state/status.json")" = failed ]
 done
 
@@ -64,7 +64,7 @@ _control_commit() { [ "$1" = "$D/processing/fedcba9876543210.json" ] && [ ! -e "
 _control_fast_path_eligible() { return 1; }
 _control_do_apply() { return 0; }
 _sweep_config_backups() { :; }
-OS_TYPE=Linux SCRIPT_DIR="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_apply >/dev/null 2>&1
+OS_TYPE=Linux RIGFORGE_LIB="$D" RIGFORGE_STATE="$D" CONFIG_JSON="$D/config.json" RIGFORGE_CONTROL_STATE="$D/state" RIGFORGE_CONTROL_PROCESSING="$D/processing" control_apply >/dev/null 2>&1
 [ "$(jq -r .status "$D/state/status.json")" = applied ]
 [ ! -e "$D/processing/fedcba9876543210.json" ]
 

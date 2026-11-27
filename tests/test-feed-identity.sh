@@ -51,7 +51,7 @@ parse_rig_id() {
     (
         source "$SCRIPT" >/dev/null 2>&1
         set +e
-        SCRIPT_DIR="$ROOT"
+        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
         CONFIG_JSON="$cfg"
         parse_config >/dev/null 2>&1
         printf '%s' "${RIG_ID:-}"
@@ -98,7 +98,7 @@ run_fixture() {
     (
         source "$SCRIPT" >/dev/null 2>&1
         OS_TYPE=Linux RIGFORGE_APPLIANCE=1
-        SCRIPT_DIR="$FX"
+        RIGFORGE_LIB="$FX" RIGFORGE_STATE="$FX"
         CONFIG_JSON="$FX/config.json"
         CONFIG_META_FILE="$FX/meta.json"
         RIGFORGE_REVISION_KEY="$FX/revkey"

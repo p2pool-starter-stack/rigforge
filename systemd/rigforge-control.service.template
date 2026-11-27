@@ -8,7 +8,7 @@ NotifyAccess=main
 TimeoutStartSec=15
 ExecStartPre=+$NFT_PATH -f $WORKER_ROOT/api-firewall.nft
 ExecStart=/usr/bin/python3 ${CREDENTIALS_DIRECTORY}/server $CONTROL_BIND $CONTROL_PORT ${STATE_DIRECTORY} ${CREDENTIALS_DIRECTORY}/config
-LoadCredential=config:$RIGFORGE_LIB/config.json
+LoadCredential=config:$RIGFORGE_STATE/config.json
 LoadCredential=server:$RIGFORGE_LIB/util/control-server.py
 Environment=RIGFORGE_API_PORT=$API_PORT
 Environment=RIGFORGE_APPLIANCE=$RIGFORGE_APPLIANCE

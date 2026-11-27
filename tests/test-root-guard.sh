@@ -35,7 +35,7 @@ source "$SCRIPT"
 source "$TREE/util/root-guard.sh"
 set +eu
 OS_TYPE=Linux
-SCRIPT_DIR="$TREE"
+RIGFORGE_LIB="$TREE" RIGFORGE_STATE="$TREE"
 SYSTEMD_DIR="$R/etc-systemd"
 SERVICE_NAME=xmrig
 ROOT_GUARD_STAMP="$R/etc/rigforge-root-guard"
@@ -94,10 +94,10 @@ assert_has "$out" "$R/users/op is owned by uid 1000" "ancestor refusal names the
 mkdir -p "$R/users/u"
 ln -s "$TREE" "$R/users/u/link"
 reset "$R/users/u 1000:1000:755"
-SCRIPT_DIR="$R/users/u/link" guard ""
+RIGFORGE_LIB="$R/users/u/link" RIGFORGE_STATE="$R/users/u/link" guard ""
 assert_eq "$rc" 1 "a code path through a symlink in a user-owned directory is refused"
 
-SCRIPT_DIR=relative/tree guard ""
+RIGFORGE_LIB=relative/tree RIGFORGE_STATE=relative/tree guard ""
 assert_eq "$rc" 1 "a relative code path is refused"
 
 reset "$R/users 0:0:1557"
@@ -180,7 +180,7 @@ assert_has "$out" "could not record the allowance" "a failed allowance write war
 mkdir -p "$R/state"
 reset "$TREE/util/helper.sh 1000:1000:644"
 SCRIPT_DIR="$R/state" guard ""
-assert_eq "$rc" 1 "the lib dir the guard loads from is checked when RIGFORGE_HOME points elsewhere"
+assert_eq "$rc" 1 "the lib dir the guard loads from is checked when a legacy SCRIPT_DIR points elsewhere"
 assert_has "$out" "$TREE/util/helper.sh" "the lib dir refusal names the lib path"
 
 reset "$TREE/rigforge.sh 1000:1000:755"

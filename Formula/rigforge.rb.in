@@ -21,10 +21,11 @@ class Rigforge < Formula
   def caveats
     <<~EOS
       Installing does nothing to this machine. Configure and provision explicitly:
-        cp #{opt_libexec}/config.minimal.json #{opt_libexec}/config.json
+        mkdir -p #{var}/rigforge
+        cp #{opt_libexec}/config.minimal.json #{var}/rigforge/config.json
         sudo "$(command -v rigforge)" setup
-      config.json lives in the installed tree and a brew upgrade replaces that tree: run
-      `rigforge backup` first and `rigforge restore` afterwards. A running miner is never
+      config.json, backups and data live in #{var}/rigforge and survive a brew upgrade, which
+      replaces only the code in #{opt_libexec}. A running miner is never
       restarted automatically; run `sudo "$(command -v rigforge)" apply` yourself after reviewing the release notes.
     EOS
   end
