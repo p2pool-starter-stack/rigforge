@@ -70,7 +70,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' >"$STUBS/cmake"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$STUBS/make"
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
-export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
+export RIGFORGE_TEST_OVERRIDES=1 XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
 
 cat >"$WORK/config.json" <<EOF
 { "HOME_DIR": "$WORK/data-home", "DONATION": 7, "tor_socks5": null, "pools": [{"url": "poolbox.lan:3333"}] }

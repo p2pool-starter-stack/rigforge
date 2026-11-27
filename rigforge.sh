@@ -62,6 +62,7 @@ _script_dir() {
 }
 for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
 [ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find -H "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
+[ "${RIGFORGE_TEST_OVERRIDES:-0}" = 1 ] || unset XMRIG_VERSION XMRIG_COMMIT API_CMD DMIDECODE RDMSR_BIN SERVICE_NAME LOGROTATE_DIR GRUB_DEFAULT FSTAB LIMITS_CONF MODULES_LOAD_DIR MODULES_FILE SYSTEMD_DIR HUGEPAGES_1G_DIR BIN_DIR MEMINFO CPUINFO MSR_MODULE_DIR GOVERNOR_FILE HUGEPAGES_1G_NR NR_HUGEPAGES_FILE CPUFREQ_MAX CPU_SYSFS DMI_DIR SMT_CONTROL LOCKDOWN_FILE RIGFORGE_APPLIANCE_MARKER RIGFORGE_LEGACY_APPLIANCE_UNIT
 # shellcheck source=util/config-apply-state.sh
 source "${RIGFORGE_LIB:-$(_script_dir)}/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
@@ -86,7 +87,6 @@ REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
 SERVICE_NO_START=false
-# Pinned XMRig release for reproducible builds; environment-overridable.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
 # Set to false when the pinned XMRig commit is already built, so a re-run/upgrade skips the (slow)
@@ -105,7 +105,6 @@ fi
 ENABLE_RUNTIME=""
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then ENABLE_RUNTIME="--runtime"; fi
 
-# Writable system paths are overridable for the test sandbox; defaults remain the real locations.
 LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
 GRUB_DEFAULT="${GRUB_DEFAULT:-/etc/default/grub}"
 FSTAB="${FSTAB:-/etc/fstab}"
@@ -117,7 +116,6 @@ HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
 # Directory on PATH where `setup` installs the `rigforge` command (a symlink back to this script).
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 
-# Read-only doctor paths, overridable for tests.
 MEMINFO="${MEMINFO:-/proc/meminfo}"
 # CPU flags source shared with util/proposed-grub.sh's pdpe1gb probe (#338).
 CPUINFO="${CPUINFO:-/proc/cpuinfo}"

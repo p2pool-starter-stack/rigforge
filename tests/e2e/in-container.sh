@@ -136,7 +136,7 @@ chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
 # Pin the XMRig version/commit to known test values so the build's commit verification (#18) passes
 # without a real clone; the git stub echoes XMRIG_COMMIT for `rev-parse`.
-export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
+export RIGFORGE_TEST_OVERRIDES=1 XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
 
 # 5. Seed config.json (writable HOME_DIR; DONATION 7). Use an explicit (dotted) host so this doesn't
 #    depend on the .local/mDNS appending that PR #15 removes.

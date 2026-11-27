@@ -4,6 +4,8 @@ MUSL_TARGET ?= x86_64-unknown-linux-musl
 
 SHELL_FILES = $(shell git ls-files '*.sh')
 
+export RIGFORGE_TEST_OVERRIDES := 1
+
 YAML_FILES = $(shell git ls-files '*.yml' '*.yaml')
 MD_FILES = $(shell git ls-files '*.md')
 
@@ -41,6 +43,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-state-lib.sh
 	bash tests/test-homebrew-formula.sh
 	bash tests/test-release-bundle.sh
+	bash tests/test-env-override-gate.sh
 	python3 tests/test-server-deadline.py
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
