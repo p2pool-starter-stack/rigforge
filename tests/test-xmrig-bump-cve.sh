@@ -35,6 +35,15 @@ grep -q 'sort -V' "$WF" ||
     fail "the workflow must order versions before bumping so a pulled release cannot open a downgrade PR"
 grep -q 'refs/heads/' "$WF" ||
     fail "the bump step must detect a branch left by an interrupted run and reuse it instead of re-pushing"
+grep -q -- '--state all' "$WF" ||
+    fail "a closed bump PR or tracking issue is a human decision and must stay terminal (existence checks must use --state all)"
+grep -q 'Open the tracking issue' "$WF" ||
+    fail "the tracking issue must be opened before build-verify so a broken build cannot swallow the escalation"
+grep -q 'user.login' "$WF" ||
+    fail "tracking-issue dedup must match only issues the workflow identity itself opened"
+out=$(printf 'CVE-2024-%s\n' 99999999999999999999999999999999999999 | scan_cves)
+[ "${#out}" -le 27 ] ||
+    fail "scan_cves must bound the id length so a hostile notes body cannot overflow the 255-char issue title"
 grep -q -- '--add-label security' "$WF" ||
     fail "a bump whose release notes mention CVEs must carry the security label"
 grep -q 'release notes mention' "$WF" ||
