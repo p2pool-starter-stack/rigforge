@@ -109,6 +109,12 @@ RigForge is built to be reproducible and tamper-evident:
 - Workflow auditing. [zizmor](https://github.com/zizmorcore/zizmor) static-audits the CI workflows
   for template injection, over-broad token scopes, and credential persistence; jobs run with a
   least-privilege, read-only `GITHUB_TOKEN` by default.
+- Static analysis. [CodeQL](https://codeql.github.com/) analyzes the Python servers
+  (`util/control-server.py`, `util/api-server.py`) and the workflows (`Analyze (python)`,
+  `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly. Shell has no
+  CodeQL support, so `rigforge.sh` and the other Bash files stay ShellCheck-only. The repository
+  ruleset's `code_scanning` rule is a GitHub setting an owner enables once both analyses have
+  reported.
 
 Bug reports: `rigforge.sh support-bundle` produces a redacted tarball (token and pool password
 structurally removed via jq, wallet masked). Redaction covers RigForge's own fields — review the
@@ -133,9 +139,20 @@ What it does **not** prove is origin: checksums and bundles live in the same pla
 attacker who fully controls the GitHub account could regenerate both. Release *signing*
 (minisign) existed briefly for that gap and was removed by decision on 2026-07-11: its
 protection only materializes for users who pin the public key somewhere outside this repo, and
-the key-custody burden wasn't worth it for this project's users, who deploy from git tags. If
-that trade ever changes (a real download-based user base), the signing machinery lives in the
-git history of `.github/workflows/release.yml` (#137, #205).
+the key-custody burden wasn't worth it for this project's users, who deploy from git tags. The
+trade changed on 2026-11-20 for one channel: an `apt upgrade` re-runs maintainer scripts as root
+with no human eyeballing a download, so the .deb feed is signed (below) and release *bundles*
+still ship checksums only. The old minisign machinery lives in the git history of
+`.github/workflows/release.yml` (#137, #205).
+
+That no-signing posture governs the git route and the checksums-only release assets. It is
+qualified by [ADR 0003](docs/adr/0003-package-ownership-upgrade-authority-and-key-custody.md):
+the apt feed added by the DIY install-routes epic (#778) is the one place this project does
+sign — every feed publish is signed with a dedicated OpenPGP key whose 40-hex fingerprint is
+pinned in this repo, because an apt feed is fetched automatically by every `apt upgrade`.
+Until that feed ships (the owner steps are recorded in the ADR), nothing is signed yet.
+Tarballs and `SHA256SUMS` stay checksums-only, and the remote-upgrade git path below stays
+unsigned by the same ADR.
 
 The same trust boundary governs the remote-upgrade path (`control-upgrade`, #308 — opt-in, off by
 default, [ADR 0002](docs/adr/0002-remote-worker-upgrade.md)). There a rig fetches a release and runs
@@ -146,11 +163,37 @@ no role on that path (ADR 0002 D5). It removes the human who would otherwise eye
 so it inherits the origin gap above as a deliberately accepted risk: a full GitHub-account
 compromise could push malicious root code across a fleet. We accept that rather than plan around a
 compromise of GitHub itself — the proportionate mitigation is hardening the account (hardware-key
-2FA, tight release and branch-protection permissions), not re-adding release signing.
+2FA, tight release and branch-protection permissions), not re-adding bundle signing.
 
 For the strongest guarantee available today, deploy from a git checkout at the release tag —
 the commit hash is the integrity anchor, and the XMRig source it builds is itself pinned and
 commit-verified.
+
+#### The apt feed is signed
+
+The project's apt feed (install route in the README) is a flat repository whose every index ships
+a clear-signed `InRelease` and a detached `Release.gpg`, produced in the release pipeline by the
+`Publish APT feed` workflow and published only to Pages after the signing job's own
+`gpg --verify` check passes against the fingerprint pinned in this repo. apt refuses to install
+from an index that lacks a valid signature from the key in your keyring, so a tampered package or
+index cannot be installed without also stealing that key. The trust anchor is the pinned
+fingerprint — [`packaging/apt/fingerprint`](packaging/apt/fingerprint) on `main` — which the
+README tells you to compare when you install the keyring; a signature you never pinned proves as
+much as the channel that handed you the key.
+
+Key custody (owner ruling, 2026-11-20): the armored private key lives only as the `APT_SIGNING_KEY`
+repository secret scoped to the protected `github-pages` environment, whose required reviewer is
+the owner — the signing job waits for that approval, imports the key into a throwaway keyring,
+and deletes that keyring in a cleanup step that runs even when an earlier step fails (the hosted
+runner is ephemeral in any case). The key holds no other trust (it signs only the feed),
+and two passphrase-protected backups of it are stored offline by the owner, one on the owner's
+machine and one on the project NAS. Rotation: generate a new key, commit its fingerprint and
+public key under `packaging/apt/` to `main`, move the secret and the `APT_SIGNING_FINGERPRINT`
+variable, keep the backup discipline of two passphrase-protected offline copies, and approve one
+signing run; users pick the new key up by re-running the README keyring step. Recovery after loss
+or exposure: publish a revocation note as a regular release, rotate as above with the new key,
+and have users re-pin the fingerprint — the apt trust boundary never silently follows a new key,
+and old feeds stay verifiable by users who still hold the old one.
 
 ## Supported versions
 

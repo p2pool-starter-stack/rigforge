@@ -68,6 +68,7 @@ run_setup() {
         source "$SCRIPT"
 
         SCRIPT_DIR="$ROOT"
+        ROOT_GUARD_STAMP="$case_dir/root-guard"
         WORKER_ROOT="$case_dir/worker"
         SYSTEMD_DIR="$case_dir/systemd"
         OS_TYPE=Linux
@@ -123,7 +124,7 @@ run_setup() {
         }
         sudo() { "$@"; }
 
-        main
+        main --no-root-guard
     ) >"$case_dir/output.log" 2>&1
 }
 

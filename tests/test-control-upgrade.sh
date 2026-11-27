@@ -272,10 +272,145 @@ assert_eq "started record indexed under changes/<cid> too (#320)" \
     "$([ -f "$cuSt/state/changes/abc123def4567890.json" ] && echo y || echo n)" "y"
 assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.json" 2>/dev/null)")" "applied"
 
-# #308: the control-upgrade oneshot runs as root with NO $HOME, so git can't read root's safe.directory
-# config and fatals on "dubious ownership" of the operator-owned install — every git op then fails and
-# the upgrade silently dies (a real miner-0 finding; the stubbed suite can't reach it since it stubs
-# git). Every `git -C "$SCRIPT_DIR"` in the upgrade path MUST pin -c safe.directory. Drift-guard it.
 echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
-bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
+bare_rf_git=$(grep -nE 'git -C "\$(SCRIPT_DIR|\(_lib_dir\))"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
+
+echo "== unit: _control_upgrade_do reowns what the upgrade creates to the checkout owner (#798) =="
+rw_dir=$(mktemp -d "$SANDBOX/reown.XXXXXX")/'we[i]rd'
+mkdir -p "$rw_dir/data/logs" "$rw_dir/.git/refs/remotes/origin"
+touch "$rw_dir/data/logs/x"
+rw_uid=$(id -u) rw_gid=$(id -g) rw_fix=""
+if [ "$rw_uid" -eq 0 ]; then
+    rw_uid=1234 rw_gid=1234 rw_fix=1
+    chown -R "$rw_uid:$rw_gid" "$rw_dir"
+fi
+_reown_run() {
+    local want="$1" rw_r rw_n=0 out=""
+    shift
+    rm -f "$rw_dir/chown.log"
+    for rw_r in "$@"; do
+        rw_n=$((rw_n + 1))
+        out="$out$(
+            source "$SCRIPT"
+            set +e
+            id() { echo 0; }
+            stat() { echo "$want"; }
+            chown() { echo "$2 ${*:3}" >>"$rw_dir/chown.log"; }
+            _control_upgrade_steps() { mkdir -p "$rw_dir/tools$rw_n" && touch "$rw_dir/tools$rw_n/new.sh" && { [ -z "$rw_fix" ] || command chown -R "$rw_uid:$rw_gid" "$rw_dir/tools$rw_n"; } && return "$rw_r"; }
+            SCRIPT_DIR="$rw_dir"
+            _control_upgrade_do v9.9.9
+            echo "rc=$?"
+        )"$'\n'
+    done
+    printf '%s' "$out"
+    local rw_l
+    while IFS= read -r rw_l; do echo "${rw_l/"$rw_dir"\//}"; done < <(sort "$rw_dir/chown.log" 2>/dev/null)
+}
+res=$(_reown_run "4242:4242" 0)
+assert_contains "success path: new directory reowned to the checkout owner" "$res" "4242:4242 tools1"
+assert_contains "success path: new file reowned" "$res" "tools1/new.sh"
+assert_contains "success path: .git refs reowned" "$res" ".git/refs/remotes/origin"
+assert_contains "success path: rc preserved" "$res" "rc=0"
+assert_absent "data/ is left alone, even under a glob-metachar path" "$res" "data"
+res=$(_reown_run "4242:4242" 1)
+assert_contains "failed steps: still reowned" "$res" "4242:4242 tools1"
+assert_contains "failed steps: rc preserved" "$res" "rc=1"
+res=$(_reown_run "4242:4242" 1 0)
+assert_contains "rollback call reowns the directory it creates" "$res" "tools2/new.sh"
+assert_eq "a checkout already owned correctly is not chowned" "$(_reown_run "$rw_uid:$rw_gid" 0 | grep -c 'tools\|\.git')" "0"
+assert_contains "a group-only difference is reowned" "$(_reown_run "$rw_uid:99999" 0)" "$rw_uid:99999 tools1"
+assert_eq "a root-owned checkout keeps root ownership" "$(_reown_run "0:0" 0 | grep -c 'tools\|\.git')" "0"
+
+echo "== unit: real-git control-upgrade as root keeps a user-owned checkout user-owned (#798) =="
+rg_path=${PATH//"${STUBS:-/nonexistent}:"/}
+if ! PATH="$rg_path" command -v git >/dev/null; then
+    ok "SKIP real-git reown: no git on this host"
+else
+    rg_d=$(mktemp -d "$SANDBOX/reown-git.XXXXXX")
+    rg_git() { PATH="$rg_path" git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
+    rg_git init -q --bare "$rg_d/origin.git"
+    rg_git init -q "$rg_d/src"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$rg_d/src/rigforge.sh"
+    chmod +x "$rg_d/src/rigforge.sh"
+    rg_git -C "$rg_d/src" add -A
+    rg_git -C "$rg_d/src" commit -qm v1
+    rg_git -C "$rg_d/src" tag v1.0.0
+    mkdir -p "$rg_d/src/tools/sub"
+    touch "$rg_d/src/tools/sub/new.sh"
+    rg_git -C "$rg_d/src" add -A
+    rg_git -C "$rg_d/src" commit -qm v9
+    rg_git -C "$rg_d/src" tag v9.9.9
+    rg_git -C "$rg_d/src" push -q "$rg_d/origin.git" main --tags
+    rg_git clone -q "$rg_d/origin.git" "$rg_d/co"
+    rg_git -C "$rg_d/co" checkout -q v1.0.0
+    mkdir -p "$rg_d/co/data"
+    rg_owner="$(id -u):$(id -g)" rg_sudo=()
+    if [ "$(id -u)" -eq 0 ]; then
+        rg_owner=1234:1234
+        chown -R "$rg_owner" "$rg_d/co"
+    elif PATH="$rg_path" sudo -n true 2>/dev/null; then
+        rg_sudo=(sudo -n env "PATH=$rg_path" "RIGFORGE_CONTROL_UPGRADE_STATE=$rg_d")
+    fi
+    rg_rc=$(PATH="$rg_path" ${rg_sudo[@]+"${rg_sudo[@]}"} bash -c 'source "$1"; set +e; SCRIPT_DIR="$2" CONFIG_JSON="$3"; _root_guard_check() { :; }; _control_upgrade_do v9.9.9 >/dev/null 2>&1; echo $?' _ "$SCRIPT" "$rg_d/co" "$rg_d/none.json")
+    assert_eq "real-git upgrade to a tag that adds a directory succeeds ($([ "${#rg_sudo[@]}" -gt 0 ] || [ "$(id -u)" -eq 0 ] && echo as root || echo as the owner))" "$rg_rc" "0"
+    assert_eq "the new directory is owned by the checkout owner" "$(stat -c '%u:%g' "$rg_d/co/tools/sub" 2>/dev/null || stat -f '%u:%g' "$rg_d/co/tools/sub")" "$rg_owner"
+    assert_eq "nothing outside data/, .git included, has another owner" \
+        "$(find "$rg_d/co" -path "$rg_d/co/data" -prune -o \( ! -user "${rg_owner%%:*}" -o ! -group "${rg_owner##*:}" \) -print)" ""
+    [ "${#rg_sudo[@]}" -eq 0 ] || PATH="$rg_path" "${rg_sudo[@]}" chown -R "$rg_owner" "$rg_d"
+fi
+
+echo "== unit: control_upgrade fails cleanly before checkout and re-runs a pending install (#816) =="
+pending_run() {
+    local d
+    d=$(mktemp -d "$SANDBOX/pending.XXXXXX")
+    mkdir -p "$d/state/spool" && mkdir -m 700 "$d/upgrade-state" && printf '%s' "$2" >"$d/VERSION" && printf 'keep' >"$d/target"
+    printf '{"pools":[{"url":"h:3333"}]}\n' >"$d/config.json" && printf '{"version":"v9.9.9"}\n' >"$d/state/spool/upgrade-abc123def4567890.json"
+    cat >"$d/rigforge.sh" <<STUB
+#!/usr/bin/env bash
+echo REINSTALL >>"$d/work.log"
+n=\$(cat "$d/upgrade-fail" 2>/dev/null || echo 0)
+[ "\$n" -gt 0 ] || exit 0
+echo \$((n - 1)) >"$d/upgrade-fail"
+exit 1
+STUB
+    chmod +x "$d/rigforge.sh"
+    case "$1" in pending) : >"$d/upgrade-state/upgrade-pending" ;; owner) printf 'orig' >"$d/upgrade-state/upgrade-pending" ;; link) ln -s "$d/target" "$d/upgrade-state/upgrade-pending" ;; rollback_ok) echo 1 >"$d/upgrade-fail" ;; rollback_fail) echo 9 >"$d/upgrade-fail" ;; esac
+    (
+        source "$SCRIPT"
+        OS_TYPE=Linux SCRIPT_DIR="$d" CONFIG_JSON="$d/config.json" RIGFORGE_CONTROL_STATE="$d/state" RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state" CONTROL_UPGRADE_MIN_INTERVAL=0 MODE="$1"
+        _wait_miner_live() { return 0; }
+        _root_guard_check() { [ "$MODE" != guard ]; }
+        stat() { case "$MODE:$*" in owner:*upgrade-pending*) echo 1000:1000:600:1 ;; *) command stat "$@" ;; esac }
+        git() { case "$*" in *fetch*) [ "$MODE" != fetch ] ;; *describe*) echo v0.0.1 ;; *checkout*) echo checkout >>"$d/work.log" ;; *"is-ancestor unreach "*) return 1 ;; *"tags/v9.9.9"*) [ "$MODE" = tag ] && echo unreach || echo c0ffee ;; *rev-parse*) echo c0ffee ;; esac }
+        set +e
+        PATH="$STUBS:$PATH" control_upgrade >/dev/null 2>&1
+    )
+    printf '%s|%s|%s|%s|%s' "$(cat "$d/state/status.json" 2>/dev/null)" "$(cat "$d/work.log" 2>/dev/null)" "$([ -e "$d/upgrade-state/upgrade-pending" ] && echo marker-left)" "$(cat "$d/target")" "$(cat "$d/upgrade-state/upgrade-pending" 2>/dev/null)"
+}
+s="$(pending_run fetch 1.0.0)"
+assert_eq "fetch failure -> failed (#816)" "$(st "${s%%|*}")" "failed"
+assert_contains "fetch failure reason names the fetch and says nothing was changed (#816)" "$s" "could not fetch from origin; nothing was changed"
+assert_absent "fetch failure never claims manual intervention (#816)" "$s" "manual intervention"
+assert_eq "fetch failure neither checks out, reinstalls nor marks (#816)" "${s#*|}" "||keep|"
+s="$(pending_run guard 1.0.0)"
+assert_contains "root-guard refusal -> failed, nothing was changed (#816)" "$s" "the root guard refused this tree; nothing was changed"
+assert_eq "root-guard refusal neither checks out, reinstalls nor marks (#816)" "$(st "${s%%|*}")|${s#*|}" "failed|||keep|"
+s="$(pending_run tag 1.0.0)"
+assert_eq "tag not reachable from origin/main still rolls back with the rollback checkout (#816)" "$(st "${s%%|*}")|$(printf '%s' "${s%%|*}" | jq -r .reason)|${s#*|}" "rolled_back|upgrade to v9.9.9 failed; rolled back to v0.0.1 and live|checkout"$'\n'"REINSTALL||keep|"
+s="$(pending_run ok 1.0.0)"
+assert_eq "clean upgrade applies and clears its pending marker (#816)" "$(st "${s%%|*}")|${s#*|}" "applied|checkout"$'\n'"REINSTALL||keep|"
+s="$(pending_run pending 9.9.9)"
+assert_eq "same version with a pending marker re-runs instead of noop (#816)" "$(st "${s%%|*}")|${s#*|}" "applied|checkout"$'\n'"REINSTALL||keep|"
+s="$(pending_run link 9.9.9)"
+assert_eq "unsafe pending marker refused before checkout, target untouched (#816)" "$(st "${s%%|*}")|${s#*|}" "failed||marker-left|keep|keep"
+s="$(pending_run owner 9.9.9)"
+assert_eq "pending marker with a foreign owner refused before checkout, marker untouched (#816)" "$(st "${s%%|*}")|${s#*|}" "failed||marker-left|keep|orig"
+echo "== unit: install failure leaves marker, rollback cleans it (#816) =="
+s="$(pending_run rollback_fail 1.0.0)"
+assert_eq "install + rollback failure -> failed, marker stays (#816)" "$(st "${s%%|*}")" "failed"
+assert_contains "install failure with failed rollback asks for manual intervention (#816)" "$s" "manual intervention needed"
+assert_eq "install failure with failed rollback leaves marker and target (#816)" "${s#*|}" "checkout"$'\n'"REINSTALL"$'\n'"checkout"$'\n'"REINSTALL|marker-left|keep|"
+s="$(pending_run rollback_ok 1.0.0)"
+assert_eq "install fails, rollback succeeds, status rolled_back (#816)" "$(st "${s%%|*}")" "rolled_back"
+assert_eq "rollback install runs upgrade twice, marker cleaned (#816)" "${s#*|}" "checkout"$'\n'"REINSTALL"$'\n'"checkout"$'\n'"REINSTALL||keep|"

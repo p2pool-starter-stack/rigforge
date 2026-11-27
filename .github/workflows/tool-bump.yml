@@ -71,12 +71,12 @@ jobs:
             "$(grep -oE 'LYCHEE_VERSION: "[0-9.]+"' .github/workflows/links.yml | grep -oE '[0-9.]+')" "lychee-v"
           check jq jqlang/jq \
             "$(grep -oE 'download/jq-[0-9.]+' tests/coverage.sh | grep -oE '[0-9]+(\.[0-9]+)*')" "jq-"
+          check rust-toolchain rust-lang/rust \
+            "$(grep -oE 'channel = "[0-9.]+"' rust-toolchain.toml | grep -oE '[0-9.]+')"
+          check cargo-deny EmbarkStudios/cargo-deny \
+            "$(grep -oE 'CARGO_DENY_VERSION: "[0-9.]+"' .github/workflows/rust.yml | grep -oE '[0-9.]+')"
 
           # <workflow file>
-          #
-          # Only event=schedule counts: a workflow_dispatch run proves someone can trigger it by
-          # hand, not that cron still fires. Same UNREACHABLE IS NOT CURRENT doctrine as check()
-          # above — a lookup that found nothing is UNCHECKED, never a silent pass.
           watcher() {
             local file="$1" line started conclusion age verdict
             if ! line=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/runs" \

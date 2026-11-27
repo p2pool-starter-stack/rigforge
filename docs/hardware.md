@@ -16,7 +16,7 @@ are modest; most of the performance comes from tuning, which RigForge applies fo
 | CPU | 64-bit x86 with AVX2 support | A high-core-count CPU (e.g. AMD Ryzen / EPYC); more and faster cores mean more hashrate. XMRig auto-detects the CPU and sizes the tuning to it. |
 | RAM | ~2.3 GB free for RandomX fast mode (a 2080 MB dataset + 256 MB cache), plus ~2 MB of L3 cache per mining thread | 4 GB+; budget more on high-core-count CPUs. |
 | HugePages | Optional, but a significant speedup | RigForge configures 2 MB and 1 GB HugePages (plus MSR access) for you. Linux only, and it needs a reboot to take effect. |
-| OS | Ubuntu 22.04+ or Debian 12 | Ubuntu is the supported target. macOS is deprecated (unsupported, untested since 2026-09-14). |
+| OS | Ubuntu 22.04+ or Debian 12 | Ubuntu 24.04 is fully supported. macOS is best effort with degraded features. |
 | Network | Reach your pool / stack host on its Stratum port (Pithead uses 3333) | A LAN pool needs no Tor. An `.onion` pool needs an operator-managed Tor SOCKS proxy. |
 
 > RandomX light mode uses a shared 256 MiB cache instead of the fast dataset and is far slower; fast
@@ -60,7 +60,7 @@ adds a few defaults that make sense because the box is a dedicated miner:
 | `cpu.asm` | `auto` | XMRig picks the Ryzen / Intel / Bulldozer assembly path for the detected CPU. |
 | `randomx.wrmsr` | `true` | Auto-applies the correct per-family MSR preset (needs root + the `msr` module). |
 | `randomx.numa` | `true` | A no-op on single-NUMA machines; on multi-NUMA CPUs it gives each node its own dataset copy. Note a single-socket EPYC can still expose several NUMA nodes, so RigForge sizes the 1 GB HugePage reservation per NUMA node rather than per socket. |
-| `randomx.mode` | `fast` | `auto` lets XMRig fall back when the dataset cannot be allocated; explicit `light` uses the shared 256 MiB cache and the smaller 2 MB HugePages reservation. |
+| `randomx.mode` | `fast` | `auto` lets RigForge check available memory at apply time; if there is not enough for the fast dataset (~2080 MiB), it picks light mode with an info message. Explicit `light` uses the shared 256 MiB cache and the smaller 2 MB HugePages reservation. There is no hard floor. |
 | `randomx.init` / `randomx.init-avx2` | `-1` / `-1` (auto) | The `xmrig.randomx` settings can limit dataset-initialization threads and control AVX2 initialization; `init-avx2: 1` enables it only on supporting CPUs. A smaller thread count reduces startup and thermal-resume contention on a co-located host. |
 | `cpu.yield` | `false` | Busy-wait for maximum hashrate (we own the whole machine). |
 | `cpu.priority` | `2` | Wins scheduling vs. background daemons (XMRig warns >2 can hang a desktop). |
@@ -71,8 +71,7 @@ adds a few defaults that make sense because the box is a dedicated miner:
 > (7950X3D/7900X3D), where only one CCD has the V-cache and using all cores would push threads onto the
 > slow CCD. Letting XMRig decide is both simpler and more correct.
 
-The only branch that remains is OS-level: macOS (deprecated, unsupported and untested since
-2026-09-14) has no HugePages or MSRs, so those are disabled and the API binds IPv6 `::` instead of
+The only branch that remains is OS-level: macOS (best effort) has no HugePages or MSRs, so those are disabled and the API binds IPv6 `::` instead of
 `0.0.0.0`.
 
 The resulting XMRig config (pools, donate level, API, CPU section) lives under your worker root; see

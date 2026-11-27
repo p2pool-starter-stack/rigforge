@@ -72,14 +72,6 @@ die() {
     printf '\033[31me2e-real: %s\033[0m\n' "$1" >&2
     exit 2
 }
-# #183: the shared-rig lock. miner-0 hosts BOTH RigForge's release gates (rig-mutating) and
-# Pithead's e2e (API-reading, assumes a steadily-hashing miner) — a kernel flock serializes them.
-# Exclusive for mutators, `shared` for future read-only modes; the lock dies with the holding
-# process, so a killed run never needs cleanup. Pithead's harness carries the same helper against
-# the same path — the path IS the contract. Duplicated verbatim in tests/e2e-pithead.sh on purpose
-# (15 lines beat a lib two repos must share; tests/run.sh guards the copies against drift). The
-# env-overridable paths exist only so tests/run.sh can sandbox it without root. FD 9 is inherited
-# by children — that is what keeps the lock held for the whole run; do not close it.
 rig_lock() { # rig_lock <project> <suite> [shared]
     local mode=-x
     [ "${3:-}" = shared ] && mode=-s
@@ -107,15 +99,10 @@ rig_lock() { # rig_lock <project> <suite> [shared]
             echo "rig busy ($(cat "$hf" 2>/dev/null || echo unknown)) — waiting..." >&2
             flock $mode 9
         else
-            echo "miner-0 busy: $(cat "$hf" 2>/dev/null || echo unknown). Retry with RIG_LOCK_WAIT=1 to queue." >&2
+            echo "rig busy ($(cat "$hf" 2>/dev/null || echo unknown)). Retry with RIG_LOCK_WAIT=1 to queue." >&2
             exit 75 # EX_TEMPFAIL — callers can tell "busy, retry later" from a real failure
         fi
     fi
-    # DISPLAY-ONLY and strictly best-effort. The flock is already HELD on FD 9 above; a holder
-    # marker we can't write (a root-owned RIG_LOCK_HOLDER + a non-root runner) must NEVER abort
-    # under set -e and drop the lock — that would leave the box UNRESERVED, the exact bug (#249).
-    # Plain write, then passwordless sudo, then swallow. Portable UTC stamp — the GNU-only
-    # `date -Iseconds` errors on BSD/macOS. (#244)
     local _line
     _line="$(printf '%s %s pid=%s started=%s' "$1" "$2" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
     { printf '%s\n' "$_line" >"$hf" || printf '%s\n' "$_line" | sudo -n tee "$hf" >/dev/null; } 2>/dev/null || true
@@ -226,7 +213,7 @@ provision() {
     require_linux_root provision
     ensure_config
     phase "provision — ./rigforge.sh setup (real deps + build + tuning + service)"
-    "$RIGFORGE" setup 2>&1 | tee /tmp/e2e-provision.log
+    "$RIGFORGE" setup --no-root-guard 2>&1 | tee /tmp/e2e-provision.log
 
     # #cpu: as root, lscpu also prints a "BIOS Model name:" DMI line; setup's detected-CPU line must show
     # the clean model, not concatenate that line's "… Unknown CPU @ …" garbage.
@@ -609,12 +596,6 @@ verify() {
     fi
     summary "verify"
 }
-
-# Poll the authed receiver until it serves: 200 = a prior change's record, 503 = "no change applied
-# yet" — both mean it's up. On a rig whose every core the miner pins, a freshly-(re)started
-# DynamicUser python server can take >3s to bind; a single-shot check after `sleep 3` read as
-# connection-refused on real miner-0 runs (the upgrade phase's first run, then the control phase on
-# the v1.12.0 gate). Sets RCV_CODE/RCV_TRY for the caller's ok/bad line.
 _auth_curl() { # <token> <curl args...>; keep the bearer out of process argv
     local token=$1
     shift
@@ -868,11 +849,6 @@ _control_cleanup() {
 #              explicitly (PERMANENT — does not restore, the pre-#350 shape, still useful for a
 #              deliberate real deploy); E2E_UPGRADE_SKIP_REASON="..." skips it with a logged reason.
 #
-# Sits before control (same restart churn perf must not measure through) and reuses control's
-# snapshot/cleanup machinery (CTL_ globals + _control_cleanup) — config is snapshotted and BOTH
-# control flags are forced off again on ANY exit, plus the upgrade-phase leftovers (probe tag,
-# throttle stamp, and #350's checkout rewind) are removed. Also the producer half of pithead#597's
-# cross-repo tier-4 gate.
 
 # POST /upgrade {"version":<target>} and poll /status?change_id= to a terminal status (echoed).
 # `started` (#320) is non-terminal — keep polling through it. Echoes "post-failed:<http-code>" when
@@ -1071,6 +1047,10 @@ upgrade() {
         fi
     fi
 
+    stray=$(find "$HERE" -path "$HERE/data" -prune -o ! -user "$(stat -c %U "$HERE")" -print 2>/dev/null | head -5 | tr '\n' ' ')
+    [ -z "$stray" ] && ok "no path outside data/ is owned by anyone but the checkout owner after the upgrade legs (#798)" ||
+        bad "paths owned by a different user than the checkout root after control-upgrade (#798): $stray"
+
     _upgrade_cleanup || bad "upgrade cleanup failed"
     summary "upgrade"
 }
@@ -1256,43 +1236,63 @@ summary() {
     fi
 }
 
-# Judge a measurement against the committed baseline AND the best-ever history entry (#186).
-# Prints the ok/bad verdict lines and returns 1 on any regression — shared by judge mode and
-# record mode (#214), so the two can never disagree about what "regressed" means.
-_perf_judge() { # <hr> <baseline.json> <history.jsonl> <tolerance_pct>
-    local hr="$1" bl="$2" hist="$3" tol="$4" base best rcj=0
-    base=$(jq -r '.bench_1m_hs // empty' "$bl" 2>/dev/null || true)
-    if [ -z "$base" ]; then
-        bad "perf: baseline $bl is unreadable"
+_perf_check() {
+    [ -n "$2" ] || return 0
+    if awk -v h="$1" -v b="$2" -v t="$5" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
+        ok "perf: $1 H/s within ${5}% of $4 $2"
+    elif [ "$6" = 1 ]; then
+        bad "perf $3: $1 H/s vs $4 $2 H/s (tolerance ${5}%) — investigate before releasing"
+        return 1
+    else
+        printf '  \033[1;33m∙\033[0m perf %s (report only): %s H/s vs %s %s H/s (tolerance %s%%)\n' "$3" "$1" "$4" "$2" "$5"
         return 1
     fi
-    if awk -v h="$hr" -v b="$base" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
-        ok "perf: $hr H/s within ${tol}% of baseline $base ($(jq -r '.recorded' "$bl" 2>/dev/null))"
-    else
-        bad "perf REGRESSION: $hr H/s vs baseline $base H/s (tolerance ${tol}%) — investigate before releasing"
-        rcj=1
-    fi
-    if [ -f "$hist" ]; then
-        best=$(jq -s 'map(.bench_1m_hs) | max // empty' "$hist" 2>/dev/null || true)
-        if [ -n "$best" ]; then
-            if awk -v h="$hr" -v b="$best" -v t="$tol" 'BEGIN{exit !(h >= b * (1 - t / 100))}'; then
-                ok "perf: $hr H/s within ${tol}% of this host's best-ever $best"
-            else
-                bad "perf RATCHET: $hr H/s vs best-ever $best H/s (tolerance ${tol}%) — slow drift across releases; investigate before releasing"
-                rcj=1
-            fi
-        fi
-    fi
+}
+
+_perf_cmp() {
+    local rcj=0
+    _perf_check "$1" "$2" REGRESSION baseline "$4" "$5" || rcj=1
+    _perf_check "$1" "$3" RATCHET best-ever "$4" "$5" || rcj=1
     return "$rcj"
 }
 
+_perf_class() {
+    local c
+    c=$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1 | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+    printf '%s' "${E2E_PERF_CLASS:-${c:-$(hostname)}}"
+}
+
+_perf_gate() {
+    local hr="$1" class="$2" hist="${E2E_PERF_HISTORY:-}" vals n med mad verdict
+    vals=""
+    [ -n "$hist" ] && [ -r "$hist" ] && vals=$(jq -rs --arg c "$class" --arg i bench_1m_hs '[.[] | .[$c][$i]? | select(type == "number")] | .[-5:]' "$hist" 2>/dev/null) || vals=""
+    n=$(printf '%s' "${vals:-[]}" | jq 'length' 2>/dev/null) || n=0
+    if [ -z "$hist" ] || [ ! -r "$hist" ]; then
+        bad "perf: gate mode but no history input — pass E2E_PERF_HISTORY with earlier results for class $class"
+    elif [ -z "$vals" ]; then
+        bad "perf: gate mode but $hist cannot be read as history JSON"
+    elif [ "$n" -lt 5 ]; then
+        printf '  \033[1;33m∙\033[0m perf %s: insufficient history (%d/5) — measured %s H/s, not judging\n' "$class" "$n" "$hr"
+    else
+        read -r med mad < <(printf '%s' "$vals" | jq -r '. as $v | ($v | length) as $n | ($v | sort) as $s | (if $n % 2 == 1 then $s[($n - 1) / 2] else ($s[$n / 2 - 1] + $s[$n / 2]) / 2 end) as $med | ([$v[] | . - $med | if . < 0 then - . else . end] | sort) as $d | (if $n % 2 == 1 then $d[($n - 1) / 2] else ($d[$n / 2 - 1] + $d[$n / 2]) / 2 end) | "\($med) \(.)"')
+        verdict=$(awk -v h="$hr" -v m="$med" -v d="$mad" 'BEGIN { if (h < m - 3 * d) print "REGRESSION"; else if (h > m + 3 * d) print "SPIKE"; else print "OK" }')
+        if [ "$verdict" = OK ]; then ok "perf: $hr H/s matches the class history band (median $med, MAD $mad)"; else bad "perf $verdict: $hr H/s leaves the class history band (median $med, MAD $mad) — investigate before releasing, or start a new class history if the hardware changed deliberately"; fi
+    fi
+}
+
 perf() {
-    phase "perf — verified bench vs the committed $(hostname) baseline"
-    local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}"
+    phase "perf — verified bench by hardware class"
+    local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}" class pid=bench_1m_hs mode="${E2E_PERF_MODE:-report}"
+    [ "${E2E_PERF_GATE:-0}" != 1 ] || mode=gate
+    case "$mode" in
+    report | gate) ;;
+    *) die "perf: E2E_PERF_MODE must be report or gate (got '$mode')" ;;
+    esac
     [ "${E2E_PERF_SUBMIT:-0}" != 1 ] || submit=--submit
+    class="$(_perf_class)"
     bl="$HERE/tests/perf-baselines/$(hostname).json"
     hist="$HERE/tests/perf-baselines/$(hostname).history.jsonl"
-    "$RIGFORGE" stop >/dev/null 2>&1 || true # take the whole machine for a clean reading
+    "$RIGFORGE" stop >/dev/null 2>&1 || true
     if ! out="$(BENCH=1M "$RIGFORGE" bench ${submit:+"$submit"} 2>&1)"; then
         bad "perf: bench failed"
         printf '%s\n' "$out" | tail -3 >&2
@@ -1315,11 +1315,16 @@ perf() {
             return
         fi
     fi
+    jq -cn --arg c "$class" --arg i "$pid" --arg hs "$hr" --arg id "$id" '{($c): ({($i): ($hs | tonumber)} + (if $id == "" then {} else {benchmark_id: $id} end))}'
+    base="" best=""
+    if [ -n "${E2E_PERF_HISTORY:-}" ] && [ -z "${E2E_PERF_RECORD:-}" ]; then
+        [ ! -r "$E2E_PERF_HISTORY" ] || read -r base best < <(jq -rs --arg c "$class" --arg i "$pid" '[.[] | .[$c][$i]? | select(type == "number")] | "\(last) \(max)"' "$E2E_PERF_HISTORY" 2>/dev/null | sed 's/null//g') || true
+    elif [ -f "$bl" ]; then
+        base=$(jq -r '.bench_1m_hs // empty' "$bl" 2>/dev/null || true)
+        best=$(jq -s 'map(.bench_1m_hs) | max // empty' "$hist" 2>/dev/null || true)
+    fi
     if [ -n "${E2E_PERF_RECORD:-}" ]; then
-        # #214: judge BEFORE writing — recording is the only perf run most rigs ever get, and a
-        # regressed number must never become the new baseline by default. E2E_PERF_FORCE=1 is the
-        # conscious "re-record anyway" override from RELEASING.md's investigate-or-re-record flow.
-        if [ -f "$bl" ] && ! _perf_judge "$hr" "$bl" "$hist" "$tol"; then
+        if [ -f "$bl" ] && { [ -z "$base" ] || ! _perf_cmp "$hr" "$base" "$best" "$tol" 1; }; then
             if [ -z "${E2E_PERF_FORCE:-}" ]; then
                 bad "perf: NOT recorded — the measurement regressed (see above). Fix the regression, or consciously re-record with E2E_PERF_FORCE=1."
                 summary "perf"
@@ -1331,20 +1336,18 @@ perf() {
         jq -n --arg hs "$hr" --arg id "$id" --arg cpu "$(lscpu 2>/dev/null | sed -nE 's/^Model name:[ \t]+//p' | head -1)" --arg when "$(date '+%Y-%m-%d')" '{bench_1m_hs: ($hs | tonumber), cpu: $cpu, recorded: $when} + (if $id == "" then {} else {benchmark_id:$id} end)' >"$bl"
         jq -cn --arg hs "$hr" --arg id "$id" --arg tag "${E2E_PERF_TAG:-}" --arg when "$(date '+%Y-%m-%d')" '{tag: $tag, recorded: $when, bench_1m_hs: ($hs | tonumber)} + (if $id == "" then {} else {benchmark_id:$id} end)' >>"$hist"
         ok "perf: baseline recorded — $hr H/s -> $bl + history (commit both files)"
-        # #206: the recording dirties this checkout, and a later `git checkout <tag>` ABORTS on
-        # dirty tracked files — say so now, not at the next deploy.
         printf '  \033[1;33m∙\033[0m collect: %s and %s\n' "$bl" "$hist"
         printf '  \033[1;33m∙\033[0m after they are committed upstream, reset this rig or the next tag deploy aborts: git checkout -- tests/perf-baselines/\n'
         summary "perf"
         return
     fi
-    if [ ! -f "$bl" ]; then
-        printf '  \033[1;33m∙\033[0m no baseline for %s — measured %s H/s; record with E2E_PERF_RECORD=1 and commit tests/perf-baselines/\n' "$(hostname)" "$hr"
-        summary "perf"
-        return
+    if [ "$mode" = gate ]; then
+        _perf_gate "$hr" "$class"
+    elif [ -z "$base" ]; then
+        printf '  \033[1;33m∙\033[0m no history for class %s — measured %s H/s; keep the JSON line above and pass the history as E2E_PERF_HISTORY\n' "$class" "$hr"
+    else
+        _perf_cmp "$hr" "$base" "$best" "$tol" 0 || true
     fi
-    # The bad lines inside the judge already counted any failure; nothing more to decide here.
-    _perf_judge "$hr" "$bl" "$hist" "$tol" || true
     summary "perf"
 }
 
@@ -1352,7 +1355,6 @@ case "${1:-}" in
 provision | verify | control | upgrade | watchdog | perf | teardown | all) ;;
 *) die "usage: sudo bash tests/e2e-real.sh {provision|verify|control|upgrade|watchdog|perf|teardown|all}" ;;
 esac
-# #183: serialize the shared rig — taken after arg parsing, before the first systemctl/API touch.
 rig_lock rigforge e2e-real
 
 case "$1" in

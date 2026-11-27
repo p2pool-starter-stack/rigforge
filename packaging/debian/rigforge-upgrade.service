@@ -1,0 +1,10 @@
+[Unit]
+Description=RigForge package upgrade (rebuild if needed, re-render units, restart after success)
+ConditionPathExists=/var/lib/rigforge/upgrade-pending
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rigforge package-upgrade
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=infinity

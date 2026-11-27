@@ -39,7 +39,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh control     # the writable control path (#236) against real systemd: enable, POST a change, poll to applied, revert
    sudo bash tests/e2e-real.sh upgrade     # the remote-upgrade chain (#308/#322) with REAL git: noop + refused-tag rollback legs, plus a mandatory forward leg that auto-derives the previous real release tag -> current and proves it, then reverts (skip with a reason: E2E_UPGRADE_SKIP_REASON="...")
    sudo bash tests/e2e-real.sh watchdog    # the thermal-hold path (#349) against the real sensor and real systemd: lowers max_temp_c below the live reading, runs the verb once, asserts the stop + hold marker + journal evidence, restores on every exit path (skips explicitly when no temperature reading is available)
-   sudo bash tests/e2e-real.sh perf        # offline bench vs the committed per-host baseline + best-ever history (the release perf gate)
+   sudo E2E_PERF_MODE=gate E2E_PERF_HISTORY=<history.jsonl> bash tests/e2e-real.sh perf   # offline bench; prints JSON keyed by hardware class and fails when the result leaves the history band (report mode without E2E_PERF_MODE=gate)
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
 
@@ -53,10 +53,13 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    ```
 
    Both gates carry the standardized performance checks (see `tests/README.md` › Performance
-   testing): `e2e-real`'s `perf` phase compares the offline bench against the committed per-host
-   baseline in `tests/perf-baselines/`, and `e2e-pithead`'s `api-impact` phase proves the sister
-   API doesn't shave live hashrate. A perf regression fails the gate — investigate or consciously
-   re-record the baseline before tagging.
+   testing): `e2e-real`'s `perf` phase emits JSON keyed by hardware class and compares the offline
+   bench against the history you pass in `E2E_PERF_HISTORY`, and `e2e-pithead`'s `api-impact` phase
+   proves the sister API doesn't shave live hashrate. The phase's mode is the `E2E_PERF_MODE` field
+   (`report` default, never failing; `gate` fails the phase when the result leaves the median of the
+   class's last 5 history results ± 3×MAD, and reports `insufficient history` below 5 results, so a
+   rig that is not the gated hardware is never judged); run the release gate with
+   `E2E_PERF_MODE=gate`, and investigate any `REGRESSION` before tagging.
 
    Each phase must report `E2E-REAL (<phase>): PASS`. This proves a release bundle actually
    builds, tunes, and hashes on real hardware, which the suites can't since they all stub XMRig.
@@ -181,11 +184,19 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
 Pushing the tag triggers the release pipeline
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)), which:
 
-- verifies the tag matches `VERSION` (the build fails otherwise),
+- verifies the tagged commit is on `main` and that the tag matches `VERSION` (the build fails otherwise),
+- builds the release binaries with `make rust-musl` from the pinned toolchain: `--locked` release
+  builds of `x86_64-unknown-linux-musl` (required) and `aarch64-unknown-linux-musl` (a separate
+  non-required job, shipped only if it builds), each statically linked, stripped, and reporting
+  `--version` equal to `VERSION` (#708). CI also runs the static binary inside the pinned e2e
+  image and proves two builds of one commit are byte-identical (the
+  `Rust musl x86_64 static build` check),
 - packages the deploy bundle (`rigforge.sh`, `util/`, `systemd/`, `config.minimal.json`,
-  `config.reference.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`) as
-  `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev files are excluded),
-- generates `SHA256SUMS` for the artifacts,
+  `config.reference.json`, `README.md`, `docs/`, `images/`, `LICENSE`, `VERSION`, plus every built
+  binary under `bin/`) as `rigforge-vX.Y.Z.zip` and `.tar.gz` (`tests/`, `.github/`, and other dev
+  files are excluded),
+- generates `SHA256SUMS` for every release asset — both archives and each attached binary —
+  (`scripts/build-release-bundle.sh`),
 - pulls that version's section from [`CHANGELOG.md`](./CHANGELOG.md) as the release notes,
 - creates the GitHub Release as a draft. Review the generated notes and bundles, then click
   Publish (pre-1.0 `0.x` tags are marked pre-release; `1.0.0`+ are full releases).
@@ -205,41 +216,107 @@ test "$(gh api "repos/$repo/releases/latest" --jq .tag_name)" = vX.Y.Z \
 The `Release latest marker` workflow repeats that read after every non-prerelease publish and fails
 loudly if the marker differs. It is a guard, not a substitute for the explicit publish step above.
 
-For a publicly verifiable perf baseline, explicitly opt into submission:
+For a publicly verifiable perf result, explicitly opt into submission:
 
 ```bash
-sudo env E2E_PERF_SUBMIT=1 E2E_PERF_RECORD=1 E2E_PERF_TAG=vX.Y.Z bash tests/e2e-real.sh perf
+sudo env E2E_PERF_SUBMIT=1 E2E_PERF_HISTORY=<history.jsonl> bash tests/e2e-real.sh perf | tee <run.log>
 ```
 
-This publishes hardware and performance information. The gate verifies the submitted result and
-stores its `benchmark_id` in both the baseline and release history. Copy the returned ID into
+This publishes hardware and performance information. The gate verifies the submitted result; a missing
+ID or failed verification fails the phase. Copy the returned ID into
 [`docs/benchmarks.md`](./docs/benchmarks.md) beside the release and CPU. Without this opt-in, the
-gate remains offline and records no ID. A failed verification or missing ID fails the recording.
+gate remains offline.
 
-After a rig is re-tagged, record its benchmark for the release
-(`E2E_PERF_TAG=vX.Y.Z E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf` on the rig) and commit
-the updated `tests/perf-baselines/` files — the per-release history is what lets the perf gate
-catch slow drift across releases (see `tests/perf-baselines/README.md`). It is whichever rig ran the
-gate, which is **not** always miner-0 despite [`tests/README.md`](./tests/README.md#the-shared-rig-miner-0)
-calling it the shared rig: v1.15.0 was gated on miner-2 and v1.15.1 on miner-3, and miner-0 currently
-cannot pass the gate at all — it dual-boots Windows, so Secure Boot is enabled, kernel lockdown
-(`integrity`) denies every MSR write, and `doctor` counts that as an issue and exits non-zero. Pick a
-rig with Secure Boot off. The rest of the fleet isn't re-tagged on every release, so its baselines are
-only as fresh as the last time each rig was actually touched. `tests/perf-baselines/` legitimately
-carries gaps between releases for rigs that went untouched — it is not a promise that every rig has
-an entry for every tag. The recording is also the per-rig perf gate (#214): it judges against the
-committed baseline and best-ever history before writing, refuses to record a regressed number (fix
-it, or consciously override with `E2E_PERF_FORCE=1`), so a failed rig means investigate before
-calling it healthy. Once a rig's baseline is merged, reset its copy
-(`sudo git checkout -- tests/perf-baselines/` in `/opt/rigforge`): the recording dirties the rig's
-checkout, and the *next* release's
-`git checkout <tag>` aborts on exactly those files (this bit both the v1.4.0 and v1.5.0 deploys).
+After a rig is re-tagged, run `perf` on it and append the JSON line it prints
+(`{"<class>":{"bench_1m_hs":<H/s>}}`, plus `benchmark_id` when submitted; `grep '^{'` of the output) to the history file you keep outside
+the repo; that history, passed back as `E2E_PERF_HISTORY`, is what lets the gate catch slow drift
+across releases. The class is the CPU model unless `E2E_PERF_CLASS` overrides it, so any rig of the
+same hardware shares one history. Recording no longer touches the checkout, so there is nothing to
+commit or reset. The gate may run on a different rig each release: v1.15.0 was
+gated on one rig and v1.15.1 on another. A rig that dual-boots Windows has Secure Boot enabled,
+kernel lockdown (`integrity`) denies every MSR write,
+and `doctor` counts that as an issue and exits non-zero. Pick a rig with Secure Boot off.
+
+The perf gate's mode is `E2E_PERF_MODE` (`report` default, `gate`; the legacy `E2E_PERF_GATE=1`
+activates `gate`). In gate mode the result must stay within the median of the class's last 5 results
+in `E2E_PERF_HISTORY` ± 3×MAD, or the phase fails as `perf REGRESSION` / `perf SPIKE`; fewer than 5
+results for the class report `insufficient history` and are never judged, but gate mode without any
+history input fails rather than pass silently. A `SPIKE` or a `REGRESSION` from deliberate hardware
+or tuning work needs a new class history, documented in the release notes. Existing per-host
+files in `tests/perf-baselines/` keep their tolerance report and the recording judge until they are
+retired by deleting them once the history exists (see `tests/perf-baselines/README.md`); the
+`E2E_PERF_RECORD=1` / `E2E_PERF_FORCE=1` / `E2E_PERF_TAG` flow still writes them and still dirties the
+checkout until then.
 
 To verify a downloaded bundle: `sha256sum -c SHA256SUMS` (see
 [SECURITY.md › Release integrity](./SECURITY.md#release-integrity)).
 
 > The release is created as a draft so a human reviews it before it goes public, a deliberate gate
 > for a tool that installs a root miner. Drop `--draft` from `release.yml` to auto-publish on tag instead.
+
+## The APT feed
+
+Publishing a stable release starts a `Publish APT feed` run (`apt-feed.yml`), which builds, signs
+and deploys the signed flat apt feed to Pages; a published prerelease or draft only produces a
+skipped job. It checks the tag equals `v$(VERSION)` and sits on `main`, and it runs in the
+protected `github-pages` environment, so nothing is signed until the owner approves the run. The
+trust anchor is the fingerprint and public key under `packaging/apt/` on `main`; a feed signed by
+any other key fails the job closed. See
+[SECURITY.md › The apt feed is signed](./SECURITY.md#the-apt-feed-is-signed)
+for the trust model, custody, rotation and recovery.
+
+Owner-only steps before the first feed (one time, in order):
+
+1. Generate the signing key offline on the owner's machine (RSA 3072+, sign-only, never a
+   networked box), and store two passphrase-protected backups offline: one on the owner's machine
+   and one on the project NAS. Keep a revocation certificate with the backups.
+2. Commit the armored public key to `packaging/apt/rigforge.asc` and the 40-hex fingerprint to
+   `packaging/apt/fingerprint` via `develop` (replacing the `pending-key-generation` placeholder),
+   and ship it in the first feed's release or an earlier one: `main` only holds released
+   commits, and the workflow reads the anchor from `main`.
+3. Add the repository secret `APT_SIGNING_KEY` (the armored private key) scoped to the
+   `github-pages` environment, and the repository variable `APT_SIGNING_FINGERPRINT` with the
+   same fingerprint. The armored copy that goes into the secret must carry no passphrase (CI
+   cannot unlock one); the passphrase-protected exports stay offline as the backups.
+4. Protect the `github-pages` environment with the owner as required reviewer — this approval is
+   the gate that keeps a leaked token from signing a feed.
+5. Enable Pages for the repository with **GitHub Actions** as the source, then allow the
+   release-tag pattern (for example `v[0-9]*`) in the `github-pages` environment's **Deployment
+   branches and tags**, alongside the default branch: GitHub creates that environment with a
+   default-branch-only deployment rule when you pick the Actions source, and that rule alone
+   would refuse every release-tag run at the environment gate, leaving only the
+   `workflow_dispatch` rollback from the default branch.
+6. Add a tag ruleset (or branch-protection tag pattern) for `v[0-9]*` so only the release
+   operator can create release tags.
+
+Complete all six steps before publishing the first stable release, and make sure that release
+carries the .deb and its `SHA256SUMS` line (#784), which the job downloads and checksum-verifies.
+Until the variable is set the job skips, and until the steps 4 and 5 rules land, a manual run
+from the default branch could sign and deploy without approval while the release-tag run is
+refused at the environment gate.
+
+Rollback: the feed deploys as `apt/` (the flat feed every apt source points at) plus an archived
+`apt/<version>/` per release. To restore the previous feed, re-run `Publish APT feed` from the
+default branch with **Run workflow** and that release's tag — dispatch runs the workflow file of
+whichever branch is selected, so dispatching is restricted to the default branch. The job
+re-verifies the tag against `main`, requires both release assets to be unmodified since the
+release was published, and republishes. Every deploy re-verifies each archived feed it keeps
+against the pinned key; an archive that does not verify (for example one signed with a rotated
+key) is dropped from `apt/versions`, while its `.deb` stays on its GitHub release.
+
+## The Homebrew formula
+
+Every release uploads a generated `rigforge.rb` beside the tarball (`scripts/build-homebrew-formula.sh`
+renders `Formula/rigforge.rb.in` with the tarball URL and the sha256 from `SHA256SUMS`, and fails if
+they disagree). Publishing a stable release then starts `Bump Homebrew formula`
+(`homebrew-formula.yml`), which re-derives the formula from the published assets and opens or
+updates a pull request from the fixed branch `homebrew/formula-bump` against `main`; it never
+pushes to `main`. The formula is live for `brew tap` users only after that PR merges. Drafts,
+prereleases and a repository without the bot configured skip the job.
+
+Owner-only steps before the first bump (one time): create a GitHub App with contents and pull
+requests write access on this repository only, install it here, then add the repository variable
+`FORMULA_BOT_APP_ID` and the secret `FORMULA_BOT_PRIVATE_KEY`.
 
 ## Notes
 

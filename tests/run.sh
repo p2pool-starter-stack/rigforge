@@ -43,12 +43,12 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for _t in xmrig-overlay xmrig-logging config-ownership feed-identity; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
+for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
 assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
-for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest; do
+for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest root-guard; do
     bash "$ROOT/tests/test-$selftest.sh"
     assert_rc "XMRig $selftest regression (#533)" "$?" 0
 done
@@ -163,7 +163,7 @@ EOF
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" -e "s|\$RIGFORGE_APPLIANCE|${RIGFORGE_APPLIANCE:-}|g" \
-    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
+    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$RIGFORGE_STATE|${RIGFORGE_STATE:-${SCRIPT_DIR:-}}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
     -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g" \
     -e "s|\${WATCHDOG_INTERVAL_MIN}|${WATCHDOG_INTERVAL_MIN:-}|g" \
@@ -1767,8 +1767,8 @@ empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
     PATH="$STUBS:$PATH" _activate_xmrig_build >/dev/null 2>&1
 )
 assert_rc "prune is set -e safe with no archives" "$?" "0"
+bash "$ROOT/tests/test-root-input-hardening.sh" "$SCRIPT" >/dev/null 2>&1 && ok "swap marker, restore archive and benchmark config inputs are validated" || bad "swap marker, restore archive and benchmark config inputs are validated" "regression failed"
 
-# ---------------------------------------------------------------------------
 # Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow
 # recompile + restart are skipped, so re-running is a fast no-op and `upgrade` only acts on a bump.
 echo "== unit: xmrig_already_built detection (#4) =="
@@ -2714,6 +2714,8 @@ bash "$ROOT/tests/test-watchdog-thermal-retry.sh"
 assert_rc "thermal watchdog command retries (#631)" "$?" 0
 bash "$ROOT/tests/test-watchdog-shared-host-guard.sh"
 assert_rc "watchdog shared-host guard ordering (#665)" "$?" 0
+bash "$ROOT/tests/test-watchdog-fail-safe.sh" "$SCRIPT"
+assert_rc "thermal watchdog still protects when something else is wrong (#812)" "$?" 0
 
 echo "== unit: watchdog health check (#139) =="
 WDR="$(mktemp -d "$SANDBOX/wdr.XXXXXX")"
@@ -2737,7 +2739,6 @@ run_watchdog() { # <temp_cmd> <api_cmd> <max_temp_c> [active=y|n]
     )
 }
 wd_calls() { grep -c "$1" "$WDR/calls.log" 2>/dev/null || true; }
-# Healthy: counter stays clear, no restart.
 : >"$WDR/calls.log"
 out="$(run_watchdog 'echo 60' 'echo 12345.6' '')"
 assert_contains "healthy check logs the hashrate" "$out" "healthy (12345.6 H/s)"
@@ -2914,6 +2915,7 @@ np_out="$(
 )"
 assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
 assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
+bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" "regression failed"
 
 # `tune --now` is the on-demand spelling of the autotune engine: it must reach autotune() AND map the
 # --perf/--efficiency flag onto the target. Drive the same stubbed sweep as above through `tune --now`.
@@ -2941,7 +2943,6 @@ tune_now_decide() { # <flags...> -> final prefetch mode
 }
 assert_eq "tune --now delegates to autotune; --perf picks raw-fastest" "$(tune_now_decide --now --perf)" "1"
 assert_eq "tune --now --efficiency keeps the most-efficient mode" "$(tune_now_decide --now --efficiency)" "0"
-# '--short' is the explicit spelling of the default quick '--now' pass — same autotune delegation.
 assert_eq "tune --short is the quick prefetch pass (alias of --now)" "$(tune_now_decide --short --perf)" "1"
 
 # `tune --now` drives the live service, so it's Linux-only — refuse with a clear message elsewhere.
@@ -3029,8 +3030,6 @@ wdead="$( (
 ))"
 assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
 
-# The worker API is open (read-only) with no token by default (#125), so send a Bearer only when set.
-# This real curl branch proves token-bearing probes work without exposing the token in curl argv.
 echo "== unit: _read_api_hashrate sends a Bearer only when ACCESS_TOKEN is set (#125) =="
 clog="$SANDBOX/curl-calls.log"
 curl_stdin="$SANDBOX/curl-stdin.log"
@@ -3048,12 +3047,13 @@ assert_absent "no Authorization header sent when ACCESS_TOKEN is unset" "$(cat "
 hr_auth="$( (
     source "$SCRIPT"
     unset API_CMD
-    ACCESS_TOKEN="miner-0"
+    ACCESS_TOKEN="miner-0" OS_TYPE=Linux
     PATH="$STUBS:$PATH" CURL_LOG="$clog" CURL_STDIN_LOG="$curl_stdin" STUB_API_HR=987.6 _read_api_hashrate
 ))"
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_absent "Bearer <token> is absent from curl argv" "$(cat "$clog")" "miner-0"
 assert_contains "Bearer <token> reaches curl over stdin config" "$(cat "$curl_stdin")" 'Authorization: Bearer miner-0'
+bash "$ROOT/tests/test-config-mode-token-scope.sh" "$SCRIPT" >/dev/null 2>&1 && ok "config.json is re-owned at mode 600, doctor flags looser modes, and the API token is sent only while the miner runs" || bad "config.json is re-owned at mode 600, doctor flags looser modes, and the API token is sent only while the miner runs" "regression failed"
 # #147: support-bundle — everything needed, nothing secret; structural redaction covers both configs.
 echo "== black-box: support-bundle collects + redacts (#147) =="
 SB="$(mktemp -d "$SANDBOX/support.XXXXXX")"
@@ -3270,12 +3270,11 @@ assert_rc "unknown setup arg errors (#146)" "${setup_arg_rc:-0}" "1"
 # -v/-h flag spellings are deliberately excluded by the ^[a-z]+$ filter.
 echo "== black-box: completion script + verb-list drift guard (#145) =="
 comp_out="$(bash "$SCRIPT" completion bash)"
-# Hyphenated operator verbs (support-bundle) complete; the two INTERNAL hyphenated verbs (run by
-# systemd, not operators) are excluded by name.
-# sort -u: the #149 no-arg pre-check case names the same verbs a second time before dispatch.
-dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
+dispatch_verbs="$(sed -n '/_RIGFORGE_SOURCED" = "0" \]; then/,/^fi$/p' "$SCRIPT" | grep -oE '^    [a-z |-]+\)' | tr -d ' )' | tr '|' '\n' | grep -E '^[a-z][a-z-]*$' | grep -vE '^(api-refresh|msr-apply|control-apply|control-upgrade|package-upgrade|shared-host-check|shared-host-run)$' | sort -u | tr '\n' ' ')"
 completed_verbs="$(printf '%s\n' "$comp_out" | sed -n 's/^_rigforge_verbs="\(.*\)"$/\1/p' | tr ' ' '\n' | sort | tr '\n' ' ')"
 assert_eq "completion verbs match the dispatch case exactly (#145)" "$completed_verbs" "$dispatch_verbs"
+pkg_idle="$(RIGFORGE_PKG_STATE="$SANDBOX" bash "$SCRIPT" package-upgrade 2>&1)"
+assert_contains "package-upgrade verb is a no-op without a pending marker (#785)" "$pkg_idle" "No package upgrade is pending"
 assert_contains "completion: all ten tune flags (#145)" "$comp_out" '--now --short --long --live --bench --confirm --efficiency --perf --history --clear'
 # #207: per-verb FLAG drift guard — hand-maintained map (verbs gain flags rarely; the failure
 # message says exactly where to add one). The verb-level guard above can't see flags.
@@ -4167,6 +4166,7 @@ printf 'net      use pool ...\n* HUGE PAGES 100%%\n' >"$DOC/home/worker/xmrig.lo
 cat >"$DOC/config.json" <<EOF
 { "HOME_DIR": "$DOC/home", "pools": [{"url": "h:3333"}] }
 EOF
+chmod 600 "$DOC/config.json"
 run_doctor() { # <meminfo> <msr_dir> <governor_file> <nr1g_file>
     (
         source "$SCRIPT"
@@ -5095,15 +5095,13 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
-# #367: the MSR guard's inputs — config resolution, then the log path — must be distinguishable when
-# either one comes up empty, so a skipped block never reads the same as a failed check (the flake that
-# broke both #66 e2e assertions on a healthy rig).
 echo "== unit: doctor MSR unverifiable — guard-input failures named (#367) =="
 UNV="$DOC/unv"
 mkdir -p "$UNV/home" # HOME_DIR resolves; worker/xmrig.log is deliberately never created
 cat >"$UNV/config.json" <<EOF
 { "HOME_DIR": "$UNV/home", "pools": [{"url": "h:3333"}] }
 EOF
+chmod 600 "$UNV/config.json"
 run_doctor_cfg() { # <config.json path, possibly nonexistent>
     (
         source "$SCRIPT"
@@ -5185,7 +5183,7 @@ echo "== unit: doctor exposure posture advisory (#sec) =="
 EXP="$DOC/exposure"
 mkdir -p "$EXP/home/worker"
 exp_doctor() { # <config-body>
-    printf '%s' "$1" >"$EXP/config.json"
+    (umask 077 && printf '%s' "$1" >"$EXP/config.json")
     (
         source "$SCRIPT"
         OS_TYPE=Linux
@@ -5284,7 +5282,7 @@ un_run() {
         FSTAB="$UN/etc/fstab" LIMITS_CONF="$UN/etc/security/limits.conf" \
         MODULES_LOAD_DIR="$UN/etc/modules-load.d" MODULES_FILE="$UN/etc/modules" \
         HUGEPAGES_1G_DIR="$UN/dev/hp1g" GRUB_DEFAULT="$UN/nonexistent-grub" \
-        BIN_DIR="$UN/usr-local-bin" CALL_LOG="$UN/calls.log" \
+        BIN_DIR="$UN/usr-local-bin" CALL_LOG="$UN/calls.log" RIGFORGE_CONTROL_STATE="$UN/ctl" RIGFORGE_CONTROL_UPGRADE_STATE="$UN/ctlu" \
         RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)
 }
 # setup would have linked $BIN_DIR/rigforge -> $UN/rigforge.sh (SCRIPT_DIR=$UN); uninstall must remove
@@ -5310,14 +5308,14 @@ done
 assert_contains "uninstall disables+stops the control server unit (#273)" "$(cat "$UN/calls.log" 2>/dev/null)" "[systemctl] disable --now rigforge-control.service rigforge-control-apply.path"
 assert_eq "fstab hugepage lines gone" "$(grep -c 'hugetlbfs' "$UN/etc/fstab")" "0"
 assert_contains "fstab unrelated line kept" "$(cat "$UN/etc/fstab")" "proc /proc proc"
-assert_eq "limits memlock lines gone" "$(grep -c 'memlock unlimited' "$UN/etc/security/limits.conf")" "0"
+assert_eq "the mining user's memlock lines gone, a wildcard line left alone (#825)" "$(grep 'memlock unlimited' "$UN/etc/security/limits.conf")" "* soft memlock unlimited"
 assert_contains "limits unrelated line kept" "$(cat "$UN/etc/security/limits.conf")" "root hard nofile 1024"
 assert_eq "modules msr line gone" "$(grep -cx 'msr' "$UN/etc/modules")" "0"
 assert_contains "modules unrelated line kept" "$(cat "$UN/etc/modules")" "loop"
 assert_eq "cli: our 'rigforge' symlink removed (#cli)" "$([ -L "$UN/usr-local-bin/rigforge" ] && echo present || echo gone)" "gone"
 # Safety: a `rigforge` we did NOT create (a real file, or a symlink elsewhere) must be left alone.
 : >"$UN/usr-local-bin/rigforge"
-# Idempotent: a second uninstall is a clean no-op.
+bash "$ROOT/tests/test-uninstall-state.sh" "$SCRIPT" >/dev/null 2>&1 && ok "uninstall removes the control state and leaves a wildcard memlock line (#825)" || bad "uninstall removes the control state and leaves a wildcard memlock line (#825)" "regression failed"
 out="$(un_run)"
 assert_rc "second uninstall exits 0" "$?" "0"
 assert_eq "cli: a non-RigForge 'rigforge' is preserved (#cli)" "$([ -f "$UN/usr-local-bin/rigforge" ] && [ ! -L "$UN/usr-local-bin/rigforge" ] && echo kept || echo removed)" "kept"
@@ -5360,7 +5358,7 @@ una_out="$(cd "$UNA" && RIGFORGE_APPLIANCE=1 PATH="$STUBS:$PATH" \
     FSTAB="$UNA/nonexistent-fstab" LIMITS_CONF="$UNA/nonexistent-limits" \
     MODULES_LOAD_DIR="$UNA/nonexistent-modules-load.d" MODULES_FILE="$UNA/nonexistent-modules" \
     HUGEPAGES_1G_DIR="$UNA/dev/hp1g" GRUB_DEFAULT="$UNA/nonexistent-grub" \
-    BIN_DIR="$UNA/usr-local-bin" CALL_LOG="$UNA/calls.log" \
+    BIN_DIR="$UNA/usr-local-bin" CALL_LOG="$UNA/calls.log" RIGFORGE_CONTROL_STATE="$UNA/ctl" RIGFORGE_CONTROL_UPGRADE_STATE="$UNA/ctlu" \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" uninstall --yes </dev/null 2>&1)"
 assert_rc "appliance uninstall exits 0 (#353)" "$?" "0"
 disable_calls="$(grep -F '[systemctl] disable' "$UNA/calls.log" 2>/dev/null)"
@@ -5567,7 +5565,6 @@ tt_ovr="$(tune_target performance --efficiency)"
 assert_contains "--efficiency overrides config performance (#tunefix)" "$tt_ovr" "Optimization target: efficiency"
 assert_eq "an explicit target has no 'from config' note (#tunefix)" "$(printf '%s' "$tt_ovr" | grep -c 'from your autotune config')" "0"
 assert_contains "--perf overrides config efficiency (#tunefix)" "$(tune_target efficiency --perf)" "Optimization target: performance"
-# the sudo auto-elevate is gated on an interactive TTY, so a non-interactive (</dev/null) tune never re-execs.
 assert_eq "non-interactive tune does not auto-elevate (#tunefix)" "$(tune_target performance | grep -c 're-running with sudo')" "0"
 # Cover the interactive auto-elevate path. Run it as a real child process (so coverage sees the exec) with
 # RIGFORGE_FORCE_ELEVATE=1 forcing the gate regardless of the runner's uid, and a PATH `sudo` stub so exec
@@ -5579,6 +5576,7 @@ elev_out="$(cd "$TT" && PATH="$ELB:$STUBS:$PATH" RIGFORGE_FORCE_ELEVATE=1 STUB_U
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_contains "tune auto-elevates with sudo when interactive (#tunefix)" "$elev_out" "REEXEC:"
 assert_contains "tune re-execs the same tune command (#tunefix)" "$elev_out" "tune --live"
+bash "$ROOT/tests/test-sudo-env-forward.sh" "$SCRIPT" >/dev/null 2>&1 && ok "tune, bios and stress keep TUNE_ settings across sudo (#823)" || bad "tune, bios and stress keep TUNE_ settings across sudo (#823)" "regression failed"
 
 # tune --history is read-only: it reports the applied tuning ($OVR) + the last full run ($TLOG) the tune
 # above wrote. STUB_UNAME_S=Darwin skips the Linux-only periodic-autotune section (covered by the rig e2e).
@@ -6004,7 +6002,6 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
     RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_rc "live power tune exits 0 (#81)" "$?" "0"
 assert_eq "live mode records watts via TUNE_POWER_CMD (#81)" "$(J "$TLOG" '.results[0].watts == 90')" "true"
-# tune --live is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" tune --live </dev/null 2>&1)"
 assert_rc "tune --live rejected on non-Linux" "$?" "1"
 assert_contains "tune --live non-Linux message" "$out" "only supported on Linux"
@@ -6025,7 +6022,7 @@ CL347="$TN/calls347.log"
 rm -f "$FLAG347"
 : >"$CL347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CL347" LOGROTATE_DIR="$TN/logrotate" \
-    FLAG347="$FLAG347" API_CMD='touch "$FLAG347"; sleep 60; echo 1500' \
+    FLAG347="$FLAG347" API_CMD='sleep 60 & echo $! >"$FLAG347"; wait; echo 1500' \
     TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
     TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
     exec bash "$SCRIPT" tune --live </dev/null >"$TN/abort347.out" 2>&1) &
@@ -6042,6 +6039,7 @@ assert_eq "mid-sweep: overrides hold the candidate, not the pre-state (#347)" \
 RESTARTS_PRE347="$(grep -c '\[systemctl\] restart' "$CL347")"
 kill "$PID347" 2>/dev/null
 wait "$PID347" 2>/dev/null
+kill "$(cat "$FLAG347")" 2>/dev/null
 assert_contains "aborted live sweep announces the restore (#347)" "$(cat "$TN/abort347.out")" "restoring the pre-tune overrides"
 assert_eq "aborted live sweep: overrides byte-identical to pre-sweep (#347)" "$(cat "$OVR")" "$PRE347"
 RESTARTS_POST347="$(grep -c '\[systemctl\] restart' "$CL347")"
@@ -6222,7 +6220,6 @@ assert_eq "wrmsr recorded per candidate (#66)" "$(J "$TLOG" '.results[0] | has("
 # fixed value (false happened to be the last candidate in the case above).
 out="$(wrmsr_run true "true false")"
 assert_eq "wrmsr: measured winner (true) is pinned (#66)" "$(J "$OVR" '.randomx.wrmsr')" "true"
-# A single explicit value -> knob inactive -> not pinned (#7-style isolation).
 out="$(wrmsr_run false "true")"
 assert_eq "wrmsr not pinned when single-valued (#66)" "$(J "$OVR" '.randomx.wrmsr // "absent"')" "absent"
 # OFF BY DEFAULT: with TUNE_WRMSR unset (arg omitted), _seed_wr yields a single token (the base value),
@@ -6230,6 +6227,7 @@ assert_eq "wrmsr not pinned when single-valued (#66)" "$(J "$OVR" '.randomx.wrms
 out="$(wrmsr_run false)"
 assert_eq "wrmsr OFF by default (unset -> not swept/pinned) (#66)" "$(J "$OVR" '.randomx.wrmsr // "absent"')" "absent"
 assert_absent "wrmsr default isn't in the active-knob set (#66)" "$out" "wrmsr="
+bash "$ROOT/tests/test-tune-pins.sh" "$SCRIPT" >/dev/null 2>&1 && ok "a plain tune keeps knobs an earlier tune pinned (#815)" || bad "a plain tune keeps knobs an earlier tune pinned (#815)" "regression failed"
 
 # #65: reservation-aware thread exploration. With a small HugePages reservation, a thread count whose
 # 2MB-page need exceeds it is recorded as hugepages_capped (ran without full backing = a floor reading),
@@ -6773,7 +6771,6 @@ out="$(cd "$TN" && PATH="$STUBS:$PATH" LOGROTATE_DIR="$TN/logrotate" \
 assert_rc "autotune (flat) exits 0 (#46)" "$?" "0"
 assert_contains "autotune keeps current mode when nothing wins (#46)" "$out" "no mode beat the baseline"
 assert_eq "autotune left prefetch at the current mode (#46)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
-# autotune is Linux-only.
 out="$(cd "$TN" && PATH="$STUBS:$PATH" STUB_UNAME_S=Darwin RIGFORGE_HOME="$PWD" bash "$SCRIPT" autotune </dev/null 2>&1)"
 assert_rc "autotune rejected on non-Linux" "$?" "1"
 
@@ -6794,7 +6791,7 @@ rm -f "$FLAGAT347" "$ACTR347"
 : >"$CLAT347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CLAT347" LOGROTATE_DIR="$TN/logrotate" \
     FLAGAT347="$FLAGAT347" ACTR347="$ACTR347" \
-    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then touch "$FLAGAT347"; sleep 60; fi; echo 1200' \
+    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then sleep 60 & echo $! >"$FLAGAT347"; wait; fi; echo 1200' \
     AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 \
     exec bash "$SCRIPT" autotune </dev/null >"$TN/abortat347.out" 2>&1) &
 PIDAT347=$!
@@ -6808,6 +6805,7 @@ assert_eq "mid-sweep: overrides hold the candidate mode, not the baseline (#347)
 RESTARTS_PREAT347="$(grep -c '\[systemctl\] restart' "$CLAT347")"
 kill "$PIDAT347" 2>/dev/null
 wait "$PIDAT347" 2>/dev/null
+kill "$(cat "$FLAGAT347")" 2>/dev/null
 assert_contains "aborted autotune announces the restore (#347)" "$(cat "$TN/abortat347.out")" "sweep interrupted — restoring prefetch_mode=1"
 assert_eq "aborted autotune: prefetch back at the pre-sweep mode (#347)" "$(J "$OVR" '.randomx.scratchpad_prefetch_mode')" "1"
 assert_eq "aborted autotune: merged threads survive the abort restore (#347)" "$(J "$OVR" '.cpu.rx')" "4"
@@ -6928,7 +6926,6 @@ assert_rc "restore exits 0" "$?" "0"
 assert_eq "restore brought back config.json" "$(J "$FR/config.json" '.DONATION')" "7"
 assert_eq "restore brought back the tuning" "$(J "$FR/data/worker/tune-overrides.json" '.randomx.scratchpad_prefetch_mode')" "2"
 assert_contains "restore warns tuning is CPU-specific" "$out" "CPU-specific"
-# Validation + safety.
 out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y </dev/null 2>&1)"
 assert_rc "restore without an archive fails" "$?" "1"
 out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" restore -y "$BK/nope.tar.gz" </dev/null 2>&1)"
@@ -6960,6 +6957,7 @@ out="$(cd "$FR" && PATH="$STUBS:$PATH" RIGFORGE_HOME="$PWD" bash "$SCRIPT" resto
 assert_rc "restore of a semantically invalid config fails" "$?" "1"
 assert_contains "restore of a semantically invalid config is reported" "$out" "validation"
 assert_eq "invalid config did not clobber the existing config" "$(cksum "$FR/config.json")" "$before_sum"
+bash "$ROOT/tests/test-config-write-safety.sh" "$SCRIPT" >/dev/null 2>&1 && ok "restore snapshots and atomically replaces config.json; api-refresh reports failed writes (#820)" || bad "restore snapshots and atomically replaces config.json; api-refresh reports failed writes (#820)" "regression failed"
 # backup needs a config to snapshot.
 NOC="$(mktemp -d "$SANDBOX/noc.XXXXXX")"
 cp "$ROOT/VERSION" "$NOC/"
@@ -7014,7 +7012,7 @@ rst_stage="$(tail -1 "$RST/mktemp.log" 2>/dev/null)"
 if [ -z "$rst_stage" ]; then
     bad "restore leak-test setup (#353)" "mktemp was never logged — the wrapper stub isn't wired correctly"
 else
-    assert_rc "restore with a failing tar -xzf exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
+    assert_rc "restore with a failing tar exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
     assert_eq "restore's EXIT trap removed the staging tempdir after the abort (#353)" "$([ -d "$rst_stage" ] && echo leaked || echo clean)" "clean"
 fi
 
@@ -7468,7 +7466,7 @@ if [ "$APISRV_SKIP" = 0 ]; then
     printf '{broken' >"$APISRV/config.json"
     python3 "$ROOT/util/api-server.py" 127.0.0.1 "$APIPORT" "$APISRV" "$APISRV/config.json" 2>/dev/null &
     BROKEN_PID=$!
-    sleep 1
+    for _ in $(seq 1 50); do kill -0 "$BROKEN_PID" 2>/dev/null && sleep 0.2 || break; done
     if kill -0 "$BROKEN_PID" 2>/dev/null; then
         bad "server started despite an unreadable config (token posture unknown)" ""
         kill "$BROKEN_PID" 2>/dev/null || true
@@ -8860,12 +8858,8 @@ assert_eq "the recorded rollback backup really exists on disk (#435)" "$([ -f "$
 
 PATH="$STUBS:$PATH" source "$ROOT/tests/test-control-upgrade.sh"
 PATH="$STUBS:$PATH" source "$ROOT/tests/test-fetch-proxy.sh"
+PATH="$STUBS:$PATH" source "$ROOT/tests/test-package-mode.sh"
 
-# Same failure, a second invocation shape, found on the v1.16.0 gate (#401). git exempts a repo from
-# its dubious-ownership check when the repo is owned by $SUDO_UID, so a plain
-# `sudo bash tests/e2e-real.sh upgrade` works. Nest that inside another sudo — a `nohup setsid`
-# repo owned by the operator, and every bare `git -C "$HERE"` in the upgrade phase fatals with
-# "detected dubious ownership". The releaser then reads a RED on a gate that is fine.
 echo "== unit: e2e-real git calls survive a nested sudo (#401) =="
 assert_eq "e2e-real callers snapshot four service states and hide bearer argv" "$(printf '%s|%s|%s|%s' "$(grep -c '^    _snapshot_control_state$' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec 'systemctl is-(active|enabled).*&& CTL_.*=1' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec 'curl .*Authorization: Bearer' "$ROOT/tests/e2e-real.sh")" "$(grep -Ec '(auth|_auth)=\(' "$ROOT/tests/e2e-real.sh")")" "2|4|0|0"
 bare_e2e_git=$(grep -nE 'git -C "\$HERE"' "$ROOT/tests/e2e-real.sh" | grep -v 'safe\.directory' || true)
@@ -9066,7 +9060,7 @@ fi
 # tests do it below) rather than reimplement it — only phase and the bench are stubbed.
 echo "== unit: e2e-real perf record gate (#214/#267) =="
 PJ="$(mktemp -d "$SANDBOX/pj.XXXXXX")"
-sed -n '/^ok() {$/,/^}/p; /^bad() {$/,/^}/p; /^summary() {$/,/^}/p; /^_perf_judge()/,/^}/p; /^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
+sed -n '/^ok() {$/,/^}/p; /^bad() {$/,/^}/p; /^summary() {$/,/^}/p; /^_perf_[a-z]*()/,/^}/p; /^perf()/,/^}/p' "$ROOT/tests/e2e-real.sh" >"$PJ/fns.sh"
 cat >"$PJ/rigforge-stub" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = bench ] && echo "${STUB_BENCH_HS:-10000.0} H/s"
@@ -9104,10 +9098,10 @@ assert_eq "record: regressed history untouched (#214)" "$(grep -c . "$PJ/tests/p
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 E2E_PERF_FORCE=1 run_perf)"
 assert_contains "record: FORCE records a regression loudly (#214)" "$out" "REGRESSED measurement"
 assert_eq "record: FORCE actually wrote (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
-out="$(STUB_BENCH_HS=9000.0 run_perf)"
+out="$(STUB_BENCH_HS=9000.0 E2E_PERF_GATE=1 run_perf)"
 rc=$?
-[ "$rc" -ge 1 ] && ok "judge: regression vs best-ever still fails (#214)" || bad "judge: regression vs best-ever still fails (#214)" "rc=$rc"
-assert_contains "judge: ratchet names best-ever (#214)" "$out" "RATCHET"
+[ "$rc" -ge 1 ] && ok "judge: gate with no history input fails loudly (#214/#793)" || bad "judge: gate with no history input fails loudly (#214/#793)" "rc=$rc"
+assert_contains "judge: the gate names the missing history (#793)" "$out" "no history input"
 rm "$PJ/tests/perf-baselines/$host.json" "$PJ/tests/perf-baselines/$host.history.jsonl"
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 run_perf)"
 rc=$?
@@ -9534,7 +9528,7 @@ assert_eq "feed: appliance mode is a boolean true (#452)" "$(jq -c '.rigforge.ap
 assert_eq "feed: baked stamp is preserved (#452)" "$(jq -r '.rigforge.stamp' "$FEEDFX/data/summary.json")" "$(cat "$FEEDFX/RIGFORGE_REF")"
 (set -- && source "$ROOT/tests/test-randomx-mode.sh") && ok "RandomX mode regression suite (#532)" || bad "RandomX mode regression suite (#532)" "failed"
 source "$ROOT/tests/daemon-pools.sh"
-# ---------------------------------------------------------------------------
+bash "$ROOT/tests/test-l3-units.sh" "$SCRIPT" >/dev/null 2>&1 && ok "L3 size units and the extra-reserve warning (#819)" || bad "L3 size units and the extra-reserve warning (#819)" "regression failed"
 echo ""
 echo "== tree hygiene: the suite writes nothing into the tracked tree (#418) =="
 if [ "$PYCACHE_PRE" = present ]; then

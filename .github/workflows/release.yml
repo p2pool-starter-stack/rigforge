@@ -11,14 +11,75 @@ on:
       - "v*"
 
 permissions:
-  contents: write # create the GitHub Release + upload assets
+  contents: read
 
 jobs:
+  build-x86_64:
+    name: Build the x86_64 release binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Build the static, stripped binary
+        run: make rust-musl
+      - name: Assert the binary reports the repository VERSION
+        run: make rust-version
+      - name: Stage the release asset
+        run: |
+          set -euo pipefail
+          install -m 0755 target/x86_64-unknown-linux-musl/release/rigforge-rs \
+            "rigforge-$TAG-x86_64-unknown-linux-musl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-binary-x86_64
+          path: rigforge-${{ env.TAG }}-x86_64-unknown-linux-musl
+          if-no-files-found: error
+
+  build-aarch64:
+    name: Build the aarch64 release binary (best effort)
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Add the aarch64 musl target
+        run: rustup target add aarch64-unknown-linux-musl
+      - name: Build the static, stripped binary
+        run: make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
+      - name: Assert the binary reports the repository VERSION
+        run: make rust-version MUSL_TARGET=aarch64-unknown-linux-musl
+      - name: Stage the release asset
+        run: |
+          set -euo pipefail
+          install -m 0755 target/aarch64-unknown-linux-musl/release/rigforge-rs \
+            "rigforge-$TAG-aarch64-unknown-linux-musl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-binary-aarch64
+          path: rigforge-${{ env.TAG }}-aarch64-unknown-linux-musl
+          if-no-files-found: error
+
   release:
     name: Build & publish release
+    needs: [build-x86_64, build-aarch64]
+    if: ${{ !cancelled() && needs.build-x86_64.result == 'success' }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,6 +87,16 @@ jobs:
           # Releasing goes through `gh` with GH_TOKEN below, not `git push`, so the checkout never
           # needs the token left in .git/config (zizmor: artipacked).
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require the tag to be on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::Tag '$TAG' is not on main. Tag from main and retag."
+            exit 1
+          fi
 
       - name: Verify the tag matches VERSION
         run: |
@@ -36,17 +107,25 @@ jobs:
             exit 1
           fi
 
+      - name: Download the release binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf relbin
+          mkdir relbin
+          gh run download "$GITHUB_RUN_ID" -n release-binary-x86_64 -D relbin
+          if ! gh run download "$GITHUB_RUN_ID" -n release-binary-aarch64 -D relbin 2>"$RUNNER_TEMP/aarch64.err"; then
+            printf '::warning::aarch64 binary not bundled: %s\n' "$(tr '\n' ' ' <"$RUNNER_TEMP/aarch64.err")"
+            rm -f relbin/rigforge-"$TAG"-aarch64-unknown-linux-musl
+          fi
+          chmod 0755 relbin/rigforge-"$TAG"-*-unknown-linux-musl
+
       - name: Build the deploy bundle (.zip + .tar.gz + checksums)
         run: |
           set -euo pipefail
-          stage="rigforge-$TAG"
-          mkdir -p "$stage"
-          # Runtime files a user needs to deploy a worker — no tests/, .github/, or dev cruft.
-          cp -a rigforge.sh util systemd config.minimal.json config.reference.json README.md docs images LICENSE VERSION "$stage/"
-          zip -rq "$stage.zip" "$stage"
-          tar -czf "$stage.tar.gz" "$stage"
-          sha256sum "$stage.zip" "$stage.tar.gz" > SHA256SUMS
-          echo "--- SHA256SUMS ---"; cat SHA256SUMS
+          bash scripts/build-release-bundle.sh "$TAG" relbin/rigforge-"$TAG"-*-unknown-linux-musl
+          bash scripts/build-homebrew-formula.sh "$TAG" SHA256SUMS rigforge.rb "rigforge-$TAG.tar.gz"
 
       - name: Extract release notes from CHANGELOG.md
         run: |
@@ -65,6 +144,8 @@ jobs:
           echo "--- notes ---"; cat RELEASE_NOTES.md
 
       - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # Mark 0.x tags as pre-releases.
@@ -75,7 +156,10 @@ jobs:
           # go back to publishing automatically on tag push.
           # Checksums only, by decision (2026-07-11): release signing was removed — see
           # SECURITY.md > Release integrity. SHA256SUMS proves the bundle matches what CI built.
-          assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS)
+          assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS rigforge.rb)
+          for binary in relbin/rigforge-"$TAG"-*-unknown-linux-musl; do
+            [ -e "$binary" ] && assets+=("$binary")
+          done
           gh release create "$TAG" $pre --draft \
             --title "RigForge $TAG" \
             --notes-file RELEASE_NOTES.md \

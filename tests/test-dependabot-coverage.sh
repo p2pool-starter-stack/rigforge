@@ -52,6 +52,10 @@ grep -q '"node_modules/markdownlint-cli2"' package-lock.json ||
     fail "package-lock.json does not install markdownlint-cli2"
 grep -q "\"markdownlint-cli2\": \"$want\"" package-lock.json ||
     fail "package-lock.json does not pin the package.json version ($want)"
+grep -A1 '"overrides"' package.json | grep -q '"katex": "0.18.2"' ||
+    fail "package.json must override katex to the patched 0.18.2 (GHSA-238p-pmpm-9mq7)"
+awk '/"node_modules\/katex": \{/{f=1} f&&/"version"/{print; exit}' package-lock.json | grep -q '"0.18.2"' ||
+    fail "package-lock.json must install katex 0.18.2"
 grep -q 'npm ci' Makefile || fail "make lint-md must install from the lockfile (npm ci)"
 grep -q 'npm ci || echo' Makefile || fail "dev-setup must reach pre-commit install even when npm ci cannot"
 grep -q 'npx markdownlint-cli2' Makefile || fail "make lint-md must run the local markdownlint-cli2"
