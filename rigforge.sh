@@ -4202,18 +4202,9 @@ _control_commit() { # <staged.json> <backups-dir>
         fi
     fi
     _tor_staged_donation_conflict "$change" && return 1
-    # #415: resolve masked pool secrets before jq's array-replacing overlay. Match a stored pool by
-    # (url,user), keep only a real stored secret, and reject any sentinel left unresolved. The raw
-    # config view matters: normalized POOLS_JSON invents pass="x" for an absent password (#429).
     if printf '%s' "$change" | jq -e '(.pools | type) == "array"' >/dev/null 2>&1; then
         local resolved unresolved
-        # One jq, two output lines: the surviving markers first, the resolved config second. The
-        # marker check is a post-condition on the merged pools rather than a second pre-scan — after
-        # the merge, a marker that is STILL there is exactly one the rig could not resolve. Reading it
-        # out of the same pass also covers a marker in a pool key this resolver does not handle, which
-        # a pre-scan of the two known keys would have waved through into config.json, and it leaves a
-        # single failure branch: a scan that cannot RUN is no longer a separate outcome to name.
-        resolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" 'def pkey: [(.url? // ""), (.user? // "")]; def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({}; if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end); def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v | if ($v | type) == "string" and $v != "" then $v else null end; ($base[0] | lut) as $lut | (.pools |= map(if type == "object" then . as $p | reduce ("pass", "tls-fingerprint") as $k (.; ($p | stored($lut; $k)) as $keep | if $keep != null and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true) or ($p | has($k) | not)) then .[$k] = $keep else . end) else . end)) as $r | ([$r.pools[]? | select(type == "object") | to_entries[] | select((.value | type) == "object" and .value.__secret__ == true) | .key] | unique | join(",")), ($r | tojson)' 2>/dev/null) || {
+        resolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" 'def pkey: [(.url? // ""), (.user? // "")]; def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({}; if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end); def stored($lut; $k): ($lut[pkey | tojson] // {}) as $s | $s[$k] as $v | if ($v | type) != "string" or $v == "" then null elif $k == "pass" and $s.socks5 != .socks5 then {"__secret__": true} else $v end; ($base[0] | lut) as $lut | (.pools |= map(if type == "object" then . as $p | reduce ("pass", "tls-fingerprint") as $k (.; ($p | stored($lut; $k)) as $keep | if $keep != null and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true) or ($p | has($k) | not)) then .[$k] = $keep else . end) else . end)) as $r | ([$r.pools[]? | select(type == "object") | to_entries[] | select((.value | type) == "object" and .value.__secret__ == true) | .key] | unique | join(",")), ($r | tojson)' 2>/dev/null) || {
             echo "rejected secret-merge-failed"
             return 1
         }
