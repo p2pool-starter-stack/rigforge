@@ -48,8 +48,12 @@ grep -q "GITHUB_TOKEN: ''" "$WF" ||
     fail "the build step must not hold a usable token while it compiles third-party code"
 grep -q 'success()' "$WF" ||
     fail "the PR step must not run after a failed build-verify (a custom if overrides the implicit success())"
-grep -q 'user.login' "$WF" ||
+grep -q 'author.login' "$WF" ||
     fail "tracking-issue dedup must match only issues the workflow identity itself opened"
+! grep -q 'gh api user' "$WF" ||
+    fail "GET /user is forbidden for the job token; the dedup must not call it"
+! grep -q -- '--json number,user' "$WF" ||
+    fail "gh issue list has no user field; use author"
 out=$(printf 'CVE-2024-%s\n' 99999999999999999999999999999999999999 | scan_cves)
 [ "${#out}" -le 27 ] ||
     fail "scan_cves must bound the id length so a hostile notes body cannot overflow the 255-char issue title"
