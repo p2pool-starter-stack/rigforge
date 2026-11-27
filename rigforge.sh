@@ -13,7 +13,6 @@
 #
 
 set -Eeuo pipefail
-
 # --- Logging Utilities ---
 # Color only when stdout is a terminal and NO_COLOR (https://no-color.org) is unset/empty (#144) —
 # pipes, captures, CI logs, and the journal entries timer units write all get plain text. The
@@ -62,21 +61,23 @@ _script_dir() {
     cd -P "$(dirname "$src")" &>/dev/null && pwd
 }
 
-: "${RIGFORGE_LIB:=${RIGFORGE_HOME:-$(_script_dir)}}" "${RIGFORGE_STATE:=$RIGFORGE_LIB}" "${SCRIPT_DIR:=$RIGFORGE_LIB}"
+for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
+[ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find -H "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
+: "${RIGFORGE_LIB:=${RIGFORGE_HOME:-$(_script_dir)}}" "${RIGFORGE_STATE:=$RIGFORGE_LIB}" "${SCRIPT_DIR:=$RIGFORGE_LIB}" "${_RIGFORGE_SELF:=$(_script_dir)}"
 # shellcheck source=util/config-apply-state.sh
-source "$RIGFORGE_LIB/util/config-apply-state.sh"
+source "$_RIGFORGE_SELF/util/config-apply-state.sh"
 # shellcheck source=util/xmrig-overlay.sh
-source "$RIGFORGE_LIB/util/xmrig-overlay.sh"
+source "$_RIGFORGE_SELF/util/xmrig-overlay.sh"
 # shellcheck source=util/daemon-pools.sh
-source "$RIGFORGE_LIB/util/daemon-pools.sh"
+source "$_RIGFORGE_SELF/util/daemon-pools.sh"
 # shellcheck source=util/upgrade-check.sh
-source "$RIGFORGE_LIB/util/upgrade-check.sh"
+source "$_RIGFORGE_SELF/util/upgrade-check.sh"
 # shellcheck source=util/package-mode.sh
-source "$RIGFORGE_LIB/util/package-mode.sh"
+source "$_RIGFORGE_SELF/util/package-mode.sh"
 # shellcheck source=util/fetch-proxy.sh
-source "$RIGFORGE_LIB/util/fetch-proxy.sh"
+source "$_RIGFORGE_SELF/util/fetch-proxy.sh"
 # shellcheck source=util/package-upgrade.sh
-source "$RIGFORGE_LIB/util/package-upgrade.sh"
+source "$_RIGFORGE_SELF/util/package-upgrade.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
 CONFIG_JSON="$RIGFORGE_STATE/config.json"
 APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$RIGFORGE_STATE/.rigforge-appliance}"
@@ -86,7 +87,6 @@ REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
 SERVICE_NO_START=false
-
 # Pinned XMRig release for reproducible builds; environment-overridable.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
@@ -151,13 +151,13 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 [ "$_RIGFORGE_SOURCED" = "0" ] && trap on_err ERR
 
 # shellcheck source=util/shared-host.sh
-source "$RIGFORGE_LIB/util/shared-host.sh"
+source "$_RIGFORGE_SELF/util/shared-host.sh"
 # shellcheck source=util/randomx.sh
-source "$RIGFORGE_LIB/util/randomx.sh"
+source "$_RIGFORGE_SELF/util/randomx.sh"
 # shellcheck source=util/control-guards.sh
-source "$RIGFORGE_LIB/util/control-guards.sh"
+source "$_RIGFORGE_SELF/util/control-guards.sh"
 # shellcheck source=util/feed-identity.sh
-source "$RIGFORGE_LIB/util/feed-identity.sh"
+source "$_RIGFORGE_SELF/util/feed-identity.sh"
 
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
@@ -811,7 +811,6 @@ prepare_workspace() {
         mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
     fi
 
-    # Fix permissions to ensure the current user can write
     if [ "${EUID:-$(id -u)}" -eq 0 ] || [ ! -w "$WORKER_ROOT" ]; then
         if [ "$OS_TYPE" == "Darwin" ]; then
             sudo chown -R "$REAL_USER" "$WORKER_ROOT"
@@ -1058,7 +1057,7 @@ _config_install() {
 }
 
 # shellcheck source=util/rx-profile.sh
-source "$RIGFORGE_LIB/util/rx-profile.sh"
+source "$_RIGFORGE_SELF/util/rx-profile.sh"
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
     _config_apply_begin "${1:-}"
@@ -2522,9 +2521,9 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
 }
 
 # shellcheck source=util/benchmark.sh
-source "$RIGFORGE_LIB/util/benchmark.sh"
+source "$_RIGFORGE_SELF/util/benchmark.sh"
 # shellcheck source=util/stress.sh
-source "$RIGFORGE_LIB/util/stress.sh"
+source "$_RIGFORGE_SELF/util/stress.sh"
 
 # One offline benchmark of a config file → peak H/s (empty on failure).
 _bench_once() {
@@ -4782,7 +4781,7 @@ watchdog() {
 }
 
 # shellcheck source=util/doctor-report.sh
-source "$RIGFORGE_LIB/util/doctor-report.sh"
+source "$_RIGFORGE_SELF/util/doctor-report.sh"
 # Read a /sys/class/dmi/id field (board/BIOS identity; world-readable). Empty if missing. #78.
 _dmi() {
     [ -r "$DMI_DIR/$1" ] || return 0

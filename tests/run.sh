@@ -45,8 +45,9 @@ bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
-bash "$ROOT/tests/test-lib-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
+bash "$ROOT/tests/test-lib-state.sh" "$SCRIPT"
+assert_rc "read-only lib dir with writable state (#781)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
 assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
 for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest root-guard; do
