@@ -13,7 +13,6 @@
 #
 
 set -Eeuo pipefail
-
 # --- Logging Utilities ---
 # Color only when stdout is a terminal and NO_COLOR (https://no-color.org) is unset/empty (#144) —
 # pipes, captures, CI logs, and the journal entries timer units write all get plain text. The
@@ -61,32 +60,32 @@ _script_dir() {
     done
     cd -P "$(dirname "$src")" &>/dev/null && pwd
 }
-
+for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
+[ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find -H "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
 # shellcheck source=util/config-apply-state.sh
-source "$(_script_dir)/util/config-apply-state.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
 # shellcheck source=util/xmrig-overlay.sh
-source "$(_script_dir)/util/xmrig-overlay.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/xmrig-overlay.sh"
 # shellcheck source=util/daemon-pools.sh
-source "$(_script_dir)/util/daemon-pools.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/daemon-pools.sh"
 # shellcheck source=util/upgrade-check.sh
-source "$(_script_dir)/util/upgrade-check.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/upgrade-check.sh"
 # shellcheck source=util/package-mode.sh
-source "$(_script_dir)/util/package-mode.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/package-mode.sh"
 # shellcheck source=util/fetch-proxy.sh
-source "$(_script_dir)/util/fetch-proxy.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/fetch-proxy.sh"
 # shellcheck source=util/package-upgrade.sh
-source "$(_script_dir)/util/package-upgrade.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/package-upgrade.sh"
 REAL_USER="${SUDO_USER:-${RIGFORGE_OPERATOR:-${USER:-$(id -un)}}}"
-CONFIG_JSON="$SCRIPT_DIR/config.json"
-APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$SCRIPT_DIR/.rigforge-appliance}"
+CONFIG_JSON="$(_state_dir)/config.json"
+APPLIANCE_MARKER="${RIGFORGE_APPLIANCE_MARKER:-$(_state_dir)/.rigforge-appliance}"
 LEGACY_APPLIANCE_UNIT="${RIGFORGE_LEGACY_APPLIANCE_UNIT:-/run/systemd/system/xmrig.service}"
-CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$SCRIPT_DIR/.rigforge-config-meta.json}" # #254 provenance sidecar
+CONFIG_META_FILE="${RIGFORGE_CONFIG_META:-$(_state_dir)/.rigforge-config-meta.json}"
 REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
 SERVICE_NO_START=false
-
 # Pinned XMRig release for reproducible builds; environment-overridable.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
@@ -151,13 +150,13 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 [ "$_RIGFORGE_SOURCED" = "0" ] && trap on_err ERR
 
 # shellcheck source=util/shared-host.sh
-source "$(_script_dir)/util/shared-host.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/shared-host.sh"
 # shellcheck source=util/randomx.sh
-source "$(_script_dir)/util/randomx.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/randomx.sh"
 # shellcheck source=util/control-guards.sh
-source "$(_script_dir)/util/control-guards.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/control-guards.sh"
 # shellcheck source=util/feed-identity.sh
-source "$(_script_dir)/util/feed-identity.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/feed-identity.sh"
 
 # --- Helpers: idempotent edits, build math & GRUB cmdline ---
 
@@ -1061,7 +1060,7 @@ _config_install() {
 }
 
 # shellcheck source=util/rx-profile.sh
-source "$(_script_dir)/util/rx-profile.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/rx-profile.sh"
 generate_xmrig_config() {
     log "Generating hardware-optimized XMRig configuration..."
     _config_apply_begin "${1:-}"
@@ -1244,10 +1243,10 @@ _ensure_miner_user() {
 _render_xmrig_unit() {
     local msr_line=""
     [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
-    if [ -n "${MINER_USER:-}" ] && [ "${SHARED_HOST:-false}" != true ]; then msr_line="ExecStartPre=+$SCRIPT_DIR/rigforge.sh msr-apply"; fi
+    if [ -n "${MINER_USER:-}" ] && [ "${SHARED_HOST:-false}" != true ]; then msr_line="ExecStartPre=+$(_lib_dir)/rigforge.sh msr-apply"; fi
     WORKER_ROOT="$WORKER_ROOT" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
         envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
-        <"$SCRIPT_DIR/systemd/xmrig.service.template" | _shared_host_unit | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
+        <"$(_lib_dir)/systemd/xmrig.service.template" | _shared_host_unit | _unit_split_env | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 }
 
 install_service() {
@@ -1310,12 +1309,12 @@ install_autotune() {
     fi
     log "Enabling periodic autotune: $(_autotune_desc "$AUTOTUNE_MODE"), runs ${AUTOTUNE_ONCALENDAR:-monthly}..."
     # Bake operator, appliance posture, and target into the scheduled root run.
-    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" AUTOTUNE_TARGET="${AUTOTUNE_TARGET:-perf}" \
+    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" AUTOTUNE_TARGET="${AUTOTUNE_TARGET:-perf}" \
         envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR $AUTOTUNE_TARGET' \
-        <"$SCRIPT_DIR/systemd/rigforge-autotune.service.template" | sudo tee "$svc" >/dev/null
+        <"$(_lib_dir)/systemd/rigforge-autotune.service.template" | _unit_split_env | sudo tee "$svc" >/dev/null
     AUTOTUNE_ONCALENDAR="${AUTOTUNE_ONCALENDAR:-monthly}" \
         envsubst '$AUTOTUNE_ONCALENDAR' \
-        <"$SCRIPT_DIR/systemd/rigforge-autotune.timer.template" | sudo tee "$tmr" >/dev/null
+        <"$(_lib_dir)/systemd/rigforge-autotune.timer.template" | sudo tee "$tmr" >/dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-autotune.timer 2>/dev/null || true
 }
@@ -1349,12 +1348,12 @@ install_watchdog() {
     log "Enabling the miner watchdog: a health check every ${WATCHDOG_INTERVAL_MIN:-5} min${MAX_TEMP_C:+, thermal cutoff ${MAX_TEMP_C}°C}..."
     # Only the cadence is baked into the units — the verb re-reads config.json every run, so an
     # `apply` after a max_temp_c or ACCESS_TOKEN edit needs no unit rewrite (and no token on disk).
-    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" \
+    SERVICE_NAME="$SERVICE_NAME" RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$(_lib_dir)" \
         envsubst '$SERVICE_NAME $RIGFORGE_OPERATOR $SCRIPT_DIR' \
-        <"$SCRIPT_DIR/systemd/rigforge-watchdog.service.template" | sudo tee "$svc" >/dev/null || rc=1
+        <"$(_lib_dir)/systemd/rigforge-watchdog.service.template" | _unit_split_env | sudo tee "$svc" >/dev/null || rc=1
     WATCHDOG_INTERVAL_MIN="${WATCHDOG_INTERVAL_MIN:-5}" \
         envsubst '$WATCHDOG_INTERVAL_MIN' \
-        <"$SCRIPT_DIR/systemd/rigforge-watchdog.timer.template" | sudo tee "$tmr" >/dev/null || rc=1
+        <"$(_lib_dir)/systemd/rigforge-watchdog.timer.template" | sudo tee "$tmr" >/dev/null || rc=1
     sudo systemctl daemon-reload || rc=1
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-watchdog.timer 2>/dev/null || true
     return "$rc"
@@ -1441,9 +1440,9 @@ install_api() {
         return 1
     }
     log "Enabling the sister API on $API_BIND:$API_PORT (read-only; token: $([ -n "${ACCESS_TOKEN:-}" ] && echo required || echo open); state refreshes every 15s)..."
-    API_BIND="$API_BIND" API_PORT="$API_PORT" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$API_BIND $API_PORT $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null || return 1
-    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$SCRIPT_DIR" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$SCRIPT_DIR/systemd/rigforge-api-refresh.service.template" | sudo tee "$rsvc" >/dev/null || return 1
-    sudo tee "$rtmr" <"$SCRIPT_DIR/systemd/rigforge-api-refresh.timer.template" >/dev/null || return 1
+    API_BIND="$API_BIND" API_PORT="$API_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" envsubst '$API_BIND $API_PORT $SCRIPT_DIR $RIGFORGE_STATE' <"$(_lib_dir)/systemd/rigforge-api.service.template" | sudo tee "$svc" >/dev/null || return 1
+    RIGFORGE_OPERATOR="$REAL_USER" SCRIPT_DIR="$(_lib_dir)" envsubst '$RIGFORGE_OPERATOR $SCRIPT_DIR' <"$(_lib_dir)/systemd/rigforge-api-refresh.service.template" | _unit_split_env | sudo tee "$rsvc" >/dev/null || return 1
+    sudo tee "$rtmr" <"$(_lib_dir)/systemd/rigforge-api-refresh.timer.template" >/dev/null || return 1
     sudo systemctl daemon-reload || return 1
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api-refresh.timer || return 1
     sudo systemctl enable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} rigforge-api.service || return 1
@@ -1478,18 +1477,18 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$SCRIPT_DIR" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
-        <"$SCRIPT_DIR/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
-    RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $RIGFORGE_STATE $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
+        <"$(_lib_dir)/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
+    RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-        <"$SCRIPT_DIR/systemd/rigforge-control-apply.service.template" | sudo tee "$asvc" >/dev/null || return 1
-    sudo tee "$apath" <"$SCRIPT_DIR/systemd/rigforge-control-apply.path.template" >/dev/null || return 1
+        <"$(_lib_dir)/systemd/rigforge-control-apply.service.template" | _unit_split_env | sudo tee "$asvc" >/dev/null || return 1
+    sudo tee "$apath" <"$(_lib_dir)/systemd/rigforge-control-apply.path.template" >/dev/null || return 1
     if [ "${CONTROL_UPGRADE:-disabled}" = "enabled" ]; then
-        RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$SCRIPT_DIR" \
+        RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" \
             envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
-            <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.service.template" | sudo tee "$usvc" >/dev/null || return 1
-        sudo tee "$upath" <"$SCRIPT_DIR/systemd/rigforge-control-upgrade.path.template" >/dev/null || return 1
+            <"$(_lib_dir)/systemd/rigforge-control-upgrade.service.template" | _unit_split_env | sudo tee "$usvc" >/dev/null || return 1
+        sudo tee "$upath" <"$(_lib_dir)/systemd/rigforge-control-upgrade.path.template" >/dev/null || return 1
         log "Remote upgrade ENABLED — the stack can trigger a RigForge self-upgrade to the latest release (default-off surface; ADR 0002)."
     elif [ -f "$upath" ] || [ -f "$usvc" ]; then
         { [ ! -f "$upath" ] || sudo systemctl disable ${ENABLE_RUNTIME:+"$ENABLE_RUNTIME"} --now rigforge-control-upgrade.path 2>/dev/null; } && sudo rm -f "$usvc" "$upath" || return 1
@@ -1524,7 +1523,7 @@ _rx_setup_threads() {
 }
 
 _grub_proposed() {
-    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$SCRIPT_DIR/util/proposed-grub.sh" -q)
+    MANAGED=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" POOL_CEILING_MB="${HUGEPAGES_POOL_CEILING_MB:-0}" "$(_lib_dir)/util/proposed-grub.sh" -q)
     MANAGED="${MANAGED#quiet splash }"
     CURRENT=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULT" | head -n1)
     MERGED=$(grub_merge_cmdline "$MANAGED" "$CURRENT")
@@ -1535,7 +1534,7 @@ _grub_proposed() {
             return 0
         fi
         local _need _have
-        _need=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
+        _need=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$(_lib_dir)/util/proposed-grub.sh" --runtime 2>/dev/null) || _need=""
         _have=$(_cmdline_reserved_2mb "$CURRENT")
         if [ -n "$_need" ] && [ "$_have" -gt 0 ] 2>/dev/null && [ "$_have" -ge "$_need" ] 2>/dev/null; then
             MERGED="$CURRENT"
@@ -1653,9 +1652,9 @@ tune_kernel() {
     [ -n "$RX_SETUP_THREADS" ] && log "Sizing the HugePages reservation for $RX_SETUP_THREADS mining thread(s) (#65)."
 
     log "Applying runtime memory tuning..."
-    if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
+    if [ -f "$(_lib_dir)/util/proposed-grub.sh" ]; then
         # Calculate exact requirement based on hardware, the tuned thread count, and 1GB page status
-        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime)
+        REQUIRED_PAGES=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$(_lib_dir)/util/proposed-grub.sh" --runtime)
         log "Hardware-optimized HugePages: $REQUIRED_PAGES (2MB pages) calculated."
         _ensure_hugepages "$REQUIRED_PAGES"
     else
@@ -1675,7 +1674,7 @@ tune_kernel() {
         # the 1G reservation XMRig falls back to 2MB pages at 100%: working, small known cost
         # (pithead#797 R0 item 2).
         log "Appliance mode: skipping GRUB updates — the kernel cmdline is image-owned."
-    elif [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
+    elif [ -f "$(_lib_dir)/util/proposed-grub.sh" ] && [ -f "$GRUB_DEFAULT" ]; then
         _grub_proposed
 
         if ! grub_cmdline_editable "$GRUB_DEFAULT"; then
@@ -1741,7 +1740,8 @@ configure_limits() {
 link_cli() {
     [ "${ADD_TO_PATH:-false}" = "true" ] || return 0
     _package_install && { log "Package install ($(_package_channel)): the package owns the 'rigforge' command — skipping add_to_path." && return 0; }
-    local target="$SCRIPT_DIR/rigforge.sh" link="$BIN_DIR/rigforge"
+    local link="$BIN_DIR/rigforge" target
+    target="$(_lib_dir)/rigforge.sh"
     if [ ! -d "$BIN_DIR" ]; then
         warn "Skipped the 'rigforge' command — $BIN_DIR doesn't exist. Run it as './rigforge.sh' instead."
         return 0
@@ -1902,9 +1902,9 @@ _setup_plan() {
             _msr="modprobe msr at runtime only (appliance: no modules-load drop-in)"
             _grubline="skipping GRUB updates (appliance: the kernel cmdline is image-owned)"
         fi
-        if [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ]; then
+        if [ -f "$(_lib_dir)/util/proposed-grub.sh" ]; then
             _rx_setup_threads
-            _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
+            _pages=$(RX_THREADS="$RX_SETUP_THREADS" RESERVE_EXTRA_MB="${HUGEPAGES_RESERVE_EXTRA_MB:-0}" THREADS_CAP="${THREADS_CAP:-}" "$(_lib_dir)/util/proposed-grub.sh" --runtime 2>/dev/null) || _pages="?"
             if [ "$RIGFORGE_APPLIANCE" != 1 ] && [ -f "$GRUB_DEFAULT" ]; then
                 _grub_proposed
                 if ! grub_cmdline_editable "$GRUB_DEFAULT" 2>/dev/null; then
@@ -1965,7 +1965,7 @@ _setup_plan() {
     if _package_install; then
         _p "linking the rigforge command" "package install ($(_package_channel)): the package owns the command — no symlink"
     elif [ "$ADD_TO_PATH" = true ]; then
-        _p "linking the rigforge command" "symlink $BIN_DIR/rigforge -> $SCRIPT_DIR/rigforge.sh"
+        _p "linking the rigforge command" "symlink $BIN_DIR/rigforge -> $(_lib_dir)/rigforge.sh"
     else
         _p "linking the rigforge command" "add_to_path is off — no symlink"
     fi
@@ -2154,7 +2154,7 @@ upgrade() {
 _worker_root_for_home() { # <raw HOME_DIR> -> echoes "<root>", or returns 1 if invalid
     local raw="$1" trimmed
     if [ "$raw" = "DYNAMIC_HOME" ] || [ -z "$raw" ] || [ "$raw" = "null" ]; then
-        echo "$SCRIPT_DIR/data/worker"
+        echo "$(_state_dir)/data/worker"
     elif [[ "$raw" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$raw" != *..* ]]; then
         # Syntactically valid is not enough: HOME_DIR feeds mkdir/cd/`sudo rm -rf`, so the
         # filesystem's own top levels ("/", "/etc", bare "/home", ...) must fail closed too. (#135)
@@ -2302,7 +2302,7 @@ uninstall() {
     rmdir "$APPLIANCE_MARKER" 2>/dev/null || true
 
     # 9. the `rigforge` CLI symlink — only if it's still ours (never touch a file we didn't create)
-    if [ -L "$BIN_DIR/rigforge" ] && [ "$(readlink "$BIN_DIR/rigforge" 2>/dev/null)" = "$SCRIPT_DIR/rigforge.sh" ]; then
+    if [ -L "$BIN_DIR/rigforge" ] && [ "$(readlink "$BIN_DIR/rigforge" 2>/dev/null)" = "$(_lib_dir)/rigforge.sh" ]; then
         sudo rm -f "$BIN_DIR/rigforge"
         log "Removed the 'rigforge' command ($BIN_DIR/rigforge)."
     fi
@@ -2523,9 +2523,9 @@ _tune_config() { # <out> <prefetch> <yield> <threads> <onegb> <priority>
 }
 
 # shellcheck source=util/benchmark.sh
-source "$(_script_dir)/util/benchmark.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/benchmark.sh"
 # shellcheck source=util/stress.sh
-source "$(_script_dir)/util/stress.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/stress.sh"
 
 # One offline benchmark of a config file → peak H/s (empty on failure).
 _bench_once() {
@@ -2698,8 +2698,8 @@ _hugepages_2m_avail() { # echoes the reserved 2MB page count, or nothing (never 
     awk '/^HugePages_Total:/ {print $2; exit}' "$MEMINFO" 2>/dev/null
 }
 _hugepages_2m_need() { # <threads> -> 2MB pages needed (via proposed-grub.sh), empty if unavailable
-    [ -f "$SCRIPT_DIR/util/proposed-grub.sh" ] || return 0
-    RX_THREADS="$1" "$SCRIPT_DIR/util/proposed-grub.sh" --runtime 2>/dev/null
+    [ -f "$(_lib_dir)/util/proposed-grub.sh" ] || return 0
+    RX_THREADS="$1" "$(_lib_dir)/util/proposed-grub.sh" --runtime 2>/dev/null
 }
 
 # A sensible RandomX thread count for this CPU (~one thread per 2 MB of L3, clamped to the core count),
@@ -3372,7 +3372,7 @@ autotune() {
     parse_config
     _shared_host_start_guard
     if [ "${SHARED_HOST:-false}" = true ] && ! _shared_host_in_slice; then
-        AUTOTUNE_TARGET="${target_env:-${AUTOTUNE_TARGET:-perf}}" _shared_host_run "$SCRIPT_DIR/rigforge.sh" autotune
+        AUTOTUNE_TARGET="${target_env:-${AUTOTUNE_TARGET:-perf}}" _shared_host_run "$(_lib_dir)/rigforge.sh" autotune
         return
     fi
     if _xmrig_knob_pinned prefetch; then
@@ -3559,10 +3559,10 @@ backup() {
     jq -n --arg v "$(cmd_version)" --arg host "$(hostname 2>/dev/null)" --arg files "$included" \
         '{rigforge: $v, source_host: $host, files: ($files | split(" "))}' >"$STAGE_DIR/rigforge-backup.json" 2>/dev/null || true
 
-    local backups_dir="$SCRIPT_DIR/backups" stamp archive
-    mkdir -p "$backups_dir"
+    local stamp archive
+    mkdir -p "$(_state_dir)/backups"
     stamp=$(date +%Y%m%d-%H%M%S)
-    archive="$backups_dir/rigforge-backup-$stamp.tar.gz"
+    archive="$(_state_dir)/backups/rigforge-backup-$stamp.tar.gz"
     (umask 077 && tar -czf "$archive" -C "$STAGE_DIR" .)
     chmod 600 "$archive" 2>/dev/null || true
 
@@ -3608,7 +3608,7 @@ restore() {
         [ -n "$src" ] && log "Backup was made on host: $src"
     fi
 
-    local backups="$SCRIPT_DIR/config-backups" snap
+    local backups snap && backups="$(_state_dir)/config-backups"
     if [ -f "$CONFIG_JSON" ]; then
         snap="$backups/config-$(date -u +%Y%m%d-%H%M%S)-restore-$$.json"
         if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$snap"); then
@@ -3716,7 +3716,7 @@ support_bundle() {
 
     local stamp archive
     stamp=$(date +%Y%m%d-%H%M%S)
-    archive="$SCRIPT_DIR/rigforge-support-$(hostname 2>/dev/null)-$stamp.tar.gz"
+    archive="$(_state_dir)/rigforge-support-$(hostname 2>/dev/null)-$stamp.tar.gz"
     (umask 077 && tar -czf "$archive" -C "$STAGE_DIR" .)
     chmod 600 "$archive" 2>/dev/null || true
 
@@ -4000,7 +4000,7 @@ cmd_completion() {
 
 cmd_version() {
     local v="unknown"
-    if [ -f "$SCRIPT_DIR/VERSION" ]; then v="$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")"; fi
+    if [ -f "$(_lib_dir)/VERSION" ]; then v="$(tr -d '[:space:]' <"$(_lib_dir)/VERSION")"; fi
     echo "RigForge $v"
 }
 
@@ -4495,7 +4495,7 @@ control_apply() {
     local state="${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}" spool status backups
     spool="$state/spool"
     status="$state/status.json"
-    backups="$SCRIPT_DIR/config-backups"
+    backups="$(_state_dir)/config-backups"
     local newest older cid change_keys result rc backup staged
     newest=$(ls -t "$spool"/pending-*.json 2>/dev/null | head -1) || true
     if [ -z "$newest" ]; then
@@ -4585,15 +4585,15 @@ _control_upgrade_steps() {
     RIGFORGE_UPGRADE_UNMOVED="the root guard refused this tree"
     _root_guard_check "" || return 1
     RIGFORGE_UPGRADE_UNMOVED="could not fetch from origin"
-    _fetch_git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" fetch --quiet --tags origin 2>/dev/null || return 1
+    _fetch_git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" fetch --quiet --tags origin 2>/dev/null || return 1
     RIGFORGE_UPGRADE_UNMOVED=""
     if printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        cobj=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
-        git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
+        cobj=$(git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) || return 1
+        git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" merge-base --is-ancestor "$cobj" origin/main 2>/dev/null || return 1
     fi
     _control_upgrade_mark "$udir" || return 1
-    git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" checkout --quiet --force "$ref" 2>/dev/null || return 1
-    "$SCRIPT_DIR/rigforge.sh" upgrade >/dev/null && rm -f "$udir/upgrade-pending"
+    git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" checkout --quiet --force "$ref" 2>/dev/null || return 1
+    "$(_lib_dir)/rigforge.sh" upgrade >/dev/null && rm -f "$udir/upgrade-pending"
 }
 
 # control-upgrade (#308, ADR 0002): the privileged half of the REMOTE-UPGRADE path, run by the
@@ -4643,7 +4643,7 @@ control_upgrade() {
         warn "control-upgrade: malformed target for $cid — refused."
         return 0
     fi
-    installed=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
+    installed=$(tr -d '[:space:]' <"$(_lib_dir)/VERSION" 2>/dev/null || true)
     local thr_rc=0 throttle="${RIGFORGE_CONTROL_UPGRADE_STATE:-/var/lib/rigforge-control-upgrade}"
     if [ -n "$installed" ]; then
         local want="${target#v}" highest
@@ -4659,7 +4659,7 @@ control_upgrade() {
             return 0
         fi
     fi
-    _fetch_preflight -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" || {
+    _fetch_preflight -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" || {
         _control_status "$status" failed "$cid" version "$FETCH_PREFLIGHT_REASON" ""
         warn "control-upgrade: $FETCH_PREFLIGHT_REASON"
         return 0
@@ -4675,7 +4675,7 @@ control_upgrade() {
         warn "control-upgrade: throttled."
         return 0
     fi
-    old_tag=$(git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || git -C "$SCRIPT_DIR" -c safe.directory="$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
+    old_tag=$(git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" describe --tags --exact-match 2>/dev/null || git -C "$(_lib_dir)" -c safe.directory="$(_lib_dir)" rev-parse HEAD 2>/dev/null || true)
     log "control-upgrade: $cid -> $target (from ${old_tag:-unknown}); fetching + building..."
     local RIGFORGE_CONFIG_SOURCE=control RIGFORGE_CONFIG_CHANGE_ID="$cid" RIGFORGE_UPGRADE_UNMOVED=""
     if _control_upgrade_do "$target" && _wait_miner_live "${CONTROL_LIVE_TRIES:-20}"; then
@@ -4780,7 +4780,7 @@ watchdog() {
 }
 
 # shellcheck source=util/doctor-report.sh
-source "$(_script_dir)/util/doctor-report.sh"
+source "${RIGFORGE_LIB:-$(_script_dir)}/util/doctor-report.sh"
 # Read a /sys/class/dmi/id field (board/BIOS identity; world-readable). Empty if missing. #78.
 _dmi() {
     [ -r "$DMI_DIR/$1" ] || return 0
@@ -5085,7 +5085,7 @@ _writable_config_canonical() {
     jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
 }
 
-_writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL_USER" "$(_script_dir)/util/revision-key.sh" "${RIGFORGE_REVISION_KEY:-$SCRIPT_DIR/.rigforge-revision-key}" || :; }
+_writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL_USER" "${RIGFORGE_LIB:-$(_script_dir)}/util/revision-key.sh" "${RIGFORGE_REVISION_KEY:-$(_state_dir)/.rigforge-revision-key}" || :; }
 
 # #253: the MASKED view for the open feed — no pool credential is ever served on the token-optional
 # read. #415: a SET secret is masked to the {"__secret__": true} sentinel rather than deleted
@@ -5134,7 +5134,7 @@ _api_control_json() {
 }
 _api_control_history_json() { for f in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/changes"/*.json; do [ -f "$f" ] && jq -c '{change_id, status, reason}' "$f" 2>/dev/null; done | jq -cs '.' || true; } # #519: per-file so one malformed entry drops only itself; || true as the loop's rc leaks through pipefail
 _api_rigforge_block() {                                                                                                                                                                                            # <hashrate|"">
-    jq -n --arg v "$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$(cat "$SCRIPT_DIR/RIGFORGE_REF" 2>/dev/null || echo '')" --arg os "$(_feed_os_version)" --arg rid "${RIG_ID:-}" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), os_version: (if $os == "" then null else $os end), rig_id: (if $rid == "" then null else $rid end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
+    jq -n --arg v "$(cat "$(_lib_dir)/VERSION" 2>/dev/null || echo unknown)" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$(cat "$(_lib_dir)/RIGFORGE_REF" 2>/dev/null || echo '')" --arg os "$(_feed_os_version)" --arg rid "${RIG_ID:-}" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), os_version: (if $os == "" then null else $os end), rig_id: (if $rid == "" then null else $rid end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
 }
 # Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
 api_refresh() {
