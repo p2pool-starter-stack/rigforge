@@ -495,7 +495,7 @@
       "exit_codes": {
         "0": "pass",
         "1": "fail",
-        "2": "platform-failure"
+        "2": "setup-failure"
       },
       "needs": [
         "needs_docker"
@@ -513,7 +513,7 @@
       "exit_codes": {
         "0": "pass",
         "1": "fail",
-        "2": "platform-failure"
+        "2": "setup-failure"
       },
       "needs": [
         "needs_hardware"
