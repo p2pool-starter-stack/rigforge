@@ -38,7 +38,7 @@ jobs:
           scan_cves() {
               LC_ALL=C grep -aoiE 'CVE-[0-9]{4}-[0-9]{1,18}' | tr '[:lower:]' '[:upper:]' | sort -u | head -5 || true
           }
-          current=$(grep -oE 'XMRIG_VERSION:-v[0-9.]+' rigforge.sh | head -1 | sed 's/^XMRIG_VERSION:-//')
+          current=$(grep -oE 'XMRIG_VERSION:-v[0-9.]+' rigforge.sh | head -1 | sed 's/^XMRIG_VERSION:-//' || true)
           [ -n "$current" ] || { echo "::error::could not read the XMRig version pin from rigforge.sh"; exit 1; }
           latest=$(gh api repos/xmrig/xmrig/releases/latest --jq .tag_name)
           # Third-party input: validate hard before it goes anywhere near a command or a ref.
@@ -73,41 +73,6 @@ jobs:
             echo "commit=$commit"
             echo "cves=$cves"
           } >>"$GITHUB_OUTPUT"
-      - name: Open the tracking issue for a CVE-mentioning release
-        if: steps.detect.outputs.stale == 'true' && steps.detect.outputs.cves != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CURRENT: ${{ steps.detect.outputs.current }}
-          TAG: ${{ steps.detect.outputs.latest }}
-          COMMIT: ${{ steps.detect.outputs.commit }}
-          CVE_LIST: ${{ steps.detect.outputs.cves }}
-        run: |
-          set -Eeuo pipefail
-          branch="bot/xmrig-${TAG}"
-          me=$(gh api user --jq .login)
-          known_issue=$(gh issue list --state all --search "\"XMRig ${TAG} release notes mention\" in:title" \
-            --json number,user --jq "[.[] | select(.user.login==\"${me}\")][0].number // empty")
-          if [ -n "$known_issue" ]; then
-            echo "tracking issue #${known_issue} already exists — not re-filing"
-            exit 0
-          fi
-          pr_url=$(gh pr list --state all --head "$branch" --json url --jq 'map(.url)[0] // empty')
-          [ -n "$pr_url" ] || pr_url="branch ${branch}"
-          {
-            printf '## What is the problem\n\n'
-            printf 'The upstream XMRig %s release notes mention %s. The pinned XMRig %s (%s) predates that release and has not been bumped.\n\n' \
-              "$TAG" "$CVE_LIST" "$CURRENT" "${COMMIT:0:12}"
-            printf '## What it impacts\n\n'
-            printf 'Every worker builds XMRig from the pinned commit, so rigs stay exposed until the pin moves.\n\n'
-            printf '## Acceptance criteria\n\n'
-            printf -- '- [ ] %s is reviewed and merged\n' "$pr_url"
-            printf -- '- [ ] Rigs take the new pin through the normal upgrade path\n\n'
-            printf '## Source\n\n'
-            printf -- '- Release notes: https://github.com/xmrig/xmrig/releases/tag/%s\n' "$TAG"
-            printf -- '- Monitor: .github/workflows/xmrig-bump.yml (daily, #767)\n'
-          } >/tmp/issue-body.md
-          gh issue create --title "Security: XMRig ${TAG} release notes mention ${CVE_LIST}" \
-            --label security --body-file /tmp/issue-body.md
       - name: Build-verify the new pin (build only — nothing is executed beyond --version)
         if: steps.detect.outputs.stale == 'true' && steps.detect.outputs.pr_open == '0'
         env:
@@ -141,6 +106,11 @@ jobs:
           origin_url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           open_pr=$(gh pr list --state open --head "$branch" --json number,headRepositoryOwner --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\")) | length")
           if [ "$open_pr" = "0" ]; then
+            closed_pr=$(gh pr list --state closed --head "$branch" --json number,headRepositoryOwner --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\")) | length")
+            if [ "$closed_pr" != "0" ]; then
+              echo "bump for ${TAG} was declined (PR closed) while this run was in flight — leaving the human decision alone"
+              exit 0
+            fi
             remote_tip=$(git ls-remote "$origin_url" "refs/heads/${branch}" | cut -f1)
             if [ -n "$remote_tip" ]; then
               echo "reusing branch ${branch} (${remote_tip:0:12}) left by an interrupted run"
@@ -164,7 +134,7 @@ jobs:
               printf -- '- Commit resolved from the release tag and verified: %s\n' "$COMMIT"
               printf -- '- Full Release build succeeded on this runner (see the build-verify step of this run)\n'
               printf -- '- Upstream notes: https://github.com/xmrig/xmrig/releases/tag/%s\n\n' "$TAG"
-              [ -z "$CVE_LIST" ] || printf 'Release notes mention %s; this PR carries the security label, and a dedicated tracking issue is open.\n\n' "$CVE_LIST"
+              [ -z "$CVE_LIST" ] || printf 'Release notes mention %s; this PR carries the security label and this run files a tracking issue.\n\n' "$CVE_LIST"
               printf 'Deploys via the normal path after merge: upgrade rebuilds only where the pin changed.\n'
               printf 'Changelog gets its line at release curation, like every pin bump.\n'
             } >/tmp/pr-body.md
@@ -180,3 +150,38 @@ jobs:
             prior=$(gh run list --workflow "$wf" --branch "$branch" --limit 1 --json databaseId --jq length)
             [ "$prior" != "0" ] || gh workflow run "$wf" --ref "$branch"
           done
+      - name: Open the tracking issue for a CVE-mentioning release
+        if: steps.detect.outputs.stale == 'true' && steps.detect.outputs.cves != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.detect.outputs.current }}
+          TAG: ${{ steps.detect.outputs.latest }}
+          COMMIT: ${{ steps.detect.outputs.commit }}
+          CVE_LIST: ${{ steps.detect.outputs.cves }}
+        run: |
+          set -Eeuo pipefail
+          branch="bot/xmrig-${TAG}"
+          me=$(gh api user --jq .login)
+          known_issue=$(gh issue list --state all --search "\"XMRig ${TAG} release notes mention\" in:title" \
+            --json number,user --jq "[.[] | select(.user.login==\"${me}\")][0].number // empty")
+          if [ -n "$known_issue" ]; then
+            echo "tracking issue #${known_issue} already exists — not re-filing"
+            exit 0
+          fi
+          pr_url=$(gh pr list --state all --head "$branch" --json url,headRepositoryOwner --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\"))[0].url // empty")
+          [ -n "$pr_url" ] || pr_url="branch ${branch}"
+          {
+            printf '## What is the problem\n\n'
+            printf 'The upstream XMRig %s release notes mention %s. The pinned XMRig %s (%s) predates that release and has not been bumped.\n\n' \
+              "$TAG" "$CVE_LIST" "$CURRENT" "${COMMIT:0:12}"
+            printf '## What it impacts\n\n'
+            printf 'Every worker builds XMRig from the pinned commit, so rigs stay exposed until the pin moves.\n\n'
+            printf '## Acceptance criteria\n\n'
+            printf -- '- [ ] %s is reviewed and merged\n' "$pr_url"
+            printf -- '- [ ] Rigs take the new pin through the normal upgrade path\n\n'
+            printf '## Source\n\n'
+            printf -- '- Release notes: https://github.com/xmrig/xmrig/releases/tag/%s\n' "$TAG"
+            printf -- '- Monitor: .github/workflows/xmrig-bump.yml (daily, #767)\n'
+          } >/tmp/issue-body.md
+          gh issue create --title "Security: XMRig ${TAG} release notes mention ${CVE_LIST}" \
+            --label security --body-file /tmp/issue-body.md

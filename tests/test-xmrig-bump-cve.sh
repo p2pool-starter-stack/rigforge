@@ -37,6 +37,9 @@ grep -q 'refs/heads/' "$WF" ||
     fail "the bump step must detect a branch left by an interrupted run and reuse it instead of re-pushing"
 grep -q -- '--state all' "$WF" ||
     fail "a closed bump PR or tracking issue is a human decision and must stay terminal (existence checks must use --state all)"
+closed_checks=$(grep -c -- '--state closed' "$WF" || true)
+[ "${closed_checks:-0}" -ge 2 ] ||
+    fail "a PR closed between detect and create must not be resurrected: the decline check must run at create time too"
 grep -q 'Open the tracking issue' "$WF" ||
     fail "the tracking issue needs its own step gated only on detect, so a failed build cannot swallow the escalation"
 grep -q 'headRepositoryOwner' "$WF" ||
