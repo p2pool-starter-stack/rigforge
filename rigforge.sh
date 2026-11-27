@@ -3270,11 +3270,6 @@ _autotune_set_prefetch() { # <overrides_file> <mode>
     rm -f "$tmp"
 }
 
-# #347: autotune's abort protection. Each trial merges a candidate prefetch mode into the overrides file
-# and restarts the miner on it — an abort mid-sweep would otherwise persist that candidate. The EXIT trap
-# restores the pre-sweep mode through the SAME settle step the clean path ends with, so the two cannot
-# diverge. The merge-based restore (_autotune_set_prefetch) preserves any offline-`tune` knobs, exactly
-# like the sweep's own writes.
 _AUTOTUNE_DIRTY=0
 _AUTOTUNE_PRE_MODE="" _AUTOTUNE_OVR_FILE=""
 _autotune_settle() { # <mode> — merge the mode into the overrides and leave the miner running on it
