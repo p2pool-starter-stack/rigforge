@@ -68,8 +68,7 @@ jobs:
       issues: read
       pull-requests: read
     env:
-      # Warn-only until this date (14 days after the check first ran); after it the job fails.
-      ENFORCE_FROM: "2026-12-04"
+      ENFORCE_FROM: "2026-12-11"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
