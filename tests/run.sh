@@ -43,7 +43,7 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
+for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit token-error-text; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -514,7 +514,7 @@ for u in '-bad:3333' '.bad:3333' 'ba d:3333' 'a;b:3333' 'a/b:3333' 'http://h:333
     parse_rc "$c" "$ROOT"
     assert_rc "invalid host '$u' rejected" "$?" "1"
 done
-# Valid hostname / IPv4 / bracketed-IPv6 accepted.
+bash "$ROOT/tests/test-host-port-message.sh" "$SCRIPT" >/dev/null 2>&1 && ok "a host:port with a user name or password is refused without printing it" || bad "a host:port with a user name or password is refused without printing it" "regression failed"
 for u in 'good-host.lan:3333' '10.0.0.5:3333' '[2001:db8::1]:3333'; do
     c="$(mkconf okhost "{ \"pools\": [{\"url\":\"$u\"}] }")"
     parse_rc "$c" "$ROOT"
@@ -7391,7 +7391,7 @@ assert_eq "api-refresh: a broken health block leaves health.json serving the pre
 assert_eq "api-refresh: tune.json still updates despite the health failure (#276)" "$(jq -r '.applied' "$APIQ/data/tune.json")" "true"
 assert_eq "api-refresh: summary.json still updates despite the health failure (#276)" "$(jq -r '.rigforge.xmrig_version' "$APIQ/data/summary.json")" "x"
 source "$ROOT/tests/test-api-refresh-liveness.sh"
-# The dispatch entry is wired (any OS: rc + message prove the verb was reached).
+bash "$ROOT/tests/test-tune-files-regular.sh" "$SCRIPT" >/dev/null 2>&1 && ok "tune feed reads only regular files" || bad "tune feed reads only regular files" "regression failed"
 out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
     assert_contains "black-box api-refresh dispatch runs (Linux)" "$out" ""
@@ -7742,7 +7742,7 @@ assert_eq "status: warnings[] flags a max_temp_c change (#257)" "$(jq -r '.warni
     _control_status "$wst/s3.json" applied cidP "pools,DONATION" "" ""
 ) 2>/dev/null
 assert_eq "status: no warnings for a non-thermal change (#257)" "$(jq -c '.warnings' "$wst/s3.json")" "[]"
-# #255: _control_status also indexes each outcome under changes/<cid>.json so a caller can query it.
+bash "$ROOT/tests/test-control-status-write.sh" "$SCRIPT" >/dev/null 2>&1 && ok "control status records are written through a private temporary folder and replace links at their names" || bad "control status records are written through a private temporary folder and replace links at their names" "regression failed"
 csidx="$(mktemp -d "$SANDBOX/csidx.XXXXXX")"
 (
     source "$SCRIPT"
@@ -7826,12 +7826,11 @@ assert_eq "config: DONATION + interval carried (#253)" "$(printf '%s' "$blk" | j
 blk2="$(cfgblk '{ "pools":[{"url":"h:3333"}] }')"
 assert_eq "config: max_temp_c null when unset (#253)" "$(printf '%s' "$blk2" | jq -r '.max_temp_c')" "null"
 assert_eq "config: autotune/watchdog default to disabled (#253)" "$(printf '%s' "$blk2" | jq -r '"\(.autotune) \(.watchdog)"')" "disabled disabled"
-# round-trip contract: the config block's keys are EXACTLY the control writable allowlist.
+bash "$ROOT/tests/test-jq-config-input.sh" "$SCRIPT" >/dev/null 2>&1 && ok "config: pool settings and the API token reach jq on a descriptor or the environment" || bad "config: pool settings and the API token reach jq on a descriptor or the environment" "regression failed"
 assert_eq "config: keys == the control writable allowlist, round-trippable (#253)" "$(printf '%s' "$blk2" | jq -r 'keys_unsorted | sort | join(",")')" "DONATION,autotune,max_temp_c,pools,watchdog,watchdog_interval_min"
 
-# #254: config revision + last-change provenance in the feed (rigforge.config_meta).
 echo "== unit: config_meta — revision + last-change provenance (#254) =="
-whash() { # <config-json> -> _writable_config_hash
+whash() {
     local d
     d=$(mktemp -d "$SANDBOX/whash.XXXXXX")
     printf '%s\n' "$1" >"$d/config.json"
