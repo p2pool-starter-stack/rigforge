@@ -40,6 +40,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-state-lib.sh
 	bash tests/test-homebrew-formula.sh
 	bash tests/test-release-bundle.sh
+	python3 tests/test-server-deadline.py
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
