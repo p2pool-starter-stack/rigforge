@@ -38,7 +38,13 @@ grep -q 'refs/heads/' "$WF" ||
 grep -q -- '--state all' "$WF" ||
     fail "a closed bump PR or tracking issue is a human decision and must stay terminal (existence checks must use --state all)"
 grep -q 'Open the tracking issue' "$WF" ||
-    fail "the tracking issue must be opened before build-verify so a broken build cannot swallow the escalation"
+    fail "the tracking issue needs its own step gated only on detect, so a failed build cannot swallow the escalation"
+grep -q 'headRepositoryOwner' "$WF" ||
+    fail "the bump PR existence checks must ignore fork PRs squatting on the bot branch name"
+grep -q "GITHUB_TOKEN: ''" "$WF" ||
+    fail "the build step must not hold a usable token while it compiles third-party code"
+grep -q 'success()' "$WF" ||
+    fail "the PR step must not run after a failed build-verify (a custom if overrides the implicit success())"
 grep -q 'user.login' "$WF" ||
     fail "tracking-issue dedup must match only issues the workflow identity itself opened"
 out=$(printf 'CVE-2024-%s\n' 99999999999999999999999999999999999999 | scan_cves)

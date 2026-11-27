@@ -39,6 +39,7 @@ jobs:
               LC_ALL=C grep -aoiE 'CVE-[0-9]{4}-[0-9]{1,18}' | tr '[:lower:]' '[:upper:]' | sort -u | head -5 || true
           }
           current=$(grep -oE 'XMRIG_VERSION:-v[0-9.]+' rigforge.sh | head -1 | sed 's/^XMRIG_VERSION:-//')
+          [ -n "$current" ] || { echo "::error::could not read the XMRig version pin from rigforge.sh"; exit 1; }
           latest=$(gh api repos/xmrig/xmrig/releases/latest --jq .tag_name)
           # Third-party input: validate hard before it goes anywhere near a command or a ref.
           if ! printf '%s' "$latest" | grep -qE '^v[0-9]{1,4}(\.[0-9]{1,4}){0,3}$'; then
@@ -49,8 +50,8 @@ jobs:
             echo "stale=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
-          pr_open=$(gh pr list --state open --head "bot/xmrig-${latest}" --json number --jq length)
-          pr_closed=$(gh pr list --state closed --head "bot/xmrig-${latest}" --json number --jq length)
+          pr_open=$(gh pr list --state open --head "bot/xmrig-${latest}" --json number,headRepositoryOwner --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\")) | length")
+          pr_closed=$(gh pr list --state closed --head "bot/xmrig-${latest}" --json number,headRepositoryOwner --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\")) | length")
           if [ "$pr_open" = "0" ] && [ "$pr_closed" != "0" ]; then
             echo "bump for ${latest} was declined (PR closed) — leaving the human decision alone"
             echo "stale=false" >>"$GITHUB_OUTPUT"
@@ -110,6 +111,7 @@ jobs:
       - name: Build-verify the new pin (build only — nothing is executed beyond --version)
         if: steps.detect.outputs.stale == 'true' && steps.detect.outputs.pr_open == '0'
         env:
+          GITHUB_TOKEN: ''
           TAG: ${{ steps.detect.outputs.latest }}
           COMMIT: ${{ steps.detect.outputs.commit }}
         run: |
@@ -126,7 +128,7 @@ jobs:
           test -x xmrig
           ./xmrig --version | head -1
       - name: Open the bump PR and start its required checks
-        if: steps.detect.outputs.stale == 'true'
+        if: steps.detect.outputs.stale == 'true' && success()
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT: ${{ steps.detect.outputs.current }}
@@ -136,25 +138,26 @@ jobs:
         run: |
           set -Eeuo pipefail
           branch="bot/xmrig-${TAG}"
-          open_pr=$(gh pr list --state open --head "$branch" --json number --jq length)
+          origin_url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          open_pr=$(gh pr list --state open --head "$branch" --json number,headRepositoryOwner --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\")) | length")
           if [ "$open_pr" = "0" ]; then
-            remote_tip=$(git ls-remote origin "refs/heads/${branch}" | cut -f1)
+            remote_tip=$(git ls-remote "$origin_url" "refs/heads/${branch}" | cut -f1)
             if [ -n "$remote_tip" ]; then
               echo "reusing branch ${branch} (${remote_tip:0:12}) left by an interrupted run"
-              git fetch --depth 1 origin "$branch"
+              git fetch --depth 1 "$origin_url" "$branch"
               git checkout -b "$branch" FETCH_HEAD
             else
               git checkout -b "$branch"
             fi
-            sed -i "s|XMRIG_VERSION:-${CURRENT}|XMRIG_VERSION:-${TAG}|" rigforge.sh
-            sed -i "s|XMRIG_COMMIT:-[0-9a-f]\{40\}|XMRIG_COMMIT:-${COMMIT}|" rigforge.sh
-            grep -q "XMRIG_VERSION:-${TAG}" rigforge.sh
-            grep -q "XMRIG_COMMIT:-${COMMIT}" rigforge.sh
+            sed -i "s|XMRIG_VERSION:-${CURRENT}\}|XMRIG_VERSION:-${TAG}\}|" rigforge.sh
+            sed -i "s|XMRIG_COMMIT:-[0-9a-f]\{40\}\}|XMRIG_COMMIT:-${COMMIT}\}|" rigforge.sh
+            grep -q "XMRIG_VERSION:-${TAG}}" rigforge.sh
+            grep -q "XMRIG_COMMIT:-${COMMIT}}" rigforge.sh
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             if ! git diff --quiet; then
               git commit -am "chore: bump the XMRig pin to ${TAG} (bot, build-verified)"
-              git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+              git push "$origin_url" "$branch"
             fi
             {
               printf 'Automated pin bump (#225): upstream released %s (pinned: %s).\n\n' "$TAG" "$CURRENT"
@@ -169,7 +172,10 @@ jobs:
               --title "chore: bump the XMRig pin to ${TAG} (bot, build-verified)" \
               --body-file /tmp/pr-body.md
           fi
-          [ -z "$CVE_LIST" ] || gh pr edit "$branch" --add-label security
+          if [ -n "$CVE_LIST" ]; then
+            pr_num=$(gh pr list --state all --head "$branch" --json number,headRepositoryOwner --jq "map(select(.headRepositoryOwner.login==\"${GITHUB_REPOSITORY_OWNER}\"))[0].number // empty")
+            gh pr edit "$pr_num" --add-label security
+          fi
           for wf in ci.yml security.yml; do
             prior=$(gh run list --workflow "$wf" --branch "$branch" --limit 1 --json databaseId --jq length)
             [ "$prior" != "0" ] || gh workflow run "$wf" --ref "$branch"
