@@ -55,6 +55,10 @@ _rg_tree_unsafe() {
         for f in "$d/rigforge.sh" "$d/util" "$d"/util/* "$d/systemd" "$d"/systemd/*; do
             _rg_unsafe "$f" && return 0
         done
+        for f in "$d/.rigforge-impl" "$d/bin" "$d/bin/rigforge-rs"; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            _rg_unsafe "$f" && return 0
+        done
         [ -d "$d/.git" ] || continue
         for f in "$d/.git" "$d/.git/config" "$d/.git/hooks" "$d"/.git/hooks/*; do
             [ -e "$f" ] || [ -L "$f" ] || continue

@@ -154,3 +154,23 @@ jobs:
         run: make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
       - name: Assert the binary reports the repository VERSION
         run: make rust-version MUSL_TARGET=aarch64-unknown-linux-musl
+
+  suite:
+    name: Test suite in rust mode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      RIGFORGE_IMPL: rust
+      RIGFORGE_BIN: ${{ github.workspace }}/target/release/rigforge-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Build the release binary
+        run: cargo build --release --locked -p rigforge-rs
+      - name: Run the binary once
+        run: '"$RIGFORGE_BIN" --version'
+      - name: Run make test-suite with RIGFORGE_IMPL=rust
+        run: make test-suite

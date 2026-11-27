@@ -39,3 +39,6 @@ __pycache__/
 graphify-out/
 
 /target/
+
+.rigforge-impl
+/bin/rigforge-rs
