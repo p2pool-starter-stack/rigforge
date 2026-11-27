@@ -44,7 +44,8 @@ co_rigforge() {
         [ "$mode" != grub ] || echo "tuning the kernel: GRUB cmdline: 'a' -> 'b'"
         [ "$mode" != reboot ] || echo 'tuning the kernel: x — a reboot WILL be required'
         ;;
-    'setup ')
+    'upgrade ') [ "$mode" != upgrade-refused ] || return 1 ;;
+    'setup --no-root-guard')
         : >"$D/setup-ran"
         render
         echo 'XMRig already built at the pinned commit — recompile will be skipped.'
@@ -83,6 +84,7 @@ expect pass ok 'autosave=false and watch=false'
 expect pass ok 'byte-identical'
 expect pass ok 'not hot-reloaded'
 expect pass ok 'restart and no rebuild'
+expect pass ok 'upgrade without --no-root-guard passes'
 [ "$(grep -c '^bad' "$D/rows")" = 0 ] && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
 [ "$(jq '.pools[0].keepalive' "$GEN_CFG")" = false ] && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
 run_case autosave
@@ -107,6 +109,8 @@ for _m in packages grub reboot; do
 done
 run_case no-restart
 expect no-restart bad 'did not restart'
+run_case upgrade-refused
+expect upgrade-refused bad 'upgrade without --no-root-guard failed'
 
 printf 'e2e config-ownership phase tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

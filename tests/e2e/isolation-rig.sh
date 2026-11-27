@@ -111,7 +111,7 @@ assert_eq "upgrade --check went through the proxy" "$(grew "$before")" "y"
 
 echo "== setup clones the pinned XMRig through the proxy =="
 before="$(upstream_hits)"
-out="$(rf setup)"
+out="$(rf setup --no-root-guard)"
 rc=$?
 assert_rc "setup exits 0" "$rc" "0"
 [ "$rc" = 0 ] || tail_out "$out"

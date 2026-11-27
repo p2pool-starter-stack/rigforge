@@ -220,6 +220,8 @@ fi
 [ ! -e "$D/unsafe-allocation" ] || fail 'light mode allocated the generic HugePages fallback'
 has "$(SCRIPT_DIR="$D/no-proposed" RX_MODE=light _setup_plan 2>&1)" 'RandomX light mode requires util/proposed-grub.sh'
 if RX_MODE=bogus bash "$PROPOSED" -q >/dev/null 2>&1; then fail 'proposed-grub accepted an invalid RandomX mode'; fi
+printf "GRUB_CMDLINE_LINUX_DEFAULT='quiet hugepagesz=2M hugepages=4 msr.allow_writes=on'\n" >"$D/grub2"
+has "$(GRUB_DEFAULT="$D/grub2" RIGFORGE_APPLIANCE=0 RX_MODE=fast _setup_plan 2>&1)" 'not one plain double-quoted line'
 
 _ck_info() { printf 'INFO:%s\n' "$*"; }
 _ck_warn() { printf 'WARN:%s\n' "$*"; }
@@ -374,7 +376,7 @@ _nps_suspect() { :; }
     MEMINFO="$D/doctor-meminfo"
     printf 'MemAvailable: 1 kB\nHugePages_Total: 1\nHugePages_Free: 0\nHugepagesize: 2048 kB\n' >"$MEMINFO"
     doctor_config() {
-        jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON"
+        jq -n --arg mode "$1" '{pools:[],xmrig:{randomx:{mode:$mode}}}' >"$CONFIG_JSON" && chmod 600 "$CONFIG_JSON"
     }
     doctor_config light
     if light_doctor=$(doctor 2>&1); then fail 'light doctor unexpectedly passed the inactive-service baseline'; fi

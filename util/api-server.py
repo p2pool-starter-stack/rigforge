@@ -144,6 +144,6 @@ if __name__ == "__main__":
                     pass
                 HTTPServer.server_bind(self)
 
-        _V6((bind, port), Handler).serve_forever()
+        _V6((bind, port), Handler).serve_forever(poll_interval=30)
     else:
-        HTTPServer((bind, port), Handler).serve_forever()
+        HTTPServer((bind, port), Handler).serve_forever(poll_interval=30)

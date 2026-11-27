@@ -64,14 +64,12 @@ enforce_nonempty_enumeration() {
     return 0
 }
 
-# --- exemptions, one glob per reason (case pattern matching: '*' matches '/' too) ---------------
 is_exempt() {
     case "$1" in
-    # Prose documentation, including CHANGELOG.md — it grows by nature (one entry per release) and
-    # is not source to split. This gate governs code.
     *.md) return 0 ;;
-    # Data/config, not source: config.reference.json, config.minimal.json, and JSON fixtures.
     *.json) return 0 ;;
+    Cargo.lock | */Cargo.lock) return 0 ;;
+    crates/*/tests/golden/*.tsv) return 0 ;;
     *) return 1 ;;
     esac
 }
