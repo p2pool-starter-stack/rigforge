@@ -1234,8 +1234,8 @@ _render_xmrig_unit() {
     local msr_line=""
     [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     if [ -n "${MINER_USER:-}" ] && [ "${SHARED_HOST:-false}" != true ]; then msr_line="ExecStartPre=+$(_lib_dir)/rigforge.sh msr-apply"; fi
-    WORKER_ROOT="$WORKER_ROOT" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
-        envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
+    WORKER_ROOT="$WORKER_ROOT" SYSTEMD_DIR="$SYSTEMD_DIR" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
+        envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $SYSTEMD_DIR $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
         <"$(_lib_dir)/systemd/xmrig.service.template" | _shared_host_unit | _unit_split_env | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 }
 
@@ -1349,28 +1349,20 @@ install_watchdog() {
     return "$rc"
 }
 
-# Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
-# JSON from /run/rigforge-api; a systemd timer (`rigforge.sh api-refresh`) recomputes the files every
-# 15 s. Requests never touch the miner. Toggle shape mirrors install_autotune above.
-# Opt-in API firewall (#142): an own `inet rigforge` nft table scoping the read-only API port(s)
-# to `api_allow_from` + loopback. nftables only (Ubuntu 24.04's native firewall — a ufw fallback
-# would double the surface); own table so teardown is a single `destroy`. Matches only the API
-# dports, so SSH and the outbound stratum connection are untouchable by construction. Applied now
-# AND re-applied on boot via xmrig.service (the always-present anchor); removed with the table.
 install_api_firewall() {
     [ "$OS_TYPE" == "Linux" ] || return 0
-    [ -n "${WORKER_ROOT:-}" ] || return 0 # nowhere to stage the rule file yet
-    local nft_file="$WORKER_ROOT/api-firewall.nft"
+    [ -n "${WORKER_ROOT:-}" ] || return 0
+    local nft_file="$SYSTEMD_DIR/rigforge-api-firewall.nft" old_file="$WORKER_ROOT/api-firewall.nft"
     if [ -z "${API_ALLOW_FROM:-}" ]; then
-        if [ -f "$nft_file" ]; then
+        [ -z "${1:-}" ] || return 0
+        if [ -f "$nft_file" ] || [ -f "$old_file" ]; then
             command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
-            sudo rm -f "$nft_file"
+            sudo rm -f "$nft_file" "$old_file"
             log "API firewall removed."
         fi
         return 0
     fi
     command -v nft >/dev/null 2>&1 || error "api_allow_from is set but 'nft' is missing — install nftables (sudo apt-get install nftables) or clear the key."
-    # Port set: :8080 (XMRig's API) always, plus :8081 (the sister API) when it's enabled.
     local ports="8080"
     [ "${API_MODE:-disabled}" = enabled ] && ports="$ports, ${API_PORT:-8081}"
     [ "${CONTROL_MODE:-disabled}" = enabled ] && ports="$ports, ${CONTROL_PORT:-8082}"
@@ -1392,6 +1384,7 @@ NFT
     if ! sudo nft -f "$nft_file"; then
         error "API firewall FAILED to load — nft rejected the ruleset for api_allow_from='$API_ALLOW_FROM'. The API ports are NOT restricted. Fix api_allow_from and re-run."
     fi
+    [ -n "${1:-}" ] || sudo rm -f "$old_file"
     log "API firewall active — port(s) $ports reachable only from $API_ALLOW_FROM and loopback."
 }
 _wait_sister_api() {
@@ -1467,8 +1460,8 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $RIGFORGE_STATE $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" API_PORT="${API_PORT:-8081}" SYSTEMD_DIR="$SYSTEMD_DIR" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $RIGFORGE_STATE $API_PORT $SYSTEMD_DIR $NFT_PATH $RIGFORGE_APPLIANCE' \
         <"$(_lib_dir)/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
@@ -2010,6 +2003,8 @@ main() {
     tune_kernel
     CURRENT_STEP="configuring limits"
     configure_limits
+    CURRENT_STEP="configuring the API firewall"
+    install_api_firewall early >/dev/null
     CURRENT_STEP="installing the service"
     install_service
     CURRENT_STEP="configuring autotune"
@@ -2115,6 +2110,7 @@ upgrade() {
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
+    install_api_firewall early >/dev/null
     install_service
     install_autotune
     install_watchdog
@@ -2246,7 +2242,7 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP"
+    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP" "$SYSTEMD_DIR/rigforge-api-firewall.nft"
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
@@ -4091,6 +4087,7 @@ apply() {
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         parse_config
         _shared_host_prepare
+        install_api_firewall early >/dev/null || true
     fi
     _apply_runtime preserve-run-state || return 1
     local _wd_rc=0 _api_rc=0 _control_rc=0
