@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::panic)]
+
 use std::process::Command;
 
 fn repo_version() -> String {

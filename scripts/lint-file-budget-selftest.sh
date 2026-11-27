@@ -205,6 +205,19 @@ commit_all "$R" base
 expect_fail "a 500-line .rs file with no budget row is refused while Cargo.lock stays exempt" "$R" "lib.rs is 500 lines"
 
 R=$(mkrepo)
+mkdir -p "$R/crates/core/tests/golden/jq-1.7.1"
+mklines "$R/crates/core/tests/golden/jq-1.7.1/num.tsv" 900
+commit_all "$R" base
+expect_pass "a 900-line generated golden file is exempt and trips nothing" "$R"
+
+R=$(mkrepo)
+mkdir -p "$R/crates/core/tests/golden/jq-1.7.1" "$R/crates/core/src"
+mklines "$R/crates/core/tests/golden/jq-1.7.1/num.tsv" 900
+mklines "$R/crates/core/src/num.rs" 900
+commit_all "$R" base
+expect_fail "a source file of the golden file's length is still refused" "$R" "crates/core/src/num.rs is 900 lines"
+
+R=$(mkrepo)
 printf '\000\001\002\003' >"$R/blob.bin"
 for _ in $(seq 1 900); do printf '\000\n' >>"$R/blob.bin"; done
 commit_all "$R" base

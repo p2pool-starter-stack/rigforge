@@ -69,6 +69,7 @@ is_exempt() {
     *.md) return 0 ;;
     *.json) return 0 ;;
     Cargo.lock | */Cargo.lock) return 0 ;;
+    crates/*/tests/golden/*.tsv) return 0 ;;
     *) return 1 ;;
     esac
 }
