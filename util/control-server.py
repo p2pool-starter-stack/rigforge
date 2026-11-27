@@ -429,4 +429,4 @@ if __name__ == "__main__":
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
             notify.connect("\0" + address[1:] if address.startswith("@") else address)
             notify.sendall(b"READY=1")
-    server.serve_forever()
+    server.serve_forever(poll_interval=30)

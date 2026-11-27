@@ -163,7 +163,7 @@ EOF
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" -e "s|\$RIGFORGE_APPLIANCE|${RIGFORGE_APPLIANCE:-}|g" \
-    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
+    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$RIGFORGE_STATE|${RIGFORGE_STATE:-${SCRIPT_DIR:-}}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
     -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g" \
     -e "s|\${WATCHDOG_INTERVAL_MIN}|${WATCHDOG_INTERVAL_MIN:-}|g" \
@@ -514,7 +514,7 @@ for u in '-bad:3333' '.bad:3333' 'ba d:3333' 'a;b:3333' 'a/b:3333' 'http://h:333
     parse_rc "$c" "$ROOT"
     assert_rc "invalid host '$u' rejected" "$?" "1"
 done
-# Valid hostname / IPv4 / bracketed-IPv6 accepted.
+bash "$ROOT/tests/test-host-port-message.sh" "$SCRIPT" >/dev/null 2>&1 && ok "a host:port with a user name or password is refused without printing it" || bad "a host:port with a user name or password is refused without printing it" "regression failed"
 for u in 'good-host.lan:3333' '10.0.0.5:3333' '[2001:db8::1]:3333'; do
     c="$(mkconf okhost "{ \"pools\": [{\"url\":\"$u\"}] }")"
     parse_rc "$c" "$ROOT"
@@ -1767,8 +1767,8 @@ empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
     PATH="$STUBS:$PATH" _activate_xmrig_build >/dev/null 2>&1
 )
 assert_rc "prune is set -e safe with no archives" "$?" "0"
+bash "$ROOT/tests/test-root-input-hardening.sh" "$SCRIPT" >/dev/null 2>&1 && ok "swap marker, restore archive and benchmark config inputs are validated" || bad "swap marker, restore archive and benchmark config inputs are validated" "regression failed"
 
-# ---------------------------------------------------------------------------
 # Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow
 # recompile + restart are skipped, so re-running is a fast no-op and `upgrade` only acts on a bump.
 echo "== unit: xmrig_already_built detection (#4) =="
@@ -3030,8 +3030,6 @@ wdead="$( (
 ))"
 assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
 
-# The worker API is open (read-only) with no token by default (#125), so send a Bearer only when set.
-# This real curl branch proves token-bearing probes work without exposing the token in curl argv.
 echo "== unit: _read_api_hashrate sends a Bearer only when ACCESS_TOKEN is set (#125) =="
 clog="$SANDBOX/curl-calls.log"
 curl_stdin="$SANDBOX/curl-stdin.log"
@@ -3049,12 +3047,13 @@ assert_absent "no Authorization header sent when ACCESS_TOKEN is unset" "$(cat "
 hr_auth="$( (
     source "$SCRIPT"
     unset API_CMD
-    ACCESS_TOKEN="miner-0"
+    ACCESS_TOKEN="miner-0" OS_TYPE=Linux
     PATH="$STUBS:$PATH" CURL_LOG="$clog" CURL_STDIN_LOG="$curl_stdin" STUB_API_HR=987.6 _read_api_hashrate
 ))"
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_absent "Bearer <token> is absent from curl argv" "$(cat "$clog")" "miner-0"
 assert_contains "Bearer <token> reaches curl over stdin config" "$(cat "$curl_stdin")" 'Authorization: Bearer miner-0'
+bash "$ROOT/tests/test-config-mode-token-scope.sh" "$SCRIPT" >/dev/null 2>&1 && ok "config.json is re-owned at mode 600, doctor flags looser modes, and the API token is sent only while the miner runs" || bad "config.json is re-owned at mode 600, doctor flags looser modes, and the API token is sent only while the miner runs" "regression failed"
 # #147: support-bundle — everything needed, nothing secret; structural redaction covers both configs.
 echo "== black-box: support-bundle collects + redacts (#147) =="
 SB="$(mktemp -d "$SANDBOX/support.XXXXXX")"
@@ -4167,6 +4166,7 @@ printf 'net      use pool ...\n* HUGE PAGES 100%%\n' >"$DOC/home/worker/xmrig.lo
 cat >"$DOC/config.json" <<EOF
 { "HOME_DIR": "$DOC/home", "pools": [{"url": "h:3333"}] }
 EOF
+chmod 600 "$DOC/config.json"
 run_doctor() { # <meminfo> <msr_dir> <governor_file> <nr1g_file>
     (
         source "$SCRIPT"
@@ -5095,15 +5095,13 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
-# #367: the MSR guard's inputs — config resolution, then the log path — must be distinguishable when
-# either one comes up empty, so a skipped block never reads the same as a failed check (the flake that
-# broke both #66 e2e assertions on a healthy rig).
 echo "== unit: doctor MSR unverifiable — guard-input failures named (#367) =="
 UNV="$DOC/unv"
 mkdir -p "$UNV/home" # HOME_DIR resolves; worker/xmrig.log is deliberately never created
 cat >"$UNV/config.json" <<EOF
 { "HOME_DIR": "$UNV/home", "pools": [{"url": "h:3333"}] }
 EOF
+chmod 600 "$UNV/config.json"
 run_doctor_cfg() { # <config.json path, possibly nonexistent>
     (
         source "$SCRIPT"
@@ -5185,7 +5183,7 @@ echo "== unit: doctor exposure posture advisory (#sec) =="
 EXP="$DOC/exposure"
 mkdir -p "$EXP/home/worker"
 exp_doctor() { # <config-body>
-    printf '%s' "$1" >"$EXP/config.json"
+    (umask 077 && printf '%s' "$1" >"$EXP/config.json")
     (
         source "$SCRIPT"
         OS_TYPE=Linux
@@ -7014,7 +7012,7 @@ rst_stage="$(tail -1 "$RST/mktemp.log" 2>/dev/null)"
 if [ -z "$rst_stage" ]; then
     bad "restore leak-test setup (#353)" "mktemp was never logged — the wrapper stub isn't wired correctly"
 else
-    assert_rc "restore with a failing tar -xzf exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
+    assert_rc "restore with a failing tar exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
     assert_eq "restore's EXIT trap removed the staging tempdir after the abort (#353)" "$([ -d "$rst_stage" ] && echo leaked || echo clean)" "clean"
 fi
 
@@ -7393,7 +7391,7 @@ assert_eq "api-refresh: a broken health block leaves health.json serving the pre
 assert_eq "api-refresh: tune.json still updates despite the health failure (#276)" "$(jq -r '.applied' "$APIQ/data/tune.json")" "true"
 assert_eq "api-refresh: summary.json still updates despite the health failure (#276)" "$(jq -r '.rigforge.xmrig_version' "$APIQ/data/summary.json")" "x"
 source "$ROOT/tests/test-api-refresh-liveness.sh"
-# The dispatch entry is wired (any OS: rc + message prove the verb was reached).
+bash "$ROOT/tests/test-tune-files-regular.sh" "$SCRIPT" >/dev/null 2>&1 && ok "tune feed reads only regular files" || bad "tune feed reads only regular files" "regression failed"
 out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
     assert_contains "black-box api-refresh dispatch runs (Linux)" "$out" ""
@@ -7744,7 +7742,7 @@ assert_eq "status: warnings[] flags a max_temp_c change (#257)" "$(jq -r '.warni
     _control_status "$wst/s3.json" applied cidP "pools,DONATION" "" ""
 ) 2>/dev/null
 assert_eq "status: no warnings for a non-thermal change (#257)" "$(jq -c '.warnings' "$wst/s3.json")" "[]"
-# #255: _control_status also indexes each outcome under changes/<cid>.json so a caller can query it.
+bash "$ROOT/tests/test-control-status-write.sh" "$SCRIPT" >/dev/null 2>&1 && ok "control status records are written through a private temporary folder and replace links at their names" || bad "control status records are written through a private temporary folder and replace links at their names" "regression failed"
 csidx="$(mktemp -d "$SANDBOX/csidx.XXXXXX")"
 (
     source "$SCRIPT"
@@ -7828,12 +7826,11 @@ assert_eq "config: DONATION + interval carried (#253)" "$(printf '%s' "$blk" | j
 blk2="$(cfgblk '{ "pools":[{"url":"h:3333"}] }')"
 assert_eq "config: max_temp_c null when unset (#253)" "$(printf '%s' "$blk2" | jq -r '.max_temp_c')" "null"
 assert_eq "config: autotune/watchdog default to disabled (#253)" "$(printf '%s' "$blk2" | jq -r '"\(.autotune) \(.watchdog)"')" "disabled disabled"
-# round-trip contract: the config block's keys are EXACTLY the control writable allowlist.
+bash "$ROOT/tests/test-jq-config-input.sh" "$SCRIPT" >/dev/null 2>&1 && ok "config: pool settings and the API token reach jq on a descriptor or the environment" || bad "config: pool settings and the API token reach jq on a descriptor or the environment" "regression failed"
 assert_eq "config: keys == the control writable allowlist, round-trippable (#253)" "$(printf '%s' "$blk2" | jq -r 'keys_unsorted | sort | join(",")')" "DONATION,autotune,max_temp_c,pools,watchdog,watchdog_interval_min"
 
-# #254: config revision + last-change provenance in the feed (rigforge.config_meta).
 echo "== unit: config_meta — revision + last-change provenance (#254) =="
-whash() { # <config-json> -> _writable_config_hash
+whash() {
     local d
     d=$(mktemp -d "$SANDBOX/whash.XXXXXX")
     printf '%s\n' "$1" >"$d/config.json"
@@ -9102,8 +9099,8 @@ assert_contains "record: FORCE records a regression loudly (#214)" "$out" "REGRE
 assert_eq "record: FORCE actually wrote (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_GATE=1 run_perf)"
 rc=$?
-[ "$rc" -ge 1 ] && ok "judge: regression vs best-ever still fails (#214)" || bad "judge: regression vs best-ever still fails (#214)" "rc=$rc"
-assert_contains "judge: ratchet names best-ever (#214)" "$out" "RATCHET"
+[ "$rc" -ge 1 ] && ok "judge: gate with no history input fails loudly (#214/#793)" || bad "judge: gate with no history input fails loudly (#214/#793)" "rc=$rc"
+assert_contains "judge: the gate names the missing history (#793)" "$out" "no history input"
 rm "$PJ/tests/perf-baselines/$host.json" "$PJ/tests/perf-baselines/$host.history.jsonl"
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 run_perf)"
 rc=$?
