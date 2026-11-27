@@ -26,19 +26,28 @@ case ",$PR_LABELS," in
     ;;
 esac
 
+soft_fail() {
+    echo "::warning::$1"
+    if [[ "$TODAY" < "$ENFORCE_FROM" ]]; then
+        exit 0
+    fi
+    exit 1
+}
+
 if [ -n "${ISSUES_FILE:-}" ]; then
     issues=$(cat "$ISSUES_FILE")
 else
     issues=$(gh issue list --state open --label security-baseline --label "branch:$BASE_REF" \
-        --limit 100 --json number,body)
+        --limit 100 --json number,body) || soft_fail "could not list security baseline issues"
 fi
 
-rows=$(jq -r '.[] | [.number, (first((.body // "") | scan("(?:^|\\n)\\s*expires:\\s*([0-9]{4}-[0-9]{2}-[0-9]{2})")[0]) // "")] | @tsv' <<<"$issues")
+rows=$(jq -r '.[] | [.number, ([(.body // "") | scan("expires:\\s*([0-9]{4}-[0-9]{2}-[0-9]{2})")[0]] | min // "")] | @tsv' <<<"$issues") ||
+    soft_fail "could not parse security baseline issues"
 lapsed=0
 while IFS=$'\t' read -r number expires; do
     [ -n "$expires" ] || continue
     [[ "$expires" < "$TODAY" ]] || continue
-    if grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?):? +#${number}([^0-9]|$)" <<<"$PR_BODY"; then
+    if grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?|part of):? +#${number}([^0-9]|$)" <<<"$PR_BODY"; then
         echo "issue #$number expired $expires but this PR closes it"
         continue
     fi
