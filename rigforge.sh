@@ -350,18 +350,11 @@ ensure_config_exists() {
                 ;;
             esac
 
-            # Omit unset fields to preserve the LAN config's minimal shape.
-            (umask 077 && jq -n --arg url "$IN_URL" --arg pass "$IN_PASS" --arg socks5 "$IN_SOCKS5" \
-                '{pools: [({url: $url} + (if $pass == "" then {} else {pass: $pass} end) + (if $socks5 == "" then {} else {socks5: $socks5} end))]}' >"$CONFIG_JSON")
-            # The operator is told (below) to hand-edit this file to add a wallet / ACCESS_TOKEN, and the
-            # first `apply` may be a long way off — chmod now so those secrets are never world-readable
-            # in the interim (generate_xmrig_config's chmod 600 only runs on setup/apply). (#131)
+            (umask 077 && IN_PASS="$IN_PASS" jq -n --arg url "$IN_URL" --arg socks5 "$IN_SOCKS5" \
+                '{pools: [({url: $url} + (if env.IN_PASS == "" then {} else {pass: env.IN_PASS} end) + (if $socks5 == "" then {} else {socks5: $socks5} end))]}' >"$CONFIG_JSON")
             chmod 600 "$CONFIG_JSON"
-            _reown_worker # hand the freshly-created config.json to the operator, even if setup later fails
+            _reown_worker
             log "Created $CONFIG_JSON successfully."
-            # New-user safety net: the minimal config has no wallet, so a PUBLIC-pool miner who stops here
-            # would credit hashes to the hostname, not themselves — and nothing later (doctor included)
-            # flags it, since it's a pool-side auth detail. Pithead users correctly need no wallet.
             warn "Mining to a PUBLIC pool (SupportXMR, etc.)? Add your Monero wallet as the pool \"user\" in"
             warn "$CONFIG_JSON and run 'sudo $0 apply', or your hashes credit '$(hostname)', not you."
             warn "Connecting to a Pithead stack instead? You're all set — no wallet needed."
@@ -402,12 +395,12 @@ _uint_in_range() { # <value> <min> <max> -> 0 iff a whole number bash can evalua
 
 _validate_host_port() {
     local _v="$1" _label="$2" _eg="$3" _h _p
+    [[ "$_v" != *@* ]] || error "$_label must be host:port, without a user name or password."
     if ! [[ "$_v" =~ :[0-9]+$ ]]; then
         error "$_label '$_v' must include a port, e.g. $_v:$_eg."
     fi
     _h="${_v%:*}"
     _p="${_v##*:}"
-    # Bound the digit count before arithmetic; huge values otherwise evade the range check.
     if [ "${#_p}" -gt 5 ]; then
         error "$_label port '$_p' in '$_v' has more than five digits; a port is 1-65535."
     fi
@@ -469,13 +462,13 @@ parse_config() {
         })
     ' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | {"rig-id": .["rig-id"], nicehash, algo, coin, sni} | with_entries(select(.value != null))]] | transpose | map(.[0] + .[1])' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | ."tls-fingerprint"]] | transpose | map(.[0] + (if (.[1] // null) != null then {"tls-fingerprint": .[1]} else {} end))' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | .socks5]] | transpose | map(.[0] + (if (.[1] // null) != null then {"socks5": .[1]} else {} end))' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | {"rig-id": .["rig-id"], nicehash, algo, coin, sni} | with_entries(select(.value != null))]] | transpose | map(.[0] + .[1])' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | [(.keepalive == false), (.enabled == false)]]] | transpose | map(.[0] + (if .[1][0] then {"keepalive": false} else {} end) + (if .[1][1] then {"enabled": false} else {} end))' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse 'pools' in $CONFIG_JSON."
 
-    POOLS_JSON=$(jq -c --argjson base "$POOLS_JSON" '[$base, [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON") || error "Could not parse daemon pool fields."
+    POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse daemon pool fields."
     while IFS= read -r _pool; do
         _u=$(jq -r '.url' <<<"$_pool")
         _user=$(jq -r '.user' <<<"$_pool")
@@ -1134,9 +1127,8 @@ generate_xmrig_config() {
     FULL_USER="$(hostname)"
     local _new _step
     _new=$(mktemp config.json.XXXXXX) || _config_render_fail "" "Creating a temp file for the XMRig config failed" || return 1
-    jq -n --argjson pools "$POOLS_JSON" \
+    ACCESS_TOKEN="$ACCESS_TOKEN" jq -n --slurpfile pools <(printf '%s' "$POOLS_JSON") \
         --arg user "$FULL_USER" \
-        --arg access_token "$ACCESS_TOKEN" \
         --arg log "$LOG_FILE_PATH" \
         --argjson yield "$YIELD" \
         --argjson prio "$PRIORITY" \
@@ -1155,7 +1147,7 @@ generate_xmrig_config() {
         --argjson donation "$DONATION" \
         --arg host "$HTTP_HOST" \
         --arg os "$OS_TYPE" \
-        '{
+        '($pools[0]) as $pools | env.ACCESS_TOKEN as $access_token | {
             cpu: {
                 enabled: true,
                 "huge-pages": $huge_pages,
@@ -4420,28 +4412,28 @@ _control_do_apply_fast() {
     [ "$is_active" -eq 0 ]
 }
 
-# A status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it back) —
-# a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
-_control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
-    local f="$1" cid="$3" body cdir
-    mkdir -p "$(dirname "$f")"
-    # #257: warnings[] flags a safety-relevant change (watchdog / max_temp_c = thermal protection) even
-    # when allowed, so the operator and dashboard can require an extra confirm. Additive to the shape.
+_control_status_put() {
+    local t
+    t=$(mktemp -d .rigforge-status.XXXXXX)
+    (cd -P -- "$t" && [ "$(pwd -P)" = "$1/$t" ] && [ -O . ] && printf '%s' "$3" >r && { mv -fT -- r "../$2" || mv -fh -- r "../$2" || rm -f r; })
+    rmdir -- "$t"
+}
+_control_status() {
+    local f="$1" cid="$3" body
     body=$(jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end), warnings: ($k | split(",") | map(select(. == "watchdog" or . == "max_temp_c")) | map("thermal protection changed: " + .))}')
-    printf '%s' "$body" >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
-    [ "$2" = started ] || RIGFORGE_CONTROL_TERMINAL_WRITTEN=1 # #509: `started` (#320) is the one non-terminal status written here
-    # #255: also index by change_id, so a caller can GET /status?change_id=<cid> after a concurrent
-    # change overwrote status.json. cid is server-generated 16-hex; guard it anyway (it becomes a
-    # filename). Keep only the last ~20 outcomes.
-    if [[ "$cid" =~ ^[0-9a-f]{16}$ ]]; then
-        cdir="$(dirname "$f")/changes"
-        mkdir -p "$cdir"
-        printf '%s' "$body" >"$cdir/$cid.json.tmp.$$" 2>/dev/null && mv -f "$cdir/$cid.json.tmp.$$" "$cdir/$cid.json" && chmod 644 "$cdir/$cid.json" 2>/dev/null || true
-        # shellcheck disable=SC2012  # names are controlled 16-hex; ls -t orders by recency
-        ls -t "$cdir"/*.json 2>/dev/null | tail -n +21 | while IFS= read -r old; do [ -n "$old" ] && rm -f "$old"; done
-        # A terminal apply record supersedes the receiver's pending marker (#344); an upgrade id has none.
-        rm -f "$(dirname "$f")/pending/$cid.json" 2>/dev/null || true
-    fi
+    (
+        umask 022
+        mkdir -p -- "$(dirname "$f")" && cd -P -- "$(dirname "$f")" || exit 0
+        base=$(pwd -P)
+        _control_status_put "$base" "${f##*/}" "$body"
+        [[ "$cid" =~ ^[0-9a-f]{16}$ ]] || exit 0
+        mkdir changes
+        cd -P changes && [ "$(pwd -P)" = "$base/changes" ] && _control_status_put "$base/changes" "$cid.json" "$body"
+        # shellcheck disable=SC2012
+        [ "$(pwd -P)" = "$base/changes" ] && ls -t -- *.json | tail -n +21 | while IFS= read -r old; do rm -f -- "$old"; done
+        cd -P -- "$base/pending" && [ "$(pwd -P)" = "$base/pending" ] && rm -f -- "$cid.json"
+    ) 2>/dev/null || true
+    [ "$2" = started ] || RIGFORGE_CONTROL_TERMINAL_WRITTEN=1
 }
 
 # #509/#535: control_apply and control_upgrade record an outcome on every branch, but the work between
@@ -5004,16 +4996,16 @@ _api_power_json() { # <hashrate|"">
     jq -n --arg w "$w" --arg hr "$hr" '{watts: (if $w == "" then null else ($w | tonumber) end), hs_per_watt: (if $w == "" or $hr == "" or ($w | tonumber) == 0 then null else (($hr | tonumber) / ($w | tonumber)) end)}'
 }
 
-# Tune/autotune state as JSON — the machine-readable sibling of _tune_history (same sources, same
-# systemctl reads). Every jq program here is single-line: kcov cannot attribute in-string lines.
 _api_tune_json() {
     local ovr="$WORKER_ROOT/tune-overrides.json" logf="$WORKER_ROOT/rigforge-tune.json"
-    local applied=null target=null best=null n=null aten=false atgt="" asched="" anext=""
-    if [ -s "$ovr" ] && jq -e . "$ovr" >/dev/null 2>&1; then applied=$(cat "$ovr"); fi
-    if [ -s "$logf" ] && jq -e . "$logf" >/dev/null 2>&1; then
-        target=$(jq -c '.target // null' "$logf" 2>/dev/null || echo null)
-        best=$(jq -c '.best.hashrate // null' "$logf" 2>/dev/null || echo null)
-        n=$(jq -c '.results | length' "$logf" 2>/dev/null || echo null)
+    local applied="" target=null best=null n=null aten=false atgt="" asched="" anext="" logc=""
+    [ -f "$ovr" ] && { [ ! -L "$ovr" ] && [ "$ovr" -ef /dev/fd/9 ] && IFS= read -r -d '' applied <&9; } 2>/dev/null 9<"$ovr" || true
+    [ -n "$applied" ] && applied=$(jq -ce . <<<"$applied" 2>/dev/null) || applied=null
+    [ -f "$logf" ] && { [ ! -L "$logf" ] && [ "$logf" -ef /dev/fd/9 ] && IFS= read -r -d '' logc <&9; } 2>/dev/null 9<"$logf" || true
+    if [ -n "$logc" ] && jq -e . <<<"$logc" >/dev/null 2>&1; then
+        target=$(jq -c '.target // null' <<<"$logc" 2>/dev/null || echo null)
+        best=$(jq -c '.best.hashrate // null' <<<"$logc" 2>/dev/null || echo null)
+        n=$(jq -c '.results | length' <<<"$logc" 2>/dev/null || echo null)
     fi
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
         aten=true
@@ -5082,7 +5074,7 @@ _writable_config_canonical() {
     local pools
     pools=$(jq -c '.pools // []' "$CONFIG_JSON" 2>/dev/null || echo '[]')
     [ -n "$pools" ] || pools='[]'
-    jq -Sn --argjson pools "$pools" --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools, DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}'
+    jq -Sn --slurpfile pools /dev/fd/3 --argjson don "${DONATION:-0}" --arg at "${AUTOTUNE_MODE:-disabled}" --arg wd "${WATCHDOG_MODE:-disabled}" --argjson wi "${WATCHDOG_INTERVAL_MIN:-5}" --arg mt "${MAX_TEMP_C:-}" '{pools: $pools[0], DONATION: $don, autotune: $at, watchdog: $wd, watchdog_interval_min: $wi, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end)}' 3<<<"$pools"
 }
 
 _writable_config_hash() { _writable_config_canonical | RIGFORGE_KEY_OWNER="$REAL_USER" "${RIGFORGE_LIB:-$(_script_dir)}/util/revision-key.sh" "${RIGFORGE_REVISION_KEY:-$(_state_dir)/.rigforge-revision-key}" || :; }
