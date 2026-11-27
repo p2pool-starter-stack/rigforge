@@ -55,12 +55,16 @@ def arm_body(block, name):
 
 def header_inputs(text):
     out = set()
+    code = '\n'.join(l for l in text.splitlines() if not l.lstrip().startswith('#'))
     for line in text.splitlines()[1:]:
         if not line.startswith('#'):
             if line.strip():
                 break
             continue
         out.update(re.findall(r'\bE2E_[A-Z0-9_]+\b', line))
+        for n in re.findall(r'\b([A-Z][A-Z0-9_]*[A-Z0-9])=', line):
+            if not re.search(r'(?<![\w(])' + n + '=', code):
+                out.add(n)
     return out
 
 
@@ -114,6 +118,15 @@ for i, s in enumerate(d.get('suites', [])):
         if n not in needs_enum:
             errors.append('suite [%s] needs %r not in %s' % (name, n, sorted(needs_enum)))
 
+listed = {s.get('file') for s in d.get('suites', [])}
+callers = [os.path.join(root, 'Makefile')]
+wf = os.path.join(root, '.github', 'workflows')
+callers += [os.path.join(wf, f) for f in sorted(os.listdir(wf)) if f.endswith(('.yml', '.yaml'))]
+for c in callers:
+    for ref in sorted(set(re.findall(r'\btests/[\w./-]+\.(?:sh|py)\b', open(c).read()))):
+        if ref != 'tests/manifest-selftest.sh' and ref not in listed:
+            errors.append('%s runs %s, which has no manifest suite' % (os.path.relpath(c, root), ref))
+
 blob = json.dumps(d)
 for term in ['github', 'actions', 'ghci', 'bench-ci', 'runner']:
     if re.search(r'(?<!\w)' + term + r'(?!\w)', blob, re.I):
@@ -142,6 +155,10 @@ elif case == 'bad-needs':
     suite['e2e-real']['needs'].append('real-hardware')
 elif case == 'bad-all-runs':
     suite['e2e-pithead']['all_runs'].remove('dev-fee')
+elif case == 'drop-suite':
+    d['suites'].remove(suite['unit'])
+elif case == 'drop-knob':
+    suite['smoke']['inputs'].remove('SMOKE_RUN_SETUP')
 json.dump(d, open(sys.argv[2], 'w'))
 PY
 }
@@ -152,12 +169,12 @@ PY
 }
 
 if validate "$MANIFEST"; then
-    ok "manifest matches every harness dispatch, input header, needs vocabulary and the CI-term rule"
+    ok "manifest matches every harness dispatch, input header, needs vocabulary, suite caller and the CI-term rule"
 else
     fail "manifest does not match the harnesses"
 fi
 
-for case in drop-phase invent-phase drop-input bad-needs bad-all-runs; do
+for case in drop-phase invent-phase drop-input bad-needs bad-all-runs drop-suite drop-knob; do
     mutate "$case"
     if validate "$WORK/mutated.json" 2>/dev/null; then
         fail "selftest accepted the $case mutation"

@@ -218,6 +218,137 @@
       "needs": []
     },
     {
+      "name": "doctor-json",
+      "file": "tests/test-doctor-json.sh",
+      "phases": [],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "xmrig-bump",
+      "file": "tests/test-xmrig-bump.sh",
+      "phases": [],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "osv-file-issue",
+      "file": "tests/test-osv-file-issue.sh",
+      "phases": [],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "file-security-issue",
+      "file": "tests/test-file-security-issue.sh",
+      "phases": [],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "docs-replay-unit",
+      "file": "tests/test-docs-replay.py",
+      "phases": [],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "state-lib",
+      "file": "tests/test-state-lib.sh",
+      "phases": [],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "release-bundle",
+      "file": "tests/test-release-bundle.sh",
+      "phases": [],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "apt-feed",
+      "file": "tests/test-apt-feed.sh",
+      "phases": [],
+      "timeout_seconds": 300,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": [
+        "needs_root"
+      ]
+    },
+    {
+      "name": "stock-home",
+      "file": "tests/test-stock-home.sh",
+      "phases": [],
+      "timeout_seconds": 1800,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail",
+        "2": "platform-failure"
+      },
+      "needs": [
+        "needs_vm",
+        "needs_root"
+      ]
+    },
+    {
+      "name": "api-allowlist-linux",
+      "file": "tests/test-api-allowlist-linux.sh",
+      "phases": [],
+      "timeout_seconds": 300,
+      "inputs": [
+        "E2E_ALLOWLIST_LINUX_TEST"
+      ],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": [
+        "needs_root",
+        "needs_docker"
+      ]
+    },
+    {
       "name": "e2e-container",
       "file": "tests/e2e/linux.sh",
       "phases": [],
@@ -227,7 +358,9 @@
         "0": "pass",
         "1": "fail"
       },
-      "needs": []
+      "needs": [
+        "needs_docker"
+      ]
     },
     {
       "name": "e2e-real",
@@ -357,7 +490,9 @@
       "file": "tests/coverage.sh",
       "phases": [],
       "timeout_seconds": 1200,
-      "inputs": [],
+      "inputs": [
+        "COVERAGE_NO_FAIL"
+      ],
       "exit_codes": {
         "0": "pass",
         "1": "fail"
@@ -371,7 +506,10 @@
       "file": "tests/smoke.sh",
       "phases": [],
       "timeout_seconds": 600,
-      "inputs": [],
+      "inputs": [
+        "SMOKE_RUN_SETUP",
+        "BENCH"
+      ],
       "exit_codes": {
         "0": "pass",
         "1": "fail"
