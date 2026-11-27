@@ -86,6 +86,10 @@ side: both sides are measurements of different trees, and taking one bakes in a 
 true of the merged result. The gate never rewrites this baseline: `--generate` prints a proposed copy
 to stdout, and a contributor deliberately redirects and reviews it.
 
+### Test manifest
+
+`tests/manifest.json` lists every suite with its `file`, `phases`, `all_runs`, `timeout_seconds`, `inputs`, `exit_codes` and `needs`. Phases exist only for harnesses that dispatch on their first argument (`tests/e2e-real.sh`, `tests/e2e-pithead.sh`); every other suite runs whole and has an empty list. `all_runs` is the subset the `all` phase runs. `needs` draws on `needs_vm`, `needs_hardware`, `needs_docker`, `needs_root` and `needs_macos`. The manifest names no CI system, host or status context. `tests/manifest-selftest.sh` runs in `make test-suite` and fails when the phases, `all_runs` or documented `E2E_*` inputs drift from the harnesses, so update the manifest in the same change that adds a phase or input.
+
 ### Config & docs linting
 
 The YAML, Markdown, and link checks gate in CI and have matching Make targets for local runs:

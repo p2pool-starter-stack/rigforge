@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT/tests/manifest.json"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
 PASS=0
 FAIL=0
@@ -15,96 +17,154 @@ ok() {
     printf '  OK:   %s\n' "$1"
 }
 
-if [ ! -f "$MANIFEST" ]; then
+validate() {
+    python3 -I - "$1" "$ROOT" <<'PY'
+import json, os, re, sys
+
+manifest_file, root = sys.argv[1], sys.argv[2]
+d = json.load(open(manifest_file))
+errors = []
+required = ['name', 'file', 'phases', 'timeout_seconds', 'inputs', 'exit_codes', 'needs']
+needs_enum = {'needs_vm', 'needs_hardware', 'needs_docker', 'needs_root', 'needs_macos'}
+
+
+def words(text):
+    return set(re.findall(r'[A-Za-z0-9_]+', text))
+
+
+def dispatch_block(text):
+    starts = [m.start() for m in re.finditer(r'^case "\$\{?1[^"]*"\s+in\s*$', text, re.M)]
+    if not starts:
+        return None
+    block = text[starts[-1]:]
+    end = re.search(r'^esac\s*$', block, re.M)
+    return block[: end.end()] if end else block
+
+
+def arms(block):
+    out = []
+    for m in re.finditer(r'^([A-Za-z][\w-]*(?:\s*\|\s*[\w-]+)*)\)', block, re.M):
+        out.extend(x.strip() for x in m.group(1).split('|'))
+    return out
+
+
+def arm_body(block, name):
+    m = re.search(r'^(?:[\w-]+\s*\|\s*)*' + re.escape(name) + r'(?:\s*\|\s*[\w-]+)*\)(.*?)^\s*;;', block, re.M | re.S)
+    return m.group(1) if m else ''
+
+
+def header_inputs(text):
+    out = set()
+    for line in text.splitlines()[1:]:
+        if not line.startswith('#'):
+            if line.strip():
+                break
+            continue
+        out.update(re.findall(r'\bE2E_[A-Z0-9_]+\b', line))
+    return out
+
+
+seen = set()
+for i, s in enumerate(d.get('suites', [])):
+    name = s.get('name', '[#%d]' % i)
+    if name in seen:
+        errors.append('duplicate suite name %s' % name)
+    seen.add(name)
+    for k in required:
+        if k not in s:
+            errors.append('suite [%s] missing field %s' % (name, k))
+    rel = s.get('file', '')
+    path = os.path.join(root, rel)
+    if not os.path.isfile(path):
+        errors.append('suite [%s] file %s does not exist' % (name, rel))
+        continue
+    text = open(path).read()
+    phases = s.get('phases', [])
+    if not isinstance(phases, list) or not all(isinstance(p, str) and p for p in phases):
+        errors.append('suite [%s] invalid phases' % name)
+        phases = []
+    block = dispatch_block(text)
+    actual = set(arms(block)) if block else set()
+    if set(phases) != actual or len(set(phases)) != len(phases):
+        errors.append('suite [%s] phases %s != dispatch arms %s in %s' % (name, sorted(phases), sorted(actual), rel))
+    all_runs = s.get('all_runs')
+    if all_runs is not None:
+        body = arm_body(block or '', 'all')
+        tokens = {t.replace('_', '-') for t in re.findall(r'\b(?:phase_)?([a-z][a-z_]*)\b', body)}
+        expect = tokens & set(phases)
+        if set(all_runs) != expect:
+            errors.append('suite [%s] all_runs %s != phases run by all %s' % (name, sorted(all_runs), sorted(expect)))
+    t = s.get('timeout_seconds')
+    if not isinstance(t, int) or isinstance(t, bool) or t <= 0:
+        errors.append('suite [%s] invalid timeout_seconds: %r' % (name, t))
+    inputs = s.get('inputs', [])
+    present = words(text)
+    for sub in os.listdir(os.path.dirname(path)):
+        if sub.endswith(('.sh', '.py')):
+            present |= words(open(os.path.join(os.path.dirname(path), sub)).read())
+    for inp in inputs:
+        if not isinstance(inp, str) or inp not in present:
+            errors.append('suite [%s] input %r not found beside %s' % (name, inp, rel))
+    for inp in header_inputs(text) - set(inputs):
+        errors.append('suite [%s] documented input %s missing from manifest' % (name, inp))
+    for k, v in s.get('exit_codes', {}).items():
+        if not isinstance(k, str) or not k.isdigit() or not isinstance(v, str):
+            errors.append('suite [%s] invalid exit_code: %r:%r' % (name, k, v))
+    for n in s.get('needs', []):
+        if n not in needs_enum:
+            errors.append('suite [%s] needs %r not in %s' % (name, n, sorted(needs_enum)))
+
+blob = json.dumps(d)
+for term in ['github', 'actions', 'ghci', 'bench-ci', 'runner']:
+    if re.search(r'(?<!\w)' + term + r'(?!\w)', blob, re.I):
+        errors.append('manifest references CI/host term: %s' % term)
+
+for e in errors:
+    print(e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+}
+
+mutate() {
+    python3 -I - "$MANIFEST" "$WORK/mutated.json" "$1" <<'PY'
+import json, sys
+
+d = json.load(open(sys.argv[1]))
+suite = {s['name']: s for s in d['suites']}
+case = sys.argv[3]
+if case == 'drop-phase':
+    suite['e2e-real']['phases'].remove('teardown')
+elif case == 'invent-phase':
+    suite['e2e-real']['phases'].append('state')
+elif case == 'drop-input':
+    suite['e2e-real']['inputs'].remove('E2E_PERF_TAG')
+elif case == 'bad-needs':
+    suite['e2e-real']['needs'].append('real-hardware')
+elif case == 'bad-all-runs':
+    suite['e2e-pithead']['all_runs'].remove('dev-fee')
+json.dump(d, open(sys.argv[2], 'w'))
+PY
+}
+
+[ -f "$MANIFEST" ] || {
     echo "manifest.json not found at $MANIFEST" >&2
     exit 1
-fi
-
-version=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('version',''))" "$MANIFEST")
-[ "$version" -ge 1 ] 2>/dev/null || {
-    echo "missing or invalid 'version' >= 1" >&2
-    exit 1
 }
 
-n_suites=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['suites']))" "$MANIFEST")
-[ "$n_suites" -gt 0 ] || {
-    echo "no suites in manifest" >&2
-    exit 1
-}
-
-ok "manifest has version=$version and $n_suites suites"
-
-python3 -c "
-import json, sys, os, re
-
-manifest_file = sys.argv[1]
-root = sys.argv[2]
-
-d = json.load(open(manifest_file))
-suites = d['suites']
-
-errors = []
-required_keys = ['name','file','phases','timeout_seconds','inputs','exit_codes','needs']
-
-for i, s in enumerate(suites):
-    name = s.get('name', f'[#{i}]')
-
-    for k in required_keys:
-        if k not in s:
-            errors.append(f'suite [{name}] missing field {k}')
-
-    rel_file = s.get('file', '')
-    full_path = os.path.join(root, rel_file)
-
-    if not os.path.isfile(full_path):
-        errors.append(f'suite [{name}] file {rel_file} does not exist')
-        continue
-
-    with open(full_path) as f:
-        text = f.read()
-
-    for phase in s.get('phases', []):
-        if not re.search(r'(?<!\w)' + re.escape(phase) + r'(?!\w)', text):
-            errors.append(f'suite [{name}] phase {phase!r} not found in {rel_file}')
-
-    t = s.get('timeout_seconds')
-    if not isinstance(t, int) or t <= 0:
-        errors.append(f'suite [{name}] invalid timeout_seconds: {t!r}')
-
-    for inp in s.get('inputs', []):
-        if not isinstance(inp, str) or not inp:
-            errors.append(f'suite [{name}] invalid input: {inp!r}')
-
-    for k, v in s.get('exit_codes', {}).items():
-        if not isinstance(k, str) or not isinstance(v, str):
-            errors.append(f'suite [{name}] invalid exit_code: {k!r}:{v!r}')
-
-    for n in s.get('needs', []):
-        if not isinstance(n, str) or not n:
-            errors.append(f'suite [{name}] invalid needs entry: {n!r}')
-
-text = json.dumps(d)
-for term in ['github', 'actions', 'ghci', 'bench-ci', 'runner']:
-    if re.search(r'(?<!\w)' + term + r'(?!\w)', text, re.I):
-        errors.append(f'manifest references CI/host term: {term}')
-
-if errors:
-    for e in errors:
-        print(e, file=sys.stderr)
-    sys.exit(1)
-else:
-    print('ok')
-" "$MANIFEST" "$ROOT"
-
-result=$?
-if [ "$result" -eq 0 ]; then
-    ok "all suites pass schema, content, and CI-ref checks"
+if validate "$MANIFEST"; then
+    ok "manifest matches every harness dispatch, input header, needs vocabulary and the CI-term rule"
 else
-    fail "suite validation errors found"
+    fail "manifest does not match the harnesses"
 fi
 
-ok "manifest covers $n_suites suites"
+for case in drop-phase invent-phase drop-input bad-needs bad-all-runs; do
+    mutate "$case"
+    if validate "$WORK/mutated.json" 2>/dev/null; then
+        fail "selftest accepted the $case mutation"
+    else
+        ok "selftest rejects the $case mutation"
+    fi
+done
 
-echo ""
-printf '%d passed, %d failed\n' "$PASS" "$FAIL"
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
