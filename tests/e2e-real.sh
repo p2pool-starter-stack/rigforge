@@ -1262,9 +1262,32 @@ _perf_class() {
     printf '%s' "${E2E_PERF_CLASS:-${c:-$(hostname)}}"
 }
 
+_perf_gate() {
+    local hr="$1" class="$2" hist="${E2E_PERF_HISTORY:-}" vals n med mad verdict
+    vals=""
+    [ -n "$hist" ] && [ -r "$hist" ] && vals=$(jq -rs --arg c "$class" --arg i bench_1m_hs '[.[] | .[$c][$i]? | select(type == "number")] | .[-5:]' "$hist" 2>/dev/null) || vals=""
+    n=$(printf '%s' "${vals:-[]}" | jq 'length' 2>/dev/null) || n=0
+    if [ -z "$hist" ] || [ ! -r "$hist" ]; then
+        bad "perf: gate mode but no history input — pass E2E_PERF_HISTORY with earlier results for class $class"
+    elif [ -z "$vals" ]; then
+        bad "perf: gate mode but $hist cannot be read as history JSON"
+    elif [ "$n" -lt 5 ]; then
+        printf '  \033[1;33m∙\033[0m perf %s: insufficient history (%d/5) — measured %s H/s, not judging\n' "$class" "$n" "$hr"
+    else
+        read -r med mad < <(printf '%s' "$vals" | jq -r '. as $v | ($v | length) as $n | ($v | sort) as $s | (if $n % 2 == 1 then $s[($n - 1) / 2] else ($s[$n / 2 - 1] + $s[$n / 2]) / 2 end) as $med | ([$v[] | . - $med | if . < 0 then - . else . end] | sort) as $d | (if $n % 2 == 1 then $d[($n - 1) / 2] else ($d[$n / 2 - 1] + $d[$n / 2]) / 2 end) | "\($med) \(.)"')
+        verdict=$(awk -v h="$hr" -v m="$med" -v d="$mad" 'BEGIN { if (h < m - 3 * d) print "REGRESSION"; else if (h > m + 3 * d) print "SPIKE"; else print "OK" }')
+        if [ "$verdict" = OK ]; then ok "perf: $hr H/s matches the class history band (median $med, MAD $mad)"; else bad "perf $verdict: $hr H/s leaves the class history band (median $med, MAD $mad) — investigate before releasing, or start a new class history if the hardware changed deliberately"; fi
+    fi
+}
+
 perf() {
     phase "perf — verified bench by hardware class"
-    local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}" class pid=bench_1m_hs enf="${E2E_PERF_GATE:-0}"
+    local bl hist out hr base best id="" submit="" tol="${E2E_PERF_TOLERANCE_PCT:-5}" class pid=bench_1m_hs mode="${E2E_PERF_MODE:-report}"
+    [ "${E2E_PERF_GATE:-0}" != 1 ] || mode=gate
+    case "$mode" in
+    report | gate) ;;
+    *) die "perf: E2E_PERF_MODE must be report or gate (got '$mode')" ;;
+    esac
     [ "${E2E_PERF_SUBMIT:-0}" != 1 ] || submit=--submit
     class="$(_perf_class)"
     bl="$HERE/tests/perf-baselines/$(hostname).json"
@@ -1318,14 +1341,12 @@ perf() {
         summary "perf"
         return
     fi
-    if [ -z "$base" ]; then
-        if [ "$enf" = 1 ]; then
-            bad "perf: E2E_PERF_GATE=1 but no history for class $class — pass E2E_PERF_HISTORY with earlier results"
-        else
-            printf '  \033[1;33m∙\033[0m no history for class %s — measured %s H/s; keep the JSON line above and pass the history as E2E_PERF_HISTORY\n' "$class" "$hr"
-        fi
+    if [ "$mode" = gate ]; then
+        _perf_gate "$hr" "$class"
+    elif [ -z "$base" ]; then
+        printf '  \033[1;33m∙\033[0m no history for class %s — measured %s H/s; keep the JSON line above and pass the history as E2E_PERF_HISTORY\n' "$class" "$hr"
     else
-        _perf_cmp "$hr" "$base" "$best" "$tol" "$enf" || true
+        _perf_cmp "$hr" "$base" "$best" "$tol" 0 || true
     fi
     summary "perf"
 }

@@ -9102,8 +9102,8 @@ assert_contains "record: FORCE records a regression loudly (#214)" "$out" "REGRE
 assert_eq "record: FORCE actually wrote (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_GATE=1 run_perf)"
 rc=$?
-[ "$rc" -ge 1 ] && ok "judge: regression vs best-ever still fails (#214)" || bad "judge: regression vs best-ever still fails (#214)" "rc=$rc"
-assert_contains "judge: ratchet names best-ever (#214)" "$out" "RATCHET"
+[ "$rc" -ge 1 ] && ok "judge: gate with no history input fails loudly (#214/#793)" || bad "judge: gate with no history input fails loudly (#214/#793)" "rc=$rc"
+assert_contains "judge: the gate names the missing history (#793)" "$out" "no history input"
 rm "$PJ/tests/perf-baselines/$host.json" "$PJ/tests/perf-baselines/$host.history.jsonl"
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 run_perf)"
 rc=$?
