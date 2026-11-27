@@ -147,9 +147,10 @@ SERVICE_NAME="${SERVICE_NAME:-xmrig}"
 _RIGFORGE_SOURCED=0
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _RIGFORGE_SOURCED=1; fi
 
-# Report which step failed on an unexpected error (skip when sourced by the test suite).
 [ "$_RIGFORGE_SOURCED" = "0" ] && trap on_err ERR
 
+# shellcheck source=util/impl-handover.sh
+source "$(_script_dir)/util/impl-handover.sh"
 # shellcheck source=util/shared-host.sh
 source "$(_script_dir)/util/shared-host.sh"
 # shellcheck source=util/randomx.sh
@@ -6046,22 +6047,15 @@ USAGE
 }
 
 if [ "$_RIGFORGE_SOURCED" = "0" ]; then
-    # Honesty check: these verbs take no arguments, so reject extras (Pithead's `setup --skip-deps`
-    # muscle memory, a typo'd `apply --now`) instead of silently running as if nothing was passed.
-    # Verbs with their own flags (setup/upgrade/tune/apply/backup/restore/...) validate in their loops.
+    _impl_handover "$@"
     case "${1:-setup}" in
     autotune | watchdog | api-refresh | msr-apply | control-apply | control-upgrade | status | logs | start | up | stop | down | restart | enable | disable | version | --version | -v | help | -h | --help)
         [ -z "${2:-}" ] || error "Unexpected argument for $1: '$2'. Run '$0 help'."
         ;;
     esac
-    # #353 (1): name the verb before dispatch so an UNEXPECTED failure in any of them reports where it
-    # actually happened, not the stale "starting up" default — setup's own main() overwrites this a
-    # moment later with its fine-grained per-phase steps, so this is a no-op there.
     CURRENT_STEP="running '${1:-setup}'"
     case "${1:-setup}" in
     setup)
-        # if-form, not `[ $# -gt 0 ] && shift`: a false && list at top level trips set -e on the
-        # zero-arg default path (bare ./rigforge.sh dispatches here with $# = 0).
         if [ $# -gt 0 ]; then shift; fi
         main "$@"
         ;;
