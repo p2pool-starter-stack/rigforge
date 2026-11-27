@@ -4412,28 +4412,28 @@ _control_do_apply_fast() {
     [ "$is_active" -eq 0 ]
 }
 
-# A status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it back) —
-# a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
-_control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
-    local f="$1" cid="$3" body cdir
-    mkdir -p "$(dirname "$f")"
-    # #257: warnings[] flags a safety-relevant change (watchdog / max_temp_c = thermal protection) even
-    # when allowed, so the operator and dashboard can require an extra confirm. Additive to the shape.
+_control_status_put() {
+    local t
+    t=$(mktemp -d .rigforge-status.XXXXXX)
+    (cd -P -- "$t" && [ "$(pwd -P)" = "$1/$t" ] && [ -O . ] && printf '%s' "$3" >r && { mv -fT -- r "../$2" || mv -fh -- r "../$2" || rm -f r; })
+    rmdir -- "$t"
+}
+_control_status() {
+    local f="$1" cid="$3" body
     body=$(jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end), warnings: ($k | split(",") | map(select(. == "watchdog" or . == "max_temp_c")) | map("thermal protection changed: " + .))}')
-    printf '%s' "$body" >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
-    [ "$2" = started ] || RIGFORGE_CONTROL_TERMINAL_WRITTEN=1 # #509: `started` (#320) is the one non-terminal status written here
-    # #255: also index by change_id, so a caller can GET /status?change_id=<cid> after a concurrent
-    # change overwrote status.json. cid is server-generated 16-hex; guard it anyway (it becomes a
-    # filename). Keep only the last ~20 outcomes.
-    if [[ "$cid" =~ ^[0-9a-f]{16}$ ]]; then
-        cdir="$(dirname "$f")/changes"
-        mkdir -p "$cdir"
-        printf '%s' "$body" >"$cdir/$cid.json.tmp.$$" 2>/dev/null && mv -f "$cdir/$cid.json.tmp.$$" "$cdir/$cid.json" && chmod 644 "$cdir/$cid.json" 2>/dev/null || true
-        # shellcheck disable=SC2012  # names are controlled 16-hex; ls -t orders by recency
-        ls -t "$cdir"/*.json 2>/dev/null | tail -n +21 | while IFS= read -r old; do [ -n "$old" ] && rm -f "$old"; done
-        # A terminal apply record supersedes the receiver's pending marker (#344); an upgrade id has none.
-        rm -f "$(dirname "$f")/pending/$cid.json" 2>/dev/null || true
-    fi
+    (
+        umask 022
+        mkdir -p -- "$(dirname "$f")" && cd -P -- "$(dirname "$f")" || exit 0
+        base=$(pwd -P)
+        _control_status_put "$base" "${f##*/}" "$body"
+        [[ "$cid" =~ ^[0-9a-f]{16}$ ]] || exit 0
+        mkdir changes
+        cd -P changes && [ "$(pwd -P)" = "$base/changes" ] && _control_status_put "$base/changes" "$cid.json" "$body"
+        # shellcheck disable=SC2012
+        [ "$(pwd -P)" = "$base/changes" ] && ls -t -- *.json | tail -n +21 | while IFS= read -r old; do rm -f -- "$old"; done
+        cd -P -- "$base/pending" && [ "$(pwd -P)" = "$base/pending" ] && rm -f -- "$cid.json"
+    ) 2>/dev/null || true
+    [ "$2" = started ] || RIGFORGE_CONTROL_TERMINAL_WRITTEN=1
 }
 
 # #509/#535: control_apply and control_upgrade record an outcome on every branch, but the work between
