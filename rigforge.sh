@@ -811,7 +811,6 @@ prepare_workspace() {
         mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
     fi
 
-    # Fix permissions to ensure the current user can write
     if [ "${EUID:-$(id -u)}" -eq 0 ] || [ ! -w "$WORKER_ROOT" ]; then
         if [ "$OS_TYPE" == "Darwin" ]; then
             sudo chown -R "$REAL_USER" "$WORKER_ROOT"
@@ -825,8 +824,12 @@ prepare_workspace() {
 
 _recover_xmrig_swap() {
     [ -f "$WORKER_ROOT/xmrig.swap" ] || return 0
+    local name
+    name=$(cat "$WORKER_ROOT/xmrig.swap" 2>/dev/null || true)
+    [[ "$name" == xmrig-* && "$name" != *[!A-Za-z0-9_.-]* ]] || name=""
+    [ -n "$name" ] || { warn "Ignoring an invalid XMRig swap marker." && rm -f "$WORKER_ROOT/xmrig.swap" && return 0; }
     [ -d "$WORKER_ROOT/xmrig" ] || {
-        mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null || mv "$WORKER_ROOT/$(cat "$WORKER_ROOT/xmrig.swap")" "$WORKER_ROOT/xmrig" 2>/dev/null || warn "Could not recover the interrupted XMRig swap; rebuilding."
+        { [ -d "$WORKER_ROOT/xmrig.new" ] && [ ! -L "$WORKER_ROOT/xmrig.new" ] && mv "$WORKER_ROOT/xmrig.new" "$WORKER_ROOT/xmrig" 2>/dev/null; } || { [ -d "$WORKER_ROOT/$name" ] && [ ! -L "$WORKER_ROOT/$name" ] && mv "$WORKER_ROOT/$name" "$WORKER_ROOT/xmrig" 2>/dev/null; } || warn "Could not recover the interrupted XMRig swap; rebuilding."
     }
     rm -f "$WORKER_ROOT/xmrig.swap"
     decide_rebuild
@@ -3554,7 +3557,6 @@ backup() {
             included="$included $f"
         fi
     done
-    # A small manifest for provenance — handy when rolling a tune out across a fleet.
     jq -n --arg v "$(cmd_version)" --arg host "$(hostname 2>/dev/null)" --arg files "$included" \
         '{rigforge: $v, source_host: $host, files: ($files | split(" "))}' >"$STAGE_DIR/rigforge-backup.json" 2>/dev/null || true
 
@@ -3572,7 +3574,7 @@ backup() {
 
 # restore [-y|--yes] <archive>: put config.json + tuning back from a backup archive.
 restore() {
-    local assume_yes=0 archive="" arg
+    local assume_yes=0 archive="" arg names
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
@@ -3593,16 +3595,13 @@ restore() {
     fi
 
     STAGE_DIR=$(mktemp -d)
-    # Cleanup is armed the moment the temp dir exists — a set -e abort anywhere below (an error() call
-    # included: EXIT traps fire for those same as any other exit) must not leak this secret-bearing
-    # staging content. Same EXIT-trap treatment tune() got in #135. (#353)
     trap 'rm -rf "$STAGE_DIR"' EXIT
-    tar -xzf "$archive" -C "$STAGE_DIR" 2>/dev/null || error "Could not extract $archive — is it a RigForge backup?"
+    names=$(tar -tzf "$archive" 2>/dev/null) || error "Could not extract $archive — is it a RigForge backup?"
+    ! grep -Eq '(^|/)\.\.(/|$)|^/' <<<"$names" || error "Archive has a member path that is absolute or contains '..'; refusing it."
+    tar -xzf "$archive" -C "$STAGE_DIR" --no-same-owner --no-same-permissions 2>/dev/null || error "Could not extract $archive — is it a RigForge backup?"
+    [ -z "$(find "$STAGE_DIR" \( ! -type f ! -type d \) -o \( -type f -links +1 \))" ] || error "Archive has a member that is not a regular file or directory; refusing it."
     [ -f "$STAGE_DIR/config.json" ] || error "Archive has no config.json — not a RigForge backup."
-    # Validate the staged config BEFORE it ever touches the live one — same subshell idiom as
-    # _control_commit (rigforge.sh:~3652): parse_config's error() only exits the subshell, so a bad
-    # backup can be rejected without corrupting this shell's CONFIG_JSON. shellcheck flags this as
-    # SC2031 (info), same as there — intentional, not suppressed.
+    chmod 600 "$STAGE_DIR/config.json"
     (CONFIG_JSON="$STAGE_DIR/config.json" && parse_config) >/dev/null 2>&1 || error "Backup's config.json failed validation — existing config left untouched."
     if [ -f "$STAGE_DIR/rigforge-backup.json" ]; then
         local src

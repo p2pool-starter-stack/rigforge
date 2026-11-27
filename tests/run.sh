@@ -1767,8 +1767,8 @@ empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
     PATH="$STUBS:$PATH" _activate_xmrig_build >/dev/null 2>&1
 )
 assert_rc "prune is set -e safe with no archives" "$?" "0"
+bash "$ROOT/tests/test-root-input-hardening.sh" "$SCRIPT" >/dev/null 2>&1 && ok "swap marker, restore archive and benchmark config inputs are validated" || bad "swap marker, restore archive and benchmark config inputs are validated" "regression failed"
 
-# ---------------------------------------------------------------------------
 # Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow
 # recompile + restart are skipped, so re-running is a fast no-op and `upgrade` only acts on a bump.
 echo "== unit: xmrig_already_built detection (#4) =="
@@ -7014,7 +7014,7 @@ rst_stage="$(tail -1 "$RST/mktemp.log" 2>/dev/null)"
 if [ -z "$rst_stage" ]; then
     bad "restore leak-test setup (#353)" "mktemp was never logged — the wrapper stub isn't wired correctly"
 else
-    assert_rc "restore with a failing tar -xzf exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
+    assert_rc "restore with a failing tar exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
     assert_eq "restore's EXIT trap removed the staging tempdir after the abort (#353)" "$([ -d "$rst_stage" ] && echo leaked || echo clean)" "clean"
 fi
 
