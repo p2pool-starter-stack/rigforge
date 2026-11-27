@@ -26,4 +26,5 @@ print_stderr = "deny"
 panic = "unwind"
 
 [profile.release]
+strip = true
 panic = "unwind"
