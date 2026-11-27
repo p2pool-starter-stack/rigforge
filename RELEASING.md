@@ -39,7 +39,7 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    sudo bash tests/e2e-real.sh control     # the writable control path (#236) against real systemd: enable, POST a change, poll to applied, revert
    sudo bash tests/e2e-real.sh upgrade     # the remote-upgrade chain (#308/#322) with REAL git: noop + refused-tag rollback legs, plus a mandatory forward leg that auto-derives the previous real release tag -> current and proves it, then reverts (skip with a reason: E2E_UPGRADE_SKIP_REASON="...")
    sudo bash tests/e2e-real.sh watchdog    # the thermal-hold path (#349) against the real sensor and real systemd: lowers max_temp_c below the live reading, runs the verb once, asserts the stop + hold marker + journal evidence, restores on every exit path (skips explicitly when no temperature reading is available)
-   sudo E2E_PERF_GATE=1 E2E_PERF_HISTORY=<history.jsonl> bash tests/e2e-real.sh perf   # offline bench; prints JSON keyed by hardware class and fails on a regression vs that history (drop E2E_PERF_GATE=1 to only report)
+   sudo E2E_PERF_MODE=gate E2E_PERF_HISTORY=<history.jsonl> bash tests/e2e-real.sh perf   # offline bench; prints JSON keyed by hardware class and fails when the result leaves the history band (report mode without E2E_PERF_MODE=gate)
    sudo bash tests/e2e-real.sh teardown    # uninstall + assert a clean revert
    ```
 
@@ -55,8 +55,11 @@ promoted to `main` and tagged. The steps below build the release commit on `deve
    Both gates carry the standardized performance checks (see `tests/README.md` › Performance
    testing): `e2e-real`'s `perf` phase emits JSON keyed by hardware class and compares the offline
    bench against the history you pass in `E2E_PERF_HISTORY`, and `e2e-pithead`'s `api-impact` phase
-   proves the sister API doesn't shave live hashrate. Report mode is the default and never fails on a
-   regression; run the release gate with `E2E_PERF_GATE=1`, and investigate any drop before tagging.
+   proves the sister API doesn't shave live hashrate. The phase's mode is the `E2E_PERF_MODE` field
+   (`report` default, never failing; `gate` fails the phase when the result leaves the median of the
+   class's last 5 history results ± 3×MAD, and reports `insufficient history` below 5 results, so a
+   rig that is not the gated hardware is never judged); run the release gate with
+   `E2E_PERF_MODE=gate`, and investigate any `REGRESSION` before tagging.
 
    Each phase must report `E2E-REAL (<phase>): PASS`. This proves a release bundle actually
    builds, tunes, and hashes on real hardware, which the suites can't since they all stub XMRig.
@@ -226,10 +229,14 @@ gated on one rig and v1.15.1 on another. A rig that dual-boots Windows has Secur
 kernel lockdown (`integrity`) denies every MSR write,
 and `doctor` counts that as an issue and exits non-zero. Pick a rig with Secure Boot off.
 
-The default changed from failing to reporting. With `E2E_PERF_GATE=1` (and no history, the gate fails rather than pass silently) a result more than the tolerance below the
-latest or the best entry for its class fails as `perf REGRESSION` / `perf RATCHET`. Existing per-host
-files in `tests/perf-baselines/` keep working, as the history, until `E2E_PERF_HISTORY` is set. They
-are retired by deleting them once the history exists (see `tests/perf-baselines/README.md`); the old
+The perf gate's mode is `E2E_PERF_MODE` (`report` default, `gate`; the legacy `E2E_PERF_GATE=1`
+activates `gate`). In gate mode the result must stay within the median of the class's last 5 results
+in `E2E_PERF_HISTORY` ± 3×MAD, or the phase fails as `perf REGRESSION` / `perf SPIKE`; fewer than 5
+results for the class report `insufficient history` and are never judged, but gate mode without any
+history input fails rather than pass silently. A `SPIKE` or a `REGRESSION` from deliberate hardware
+or tuning work needs a new class history, documented in the release notes. Existing per-host
+files in `tests/perf-baselines/` keep their tolerance report and the recording judge until they are
+retired by deleting them once the history exists (see `tests/perf-baselines/README.md`); the
 `E2E_PERF_RECORD=1` / `E2E_PERF_FORCE=1` / `E2E_PERF_TAG` flow still writes them and still dirties the
 checkout until then.
 

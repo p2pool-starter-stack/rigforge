@@ -21,6 +21,10 @@ chmod +x "$D/rigforge"
 hostname() { printf ''; }
 lscpu() { echo 'Model name: test CPU'; }
 phase() { :; }
+die() {
+    printf 'e2e-real: %s\n' "$1" >&2
+    exit 2
+}
 HERE="$D" RIGFORGE="$D/rigforge"
 export CALLS="$D/calls"
 source "$D/functions.sh"
@@ -49,6 +53,16 @@ if OMIT_ID=1 run_perf 1 >"$D/output" 2>&1; then
     exit 1
 fi
 cmp -s "$D/before" "$D/tests/perf-baselines/.json"
+printf '{"bench_1m_hs":1000.0,"cpu":"x","recorded":"2026-01-01"}\n' >"$D/tests/perf-baselines/.json"
+printf '{"tag":"old","recorded":"2026-01-01","bench_1m_hs":2000.0}\n' >"$D/tests/perf-baselines/.history.jsonl"
+if out=$(run_perf 0 2>&1); then
+    echo 'FAIL: recording passed a result inside baseline but below best-ever'
+    exit 1
+fi
+grep -q 'perf RATCHET' <<<"$out" || {
+    echo 'FAIL: recording did not name the best-ever ratchet (#214)'
+    exit 1
+}
 lscpu() { echo 'Model name: AMD Ryzen 7 7800X3D 8-Core Processor'; }
 class=amd-ryzen-7-7800x3d-8-core-processor
 rm -rf "$D/tests"
@@ -75,12 +89,8 @@ grep -q 'REGRESSION (report only)' <<<"$out" || {
     echo 'FAIL: report mode hid the regression'
     exit 1
 }
-if E2E_PERF_HISTORY=$H E2E_PERF_GATE=1 run_report >/dev/null 2>&1; then
-    echo 'FAIL: gate mode passed a regression'
-    exit 1
-fi
 if E2E_PERF_HISTORY=$D/missing E2E_PERF_GATE=1 run_report >/dev/null 2>&1; then
-    echo 'FAIL: gate mode passed with no history'
+    echo 'FAIL: gate mode passed with no history file'
     exit 1
 fi
 printf 'not json\n{"%s":{"bench_1m_hs":null}}\n' "$class" >"$H"
@@ -92,9 +102,82 @@ grep -q 'no history for class' <<<"$out" || {
     echo 'FAIL: malformed history was not reported as no history'
     exit 1
 }
-printf '{"%s":{"bench_1m_hs":1000}}\n' "$class" >"$H"
-E2E_PERF_HISTORY=$H E2E_PERF_GATE=1 run_report >/dev/null 2>&1 || {
+printf '{"%s":{"bench_1m_hs":1000}}\n{"%s":{"bench_1m_hs":1010}}\n{"%s":{"bench_1m_hs":995}}\n{"%s":{"bench_1m_hs":1005}}\n{"%s":{"bench_1m_hs":1000}}\n' "$class" "$class" "$class" "$class" "$class" >"$H"
+out=$(E2E_PERF_HISTORY=$H E2E_PERF_MODE=gate run_report 2>&1) || {
     echo 'FAIL: gate mode failed a healthy result'
+    exit 1
+}
+grep -q 'matches the class history band' <<<"$out" || {
+    echo 'FAIL: healthy gate result not reported'
+    exit 1
+}
+printf '{"%s":{"bench_1m_hs":5000}}\n{"%s":{"bench_1m_hs":5100}}\n{"%s":{"bench_1m_hs":4900}}\n{"%s":{"bench_1m_hs":5050}}\n{"%s":{"bench_1m_hs":4950}}\n' "$class" "$class" "$class" "$class" "$class" >"$H"
+if out=$(E2E_PERF_HISTORY=$H E2E_PERF_MODE=gate run_report 2>&1); then
+    echo 'FAIL: gate mode passed a regression'
+    exit 1
+fi
+grep -q 'perf REGRESSION' <<<"$out" || {
+    echo 'FAIL: gate regression not named REGRESSION'
+    exit 1
+}
+out=$(E2E_PERF_HISTORY=$H run_report 2>&1) || {
+    echo 'FAIL: report mode failed on a regression with full history'
+    exit 1
+}
+grep -q 'REGRESSION (report only)' <<<"$out" || {
+    echo 'FAIL: report mode hid the regression with full history'
+    exit 1
+}
+printf '{"%s":{"bench_1m_hs":95}}\n{"%s":{"bench_1m_hs":100}}\n{"%s":{"bench_1m_hs":105}}\n{"%s":{"bench_1m_hs":98}}\n{"%s":{"bench_1m_hs":102}}\n' "$class" "$class" "$class" "$class" "$class" >"$H"
+if out=$(E2E_PERF_HISTORY=$H E2E_PERF_MODE=gate run_report 2>&1); then
+    echo 'FAIL: gate mode passed an unexplained spike'
+    exit 1
+fi
+grep -q 'perf SPIKE' <<<"$out" || {
+    echo 'FAIL: gate spike not named SPIKE'
+    exit 1
+}
+printf '{"%s":{"bench_1m_hs":1000}}\n{"%s":{"bench_1m_hs":1010}}\n{"%s":{"bench_1m_hs":995}}\n{"%s":{"bench_1m_hs":1005}}\n' "$class" "$class" "$class" "$class" >"$H"
+out=$(E2E_PERF_HISTORY=$H E2E_PERF_MODE=gate run_report 2>&1) || {
+    echo 'FAIL: gate mode failed on insufficient history'
+    exit 1
+}
+grep -q 'insufficient history (4/5)' <<<"$out" || {
+    echo 'FAIL: insufficient history not reported'
+    exit 1
+}
+printf '{"other":{"bench_1m_hs":9}}\n' >"$H"
+out=$(E2E_PERF_HISTORY=$H E2E_PERF_MODE=gate run_report 2>&1) || {
+    echo 'FAIL: gate mode failed a box whose class has no history'
+    exit 1
+}
+grep -q 'insufficient history (0/5)' <<<"$out" || {
+    echo 'FAIL: missing class history not reported'
+    exit 1
+}
+printf '{"%s":{"bench_1m_hs":5000}}\n{"%s":{"bench_1m_hs":5100}}\n{"%s":{"bench_1m_hs":4900}}\n{"%s":{"bench_1m_hs":5050}}\n{"%s":{"bench_1m_hs":4950}}\n' "$class" "$class" "$class" "$class" "$class" >"$H"
+if out=$(E2E_PERF_HISTORY=$H E2E_PERF_GATE=1 run_report 2>&1); then
+    echo 'FAIL: legacy E2E_PERF_GATE=1 no longer activates gate mode'
+    exit 1
+fi
+grep -q 'perf REGRESSION' <<<"$out" || {
+    echo 'FAIL: legacy gate alias did not judge'
+    exit 1
+}
+out=$(E2E_PERF_HISTORY=$H E2E_PERF_GATE=0 run_report 2>&1) || {
+    echo 'FAIL: E2E_PERF_GATE=0 activated the gate'
+    exit 1
+}
+grep -q 'REGRESSION (report only)' <<<"$out" || {
+    echo 'FAIL: E2E_PERF_GATE=0 did not stay in report mode'
+    exit 1
+}
+if out=$(E2E_PERF_MODE=maybe run_report 2>&1); then
+    echo 'FAIL: unknown mode passed'
+    exit 1
+fi
+grep -q 'E2E_PERF_MODE must be report or gate' <<<"$out" || {
+    echo 'FAIL: unknown mode not rejected'
     exit 1
 }
 mkdir -p "$D/tests/perf-baselines"
@@ -104,7 +187,7 @@ run_report >/dev/null 2>&1 || {
     exit 1
 }
 if E2E_PERF_GATE=1 run_report >/dev/null 2>&1; then
-    echo 'FAIL: legacy baseline ignored by gate mode'
+    echo 'FAIL: legacy baseline passed the gate without E2E_PERF_HISTORY'
     exit 1
 fi
 printf 'garbage\n' >"$D/tests/perf-baselines/.json"
