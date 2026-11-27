@@ -1,0 +1,211 @@
+name: Rust
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Rust fmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-fmt
+        run: make rust-fmt
+
+  clippy:
+    name: Rust clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-clippy
+        run: make rust-clippy
+
+  test:
+    name: Rust test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-test
+        run: make rust-test
+
+  deny:
+    name: Rust deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install pinned cargo-deny
+        env:
+          CARGO_DENY_VERSION: "0.22.1"
+          CARGO_DENY_SHA256: "13f7e825e9cb811c2f8de63f29b0f45851dfb53004029f0f2501af524728364d"
+        run: |
+          set -euo pipefail
+          dir="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          tarball="${dir}.tar.gz"
+          curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${tarball}" -o "$tarball"
+          echo "${CARGO_DENY_SHA256}  ${tarball}" | sha256sum -c -
+          mkdir unpacked
+          tar -xzf "$tarball" -C unpacked
+          sudo install "$(find unpacked -name cargo-deny -type f | head -n 1)" /usr/local/bin/cargo-deny
+          cargo-deny --version
+      - name: Run make rust-deny
+        run: make rust-deny
+
+  musl:
+    name: Rust musl x86_64 static build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-musl
+        run: make rust-musl
+      - name: Assert the binary reports the repository VERSION
+        run: make rust-version
+      - name: Run the static binary inside the pinned e2e image
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^FROM //p' tests/e2e/Dockerfile)"
+          if [ -z "$image" ]; then
+            echo "::error::cannot read the pinned base image from tests/e2e/Dockerfile"
+            exit 1
+          fi
+          want="rigforge-rs $(tr -d '[:space:]' <VERSION)"
+          got="$(docker run --rm --platform linux/amd64 \
+            -v "$PWD/target/x86_64-unknown-linux-musl/release/rigforge-rs:/rigforge-rs:ro" \
+            "$image" /rigforge-rs --version)"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the binary in the pinned e2e image reported '$got'; expected '$want'"
+            exit 1
+          fi
+      - name: Verify two further builds of this commit match byte-for-byte
+        run: |
+          set -euo pipefail
+          builds=()
+          for d in a b; do
+            dir="$(mktemp -d "repro-$d.XXXXXX")"
+            git archive --format=tar HEAD | tar -x -C "$dir"
+            (cd "$dir" && cargo build --release --locked --target x86_64-unknown-linux-musl -p rigforge-rs)
+            builds+=("$dir/target/x86_64-unknown-linux-musl/release/rigforge-rs")
+          done
+          hashes=$(sha256sum target/x86_64-unknown-linux-musl/release/rigforge-rs \
+            "${builds[@]}" | awk '{print $1}' | sort -u)
+          if [ "$(printf '%s\n' "$hashes" | wc -l | tr -d '[:space:]')" != 1 ]; then
+            echo "::error::builds of the same commit differ; expected one hash, got:"
+            printf '%s\n' "$hashes"
+            exit 1
+          fi
+
+  msrv:
+    name: Rust MSRV
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run make rust-msrv
+        run: make rust-msrv
+
+  goldens:
+    name: Rust goldens (jq 1.7.1)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install pinned jq
+        env:
+          JQ_VERSION: "1.7.1"
+          JQ_SHA256: "5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5"
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64" -o jq-linux-amd64
+          echo "${JQ_SHA256}  jq-linux-amd64" | sha256sum -c -
+          sudo install jq-linux-amd64 /usr/local/bin/jq
+          test "$(/usr/local/bin/jq --version)" = "jq-${JQ_VERSION}"
+      - name: Run make rust-goldens
+        run: |
+          set -euo pipefail
+          test "$(jq --version)" = jq-1.7.1
+          make rust-goldens
+
+  jq-versions:
+    name: Rust jq 1.6 and 1.8 live tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install pinned jq 1.6 and jq 1.8
+        env:
+          JQ16_VERSION: "1.6"
+          JQ16_SHA256: "af986793a515d500ab2d35f8d2aecd656e764504b789b66d7e1a0b727a124c44"
+          JQ18_VERSION: "1.8.2"
+          JQ18_SHA256: "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/jq16" "${RUNNER_TEMP}/jq18"
+          curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${JQ16_VERSION}/jq-linux64" -o "${RUNNER_TEMP}/jq16/jq"
+          echo "${JQ16_SHA256}  ${RUNNER_TEMP}/jq16/jq" | sha256sum -c -
+          curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${JQ18_VERSION}/jq-linux-amd64" -o "${RUNNER_TEMP}/jq18/jq"
+          echo "${JQ18_SHA256}  ${RUNNER_TEMP}/jq18/jq" | sha256sum -c -
+          chmod 755 "${RUNNER_TEMP}/jq16/jq" "${RUNNER_TEMP}/jq18/jq"
+          test "$("${RUNNER_TEMP}/jq16/jq" --version)" = "jq-${JQ16_VERSION}"
+          test "$("${RUNNER_TEMP}/jq18/jq" --version)" = "jq-${JQ18_VERSION}"
+          echo "JQ16=${RUNNER_TEMP}/jq16/jq" >> "$GITHUB_ENV"
+          echo "JQ18=${RUNNER_TEMP}/jq18/jq" >> "$GITHUB_ENV"
+      - name: Run the live jq version tests
+        run: cargo test --locked -p rigforge-core --test jq_live --test jq_live_docs -- --nocapture
+
+  musl-aarch64:
+    name: Rust musl aarch64 (best effort)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Add the aarch64 musl target
+        run: rustup target add aarch64-unknown-linux-musl
+      - name: Run make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
+        run: make rust-musl MUSL_TARGET=aarch64-unknown-linux-musl
+      - name: Assert the binary reports the repository VERSION
+        run: make rust-version MUSL_TARGET=aarch64-unknown-linux-musl

@@ -51,13 +51,34 @@ Not every verb needs root — the design, in four lines:
 - `doctor` works without root, but gives its deepest checks (MSR register read-back, RAM layout) as
   root.
 
+On Linux, `setup` and `upgrade` refuse to install the root-run units when a non-root user could change
+the code those units run (#783). They check `rigforge.sh`, the `util/` and `systemd/` directories and every
+file in them, `.git/config` and the git hooks in a git checkout (root runs `git` there for remote
+upgrades), and every directory from the code tree up to `/`, both as given and with symlinks resolved. Each path must be owned by root, writable by
+no group other than root's, and not writable by every user. A path that cannot be inspected counts as a
+refusal, and the message names the first path that fails. `config.json` is operator data, not code, and is
+not checked. A root-owned tree passes silently.
+
+- `--no-root-guard` accepts the tree anyway and prints a warning. It also records the allowance in the
+  root-owned `/etc/rigforge-root-guard` (it names the tree), so later remote upgrades through the control
+  path, which pass no flags, accept the same tree with a warning. An allowance file that a non-root user
+  could write, or one that names another tree, is ignored. `uninstall` removes it.
+- An install that predates the guard (a git checkout with the miner unit installed and no allowance file)
+  is allowed once with a loud warning and the allowance is recorded, so its remote upgrades keep working.
+  A packaged tree (with a `.rigforge-package` marker) is never allowed this way.
+- The guard runs from the tree it checks, so it catches a tree left writable by mistake. It cannot stop a
+  user who already writes the tree before the first guarded run, because that user can change the guard
+  itself or create a `.git` directory to qualify for the one-time allowance.
+- To close the gap instead, make the tree root-owned: `sudo chown -R root:root <tree> && sudo chmod -R
+  go-w <tree>`, then delete `/etc/rigforge-root-guard`. Afterwards, update the checkout with `sudo git`.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
 | `upgrade` | Redeploy this RigForge release onto the rig: regenerate the live XMRig config, reinstall the systemd units, hand the files to you (and to `miner_user`, if set) so the miner can read its rebuilt tree, restart so both are in effect, and re-tune if periodic autotune is enabled (the fastest knobs can shift between versions). The **compile** is the conditional part — XMRig is rebuilt when the pinned version/commit changed, the compiled-minimum marker is missing or nonzero, or the binary checksum fails. A miner you had deliberately stopped is left stopped, and the regenerated config and unit take effect at your next `start` (#413). `--check` just reports whether a newer RigForge release exists (on-demand GitHub query, always exits 0). |
 | `apply` | Re-read `config.json`, regenerate the live XMRig config, and restart, without recompiling. A miner that is deliberately stopped — a watchdog thermal hold, or your own `stop` — is left stopped, and picks up the new config at its next start. The fast path after editing `config.json`. On Linux it also reconciles the periodic-autotune timer with config (so changing the `autotune` target takes effect) and reports it (efficiency / performance / disabled), then asks the running miner whether a live pool connection came up — and warns when none did (a bad `pools[0].url` otherwise mines nothing while looking applied, #343). Warn only, never a failure: the pool may be legitimately down at apply time. `apply` exits non-zero when the miner restart is rejected (#630; the control path then rolls the change back instead of reporting it applied), and when the watchdog units could not be re-rendered (#395) — that one is a real failure, because the cadence the rig is running would otherwise diverge from `config.json` silently. |
 | `uninstall` | Remove the service and revert all system changes (fstab, limits, modules, GRUB) and the worker build/logs. Leaves `config.json`. Prompts first; add `--yes` to skip. |
-| `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, the miner has a live pool connection (read from the miner's own local API — a running miner with no connection is not mining, #343; with the service stopped, one TCP dial of `pools[0]` stands in for a direct pool; a proxied connection cannot be verified until mining starts), HugePages are reserved, kernel lockdown isn't blocking MSR writes (read from `/sys/kernel/security/lockdown` — active lockdown means the MSR mod cannot apply, and `msr.allow_writes=on` can't override it), the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): the live algorithm when it differs from `rx/0`, an unreachable configured SOCKS proxy for an enabled pool (a successful TCP dial stays quiet and does not prove SOCKS/Tor health), CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. When the [writable control path](#writable-control-path-opt-in) is enabled, it's also a counted issue: `doctor` checks `rigforge-control` is active and its `/status` endpoint answers (#278), staying silent when control is disabled. Exits non-zero when critical issues are found (cron-friendly, matching Pithead's `status`). |
+| `doctor` | Read-only health check (run with `sudo` for the deepest checks). Critical findings (counted as issues): the service is active, the miner has a live pool connection (read from the miner's own local API — a running miner with no connection is not mining, #343; with the service stopped, one TCP dial of `pools[0]` stands in for a direct pool; a proxied connection cannot be verified until mining starts), HugePages are reserved, kernel lockdown isn't blocking MSR writes (read from `/sys/kernel/security/lockdown` — active lockdown means the MSR mod cannot apply, and `msr.allow_writes=on` can't override it), the `msr` module is loaded, and the MSR mod actually applied, confirmed from XMRig's log and, as root, an `rdmsr` register read-back (see [MSR mod verification](#msr-mod-verification)). Advisory findings (hints, not failures): the live algorithm when it differs from `rx/0`, an unreachable configured SOCKS proxy for an enabled pool (a successful TCP dial stays quiet and does not prove SOCKS/Tor health), CPU governor, 1 GB HugePages, HugePages 100%-backed (from the XMRig log), hashrate-capping hardware RigForge can't fix but you can (single-channel or slow RAM via `dmidecode`, and a power/boost-capped CPU clock), per-thread placement (the core each CPU thread runs on, read from the miner's `/2/backends`; an explicit unavailable reason when the miner is stopped or the API is silent), and BIOS/firmware recommendations (board/BIOS context, plus enable XMP/EXPO/DOCP or SMT when they're off; manual BIOS changes RigForge can't make from the OS). Prints an actionable hint for anything off. Also binary tamper evidence (#141): the on-disk `xmrig` is compared against the SHA-256 recorded at compile time — a deliberate rebuild refreshes the record, anything else warns and counts as an issue. When the [writable control path](#writable-control-path-opt-in) is enabled, it's also a counted issue: `doctor` checks `rigforge-control` is active and its `/status` endpoint answers (#278), staying silent when control is disabled. Exits non-zero when critical issues are found (cron-friendly, matching Pithead's `status`). |
 | `bench` | Verify an offline benchmark and report H/s (`BENCH=10M` for a longer run). `--submit` opts into publishing and verifying an online benchmark; `--verify ID` checks a submitted result. See [Self-tests](#self-tests). |
 | `stress [--minutes N]` | Linux stability test after firmware changes; default 30 minutes, range 1–1440. Stops the miner, samples temperature under offline load, and restores its prior state. See [Self-tests](#self-tests). |
 | `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them, an optional, one-time step. Live variants: `--now` / `--short` (a quick prefetch re-tune against the running miner, the *run a live tune now* path), `--now --long` (a full live search of every knob, = `--live`), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
@@ -331,6 +352,15 @@ watchdog to start. The sensor is `thermal_zone0` when the board exposes one,
   design (a loaded EPYC sits near 90 °C Tctl in perfectly normal operation), so a damage-avoidance
   cutoff belongs well above the everyday reading, not near it. Editing `max_temp_c` takes effect on
   the next tick — the watchdog re-reads `config.json` every run, no `apply` needed.
+  While the hold lasts, a miner started by other means (by hand, `setup`, or a tuning sweep's
+  re-apply) is stopped again on the next tick; a tuning sweep's re-apply leaves a held miner stopped.
+  The cutoff also runs when the rest of `config.json` fails validation: if `max_temp_c` itself still
+  reads as a whole number 40-110 and the miner is active above it, the watchdog stops it, writes the
+  hold marker and still exits with the config error. While the config fails validation, only that
+  cutoff runs: no hold is lifted, and a held miner that was started again is stopped only while it
+  is above `max_temp_c`. When `HOME_DIR` itself is rejected, the stop writes no hold marker and says
+  so; start the miner by hand once the config is fixed. A `config.json` that is not valid JSON, or
+  an invalid `max_temp_c`, gives no cutoff until it is fixed.
   A failed stop is logged and retried on later ticks while the miner remains active and above the
   cutoff. A failed recovery start is logged and retains the hold for later retries, including when
   `max_temp_c` is removed; only a successful start clears the hold.
@@ -372,9 +402,8 @@ reboot).
 
 ## Running on macOS
 
-**Deprecated as of 2026-09-14: macOS is unsupported and untested going forward** (no CI, no bench).
-Ubuntu is the supported deployment platform. The instructions below describe the Darwin code paths,
-which still work but get no further investment. On macOS,
+**macOS is best effort**: Ubuntu 24.04 is the fully supported deployment platform, and on macOS most
+of RigForge works while the degraded features are listed below (no CI coverage or bench for macOS). On macOS,
 `sudo ./rigforge.sh` still does the core work: it installs dependencies (via Homebrew), compiles XMRig
 from source, and writes a tuned `config.json`. What it doesn't do is the Linux-only system integration:
 
@@ -446,7 +475,8 @@ Everything else works anywhere: `setup`, `apply`, `bench`, the offline `tune`, `
 
 `./rigforge.sh support-bundle` (no root needed) collects what a maintainer needs — `doctor` output,
 version, both configs (structurally redacted: token and pool password removed, pool user/wallet
-masked to first-4…last-4), the five logging values in effect (`xmrig-logging.json`), a 500-line miner-log tail, tuning files, unit files, hardware basics —
+masked to first-4…last-4), the five logging values in effect (`xmrig-logging.json`), a 500-line miner-log tail, tuning files, unit files, hardware basics, and
+XMRig's hwloc topology (`xmrig-topology.xml`, from `xmrig --export-topology`, which XMRig writes next to its binary; RigForge moves it into the bundle and leaves nothing in the build directory. When the miner is not built, the flag is missing or the export fails, for example without hwloc or without write access to the build directory, the reason is listed under `not_collected` in `manifest.json`) —
 into a mode-600 tarball next to the script. It never collects the journal, shell history, or
 unredacted configs, and never uploads anything. Extract and review it before attaching to a
 public issue.
@@ -535,6 +565,14 @@ connection. The same key carries the XMRig source clone and a remote upgrade's `
 upgrade refuses to start when the proxy does not answer or `origin` is not an https URL, and records
 that as its `failed` reason.
 
+**Package installs.** A `.rigforge-package` marker beside `rigforge.sh` (its value is `apt` or `brew`;
+`RIGFORGE_PACKAGE_MARKER` points the lookup elsewhere) says the package manager owns the tree, as the
+`.rigforge-appliance` marker does for an appliance. With it, `upgrade --check` still compares versions
+through the `tor_socks5`-aware fetcher but prints `sudo apt upgrade rigforge` or `brew upgrade rigforge`
+instead of git steps; `control_upgrade` and any tag upgrade refuse before running git and record that
+command as the `failed` reason; setup and `upgrade` skip the dependency install and the `add_to_path`
+symlink. Without the marker nothing changes.
+
 `upgrade` skips the recompile when the pinned XMRig is already built with a zero minimum marker
 and a valid binary checksum, so it's cheap to run — but it is
 not a no-op: it regenerates the live config, reinstalls the systemd units and restarts, because a
@@ -558,7 +596,34 @@ is the moment that actually warrants a re-tune (the monthly timer is just a slow
 > XMRig fetch, build or configuration step aborts the upgrade and leaves the live `xmrig/` tree (binary
 > and config) untouched. A swap interrupted mid-way is recovered by the next `setup` or `upgrade`.
 
+### Upgrading through apt
+
+When `apt upgrade rigforge` installs a newer version on a host that already has a
+`config.json`, the package's postinst only writes `/var/lib/rigforge/upgrade-pending` and starts
+the one-shot `rigforge-upgrade.service` with `systemctl start --no-block`; dpkg returns at once.
+A first install, a reinstall of the same version and a host without a config queue nothing.
+
+The one-shot runs `rigforge package-upgrade`, which is `upgrade` outside dpkg: it rebuilds XMRig
+only when the pin, compiled minimum or checksum requires it, re-renders every unit, and restarts
+the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and hands the tree and units back to them. Follow it with `journalctl -u rigforge-upgrade`.
+
+If it fails, the previous build keeps running, the marker stays, `/var/lib/rigforge/upgrade-failed`
+records the failure, and both `rigforge status` and `rigforge doctor` report it. dpkg is never
+failed by it. Retry with the one command `sudo rigforge upgrade`; a successful run clears the
+marker. To defer upgrades, `sudo apt-mark hold rigforge` (undo with `apt-mark unhold rigforge`).
+
 ---
+
+## Where files live
+
+RigForge reads code from one directory and writes state to another. Both default to the directory holding `rigforge.sh`, so a git clone keeps everything in one tree and nothing changes unless you set a variable.
+
+| Variable | Default | Holds |
+|---|---|---|
+| `RIGFORGE_LIB` | the directory of `rigforge.sh` | `rigforge.sh`, `util/` scripts, `systemd/` unit templates, `VERSION`, `RIGFORGE_REF`, the `.rigforge-package` marker. Never written by a worker command, so it can be root-owned and read-only. |
+| `RIGFORGE_STATE` | the same directory (`RIGFORGE_HOME` when set) | `config.json`, the `.rigforge-*` markers and sidecars (appliance marker, config provenance, revision key), `config-backups/`, `backups/`, support tarballs and the default worker root `data/worker`. |
+
+`RIGFORGE_HOME` is the older sandbox override: it sets the state directory and the template, `VERSION` and `proposed-grub.sh` lookups, while the `util/` scripts still come from the directory of `rigforge.sh`. Set `RIGFORGE_LIB` and `RIGFORGE_STATE` instead; each wins over it. Rendered units take `ExecStart` and the server script from the lib directory and the `config.json` credential from the state directory. When either variable is set, the miner unit and the scheduled verb units (autotune, watchdog, api-refresh, control-apply, control-upgrade) and the shared-host runner carry it in their environment. Both values must be clean absolute paths (letters, digits, `.`, `_`, `-`, `/`), and as root `RIGFORGE_LIB` must be owned by root and not group- or world-writable; otherwise `rigforge.sh` refuses to start. The `upgrade` verb updates a git checkout in place, so it still needs a writable checkout.
 
 ## Backup & restore
 
@@ -582,7 +647,9 @@ sudo ./rigforge.sh setup            # rebuild + apply (or 'apply' if XMRig is al
 ```
 
 Restore overwrites `config.json` and the tuning on the current machine (so it prompts first), then tells
-you to run `setup`/`apply` to put the restored config into effect.
+you to run `setup`/`apply` to put the restored config into effect. Before it overwrites, restore saves the
+current config to `config-backups/`, the same folder the control path uses, and the newest 20 files are
+kept. Restore therefore needs to be able to write next to `config.json`.
 
 ### Two reasons to use it
 
@@ -630,7 +697,7 @@ If you see MSR errors, see Troubleshooting below.
 | `doctor`: "MSR registers don't match the preset" | XMRig's log says the write succeeded but the read-back disagrees: something silently dropped it. When kernel lockdown is active, `doctor` names it as the cause (see the lockdown item it prints first); otherwise a hypervisor is the usual culprit — common on VMs/cloud instances, run RigForge on bare metal. `msr.allow_writes=on` (RigForge sets this) only matters when lockdown is *not* enforced. |
 | `doctor`: "couldn't read the MSRs via rdmsr" | The `msr` module isn't loaded (or `doctor` wasn't run as root). Run `sudo ./rigforge.sh doctor`; if it persists, `sudo modprobe msr` and check `/etc/modules-load.d/msr.conf` — a missing module is a modprobe/packaging problem, not Secure Boot (the in-tree signed module loads fine under it). This is advisory; XMRig's log already confirms the write. |
 | `HugePages_Total` is 0 | The kernel tuning needs a reboot to take effect (GRUB change). Reboot, then re-check `grep Huge /proc/meminfo`. |
-| HugePages still 0 after reboot | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; RigForge merges its kernel parameters into `GRUB_CMDLINE_LINUX_DEFAULT` rather than overwriting, so other params are preserved. |
+| HugePages still 0 after reboot | Not enough contiguous memory was reservable, or another tool changed GRUB. Re-run `sudo ./rigforge.sh`; it merges its parameters into `GRUB_CMDLINE_LINUX_DEFAULT` and keeps the others. If that line is not one plain double-quoted value (single quotes, a trailing comment, an escaped double quote, or more than one such line), RigForge leaves the file untouched and prints the parameters to add by hand: edit `/etc/default/grub`, then `sudo update-grub`. |
 | Low hashrate / few threads | RandomX is L3-bound (~2 MB per thread). A CPU with little L3 runs fewer effective threads; this is expected. See [Hardware › L3 cache](hardware.md#a-note-on-l3-cache). |
 | No AVX2 | RandomX still runs but slower. AVX2 is strongly recommended; there's no fix beyond different hardware. |
 | Dashboard can't read the worker | The API is open (no token) by default, so first check the worker is reachable from the stack host on `:8080`. If you set an `ACCESS_TOKEN`, the dashboard must send the same token (`workers.api_auth: token` + `workers.api_token`, or `name` if the token is the rig name). See [Pithead Integration › Troubleshooting](pithead-integration.md#troubleshooting). |
@@ -660,8 +727,8 @@ microseconds and cannot touch mining performance; a systemd timer schedules a re
 seconds off the request path. Refreshes use normal CPU priority (`Nice=0`) to share CPU time with
 the miner when publishing control changes; disk I/O stays at idle priority and
 the cached HTTP server retains `Nice=19`. The queued thermal and separate pools replay tests check direct-feed
-freshness and exact-ID publication, capturing timer-driven helper timings under the runner-owned
-mining fixture. They preserve the service policy and normal feed publication. The timer uses an independent wall-clock cadence,
+freshness and exact-ID publication, capturing timer-driven helper timings under the control
+replay fixture. They preserve the service policy and normal feed publication. The timer uses an independent wall-clock cadence,
 so a failed refresh or a unit reinstall cannot strand the feed without a future run. Summary and
 health responses carry `generated_at` in UTC; `doctor` reports its age and the timer's next/last
 trigger, and warns once the payload is over a minute old. The same
@@ -803,16 +870,23 @@ decisions are in [ADR 0002](adr/0002-remote-worker-upgrade.md).
 Polling an upgrade works like polling a config change, with a slightly richer vocabulary (#320):
 `GET :8082/status?change_id=<id>` serves a non-terminal `started` once the root oneshot has claimed
 the intent (so a poller can tell "mid-build" from "queued"), then one terminal outcome: `applied`
-(the `reason` names the landed version), `rolled_back`, `noop` (already on the requested version —
-idempotent, not an error), `throttled` (inside the anti-beacon window — retry later), or `failed`
-(with `reason`). A run that dies after claiming the intent (an abort, or systemd stopping the unit)
-still records `failed`, with a `reason` saying the run was lost, the checkout may be half-updated
-and the upgrade will not be retried: check the installed version and request it again (#535). Only a
-`SIGKILL` or a power loss can leave `started` as the last record. The
-oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent and can run well past
+(the `reason` names the landed version), `rolled_back`, `noop` (already on the requested version
+with no unfinished install — idempotent, not an error), `throttled` (inside the anti-beacon window —
+retry later), or `failed` (with `reason`). A run that dies after claiming the intent (an abort, or
+systemd stopping the unit) still records `failed`, with a `reason` saying the run was lost, the
+checkout may be half-updated and the upgrade will not be retried: check the installed version and
+request it again (#535). After such a run, a request for the same version is carried out again and
+is not answered `noop`; it is still subject to the throttle window. When the fetch fails, the root
+guard refuses the tree or the upgrade state cannot be used, the outcome is `failed`, with a `reason`
+that says nothing was changed. Only a `SIGKILL` or a power loss can leave `started` as the last
+record. The oneshot gets `TimeoutStartSec=infinity` (#510): a rebuild is hardware-dependent and can run well past
 ADR 0002's ~10-minute estimate — twice over, since a failed forward attempt rebuilds the rollback ref
 in the same run — so systemd's implicit 90s default would kill it mid-build. Nothing is left
 unbounded by it: the D6 throttle is what bounds how often this path fetches and builds at all.
+
+The unit runs as root, so when a fetch, checkout and rebuild (or the rollback) returns, it reowns everything
+outside `data/` (and `.git`) that differs from the checkout root's owner and group, leaving an operator-owned
+clone operator-owned. A root-owned checkout is left alone (#798).
 
 The root upgrade unit keeps its throttle lock and timestamp in
 `/var/lib/rigforge-control-upgrade`, owned by root with mode `0700`, separate from the
@@ -820,6 +894,6 @@ receiver's writable state. Unsafe ownership, permissions, links, file types, or 
 fail the upgrade before any fetch or build. Existing throttle files in the receiver's state are
 left untouched and never migrated, so the first upgrade after this change starts a fresh cooldown.
 
-`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too. Linux-only.
+`"control": "disabled"` + `apply` removes the units cleanly; `uninstall` removes them too, with both state directories under `/var/lib`. Linux-only.
 The design and the decisions behind it are recorded in
 [ADR 0001](../docs/adr/0001-writable-worker-config-control-path.md).

@@ -1,0 +1,90 @@
+crates/rigforge-core/src/text.rs	0xC2..=0xDF => 2,	0xC0..=0xDF => 2,	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	0xF0..=0xF4 => 4,	0xF0..=0xF7 => 4,	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	        _ => 0x07,	        _ => 0x03,	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	3 => 0x800,	3 => 0x400,	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	byte & 0xC0 == 0x80	byte & 0x80 == 0x80	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	rest = &[];	rest = tail;	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	used = index;	used = want;	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	if broken || cp < first_codepoint(want) {	if broken {	--test golden_str --test text_rules
+crates/rigforge-core/src/text.rs	.filter(|&b| b != 0)	.filter(|&b| b != 1)	--test text_rules
+crates/rigforge-core/src/text.rs	if last != b'\n' {	if last != b'\r' {	--test text_rules
+crates/rigforge-core/src/text.rs	trim_nl(&strip_nul(input)).to_vec()	trim_nl(input).to_vec()	--test text_rules
+crates/rigforge-core/src/text.rs	if cp < floor || (0xD800..=0xDFFF).contains(&cp) {	if cp < floor {	--test text_rules
+crates/rigforge-core/src/text.rs	if step == 0 {	if step == 1 {	--test text_rules
+crates/rigforge-core/src/text.rs	end = end.saturating_add(step);	end = end.saturating_add(1);	--test text_rules
+crates/rigforge-core/src/text.rs	if !utf8 {	if utf8 {	--test text_rules
+crates/rigforge-core/src/text.rs	.trim_matches([' ', '\t', '\n'])	.trim_matches([' ', '\n'])	--test text_rules
+crates/rigforge-core/src/text.rs	} else if body.len() > 1 && body.starts_with('0') {	} else if body.len() > 2 && body.starts_with('0') {	--test text_rules
+crates/rigforge-core/src/text.rs	if body.is_empty() && !trimmed.is_empty() {	if false {	--test text_rules
+crates/rigforge-core/src/text.rs	Some(if negative {@N        value.wrapping_neg()@N    } else {@N        value@N    })	Some(value)	--test text_rules
+crates/rigforge-core/src/text.rs	matches!(byte, 0x09..=0x0D | 0x20)	matches!(byte, 0x09..=0x0C | 0x20)	--test text_rules
+crates/rigforge-core/src/text.rs	c.is_whitespace()	c.is_ascii_whitespace()	--test golden_str --test text_rules
+crates/rigforge-core/src/num.rs	(Some(1), Some(minor)) if minor < 7 => JqMode::Double,	(Some(1), Some(minor)) if minor < 8 => JqMode::Double,	--test num_rules
+crates/rigforge-core/src/num.rs	if exp <= 0 && adjusted >= -6 {	if exp <= 0 && adjusted >= -5 {	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	} else if nd > -exp {	} else if nd >= -exp {	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	    out.push(if adjusted < 0 { '-' } else { '+' });	    out.push('+');	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	if shift > nd {	if shift >= nd {	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	let round_up = dropped.bytes().next().is_some_and(|b| b >= b'5');	let round_up = dropped.bytes().next().is_some_and(|b| b > b'5');	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	if exp + nd - 1 > EMAX {	if exp + nd - 1 >= EMAX {	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	exp = exp.clamp(ETINY, EMAX);	exp = exp.clamp(ETINY, 0);	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	        return format!("{sign}0");	        return "0".to_string();	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	if decpt <= -4 || decpt > n + 15 {	if decpt <= -4 || decpt > n + 16 {	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	coef.split_at_checked(17)	coef.split_at_checked(16)	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	(increment(head), shifted)	(head.to_string(), shifted)	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	.split([' ', '\t', '\r', '\n'])	.split([' ', '\r', '\n'])	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	@N            && self.lit == double_text(self.f)	@N	--test num_rules
+crates/rigforge-core/src/num.rs	let f = if text.starts_with('-') {	let f = if false {	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	JqMode::Double => double_text(self.exact),	JqMode::Double => self.lit.clone(),	--test golden_num --test num_rules
+crates/rigforge-core/src/num.rs	if *slot == b'9' {	if *slot == b'8' {	--test golden_num --test num_rules
+crates/rigforge-core/src/sha256.rs	while tail.len() % 64 != 56 {	while tail.len() % 64 != 55 {	--test sha256_vectors
+crates/rigforge-core/src/sha256.rs	.wrapping_mul(8)	.wrapping_mul(7)	--test sha256_vectors
+crates/rigforge-core/src/sha256.rs	^ (w15 >> 3)	^ (w15 >> 4)	--test sha256_vectors
+crates/rigforge-core/src/sha256.rs	(e & f) ^ (!e & g)	(e & f) ^ (e & g)	--test sha256_vectors
+crates/rigforge-core/src/sha256.rs	char::from_digit(u32::from(nibble), 16)	char::from_digit(u32::from(nibble), 10)	--test sha256_vectors
+crates/rigforge-core/src/limits.rs	pub const DEPTH_CONFIG: usize = 256;	pub const DEPTH_CONFIG: usize = 255;	--test json_rules
+crates/rigforge-core/src/json.rs	None => return Ok(None),	None => return Err(Error::Syntax),	--test json_rules
+crates/rigforge-core/src/json.rs	Some(_) if at == 0 => return Ok(Some(src)),	Some(_) if at == 0 => return Err(Error::Syntax),	--test json_rules
+crates/rigforge-core/src/json.rs	Some(_) => return Err(Error::Syntax),@N            None	Some(_) => return Ok(Some(src)),@N            None	--test json_rules
+crates/rigforge-core/src/json.rs	self.enter(depth, 2)?	self.enter(depth, 1)?	--test json_rules
+crates/rigforge-core/src/json.rs	if used >= self.limits.depth {	if used > self.limits.depth {	--test json_rules
+crates/rigforge-core/src/json.rs	if self.nodes > self.limits.nodes {	if self.nodes >= self.limits.nodes {	--test json_rules
+crates/rigforge-core/src/json.rs	if src.len() > limits.bytes {	if src.len() >= limits.bytes {	--test json_rules
+crates/rigforge-core/src/json.rs	            if !index.is_empty() {@N                index.insert(key.clone(), members.len());@N            }@N		--test json_rules
+crates/rigforge-core/src/json.rs	slot.1 = value;	drop(value);	--test json_rules --test golden_doc
+crates/rigforge-core/src/json.rs	if !(0xDC00..=0xDFFF).contains(&second) {	if false {	--test json_rules
+crates/rigforge-core/src/json.rs	            b'/' => b'/',@N		--test json_rules
+crates/rigforge-core/src/json.rs	0x00..=0x1F => return Err(Error::Syntax),	0x00..=0x08 => return Err(Error::Syntax),	--test json_rules
+crates/rigforge-core/src/json.rs	Some(b'n') if token.get(1) == Some(&b'u') => literal(b"null", Value::Null),	Some(b'n') => literal(b"null", Value::Null),	--test json_rules
+crates/rigforge-core/src/json.rs	    if docs.next().is_some() {@N        return Err(Error::Multiple);@N    }@N		--test json_rules
+crates/rigforge-core/src/json.rs	Ok(jq_utf8(&raw))	Ok(String::from_utf8_lossy(&raw).into_owned())	--test json_rules --test golden_doc
+crates/rigforge-core/src/json.rs	char::from_u32(code).unwrap_or('\u{FFFD}')	char::from_u32(code).unwrap()	--test generated_json
+crates/rigforge-core/src/emit.rs	'\u{00}'..='\u{1F}' | '\u{7F}' => {	'\u{00}'..='\u{1F}' => {	--test emit_rules
+crates/rigforge-core/src/emit.rs	Value::Arr(items) if !items.is_empty() => {	Value::Arr(items) => {	--test emit_rules
+crates/rigforge-core/src/emit.rs	            members.sort_by(|a, b| a.0.cmp(&b.0));@N		--test emit_rules
+crates/rigforge-core/src/emit.rs	        Value::Num(n) if n.is_nan() => Value::Null,@N		--test emit_rules
+crates/rigforge-core/src/emit.rs	        Value::Num(n) if n.is_nan() => Value::Null,@N		--test generated_json
+crates/rigforge-core/src/emit.rs	'\u{08}' => out.push_str("\\b"),	'\u{08}' => out.push_str("\\x"),	--test golden_doc
+crates/rigforge-core/src/emit.rs	out.push_str("  ");	out.push_str("    ");	--test emit_rules
+crates/rigforge-core/src/ops.rs	Value::Null | Value::Bool(false) => right,	Value::Null => right,	--test ops_rules
+crates/rigforge-core/src/ops.rs	(Value::Null, other) | (other, Value::Null) => Ok(other),	(Value::Null, other) => Ok(other),	--test ops_rules
+crates/rigforge-core/src/ops.rs	Num::computed(double.abs())	Num::computed(double)	--test ops_rules
+crates/rigforge-core/src/ops.rs	JqMode::Literal => n.f64(),	JqMode::Literal => n.exact(),	--test ops_rules
+crates/rigforge-core/src/ops.rs	JqMode::Double => n.exact(),	JqMode::Double => n.f64(),	--test ops_rules
+crates/rigforge-core/src/ops.rs	count(s.chars().count())	count(s.len())	--test ops_rules
+crates/rigforge-core/src/ops.rs	    if !matches!(value, Value::Null | Value::Obj(_)) {@N        return Err(Error::Type);@N    }@N		--test ops_rules
+crates/rigforge-core/src/ops.rs	        Value::Null => Vec::new(),@N		--test ops_rules
+crates/rigforge-core/src/ops.rs	        Value::Str(s) => s.clone(),@N		--test ops_rules
+crates/rigforge-core/src/ops.rs	    text.push('\n');@N		--test ops_rules
+crates/rigforge-core/src/num.rs	if first > b'5' || (first == b'5' && (!tail_zero || head_odd)) {	if first >= b'5' {	--test golden_num
+crates/rigforge-core/src/num.rs	first == b'5' && (!tail_zero || head_odd)	first == b'5' && !tail_zero	--test golden_num
+crates/rigforge-core/src/num.rs	|m| m.len() == 18	|m| m.len() == 19	--test golden_num
+crates/rigforge-core/src/num.rs	let cut = text.split('\0').next().unwrap_or("");	let cut = text;	--test golden_num
+crates/rigforge-core/src/num.rs	JqMode::Double => double_text(self.exact),	JqMode::Double => double_text(self.f),	--test num_rules
+crates/rigforge-core/src/json.rs	if self.src.get(self.pos..self.pos.saturating_add(2)) != Some(b"\\u") {	if false {	--test json_rules
+crates/rigforge-core/src/json.rs	docs.push(parser.value(0)?);	parser.nodes = 0;@N        docs.push(parser.value(0)?);	--test limits_rules
+crates/rigforge-core/src/limits.rs	pub const CONFIG_BYTES: usize = MIB;	pub const CONFIG_BYTES: usize = MIB + 1;	--test limits_rules
+crates/rigforge-core/src/limits.rs	pub const REPLY_BYTES: usize = 4 * MIB;	pub const REPLY_BYTES: usize = 5 * MIB;	--test limits_rules
+crates/rigforge-core/src/limits.rs	pub const FILE_BYTES: usize = MIB;	pub const FILE_BYTES: usize = MIB + 1;	--test limits_rules
+crates/rigforge-core/src/limits.rs	pub const NODES_CONFIG: usize = 1_000_000;	pub const NODES_CONFIG: usize = 1_000_001;	--test limits_rules
+crates/rigforge-core/src/limits.rs	pub const NODES_FEED: usize = 100_000;	pub const NODES_FEED: usize = 100_001;	--test limits_rules
+crates/rigforge-core/src/text.rs	0xFC..=0xFD => (6, 0x01, 0x400_0000),	0xFC..=0xFD if false => (6, 0x01, 0x400_0000),	--test text_rules

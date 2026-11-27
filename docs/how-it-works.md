@@ -11,8 +11,8 @@ custom miner. This page describes what the script does, step by step.
 A `setup` run executes these stages in order. Each is idempotent, so re-running skips work that's
 already done.
 
-1. Prerequisites: detect the OS (Linux vs. macOS — macOS is **deprecated, unsupported and untested
-   since 2026-09-14**) and install `jq` if it's missing. Privileged
+1. Prerequisites: detect the OS (Linux vs. macOS — macOS is best effort, with
+   degraded features) and install `jq` if it's missing. Privileged
    steps use `sudo` as needed, so run the script with `sudo` (or as root).
 2. Config: create a minimal `config.json` interactively if none exists, then parse and validate
    it (see [Configuration](configuration.md)).
@@ -142,6 +142,27 @@ Every part of the search is overridable; the defaults favour a thorough one-time
 | `TUNE_POWER_CMD` | *(RAPL)* | Override the power source with a shell command that echoes **instantaneous watts** (IPMI, a smart plug, wall-AC). Without it, the built-in CPU-package RAPL reader is used on Linux. |
 | `TUNE_TARGET` | *(follows `autotune` config)* | Optimize for `perf` (raw H/s) or `efficiency` (hashrate-per-watt). Defaults to the `autotune` config value (so a manual `tune` matches the scheduled run); `--perf`/`--efficiency` or this env var override. Efficiency needs a power source or falls back to `perf`. |
 | `TUNE_TEMP_CMD` | *(Linux thermal zone)* | Optional shell command that echoes °C; defaults to `/sys/class/thermal/thermal_zone0/temp`. |
+| `TUNE_SIGMA` | `1` | A change is adopted only when its gain also exceeds this many times the combined sample noise of the two candidates; `0` turns the noise band off. |
+| `TUNE_ONEGB` | `true false` | `1gb-pages` candidates, swept only when 1G HugePages are reserved. |
+| `TUNE_MIN_FREQ_MHZ` | *(80% of max boost)* | A candidate whose clock fell below this many MHz while measured is treated as throttled and never adopted; `0` turns the check off. |
+| `TUNE_GUESS_PREFETCH` | `2` | Prefetch mode of the `guess` seed. |
+| `TUNE_GUESS_THREADS` | *(L3 ÷ 2 MB)* | Thread count of the `guess` seed; `-1` (XMRig auto) when the L3 size is unknown. |
+| `TUNE_LIVE_WARMUP` | `60` | Seconds `tune --live` and `tune --confirm` wait after applying a candidate before sampling. |
+| `TUNE_LIVE_SAMPLES` | `3` | Hashrate samples per candidate in `tune --live` and `tune --confirm`; the median is used. |
+| `TUNE_LIVE_INTERVAL` | `30` | Seconds between those live samples. |
+| `TUNE_CONFIRM` | `0` | `1` is the same as passing `--confirm` to `tune`. |
+| `TUNE_CONFIRM_MARGIN` | *(`TUNE_MIN_DELTA`)* | Relative gain the tuned config must show over the previous one in `tune --confirm` to be kept. |
+| `TUNE_HISTORY` | `0` | `1` is the same as passing `--history` to `tune`. |
+| `AUTOTUNE_TARGET` | *(follows `autotune` config)* | `perf` or `efficiency` for `autotune` and `tune --now`; setup writes the configured target into the timer unit. |
+| `AUTOTUNE_MODES` | `0 1 2 3` | Prefetch modes `autotune` and `tune --now` try. |
+| `AUTOTUNE_WARMUP` | `60` | Seconds `autotune` waits after each restart before sampling. |
+| `AUTOTUNE_SAMPLES` | `3` | Hashrate samples per prefetch mode in `autotune`; the median is used. |
+| `AUTOTUNE_INTERVAL` | `10` | Seconds between those samples. |
+| `AUTOTUNE_MARGIN` | `0.01` | Relative gain a prefetch mode needs over the current one before `autotune` keeps it. |
+
+The scheduled autotune timer passes only `AUTOTUNE_TARGET` to its run, so `AUTOTUNE_MODES`,
+`AUTOTUNE_WARMUP`, `AUTOTUNE_SAMPLES`, `AUTOTUNE_INTERVAL` and `AUTOTUNE_MARGIN` apply only to a run
+you start yourself: `autotune`, `tune --now`, or the re-tune at the end of `upgrade`.
 
 ### Power & efficiency
 
@@ -207,7 +228,11 @@ These are why a reboot is needed on Linux:
   `util/proposed-grub.sh`). Making it persistent edits
   GRUB, which takes effect on reboot. RigForge merges its parameters into the existing
   `GRUB_CMDLINE_LINUX_DEFAULT` instead of overwriting it, so other kernel params are preserved (a
-  boot-safety fix).
+  boot-safety fix). It edits only when the file has at most one `GRUB_CMDLINE_LINUX_DEFAULT=` line and
+  that line is one plain double-quoted value. A single-quoted value, a trailing comment, more than one
+  `GRUB_CMDLINE_LINUX_DEFAULT=` line or a value containing an escaped double quote is refused: setup
+  and uninstall leave the file untouched and setup prints the parameters to add by hand. RigForge
+  writes `/etc/default/grub.bak` only if none exists, so the original is kept.
 - MSR access. Loads the `msr` module and sets the hardware-prefetcher / cache model-specific
   registers XMRig recommends for the CPU. (Blocked by Secure Boot; see
   [troubleshooting](operations.md#troubleshooting).)
@@ -215,7 +240,7 @@ These are why a reboot is needed on Linux:
   `fstab` and `limits.conf` so XMRig can pin memory. These edits are applied once (append-only,
   deduplicated) so re-runs don't accumulate duplicate lines.
 
-macOS (**deprecated, unsupported and untested since 2026-09-14**) doesn't expose HugePages or MSRs,
+macOS (best effort) doesn't expose HugePages or MSRs,
 so those stages are skipped there; the macOS path sets XMRig accordingly (and there's no systemd
 service, so you run the miner yourself). See
 [Operations › Running on macOS](operations.md#running-on-macos).

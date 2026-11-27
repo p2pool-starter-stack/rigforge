@@ -5,13 +5,13 @@ real, from a dependency-free suite that runs anywhere up to a real-hardware gate
 compiles XMRig and mines. Each layer covers what the one below it has to stub.
 `make test-suite` requires the suite-liveness regression, the Bash suite and the Python-dependent
 contract credential regression, plus access-token readiness, release clone-pin and Dependabot
-pin-coverage regressions. The Bash suite also runs the Python thread-profile regression for supported
+pin-coverage and CodeQL workflow regressions. The Bash suite also runs the Python thread-profile regression for supported
 XMRig profiles, caps on both sides of auto-selection, higher tuned values and failed-snapshot recovery.
 The Bash suite exits nonzero if it aborts before its final
 `rigforge tests: ... passed, ... failed` summary, even when the shell would otherwise return zero.
 Worker proof schema/join and dispatcher regressions also run in `make test-suite`;
 see [ordered worker proof receipts](../docs/dev/worker-proof.md) for the retained
-phase inventory, binding contract and rollout requirements.
+phase inventory, binding contract and binding requirements.
 The kcov container measures the Bash suite only; the credential regression always runs in the
 GitHub Test suite job, including argument inspection, password rotation and EXIT restoration.
 
@@ -36,11 +36,11 @@ reuse; untrusted pull requests must never publish trusted cache entries. Preserv
 fixtures, exact candidate revisions and every existing per-PR assertion when comparing cold/warm
 runs. Stock-home installs, real package acquisition, historical negative controls, compilation,
 donation/release builds and hardware cold starts remain fresh at their current gates. Never reuse a
-miner, populated build tree, report or previous PASS as proof for another candidate. Before rollout,
+miner, populated build tree, report or previous PASS as proof for another candidate. Before adoption,
 compare complete assertion/input/platform manifests and collect a week of setup/verification time,
-CI median/p90, failures and occupied hours; missing evidence leaves rollout acceptance open.
+CI median/p90, failures and occupied hours; missing evidence leaves acceptance open.
 
-> The split exists so CI proves everything it can on a GitHub runner, while the things a runner
+> The split exists so CI proves everything it can on a hosted CI machine, while the things it
 > physically can't do (compile XMRig, reserve HugePages, write MSRs, set the governor, hash) are
 > proven once, by hand, on a real rig before tagging a release.
 
@@ -50,22 +50,24 @@ CI median/p90, failures and occupied hours; missing evidence leaves rollout acce
 |---|---|---|---|---|
 | **Unit + black-box suite** | [`run.sh`](run.sh) + [`test-contract-credentials.sh`](test-contract-credentials.sh) | Any host (macOS/Linux), no Docker; credential regression needs Python 3. **In CI.** | Config parsing, the XMRig-config generation matrix (every CPU/OS profile, simulated via PATH stubs), GRUB/HugePages math, the command surface, tune search, doctor: everything that doesn't need a real `/etc` or real hardware. The bulk of coverage. | `make test` (lint + suite) or `make test-suite` |
 | **Linux container e2e** | [`e2e/linux.sh`](e2e/linux.sh) → [`e2e/in-container.sh`](e2e/in-container.sh) | Disposable Ubuntu container, **needs Docker**. **In CI.** | The genuine Linux deploy path against a real (throwaway) `/etc` with real GNU tools (`sed -i`, `tee`, `envsubst`) + idempotency on re-run. Only the heavy/privileged bits (compile, package install, `systemctl`/`mount`) are stubbed. A second pass re-runs the container with `RIGFORGE_APPLIANCE=1` (#348) and proves the appliance contracts on that real `/etc`: units land in `/run/systemd/system`, no package installs, no fstab/limits.conf/logrotate writes, every enable carries `--runtime`. A third script, [`e2e/isolation.sh`](e2e/isolation.sh) (#668), puts the rig on a Docker `--internal` network whose only reachable peer is a SOCKS5 proxy fronting a stand-in GitHub (a TLS git smart-HTTP server plus the releases API). With `tor_socks5` set it runs `upgrade --check`, `setup`, a local `upgrade` with an XMRig pin change and the `control-upgrade` oneshot in its own empty environment, and proves from the proxy's log that every connection named a hostname. It also proves the block is real (a direct connection and a keyless `upgrade --check` fail), that an unreachable proxy fails closed without reaching the upstream, and that the live build survives the failed upgrade. | `make test-e2e` |
-| **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is deprecated, #493). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
+| **Native macOS e2e** | [`e2e/macos.sh`](e2e/macos.sh) | A real Mac, **manual, local only. Not in CI** (macOS is best effort). | The macOS deploy path with genuine BSD tools the Linux CI can only stub: BSD `sed`, the macOS config profile, `mac_*` process control (real `nohup` + PID file), the launchd login agent, `backup`/`restore`. | `make test-e2e-macos` |
 | **Coverage gate** | [`coverage.sh`](coverage.sh) | kcov in **Docker**. **In CI.** | Line coverage of `rigforge.sh` and its shell helpers by running `run.sh` under kcov; enforces the committed floor ([`coverage-floor.txt`](coverage-floor.txt)) plus a patch-coverage gate (diff-cover) on changed lines. | `make coverage` |
+| **Package upgrade** | [`test-package-upgrade.sh`](test-package-upgrade.sh) | Any host, no Docker. **In CI** (`make test-suite`). | [`../packaging/debian/postinst`](../packaging/debian/postinst) queues only on a greater version with a config, never fails dpkg; `package-upgrade` re-renders units and clears the marker on success, and on failure keeps it, records it for status/doctor and does not restart. | `bash tests/test-package-upgrade.sh` |
+| **APT feed** | [`test-apt-feed.sh`](test-apt-feed.sh) | Ubuntu 24.04, **root**, no Docker (needs `apt-utils`). **In CI.** (`ci.yml` job) | [`../scripts/build-apt.sh`](../scripts/build-apt.sh) end to end with throwaway keys: refusal of missing/bad fingerprints and keyrings without the secret key; a signed flat feed that `apt-get update` and `download` accept from `file://`; refusal of tampered `Release`/`InRelease`/`.deb` and of a feed signed by another key. | CI only (`sudo bash tests/test-apt-feed.sh`) |
 | **Release smoke (quick)** | [`smoke.sh`](smoke.sh) | Real Linux rig, **manual**. Not in CI. | The compiled binary actually starts and hashes (`xmrig --bench`, fully offline). Fast pre-tag confidence that the worker we ship runs. | `make smoke` |
 | **Release e2e (full)** | [`e2e-real.sh`](e2e-real.sh) | Real Linux rig, **manual, root**. Not in CI. | The real thing end to end: build + tune + kernel tuning + service + a real hash, the writable control path (#236) against real systemd (`control` phase), the remote-upgrade chain with real git as the root oneshot (`upgrade` phase, #322), then a clean uninstall. **The release gate.** | `make e2e-real` (see [`RELEASING.md`](../RELEASING.md)) |
-| **Release e2e (worker↔stack)** | [`e2e-pithead.sh`](e2e-pithead.sh) ([`control` phase](e2e-pithead-control.sh), [`access-tokens` phase](e2e-pithead-tokens.sh), [`selftest` phase](e2e-selftest.sh), [`xmrig` overlay rows](e2e-pithead-xmrig.sh)) | Real rig + a **live Pithead stack**, **manual, root**. Not in CI (`connect`/`control`/`access-tokens`/`thread-profile` also run as a `rigforge`/`tier4-e2e` bench-ci job). | The integration contract: the `network` phase first waits up to 30 s (wall clock, logged as `summary-settle`) for the sister API's cached snapshot (refreshed every 15 s) to leave its `xmrig_api: unreachable` fallback after the restarts its config changes cause (#563), then records fixed boolean summary diagnostics (`network-summary`) before enforcing metadata and the XMRig key superset, without logging response bodies or key names; `network-sequence` reproduces the nightly `connect` → `worker-api` → `api-impact` → `network` prefix in one process/snapshot and stops there (separate phase submissions restore between phases); mining round-trip against the stack, the `xmrig` config overlay merged into the generated config by an apply that restarts the unit, the mining feed carrying the overlay and removal restoring the config (#526), the `:8080` API posture (open/token/`restricted`), the writable control path's DONATION apply round trip (#344/#509), a named `ACCESS_TOKENS` entry authenticating `:8081`/`:8082` while staying refused on `:8080` and after revocation (#516); setup/revocation wait up to 30 s per listener for a bearer-free GET to return HTTP 401, recording elapsed time or sanitized curl/HTTP/unit diagnostics (#573), then separately require the revoked bearer to receive HTTP 401, stratum auth accept/reject + rotation against only `PITHEAD_URL` (a temporary plain-Stratum pool preserves the primary `user`, replaces endpoint-specific settings and removes all fallbacks; URL/password enter jq through stdin with constant programs; EXIT restores the original config bytes and runtime even on failure; explicit `stratum-auth` fails with a sanitized `missing` diagnostic when `E2E_STRATUM_PASS` is absent; `all` retains its optional skip), dashboard visibility/drop-off, a missing-minimum-marker upgrade that compiles the candidate miner, verifies fresh compiler/linker output, its zero compiled minimum and reported donation, then proves reductions 1 → 0 and 5 → 2 preserve that new binary; the phase restores the original build, markers, configs and service state even on failure; `thread-profile` observes XMRig’s actual `/2/backends` CPU thread array with no cap, a cap below and above auto-selection, and tuned values above and below auto-selection, requiring at least two auto-selected threads and restoring the original tuning overrides and config on exit, and the sister-API **hashrate-impact guard** (#99 must not shave H/s under polling load). The explicit `selftest` phase, outside `all`, runs the real `bench` and requires a verified RandomX hash and record, then runs `stress --minutes ${E2E_STRESS_MINUTES:-1}` and requires a pass with the miner and timer states unchanged (#533). The explicit `config-ownership` phase (not in `all`) regenerates and restarts the miner, then requires the generated config to stay byte-identical while mining, a hand edit of it to keep the same PID and `donate_level` until a restart loads it, and `setup` on an already-built worker to restart the miner with a changed pool `keepalive` and an unchanged binary (#529); `E2E_LIVE_TIMEOUT`, `E2E_AUTOSAVE_WINDOW` and `E2E_RELOAD_WINDOW` (default 180, 30 and 20 s) bound its waits. | `PITHEAD_URL=host:3333 sudo -E make e2e-pithead` (see [`RELEASING.md`](../RELEASING.md)) |
+| **Release e2e (worker↔stack)** | [`e2e-pithead.sh`](e2e-pithead.sh) ([`control` phase](e2e-pithead-control.sh), [`access-tokens` phase](e2e-pithead-tokens.sh), [`selftest` phase](e2e-selftest.sh), [`xmrig` overlay rows](e2e-pithead-xmrig.sh)) | Real rig + a **live Pithead stack**, **manual, root**. Not in CI. | The integration contract: the `network` phase first waits up to 30 s (wall clock, logged as `summary-settle`) for the sister API's cached snapshot (refreshed every 15 s) to leave its `xmrig_api: unreachable` fallback after the restarts its config changes cause (#563), then records fixed boolean summary diagnostics (`network-summary`) before enforcing metadata and the XMRig key superset, without logging response bodies or key names; `network-sequence` reproduces the nightly `connect` → `worker-api` → `api-impact` → `network` prefix in one process/snapshot and stops there (separate phase submissions restore between phases); mining round-trip against the stack, the `xmrig` config overlay merged into the generated config by an apply that restarts the unit, the mining feed carrying the overlay and removal restoring the config (#526), the `:8080` API posture (open/token/`restricted`), the writable control path's DONATION apply round trip (#344/#509), a named `ACCESS_TOKENS` entry authenticating `:8081`/`:8082` while staying refused on `:8080` and after revocation (#516); setup/revocation wait up to 30 s per listener for a bearer-free GET to return HTTP 401, recording elapsed time or sanitized curl/HTTP/unit diagnostics (#573), then separately require the revoked bearer to receive HTTP 401, stratum auth accept/reject + rotation against only `PITHEAD_URL` (a temporary plain-Stratum pool preserves the primary `user`, replaces endpoint-specific settings and removes all fallbacks; URL/password enter jq through stdin with constant programs; EXIT restores the original config bytes and runtime even on failure; explicit `stratum-auth` fails with a sanitized `missing` diagnostic when `E2E_STRATUM_PASS` is absent; `all` retains its optional skip), dashboard visibility/drop-off, a missing-minimum-marker upgrade that compiles the candidate miner, verifies fresh compiler/linker output, its zero compiled minimum and reported donation, then proves reductions 1 → 0 and 5 → 2 preserve that new binary; the phase restores the original build, markers, configs and service state even on failure; `thread-profile` observes XMRig’s actual `/2/backends` CPU thread array with no cap, a cap below and above auto-selection, and tuned values above and below auto-selection, requiring at least two auto-selected threads and restoring the original tuning overrides and config on exit, and the sister-API **hashrate-impact guard** (#99 must not shave H/s under polling load). The explicit `selftest` phase, outside `all`, runs the real `bench` and requires a verified RandomX hash and record, then runs `stress --minutes ${E2E_STRESS_MINUTES:-1}` and requires a pass with the miner and timer states unchanged (#533). The explicit `config-ownership` phase (not in `all`) regenerates and restarts the miner, then requires the generated config to stay byte-identical while mining, a hand edit of it to keep the same PID and `donate_level` until a restart loads it, and `setup` on an already-built worker to restart the miner with a changed pool `keepalive` and an unchanged binary (#529); `E2E_LIVE_TIMEOUT`, `E2E_AUTOSAVE_WINDOW` and `E2E_RELOAD_WINDOW` (default 180, 30 and 20 s) bound its waits. | `PITHEAD_URL=host:3333 sudo -E make e2e-pithead` (see [`RELEASING.md`](../RELEASING.md)) |
 
-The opt-in `shared-host` phase of `e2e-pithead.sh` is not part of `all` and runs as a `rigforge`/`tier4-e2e`
-bench-ci job; [docs/shared-host.md](../docs/shared-host.md) describes what it checks and restores.
+The opt-in `shared-host` phase of `e2e-pithead.sh` is not part of `all`;
+[docs/shared-host.md](../docs/shared-host.md) describes what it checks and restores.
 
 `tests/test-randomx-mode.sh`, registered in `tests/run.sh`, covers the RandomX overlay, light-mode
 reservation sizing, tuning candidates, setup preview, and doctor memory warnings with isolated fixtures.
 
 `tests/test-sister-reconcile.sh`, registered in `tests/run.sh`, checks startup failures, bounded
 listener probes (including IPv6 and failed transports), and apply's failure result while retaining
-later reconciles. The hosted Ubuntu 24.04 `Stock home setup` jobs run historical and current revisions on separate
-fresh runners. Each invokes the documented `sudo ./rigforge.sh setup` as the existing non-root
+later reconciles. The `Stock home setup` tests run historical and current revisions on separate
+fresh hosts. Each invokes the documented `sudo ./rigforge.sh setup` as the existing non-root
 account beneath a private `0750` HOME. Setup installs real dependencies, compiles pinned XMRig,
 performs ordinary kernel/service provisioning and installs the real miner unit; there is no
 prebuilt worker, fake unit, appliance mode or command stub. A closed loopback pool, donation zero
@@ -73,9 +75,9 @@ and one configured mining thread leave it without mining jobs; the real miner is
 The historical case requires setup to complete while its denied sister entrypoint leaves port
 8081 unavailable. The current case requires an active DynamicUser service and authenticated port
 8081 before any apply, then tests failed apply and recovery. HOME permissions remain `0750`.
-Both jobs uninstall through the real CLI on exit. Reboot persistence, a live pool and hardware
-performance are outside this hosted proof. The real-rig `control` contract phase covers both
-network services against the coordinator through bench-ci.
+Both tests uninstall through the real CLI on exit. Reboot persistence, a live pool and hardware
+performance are outside this proof. The real-rig `control` contract phase covers both
+network services against the coordinator.
 The existing real-e2e checkout traversability preflight remains a harness placement requirement.
 The control phase uses the shared bounded unauthenticated readiness probe before its first POST;
 a delayed listener receives no write until it returns HTTP 401, and an unavailable listener fails
@@ -85,11 +87,11 @@ raw journal entries and credentials are excluded.
 
 The unit + black-box suite, the Linux container e2e, and the coverage gate run automatically on every
 push/PR (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). The native macOS e2e is
-manual and local-only — macOS is deprecated (#493), so it never runs in CI. The last two are
+manual and local-only — macOS is best effort, so it never runs in CI. The last two are
 deliberately kept out of hosted CI because they mine against live pools and exercise hardware
 performance on reserved rigs. The hosted stock-home setup has no mining jobs and does not replace
 those manual pre-tag release gates.
-The queued `control` phase also instruments real timer-driven API refreshes around a thermal
+The `control` phase also instruments real timer-driven API refreshes around a thermal
 control apply (#546). A temporary runtime drop-in replaces only the refresh service's command
 with `e2e-api-refresh-profile.sh`; its priority, timeout, timer and live feed remain in use.
 The profiler logs fixed helper names, begin/end timestamps and nanosecond durations, plus full-pass
@@ -118,12 +120,12 @@ the owned drop-in, reloads systemd and restores the timer’s prior active state
 The job fails if journal collection or measurement export fails, no profiled refresh completes
 successfully, or cleanup fails. Begin events from unfinished helpers are retained to locate stalled
 operations, including a pass stopped by cleanup.
-The ordinary `phases=["connect","control"]` job proves mining and profiles a bounded thermal
+The ordinary `phases=["connect","control"]` run proves mining and profiles a bounded thermal
 apply on an eligible worker; it does not recreate the historical sequence. For #540's separate
-thermal and pools replay cases, submit one declaring phase per `tier4-e2e` job with
-`fixture=pithead-control`: `control-replay-thermal` or `control-replay-pools`. The deployed runner
-privately supplies the operator pools probe, context and named reservation. The gate verifies that
-reservation, bypasses only its own competing flock, and leaves the runner's holder marker and release
+thermal and pools replay cases, run one declaring phase per run with
+the `control-replay-thermal` or `control-replay-pools` scope. The harness
+supplies the operator pools probe, context and named reservation. The run verifies that
+reservation, bypasses only its own competing flock, and leaves the lock holder marker and release
 alone. The hardware-free `test-control-replay.sh` uses Bash builtins for its apply fixture and checks that refusal before config changes and the
 unchanged ordinary locking; on failure it prints each synthetic case log's final 20 lines before
 removing its sandbox, preserving the failed exit status.
@@ -143,9 +145,9 @@ failures emit fixed-schema systemd state plus counts of jobs, shares and classif
 unknown service values fail the diagnostic, and no journal text, endpoint or config value is printed.
 Requests use secured scratch payloads, never credential-bearing arguments or logs. The current probe
 and borrowed worker form an equivalent fixture: historical starting config/checkout, original pool
-payload, threads/affinity/tuning and precise inter-apply timing remain unknown in the runner context.
+payload, threads/affinity/tuning and precise inter-apply timing remain unknown in the harness context.
 No guessed delays or hardware differences are substituted. Do not invoke any replay or profiler
-against a worker yourself; the runner owns reservation, restoration and baseline verification.
+against a worker yourself; the harness owns reservation, restoration and baseline verification.
 Short passes or an injected delay do not attribute the historical stale-feed failure; #540's
 fix acceptance requires evidence of the same failure mechanism. Profiling adds clock-read overhead
 and the source remains the submitted RigForge head; no alternative production implementation is
@@ -219,13 +221,33 @@ docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/test
 The image — alpine pinned by tag and digest, with the nftables probe's packages baked in — lives in
 [`docker/Dockerfile`](docker/Dockerfile); Dependabot bumps the pin.
 
-### The shared rig (miner-0)
+### Running the worker-to-stack phases directly
 
-miner-0 is the e2e bench for both RigForge's release gates and Pithead's e2e testing, and the two
-must not run concurrently: the gates mutate the rig, Pithead's tests assume a steadily-hashing
-miner. Both harnesses therefore take a kernel `flock` on `/var/lock/rig-e2e.lock` at entry — a
-second arrival exits 75 naming the holder (set `RIG_LOCK_WAIT=1` to queue instead). Check who
-holds it from off-box: `ssh miner-0 'flock -n -x /var/lock/rig-e2e.lock true || cat /var/lock/rig-e2e.lock.holder'` (#183).
+Each phase of [`e2e-pithead.sh`](e2e-pithead.sh) runs on its own as `sudo -E bash tests/e2e-pithead.sh <phase>` on a
+dedicated, uncontended rig with a live stack at `PITHEAD_URL=host:3333`. `all` runs `connect`, `worker-api`, `api-impact`,
+`network`, `stratum-auth`, `dashboard`, `dev-fee`, `control` and `access-tokens` in that order and stops at the first failure.
+Only `stratum-auth` and `dashboard` skip cleanly when their input is absent; every other phase runs or fails.
+
+| Phase | What it does | Optional inputs |
+| --- | --- | --- |
+| `connect`, `worker-api`, `api-impact`, `network` | Mining round trip, the worker API posture, the hashrate-impact guard under polling load, and the network summary and key contract. | `E2E_SHARE_TIMEOUT`, `E2E_API_IMPACT_TOLERANCE_PCT`, `E2E_API_LATENCY_S`; `network` always runs the API allowlist probe on an auto-selected link-local subnet; `E2E_ALLOWLIST_HOST_CIDR` and `E2E_ALLOWLIST_NS_CIDR` override it, must be set together, and setting only one fails the phase |
+| `network-sequence` | Outside `all`: the first four in one process and one snapshot. | as above |
+| `stratum-auth` | Stratum auth accept/reject and rotation against a temporary plain-Stratum pool. | `E2E_STRATUM_PASS`: `all` skips without it, the explicit phase fails |
+| `dashboard` | Dashboard visibility and drop-off. | `E2E_DASH_URL` (skipped without it), `E2E_DASH_AUTH`, `E2E_DROPOFF_TIMEOUT` (default 300) |
+| `dev-fee` | Legacy build migration and runtime donation reductions. | none |
+| `control` | The writable control path's DONATION apply round trip. | `E2E_APPLIANCE_POLICY_DROPIN` |
+| `access-tokens` | A named `ACCESS_TOKENS` entry authenticates and is refused after revocation. | none |
+| `thread-profile` | Outside `all`: XMRig thread profiles against the actual `/2/backends` threads. | none |
+| `config-ownership` | Outside `all`: the generated config stays byte-identical while mining and a hand edit waits for a restart. | `E2E_LIVE_TIMEOUT`, `E2E_AUTOSAVE_WINDOW`, `E2E_RELOAD_WINDOW` |
+| `selftest` | Outside `all`: the real `bench` and `stress`. | `E2E_STRESS_MINUTES` (default 1) |
+| `shared-host` | Outside `all`: [shared-host](../docs/shared-host.md) behaviour. | `E2E_SHARED_SHARE_TIMEOUT` (default 600) |
+| `control-replay-thermal`, `control-replay-pools` | Outside `all`: replay of the thermal and pools control sequences. Exits 2 unless the replay inputs are supplied. | required: `E2E_PITHEAD_CONTROL_FIXTURE=pithead-control`, `E2E_PITHEAD_CONTROL_CONTEXT`, `IT_RIG_POOLS_PROBE`, and `E2E_RIG_LOCK_UNIT` naming an active systemd unit that matches `bench-ci-riglock-<name>-<n>`; a clean clone cannot satisfy the last two until #734/#735 land |
+
+### The rig lock
+
+Release gates and the stack's own e2e tests must not run on one rig at the same time: the gates mutate the rig, the stack's tests
+assume a steadily-hashing miner. Both take a kernel `flock` on `/var/lock/rig-e2e.lock` at entry; a second arrival exits 75 naming
+the holder (set `RIG_LOCK_WAIT=1` to queue instead). `RIG_LOCK_FILE` and `RIG_LOCK_HOLDER` relocate the lock and its holder file (#183).
 
 ## Where does my test go?
 
@@ -250,8 +272,8 @@ holds it from off-box: `ssh miner-0 'flock -n -x /var/lock/rig-e2e.lock true || 
   paths up top, so the same run exercises EPYC / Ryzen-X3D / macOS inputs back to back and gives the
   same result on any host. Don't read real `/sys` or `/proc`; drive behaviour through the stubs.
 - The suite should still pass under Apple's bash 3.2, not just modern bash — that's no longer CI-
-  enforced (macOS is deprecated, #493, and no CI job runs `/bin/bash tests/run.sh` anymore), just a
-  courtesy for the deprecated Darwin path. Avoid bash-4-only syntax.
+  enforced (macOS is best effort and no CI job runs `/bin/bash tests/run.sh` anymore), just a
+  courtesy for the best-effort Darwin path. Avoid bash-4-only syntax.
   `bash tests/test-suite-liveness.sh` runs the actual timer-refresh fixtures and checks premature
   exit handling without running the host-dependent black-box suite; use `/bin/bash` on macOS
   to exercise the native Bash 3.2 runtime parser as well as the completion guard.
@@ -265,12 +287,12 @@ performance unnoticed:
 
 | Measurement | Where | Standard | Knobs |
 |---|---|---|---|
-| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine, compared against the **committed per-host baseline** in [`perf-baselines/`](perf-baselines/). No baseline → the phase reports the measurement and how to record one. | `E2E_PERF_TOLERANCE_PCT` (default 5); `E2E_PERF_RECORD=1` writes/updates the baseline — commit the file. |
+| **Absolute hashrate** | `e2e-real.sh` `perf` phase (runs inside `all`) | Offline `xmrig --bench=1M` on the idle machine. The phase prints one JSON line keyed by hardware class and perf id (`{"<class>":{"bench_1m_hs":<H/s>}}`) and reads its history from the caller (`E2E_PERF_HISTORY`, JSON lines of earlier results). `E2E_PERF_MODE` is `report` (default, never fails) or `gate`: gate fails when the result leaves the median of the class's last 5 results ± 3×MAD and reports `insufficient history` below 5 results. The legacy per-host files in [`perf-baselines/`](perf-baselines/) still back the report and the recording judge when no history is passed. | `E2E_PERF_CLASS` (default: the CPU model, slugified); `E2E_PERF_MODE` (`report` default, `gate`; legacy `E2E_PERF_GATE=1`); `E2E_PERF_HISTORY`; `E2E_PERF_TOLERANCE_PCT` (default 5, legacy report/recording paths); legacy `E2E_PERF_RECORD=1`. |
 | **Hashrate under API load** | `e2e-pithead.sh` `api-impact` phase | Live 10s-window hashrate, 6×5s samples, baseline vs 4 clients hammering the sister API back-to-back. The handler unit's `Nice=19`/`IOSchedulingClass=idle` is the mechanism; this proves it. | `E2E_API_IMPACT_TOLERANCE_PCT` (default 3). |
 | **Tune improvement** | `e2e-real.sh` `verify` phase (existing) | The short real tune must produce a winner that beats or ties the baseline candidate (#62–#64 machinery: sustained-clock sampling, variance-aware acceptance, live A/B confirm). | `TUNE_BENCH`, `TUNE_ITERS` (see the phase comments). |
 
-Baselines are per-host on purpose: hashrate is hardware. When a rig's hardware or BIOS tuning
-changes deliberately, re-record its baseline in the same PR that documents the change.
+Results are keyed by hardware class on purpose: hashrate is hardware. Keep the history outside the
+repo (the caller appends each emitted JSON line to its own store), so a run never dirties the checkout.
 
 ## XMRig self-test regressions
 
@@ -281,6 +303,6 @@ opt-in submission followed by verification, and rejection of incorrect offline t
 interrupt cleanup and the watchdog thermal cutoff. `bash tests/test-perf-submission.sh` checks
 that opt-in submission IDs reach both release perf records. These run in `make test`.
 
-The real stress window and temperature behavior still require a reserved bench-ci job on hardware.
+The real stress window and temperature behavior still require a reserved hardware run.
 Stub tests cannot prove physical stability, thermal sensor accuracy or upstream submission service
 availability. Record that hardware proof before merging a self-test control change.

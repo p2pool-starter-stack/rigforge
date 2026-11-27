@@ -24,3 +24,32 @@ _control_upgrade_throttle_ok() (
     fi
     return 0
 )
+
+_control_upgrade_reown() {
+    local dir="$1" ids uid gid f skip
+    [ "$(id -u)" -eq 0 ] || return 0
+    ids=$(stat -c '%u:%g' "$dir" 2>/dev/null) || return 0
+    uid="${ids%%:*}" gid="${ids##*:}"
+    [ "$uid" != 0 ] || return 0
+    skip="$(printf '%s' "$dir" | sed 's/[][\\*?]/\\&/g')/data"
+    while IFS= read -r -d '' f; do
+        chown -h "$uid:$gid" "$f" 2>/dev/null || warn "control-upgrade: could not reown $f to $uid:$gid"
+    done < <(find "$dir" -xdev -path "$skip" -prune -o \( ! -user "$uid" -o ! -group "$gid" \) -print0 2>/dev/null)
+}
+
+_control_upgrade_mark() {
+    local m="$1/upgrade-pending"
+    RIGFORGE_UPGRADE_UNMOVED="upgrade state unavailable under $1"
+    if [ -e "$m" ] || [ -L "$m" ]; then
+        [ ! -L "$m" ] && [ -f "$m" ] && [ "$(stat -c '%u:%g:%a:%h' "$m" 2>/dev/null)" = "0:0:600:1" ] || return 2
+    fi
+    # shellcheck disable=SC2034
+    (umask 077 && : >"$m") && RIGFORGE_UPGRADE_UNMOVED=""
+}
+
+_control_upgrade_do() {
+    local rc=0
+    _control_upgrade_steps "$1" || rc=$?
+    _control_upgrade_reown "$(_lib_dir)"
+    return "$rc"
+}

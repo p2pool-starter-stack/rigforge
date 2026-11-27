@@ -266,6 +266,7 @@ caller_case() {
         install_api() { :; }
         link_cli() { :; }
         _reown_worker() { :; }
+        _root_guard_check() { :; }
         finish_deployment() { :; }
         _upgrade_restart() { :; }
         _post_upgrade_retune() { :; }

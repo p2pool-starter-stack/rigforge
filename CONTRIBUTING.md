@@ -15,9 +15,8 @@ repo may be the better home for it.
 
 ## Making changes
 
-RigForge is portable Bash that has to run on Ubuntu/Debian. macOS is deprecated (#493): unsupported
-and untested — no CI, no bench — but the Darwin code paths still work and stay working, so don't
-break them gratuitously:
+RigForge is portable Bash that has to run on Ubuntu/Debian. macOS is best effort: it has no CI or bench
+coverage, but the Darwin code paths still work and stay working, so don't break them gratuitously:
 
 - Keep it portable. Avoid GNU-only flags and other Linux-isms where a
   POSIX-friendly alternative exists, and guard platform-specific code paths.
@@ -68,8 +67,14 @@ make lint-file-budget                    # self-test, then the gate
 scripts/lint-file-budget.sh --generate   # reprint the budget this tree implies; commit it by hand
 ```
 
-Prose (`*.md`), data (`*.json`), and binaries are exempt — the reasons are enumerated one per glob in
-the script. `rigforge.sh` is deliberately *not* exempt.
+Prose (`*.md`), data (`*.json`), the generated `Cargo.lock`, and binaries are exempt. Prose grows by
+nature and is not source to split; JSON here is config and fixtures; `Cargo.lock` is written by
+cargo; binary files are skipped by detection, not by a path list. A glob in `is_exempt` matches `/`
+too. `rigforge.sh` is deliberately *not* exempt.
+
+Rust source (`*.rs`) is ordinary source under this gate: a `.rs` file over 400 lines needs a row, a
+new one never starts above the target, and there is no Rust exemption. Split a growing module
+instead of asking for a row.
 
 **If your change is refused because the ceiling equals the file's current size**, the ratchet has left
 no slack, which is intended. Ask first whether a line-neutral form of the change exists; that question
@@ -101,8 +106,18 @@ read: GitHub Actions, the pre-commit hooks, the Python CI tools in `tools/requir
 npm devDependency, and the container test images pinned by tag and digest in the Dockerfiles under
 `tests/e2e/`, `tests/coverage/` and `tests/docker/`. The tools no manifest can express —
 shellcheck, shfmt, actionlint, gitleaks, lychee and jq, installed by curl with a sha256 check — are
-watched by the weekly `tool-bump.yml` watcher. It reports stale pins without changing them; failed
-or malformed upstream responses remain unchecked and fail the watcher.
+watched by the weekly `tool-bump.yml` watcher; the Rust toolchain pin in `rust-toolchain.toml` and
+cargo-deny are registered there too, and Dependabot's `cargo` entry covers `Cargo.lock`. The watcher
+reports stale pins without changing them; failed or malformed upstream responses remain unchecked
+and fail the watcher. It also confirms that the sibling scheduled workflows ran on their last
+schedule: only a scheduled run counts, and a lookup that finds nothing is unchecked, never a pass.
+
+The Rust workspace (`Cargo.toml`, `crates/`) is gated by `make rust-check`: `rust-fmt`, `rust-clippy`,
+`rust-test`, `rust-deny` (needs cargo-deny), `rust-musl` (needs the pinned musl target and readelf) and
+`rust-msrv`. `make check` fails, not skips, when cargo is present but cargo-deny, readelf or the musl
+target is missing. `make check` runs `lint-all`, the suite and those gates, and prints a skip line where
+cargo is missing. `lint`, `test` and the pre-commit hooks never need cargo. The jobs live in
+`.github/workflows/rust.yml`; the aarch64 build there is best effort and never fails the workflow.
 
 Dependabot checks GitHub Actions, pip and npm daily and the test images weekly. Pip, npm and docker
 group minor and patch version updates into one PR each; security updates stay one PR per package, and
@@ -117,6 +132,22 @@ fails; extend an expiry by editing the date in the issue.
 An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final
 newline) so most editors match these checks automatically.
 
+### Rust golden files
+
+The files under `crates/rigforge-core/tests/golden/jq-1.7.1/` hold what real jq 1.7.1 printed for
+each input row; they are never edited by hand. `scripts/make-goldens.sh jq` regenerates them by
+running the local jq over the corpus in that script and in `scripts/goldens-docs.sh` and
+`scripts/goldens-ops.sh` (each file starts with the jq arguments, then one row per input: hex input,
+jq status, hex output, label). Regenerate with jq 1.7.1 (`jq --version` must print `jq-1.7.1`; the
+Linux test image has it) and commit the result together with the corpus change. `make rust-goldens`
+regenerates and fails on any difference or stray file, and prints a skip line under any other jq;
+the `goldens` job in `.github/workflows/rust.yml` runs it with a pinned jq 1.7.1. jq 1.6 and 1.8
+are not committed as golden sets: the `jq_live*` tests compare against binaries named by `JQ16`
+and `JQ18` and print a `SKIPPED` line when the variable is unset (CI sets both). `make rust-mutants`
+applies each row of `tests/rust/mutants.tsv` (file, exact text, replacement, test filter) to a
+scratch copy and requires the named tests to fail; a row whose text is not found exactly once is
+refused.
+
 ## Branching
 
 RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-starter-stack/pithead)):
@@ -130,11 +161,10 @@ RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-st
 1. Fork the repo and create a topic branch off `develop`.
 2. Make your change and confirm `shellcheck` passes.
 3. Open a PR against `develop` and fill out the template.
-4. A PR into `develop` merges on green required checks plus the `adversarial-review`
-   status recorded on its head SHA by a session that did not author it, human-driven
-   or automated. Merges are explicit, never automatic: bring the branch up to date
-   with `develop`, get the review at that head, then `gh pr merge --squash`. Only the
-   owner's account merges; a PR into `main` also needs the code owner's review.
+4. A PR into `develop` merges on green required checks and review of the head SHA.
+   Merges are explicit, never automatic: bring the branch up to date with
+   `develop`, then `gh pr merge --squash`. Only the owner's account merges; a PR
+   into `main` also needs the code owner's review.
 
 Keep PRs focused and the description clear about what changed and why. Small,
 reviewable changes get merged faster.

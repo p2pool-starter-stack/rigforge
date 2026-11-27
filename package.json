@@ -4,6 +4,9 @@
     "private": true,
     "description": "Pinned CI tooling for RigForge (Dependabot npm entry; see CONTRIBUTING.md)",
     "devDependencies": {
-        "markdownlint-cli2": "0.24.1"
+        "markdownlint-cli2": "0.24.2"
+    },
+    "overrides": {
+        "katex": "0.18.2"
     }
 }
