@@ -25,8 +25,12 @@ source "$SCRATCH/scan_cves.sh"
 [ "$(printf 'not-a-CVE-2024-5\n' | scan_cves)" = "CVE-2024-5" ] ||
     fail "scan_cves must report the CVE id found inside a longer token"
 
-grep -qE 'cron: "[0-9*]+ [0-9*]+ [0-9*]+ [0-9*]+ \*"' "$WF" ||
-    fail "xmrig-bump.yml must fire every day (day-of-week field of the cron must be *)"
+grep -qE 'cron: "[0-9*]+ [0-9*]+ \* \* \*"' "$WF" ||
+    fail "xmrig-bump.yml must fire every day (month, day-of-month and day-of-week fields of the cron must be *)"
+grep -q 'sort -V' "$WF" ||
+    fail "the workflow must order versions before bumping so a pulled release cannot open a downgrade PR"
+grep -q 'refs/heads/' "$WF" ||
+    fail "the bump step must detect a branch left by an interrupted run and reuse it instead of re-pushing"
 grep -q -- '--add-label security' "$WF" ||
     fail "a bump whose release notes mention CVEs must carry the security label"
 grep -q 'release notes mention' "$WF" ||
