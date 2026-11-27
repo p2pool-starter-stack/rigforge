@@ -161,7 +161,7 @@ EOF
     cat >"$bin/envsubst" <<'EOF'
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
-    -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
+    -e "s|\$NFT_PATH|${NFT_PATH:-}|g" -e "s|\$SYSTEMD_DIR|${SYSTEMD_DIR:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" -e "s|\$RIGFORGE_APPLIANCE|${RIGFORGE_APPLIANCE:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
@@ -5261,14 +5261,9 @@ mkdir -p "$UN/etc/systemd/system" "$UN/etc/logrotate.d" "$UN/etc/security" "$UN/
 : >"$UN/etc/logrotate.d/xmrig"
 : >"$UN/etc/modules-load.d/msr.conf"
 : >"$UN/home/worker/xmrig/build/xmrig"
-# #273: pre-seed every optional unit uninstall's removal branches (rigforge.sh:1750-1759 area) are
-# responsible for — the full set the sandbox has never installed before, so those branches never ran in
-# any test. Cross-checked 1:1 against systemd/*.template (minus xmrig.service.template, already seeded
-# above) so this list can't silently drift from what setup/install_* actually ship. One list, reused
-# below for the post-uninstall removal assertions, so the two can't drift from EACH OTHER either.
 UN_OPT_UNITS="rigforge-api.service rigforge-api-refresh.service rigforge-api-refresh.timer
 rigforge-control.service rigforge-control-apply.service rigforge-control-apply.path
-rigforge-autotune.service rigforge-autotune.timer rigforge-watchdog.service rigforge-watchdog.timer"
+rigforge-autotune.service rigforge-autotune.timer rigforge-watchdog.service rigforge-watchdog.timer rigforge-api-firewall.nft"
 for _u in $UN_OPT_UNITS; do
     : >"$UN/etc/systemd/system/$_u"
 done
@@ -7171,7 +7166,7 @@ run_fw() { # <allow_from> <api_mode>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        WORKER_ROOT="$FW"
+        WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
         API_ALLOW_FROM="$1"
         API_MODE="$2"
         API_PORT=8081
@@ -7181,8 +7176,8 @@ run_fw() { # <allow_from> <api_mode>
 }
 : >"$FW/calls.log"
 out="$(run_fw "192.168.1.10" disabled)"
-assert_eq "firewall: nft file written when api_allow_from set (#142)" "$([ -f "$FW/api-firewall.nft" ] && echo y || echo n)" "y"
-nft_body="$(cat "$FW/api-firewall.nft")"
+assert_eq "firewall: nft file written when api_allow_from set (#142)" "$([ -f "$FW/rigforge-api-firewall.nft" ] && echo y || echo n)" "y"
+nft_body="$(cat "$FW/rigforge-api-firewall.nft")"
 assert_contains "firewall: own inet rigforge table (#142)" "$nft_body" "table inet rigforge"
 assert_contains "firewall: loopback always accepted (#142)" "$nft_body" 'iifname "lo" accept'
 assert_contains "firewall: the configured source is accepted (#142)" "$nft_body" "ip saddr 192.168.1.10 accept"
@@ -7190,36 +7185,34 @@ assert_contains "firewall: :8080 guarded, others dropped (#142)" "$nft_body" "tc
 assert_contains "firewall: applied via nft -f (#142)" "$(cat "$FW/calls.log")" "[nft] -f"
 assert_contains "firewall: blocked requests have a measurable counter (#586)" "$nft_body" "counter drop"
 run_fw "192.168.1.0/24" enabled >/dev/null
-assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/api-firewall.nft")" "8080, 8081"
-# Cleared -> table destroyed, file removed.
+assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/rigforge-api-firewall.nft")" "8080, 8081"
 : >"$FW/calls.log"
 run_fw "" disabled >/dev/null
-assert_eq "firewall: file removed when cleared (#142)" "$([ -f "$FW/api-firewall.nft" ] && echo y || echo n)" "n"
+assert_eq "firewall: file removed when cleared (#142)" "$([ -f "$FW/rigforge-api-firewall.nft" ] && echo y || echo n)" "n"
 assert_contains "firewall: table destroyed on teardown (#142)" "$(cat "$FW/calls.log")" "[nft] destroy table inet rigforge"
-# #243: an IPv6 api_allow_from renders an `ip6 saddr` rule (the inet table carries both families).
 run_fw6() {
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        WORKER_ROOT="$FW"
+        WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
         API_ALLOW_FROM="$1"
         API_ALLOW_FAMILY="$2"
         API_MODE=disabled
         API_PORT=8081
         set +e
         PATH="$STUBS:$PATH" CALL_LOG="$FW/calls.log" install_api_firewall >/dev/null 2>&1
-        cat "$FW/api-firewall.nft" 2>/dev/null
+        cat "$FW/rigforge-api-firewall.nft" 2>/dev/null
     )
 }
 assert_contains "firewall: IPv6 source renders ip6 saddr (#243)" "$(run_fw6 "fd00::/64" ip6)" "ip6 saddr fd00::/64 accept"
 assert_contains "firewall: IPv4 source still renders ip saddr (#243)" "$(run_fw6 "10.0.0.9" ip)" "ip saddr 10.0.0.9 accept"
-# nft missing while enabled -> hard error (never silently leave the port open thinking it's guarded).
+bash "$ROOT/tests/test-api-firewall-path.sh" "$SCRIPT" >/dev/null 2>&1 && ok "firewall: rules file lives in the unit folder and replaces the worker-root copy (#836)" || bad "firewall: rules file lives in the unit folder and replaces the worker-root copy (#836)" "regression failed"
 NONFT="$(mktemp -d "$SANDBOX/nonft.XXXXXX")"
 for cmd in sudo tee; do cp "$STUBS/$cmd" "$NONFT/" 2>/dev/null || true; done
 out="$( (
     source "$SCRIPT"
     OS_TYPE=Linux
-    WORKER_ROOT="$FW"
+    WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
     API_ALLOW_FROM=10.0.0.1
     set +e
     PATH="$NONFT" install_api_firewall 2>&1
@@ -7234,7 +7227,7 @@ chmod +x "$BADNFT/nft"
 fwrej="$( (
     source "$SCRIPT"
     OS_TYPE=Linux
-    WORKER_ROOT="$FW"
+    WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
     API_ALLOW_FROM="fd00::/64"
     API_ALLOW_FAMILY=ip6
     API_MODE=disabled
@@ -7647,7 +7640,7 @@ run_ctl_fw() { # <api_mode> <control_mode> -> the rendered nft rule
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        WORKER_ROOT="$CPS/wr"
+        WORKER_ROOT="$CPS/wr" SYSTEMD_DIR="$CPS/wr"
         mkdir -p "$CPS/wr"
         API_ALLOW_FROM=10.0.0.5
         API_MODE="$1"
@@ -7656,7 +7649,7 @@ run_ctl_fw() { # <api_mode> <control_mode> -> the rendered nft rule
         CONTROL_PORT=8082
         set +e
         PATH="$STUBS:$PATH" install_api_firewall >/dev/null 2>&1
-        cat "$CPS/wr/api-firewall.nft" 2>/dev/null
+        cat "$CPS/wr/rigforge-api-firewall.nft" 2>/dev/null
     )
 }
 assert_contains "firewall scopes control_port when control enabled (#236)" "$(run_ctl_fw disabled enabled)" "8082"
