@@ -24,6 +24,10 @@ source "$SCRATCH/scan_cves.sh"
     fail "scan_cves must reject malformed CVE-shaped strings"
 [ "$(printf 'not-a-CVE-2024-5\n' | scan_cves)" = "CVE-2024-5" ] ||
     fail "scan_cves must report the CVE id found inside a longer token"
+[ "$(printf 'x\0y CVE-2024-777 z\n' | scan_cves)" = "CVE-2024-777" ] ||
+    fail "a NUL byte in the release body must not suppress later CVE ids"
+[ "$(printf 'CVE-2024-1\nCVE-2024-2\nCVE-2024-3\nCVE-2024-4\nCVE-2024-5\nCVE-2024-6\nCVE-2024-7\n' | scan_cves | wc -l | tr -d ' ')" = "5" ] ||
+    fail "scan_cves must cap the reported id count so the tracking issue title stays within GitHub limits"
 
 grep -qE 'cron: "[0-9*]+ [0-9*]+ \* \* \*"' "$WF" ||
     fail "xmrig-bump.yml must fire every day (month, day-of-month and day-of-week fields of the cron must be *)"
