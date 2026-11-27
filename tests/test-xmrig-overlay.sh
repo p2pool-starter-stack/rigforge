@@ -36,7 +36,7 @@ parse_case() {
     (
         source "$SCRIPT"
         CONFIG_JSON="$cfg"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         set +e
         parse_config
     ) 2>&1
@@ -74,7 +74,7 @@ generate_case() {
     (
         source "$script"
         CONFIG_JSON="$cfg"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         OS_TYPE=Linux
         RIGFORGE_APPLIANCE=1
         lscpu() { printf 'Model name: Fixture CPU\n'; }
@@ -218,7 +218,7 @@ feed_case() {
     (
         source "$SCRIPT"
         CONFIG_JSON="$cfg"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         parse_config >/dev/null
         _api_config_json
     ) 2>/dev/null
@@ -233,7 +233,7 @@ doctor_cfg="$TMP/doctor.json"
 base_config "$doctor_cfg" '{"xmrig":{"cpu":{"yield":true},"randomx":{"scratchpad_prefetch_mode":2}}}'
 doctor_out="$({
     source "$SCRIPT"
-    OS_TYPE=Linux CONFIG_JSON="$doctor_cfg" RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    OS_TYPE=Linux CONFIG_JSON="$doctor_cfg" SCRIPT_DIR="$ROOT"
     systemctl() { return 1; }
     _tcp_probe() { return 0; }
     _cpu_missing_isa() { :; }
@@ -291,7 +291,7 @@ apply_case() {
     (
         source "$SCRIPT"
         CONFIG_JSON="$APPLY/config.json"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         SYSTEMD_DIR="$APPLY/systemd"
         OS_TYPE=Linux
         RIGFORGE_APPLIANCE=1

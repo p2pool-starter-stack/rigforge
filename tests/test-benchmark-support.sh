@@ -23,7 +23,7 @@ bundle() {
     bashc '
         [ "${1:-}" != doctor ] || exit 0
         source "$SCRIPT"
-        RIGFORGE_LIB="$RF_TEST_ROOT" RIGFORGE_STATE="$RF_TEST_ROOT" CONFIG_JSON="$RF_TEST_ROOT/config.json"
+        SCRIPT_DIR="$RF_TEST_ROOT" CONFIG_JSON="$RF_TEST_ROOT/config.json"
         SYSTEMD_DIR="$RF_TEST_ROOT/absent" OS_TYPE=Linux
         _worker_root_from_config() { printf "%s/worker" "$RF_TEST_ROOT"; }
         cmd_version() { echo test; }

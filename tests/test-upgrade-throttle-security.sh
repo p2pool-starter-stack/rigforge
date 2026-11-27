@@ -36,7 +36,7 @@ run_upgrade() {
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB=$d RIGFORGE_STATE=$d
+        SCRIPT_DIR=$d
         CONFIG_JSON=$d/config.json
         RIGFORGE_CONTROL_STATE=$d/state
         RIGFORGE_CONTROL_PROCESSING=$d/processing

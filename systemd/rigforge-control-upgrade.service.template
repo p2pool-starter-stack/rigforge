@@ -21,7 +21,7 @@ RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 StateDirectory=rigforge-control-upgrade
 StateDirectoryMode=0700
-ExecStart=$RIGFORGE_LIB/rigforge.sh control-upgrade
+ExecStart=$SCRIPT_DIR/rigforge.sh control-upgrade
 Nice=19
 IOSchedulingClass=idle
 # #510: systemd's implicit DefaultTimeoutStartSec is 90s, and this oneshot fetches, checks out and

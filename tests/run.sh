@@ -46,8 +46,6 @@ assert_rc "aggregate suite liveness regression (#549)" "$?" 0
 for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
-bash "$ROOT/tests/test-lib-state.sh" "$SCRIPT"
-assert_rc "read-only lib dir with writable state (#781)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
 assert_rc "persisted HugePages ceiling regression (#633)" "$?" 0
 for selftest in benchmark-verification benchmark-support stress perf-submission e2e-selftest root-guard; do
@@ -158,12 +156,14 @@ esac
 exit 0
 EOF
     # envsubst stub: substitute exactly the vars the systemd templates use (gettext may be absent on macOS).
+    # Keep this var list in lockstep with rigforge.sh:1009's real envsubst allowlist — a var dropped
+    # from ONE and not the other lets a stub-rendered unit keep a literal, undetected $VAR (#275).
     cat >"$bin/envsubst" <<'EOF'
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
     -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" -e "s|\$RIGFORGE_APPLIANCE|${RIGFORGE_APPLIANCE:-}|g" \
-    -e "s|\$RIGFORGE_LIB|${RIGFORGE_LIB:-}|g" -e "s|\$RIGFORGE_STATE|${RIGFORGE_STATE:-}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
+    -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$RIGFORGE_STATE|${RIGFORGE_STATE:-${SCRIPT_DIR:-}}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
     -e "s|\$MINER_USER_EFFECTIVE|${MINER_USER_EFFECTIVE:-}|g" -e "s|\$MSR_APPLY_LINE|${MSR_APPLY_LINE:-}|g" \
     -e "s|\${WATCHDOG_INTERVAL_MIN}|${WATCHDOG_INTERVAL_MIN:-}|g" \
@@ -227,7 +227,7 @@ parse_and_print() { # <config_file> <script_dir> <var>
     (
         source "$SCRIPT"
         CONFIG_JSON="$1"
-        RIGFORGE_LIB="$2" RIGFORGE_STATE="$2"
+        SCRIPT_DIR="$2"
         local var="$3"
         set +eu
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
@@ -243,7 +243,7 @@ parse_rc() { # <config_file> <script_dir>
     (
         source "$SCRIPT"
         CONFIG_JSON="$1"
-        RIGFORGE_LIB="$2" RIGFORGE_STATE="$2"
+        SCRIPT_DIR="$2"
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
     )
@@ -474,7 +474,7 @@ assert_rc "port of more than five digits rejected (#405)" "$?" "1"
 out="$( (
     source "$SCRIPT"
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     parse_config 2>&1
 ))"
@@ -492,7 +492,7 @@ c="$(mkconf p_fatfinger "{ \"pools\": [{\"url\":\"h:999999\"}] }")"
 out="$( (
     source "$SCRIPT"
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     parse_config 2>&1
 ))"
@@ -514,7 +514,7 @@ for u in '-bad:3333' '.bad:3333' 'ba d:3333' 'a;b:3333' 'a/b:3333' 'http://h:333
     parse_rc "$c" "$ROOT"
     assert_rc "invalid host '$u' rejected" "$?" "1"
 done
-# Valid hostname / IPv4 / bracketed-IPv6 accepted.
+bash "$ROOT/tests/test-host-port-message.sh" "$SCRIPT" >/dev/null 2>&1 && ok "a host:port with a user name or password is refused without printing it" || bad "a host:port with a user name or password is refused without printing it" "regression failed"
 for u in 'good-host.lan:3333' '10.0.0.5:3333' '[2001:db8::1]:3333'; do
     c="$(mkconf okhost "{ \"pools\": [{\"url\":\"$u\"}] }")"
     parse_rc "$c" "$ROOT"
@@ -549,7 +549,7 @@ c="$(mkconf p_enstr "{ \"pools\": [{\"url\":\"h:3333\",\"enabled\":\"yes\"}] }")
 out="$( (
     source "$SCRIPT"
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     parse_config 2>&1
 ))"
@@ -583,7 +583,7 @@ parse_rc "$c" "$ROOT"
 assert_rc "ACCESS_TOKEN with space rejected" "$?" "1"
 
 # ACCESS_TOKENS (#516): a named map of additional Bearer tokens, one per consuming Pithead stack.
-ats_fails() { (source "$SCRIPT" && CONFIG_JSON="$1" RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT" && set +e && parse_config 2>&1); }
+ats_fails() { (source "$SCRIPT" && CONFIG_JSON="$1" SCRIPT_DIR="$ROOT" && set +e && parse_config 2>&1); }
 c="$(mkconf ats_ok "{ $POOL, \"ACCESS_TOKENS\": {\"bench\": \"bench-tok-1\", \"prod\": \"prod-tok-1\"} }")"
 assert_eq "ACCESS_TOKENS parses as its own JSON object" "$(parse_and_print "$c" "$ROOT" ACCESS_TOKENS_JSON | jq -r '.bench')" "bench-tok-1"
 c="$(mkconf ats_absent "{ $POOL }")"
@@ -601,7 +601,7 @@ lint_out() { # <config> -> parse_config's stderr+stdout
     (
         source "$SCRIPT"
         CONFIG_JSON="$1"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         set +e
         parse_config 2>&1
     )
@@ -1349,7 +1349,7 @@ printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nomodeset"\n' >"$GC/grub"
 run_grub_proposed410() { # <pg_calls_file> <ceiling_mb> [reserve_extra_mb]
     (
         source "$SCRIPT"
-        RIGFORGE_LIB="$GC" RIGFORGE_STATE="$GC"
+        SCRIPT_DIR="$GC"
         GRUB_DEFAULT="$GC/grub"
         RX_SETUP_THREADS=""
         THREADS_CAP=""
@@ -1399,7 +1399,7 @@ printf '{"pools":[{"url":"h:3333"}],"hugepages_reserve_extra_mb":-5}\n' >"$c305"
 out="$(
     source "$SCRIPT"
     CONFIG_JSON="$c305"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     PATH="$STUBS:$PATH" parse_config 2>&1
 )"
 assert_contains "negative headroom rejected" "$out" "hugepages_reserve_extra_mb must be"
@@ -1407,7 +1407,7 @@ printf '{"pools":[{"url":"h:3333"}],"threads":0}\n' >"$c305"
 out="$(
     source "$SCRIPT"
     CONFIG_JSON="$c305"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     PATH="$STUBS:$PATH" parse_config 2>&1
 )"
 assert_contains "threads 0 rejected (min 1)" "$out" "threads must be"
@@ -1424,7 +1424,7 @@ printf '{"pools":[{"url":"h:3333"}],"hugepages_pool_ceiling_mb":-5}\n' >"$c398"
 out="$(
     source "$SCRIPT"
     CONFIG_JSON="$c398"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     PATH="$STUBS:$PATH" parse_config 2>&1
 )"
 assert_contains "negative ceiling rejected (#398)" "$out" "hugepages_pool_ceiling_mb must be"
@@ -1432,7 +1432,7 @@ printf '{"pools":[{"url":"h:3333"}],"hugepages_pool_ceiling_mb":99999999}\n' >"$
 out="$(
     source "$SCRIPT"
     CONFIG_JSON="$c398"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     PATH="$STUBS:$PATH" parse_config 2>&1
 )"
 assert_contains "oversized ceiling rejected (#398)" "$out" "hugepages_pool_ceiling_mb must be"
@@ -1504,7 +1504,7 @@ printf '{"pools":[{"url":"h:3333"}],"hugepages_pool_ceiling_mb":%s}\n' "$BIG412"
 out="$( (
     source "$SCRIPT"
     CONFIG_JSON="$SANDBOX/u412msg.json"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     PATH="$STUBS:$PATH" parse_config 2>&1
 ))"
@@ -1548,7 +1548,7 @@ run_grub_proposed() { # <current-cmdline> <headroom-mb> -> echoes resulting MERG
     (
         export PATH="$STUBS:$PATH" STUB_L3="32 MiB" STUB_SOCKETS=1 CPUINFO="$SANDBOX/cpuinfo_no1g" HUGEPAGES_1G_NR="$SANDBOX/nr_none"
         source "$SCRIPT"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         GRUB_DEFAULT="$gd"
         RX_SETUP_THREADS=""
         HUGEPAGES_RESERVE_EXTRA_MB="$2"
@@ -1767,8 +1767,8 @@ empty="$(mktemp -d "$SANDBOX/ws-empty.XXXXXX")"
     PATH="$STUBS:$PATH" _activate_xmrig_build >/dev/null 2>&1
 )
 assert_rc "prune is set -e safe with no archives" "$?" "0"
+bash "$ROOT/tests/test-root-input-hardening.sh" "$SCRIPT" >/dev/null 2>&1 && ok "swap marker, restore archive and benchmark config inputs are validated" || bad "swap marker, restore archive and benchmark config inputs are validated" "regression failed"
 
-# ---------------------------------------------------------------------------
 # Idempotent re-runs / upgrade (#4): a build already at the pinned commit is detected and the slow
 # recompile + restart are skipped, so re-running is a fast no-op and `upgrade` only acts on a bump.
 echo "== unit: xmrig_already_built detection (#4) =="
@@ -2011,7 +2011,7 @@ printf '1.4.0\n' >"$UPC/VERSION"
 run_upgrade_check() { # curl behavior comes from $UPC/bin/curl (rewritten per case)
     (
         source "$SCRIPT"
-        RIGFORGE_LIB="$UPC" RIGFORGE_STATE="$UPC"
+        SCRIPT_DIR="$UPC"
         set +e
         PATH="$UPC/bin:$STUBS:$PATH" _upgrade_check 2>&1
         echo "rc=$?"
@@ -2378,7 +2378,7 @@ arc_apply() {
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ARC" RIGFORGE_STATE="$ARC"
+        SCRIPT_DIR="$ARC"
         SYSTEMD_DIR="$ARC/systemd"
         SERVICE_NAME=xmrig
         REAL_USER=rfop
@@ -2402,7 +2402,7 @@ arc_api() { # <enabled|disabled>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ARC" RIGFORGE_STATE="$ARC"
+        SCRIPT_DIR="$ARC"
         SYSTEMD_DIR="$ARC/systemd"
         SERVICE_NAME=xmrig
         REAL_USER=rfop
@@ -2433,7 +2433,7 @@ arc_control() { # <enabled|disabled>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ARC" RIGFORGE_STATE="$ARC"
+        SCRIPT_DIR="$ARC"
         SYSTEMD_DIR="$ARC/systemd"
         SERVICE_NAME=xmrig
         REAL_USER=rfop
@@ -2533,7 +2533,7 @@ printf '{ "HOME_DIR": "/etc; rm -rf /tmp/x", "pools":[{"url":"h:3333"}] }\n' >"$
 printf '{ "HOME_DIR": "/opt/../../etc", "pools":[{"url":"h:3333"}] }\n' >"$WV/trav.json"
 wrc() { (
     source "$SCRIPT"
-    RIGFORGE_LIB="$WV" RIGFORGE_STATE="$WV"
+    SCRIPT_DIR="$WV"
     CONFIG_JSON="$1"
     set +e
     _worker_root_from_config 2>&1
@@ -2554,7 +2554,7 @@ run_autotune() { # <disabled|performance|efficiency> [oncalendar]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$AT" RIGFORGE_STATE="$AT"
+        SCRIPT_DIR="$AT"
         SYSTEMD_DIR="$AT/systemd"
         REAL_USER=rfop # the operator captured at setup time; baked into the service unit
         AUTOTUNE_MODE="$1"
@@ -2593,7 +2593,7 @@ run_install_watchdog() { # <disabled|enabled> [interval_min]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$WDI" RIGFORGE_STATE="$WDI"
+        SCRIPT_DIR="$WDI"
         SYSTEMD_DIR="$WDI/systemd"
         REAL_USER=rfop
         SERVICE_NAME=xmrig
@@ -2658,7 +2658,7 @@ wdf_run() { # <systemd-dir> <enabled|disabled> <daemon-reload rc> <rm rc> -> "rc
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$WDF" RIGFORGE_STATE="$WDF"
+        SCRIPT_DIR="$WDF"
         SYSTEMD_DIR="$1"
         REAL_USER=rfop
         SERVICE_NAME=xmrig
@@ -2698,7 +2698,7 @@ assert_eq "watchdog interval honours the override" "$(parse_and_print "$c" "$ROO
 assert_eq "max_temp_c honours the override" "$(parse_and_print "$c" "$ROOT" MAX_TEMP_C)" "85"
 c="$(mkconf wd_true "{ $POOL, \"watchdog\": true }")"
 assert_eq "watchdog legacy true -> enabled" "$(wd_mode "$c")" "enabled"
-parse_fails() { (source "$SCRIPT" && CONFIG_JSON="$1" RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT" && set +e && PATH="$STUBS:$PATH" parse_config 2>&1); }
+parse_fails() { (source "$SCRIPT" && CONFIG_JSON="$1" SCRIPT_DIR="$ROOT" && set +e && PATH="$STUBS:$PATH" parse_config 2>&1); }
 c="$(mkconf wd_typo "{ $POOL, \"watchdog\": \"enbaled\" }")"
 assert_contains "watchdog typo hard-errors" "$(parse_fails "$c")" 'Invalid "watchdog" value'
 c="$(mkconf wd_iv0 "{ $POOL, \"watchdog_interval_min\": 0 }")"
@@ -3030,8 +3030,6 @@ wdead="$( (
 ))"
 assert_eq "_wait_miner_live: false while the API stays at 0 (#95)" "$wdead" "DEAD"
 
-# The worker API is open (read-only) with no token by default (#125), so send a Bearer only when set.
-# This real curl branch proves token-bearing probes work without exposing the token in curl argv.
 echo "== unit: _read_api_hashrate sends a Bearer only when ACCESS_TOKEN is set (#125) =="
 clog="$SANDBOX/curl-calls.log"
 curl_stdin="$SANDBOX/curl-stdin.log"
@@ -3049,12 +3047,13 @@ assert_absent "no Authorization header sent when ACCESS_TOKEN is unset" "$(cat "
 hr_auth="$( (
     source "$SCRIPT"
     unset API_CMD
-    ACCESS_TOKEN="miner-0"
+    ACCESS_TOKEN="miner-0" OS_TYPE=Linux
     PATH="$STUBS:$PATH" CURL_LOG="$clog" CURL_STDIN_LOG="$curl_stdin" STUB_API_HR=987.6 _read_api_hashrate
 ))"
 assert_eq "_read_api_hashrate returns the hashrate when a token is set" "$hr_auth" "987.6"
 assert_absent "Bearer <token> is absent from curl argv" "$(cat "$clog")" "miner-0"
 assert_contains "Bearer <token> reaches curl over stdin config" "$(cat "$curl_stdin")" 'Authorization: Bearer miner-0'
+bash "$ROOT/tests/test-config-mode-token-scope.sh" "$SCRIPT" >/dev/null 2>&1 && ok "config.json is re-owned at mode 600, doctor flags looser modes, and the API token is sent only while the miner runs" || bad "config.json is re-owned at mode 600, doctor flags looser modes, and the API token is sent only while the miner runs" "regression failed"
 # #147: support-bundle — everything needed, nothing secret; structural redaction covers both configs.
 echo "== black-box: support-bundle collects + redacts (#147) =="
 SB="$(mktemp -d "$SANDBOX/support.XXXXXX")"
@@ -3779,7 +3778,7 @@ svc_run() { # <dir> <reboot_required> <xmrig_rebuild>: renders into <dir>, echoe
         cd "$d" || exit 1
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT" # so envsubst reads the real systemd/xmrig.service.template
         WORKER_ROOT="$d"
         SYSTEMD_DIR="$d/etc/systemd"
         REBOOT_REQUIRED="$2"
@@ -3817,7 +3816,7 @@ mkdir -p "$MU/etc/systemd" "$MU/xmrig/build"
     cd "$MU" || exit 1
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     WORKER_ROOT="$MU"
     SYSTEMD_DIR="$MU/etc/systemd"
     MINER_USER=rf-test-miner
@@ -3963,7 +3962,7 @@ printf '#!/bin/sh\nexit 0\n' >"$APR/home/worker/xmrig/build/xmrig" && chmod +x "
 (
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT" # real systemd/xmrig.service.template
     SYSTEMD_DIR="$APR/sysd"
     SERVICE_NAME=xmrig
     CONFIG_JSON="$APR/config.json"
@@ -3996,7 +3995,7 @@ mkdir -p "$SVC_OVR/etc/systemd" "$SVC_OVR/xmrig/build"
     cd "$SVC_OVR" || exit 1
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT" # so envsubst reads the real systemd/xmrig.service.template
     WORKER_ROOT="$SVC_OVR"
     SYSTEMD_DIR="$SVC_OVR/etc/systemd"
     SERVICE_NAME=miner
@@ -4167,11 +4166,12 @@ printf 'net      use pool ...\n* HUGE PAGES 100%%\n' >"$DOC/home/worker/xmrig.lo
 cat >"$DOC/config.json" <<EOF
 { "HOME_DIR": "$DOC/home", "pools": [{"url": "h:3333"}] }
 EOF
+chmod 600 "$DOC/config.json"
 run_doctor() { # <meminfo> <msr_dir> <governor_file> <nr1g_file>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$DOC/config.json"
         MEMINFO="$1"
         MSR_MODULE_DIR="$2"
@@ -4204,7 +4204,7 @@ assert_contains "doctor: reports issues" "$out" "issue(s) found"
 out="$( (
     source "$SCRIPT"
     OS_TYPE=Darwin
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     PATH="$STUBS:$PATH" doctor 2>&1
 ))"
@@ -4219,7 +4219,7 @@ EOF
 out="$( (
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     CONFIG_JSON="$DOC/config_lowhp.json"
     MEMINFO="$DOC/meminfo_ok"
     MSR_MODULE_DIR="$DOC/msrmod"
@@ -4556,7 +4556,7 @@ run_ctl_doctor() { # <config_file> <rigforge-control active:y|n> <curl /status c
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$1"
         MEMINFO="$DOC/meminfo_ok"
         MSR_MODULE_DIR="$DOC/msrmod"
@@ -4608,7 +4608,7 @@ run_pool_doctor() { # <xmrig active y|n> <API_CMD> [extra eval, e.g. a _tcp_prob
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$DOC/config.json"
         MEMINFO="$DOC/meminfo_ok"
         MSR_MODULE_DIR="$DOC/msrmod"
@@ -4688,7 +4688,7 @@ run_bios() { # <extra env assignments as "VAR=val ..."> [args...]; sandbox WORKE
     printf '\n\n\n' | (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$BIO/config.json"
         WORKER_ROOT="$BIO"
         RIGFORGE_FORCE_ELEVATE=0
@@ -4729,7 +4729,7 @@ chmod +x "$BSTOP/systemctl"
 out="$(printf '\n' | (
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     CONFIG_JSON="$BIO/config.json"
     WORKER_ROOT="$BIO"
     DMI_DIR="$DOC/dmi"
@@ -4892,7 +4892,7 @@ chmod +x "$DOC/svc_inactive/systemctl"
 out="$( (
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     CONFIG_JSON="$DOC/config.json"
     MEMINFO="$DOC/meminfo_ok"
     MSR_MODULE_DIR="$DOC/msrmod"
@@ -4979,7 +4979,7 @@ echo "== unit: link_cli installs + guards the rigforge command (#cli) =="
 lc() { # <script_dir> <bin_dir> [add_to_path=true] -> runs link_cli with those, prints its output
     (
         source "$SCRIPT"
-        RIGFORGE_LIB="$1" RIGFORGE_STATE="$1"
+        SCRIPT_DIR="$1"
         BIN_DIR="$2"
         ADD_TO_PATH="${3:-true}"
         set +eu
@@ -5050,7 +5050,7 @@ run_doctor_msr() { # <rdmsr_bin> [root|user]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$MSRD/config.json"
         MEMINFO="$DOC/meminfo_ok"
         MSR_MODULE_DIR="$DOC/msrmod"
@@ -5095,20 +5095,18 @@ printf 'msr      register values for "intel" preset FAILED to set\n' >"$MSRD/hom
 out="$(run_doctor_msr "$DOC/rdmsr_ok")"
 assert_contains "doctor: MSR FAILED-to-set WARN (#66)" "$out" "FAILED to set"
 
-# #367: the MSR guard's inputs — config resolution, then the log path — must be distinguishable when
-# either one comes up empty, so a skipped block never reads the same as a failed check (the flake that
-# broke both #66 e2e assertions on a healthy rig).
 echo "== unit: doctor MSR unverifiable — guard-input failures named (#367) =="
 UNV="$DOC/unv"
 mkdir -p "$UNV/home" # HOME_DIR resolves; worker/xmrig.log is deliberately never created
 cat >"$UNV/config.json" <<EOF
 { "HOME_DIR": "$UNV/home", "pools": [{"url": "h:3333"}] }
 EOF
+chmod 600 "$UNV/config.json"
 run_doctor_cfg() { # <config.json path, possibly nonexistent>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$1"
         MEMINFO="$DOC/meminfo_ok"
         MSR_MODULE_DIR="$DOC/msrmod"
@@ -5154,7 +5152,7 @@ run_doctor_mu() { # <rdmsr_bin> <svc stub dir>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$MUD/config.json"
         MEMINFO="$DOC/meminfo_ok"
         MSR_MODULE_DIR="$DOC/msrmod"
@@ -5185,11 +5183,11 @@ echo "== unit: doctor exposure posture advisory (#sec) =="
 EXP="$DOC/exposure"
 mkdir -p "$EXP/home/worker"
 exp_doctor() { # <config-body>
-    printf '%s' "$1" >"$EXP/config.json"
+    (umask 077 && printf '%s' "$1" >"$EXP/config.json")
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$EXP/config.json"
         MEMINFO="$DOC/meminfo_ok"
         MSR_MODULE_DIR="$DOC/msrmod"
@@ -6275,7 +6273,7 @@ run_tunekernel() { # <pg_calls_file>; reads RIGFORGE_THREADS from the env
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$TK" RIGFORGE_STATE="$TK"
+        SCRIPT_DIR="$TK"
         WORKER_ROOT="$TK/home/worker"
         MODULES_LOAD_DIR="$TK/nope"
         MODULES_FILE="$TK/nope/modules"
@@ -6316,7 +6314,7 @@ run_tk328() { # <sysctl_calls_file> <HugePages_Free> <pool_total> [miner_held_pa
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$TK" RIGFORGE_STATE="$TK"
+        SCRIPT_DIR="$TK"
         WORKER_ROOT="$TK/home/worker"
         MODULES_LOAD_DIR="$TK/nope"
         MODULES_FILE="$TK/nope/modules"
@@ -6368,7 +6366,7 @@ run_tk328_nopg() { # <sysctl_calls_file>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$HP/empty" RIGFORGE_STATE="$HP/empty"
+        SCRIPT_DIR="$HP/empty" # no util/proposed-grub.sh here
         WORKER_ROOT="$TK/home/worker"
         MODULES_LOAD_DIR="$TK/nope"
         MODULES_FILE="$TK/nope/modules"
@@ -6572,7 +6570,7 @@ out="$(
         RIGFORGE_APPLIANCE=1
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$APK" RIGFORGE_STATE="$APK"
+        SCRIPT_DIR="$APK"
         WORKER_ROOT="$APK/home/worker"
         MODULES_LOAD_DIR="$APK/mld" # exists — the non-appliance path WOULD drop msr.conf here
         GRUB_DEFAULT="$APK/grub"    # exists — the non-appliance path WOULD edit it
@@ -6628,7 +6626,7 @@ mkdir -p "$APS/run-systemd" "$APS/xmrig/build"
     RIGFORGE_APPLIANCE=1
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT" # real systemd/xmrig.service.template
     WORKER_ROOT="$APS"
     SYSTEMD_DIR="$APS/run-systemd"
     REBOOT_REQUIRED=false
@@ -7014,7 +7012,7 @@ rst_stage="$(tail -1 "$RST/mktemp.log" 2>/dev/null)"
 if [ -z "$rst_stage" ]; then
     bad "restore leak-test setup (#353)" "mktemp was never logged — the wrapper stub isn't wired correctly"
 else
-    assert_rc "restore with a failing tar -xzf exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
+    assert_rc "restore with a failing tar exits nonzero (sanity: the abort really happened)" "$rst_rc" "1"
     assert_eq "restore's EXIT trap removed the staging tempdir after the abort (#353)" "$([ -d "$rst_stage" ] && echo leaked || echo clean)" "clean"
 fi
 
@@ -7071,7 +7069,7 @@ TT="$(mktemp -d "$SANDBOX/tpl.XXXXXX")"
 cp "$TPL" "$TT/config.json"
 out="$( (
     source "$SCRIPT"
-    RIGFORGE_LIB="$TT" RIGFORGE_STATE="$TT"
+    SCRIPT_DIR="$TT"
     CONFIG_JSON="$TT/config.json"
     set +e
     parse_config 2>&1
@@ -7131,7 +7129,7 @@ c="$(mkconf ipv6_nobind "{ $POOL, \"api\": \"enabled\", \"api_allow_from\": \"fd
 w6="$( (
     source "$SCRIPT"
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
 ))"
@@ -7140,7 +7138,7 @@ c="$(mkconf ipv6_bound "{ $POOL, \"api\": \"enabled\", \"api_allow_from\": \"fd0
 w6b="$( (
     source "$SCRIPT"
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
 ))"
@@ -7255,7 +7253,7 @@ run_api_install() {
         source "$SCRIPT"
         _wait_sister_api() { :; }
         OS_TYPE=Linux
-        RIGFORGE_LIB="$APS" RIGFORGE_STATE="$APS"
+        SCRIPT_DIR="$APS"
         SYSTEMD_DIR="$APS/systemd"
         REAL_USER=rfop
         API_MODE="$1"
@@ -7290,7 +7288,7 @@ APS_CALLS="$APS/calls.log"
     source "$SCRIPT"
     _wait_sister_api() { :; }
     OS_TYPE=Linux
-    RIGFORGE_LIB="$APS" RIGFORGE_STATE="$APS"
+    SCRIPT_DIR="$APS"
     SYSTEMD_DIR="$APS/systemd"
     REAL_USER=rfop
     API_MODE=enabled
@@ -7319,7 +7317,7 @@ run_refresh() { # [env pairs...]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$APIQ/config.json"
         RIGFORGE_API_DATA="$APIQ/data"
         eval "${1:-true}"
@@ -7393,7 +7391,7 @@ assert_eq "api-refresh: a broken health block leaves health.json serving the pre
 assert_eq "api-refresh: tune.json still updates despite the health failure (#276)" "$(jq -r '.applied' "$APIQ/data/tune.json")" "true"
 assert_eq "api-refresh: summary.json still updates despite the health failure (#276)" "$(jq -r '.rigforge.xmrig_version' "$APIQ/data/summary.json")" "x"
 source "$ROOT/tests/test-api-refresh-liveness.sh"
-# The dispatch entry is wired (any OS: rc + message prove the verb was reached).
+bash "$ROOT/tests/test-tune-files-regular.sh" "$SCRIPT" >/dev/null 2>&1 && ok "tune feed reads only regular files" || bad "tune feed reads only regular files" "regression failed"
 out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
     assert_contains "black-box api-refresh dispatch runs (Linux)" "$out" ""
@@ -7550,7 +7548,7 @@ c="$(mkconf ctl_keys "{ $POOL, \"control\": \"disabled\", \"control_port\": 8082
 ctl_warns="$( (
     source "$SCRIPT"
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
 ))"
@@ -7572,7 +7570,7 @@ c="$(mkconf cu_known "{ $POOL, \"control_upgrade\": \"disabled\" }")"
 cu_warns="$( (
     source "$SCRIPT"
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     set +e
     PATH="$STUBS:$PATH" parse_config 2>&1 >/dev/null
 ))"
@@ -7587,7 +7585,7 @@ run_control_install() { # <disabled|enabled> [port]
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$CPS" RIGFORGE_STATE="$CPS"
+        SCRIPT_DIR="$CPS"
         SYSTEMD_DIR="$CPS/systemd"
         REAL_USER=rfop
         CONTROL_MODE="$1"
@@ -7672,7 +7670,7 @@ commit_case() { # <config-json> <staged-json> -> "<verb>|don=<d>|pool=<host>|bk=
     out=$( (
         source "$SCRIPT"
         CONFIG_JSON="$d/config.json"
-        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
+        SCRIPT_DIR="$d"
         set +e
         PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
     ) 2>/dev/null)
@@ -7783,7 +7781,7 @@ cfgblk() { # <config-json> -> the rigforge.config JSON
     (
         source "$SCRIPT"
         CONFIG_JSON="$d/config.json"
-        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
+        SCRIPT_DIR="$d"
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
         _api_config_json
@@ -7828,19 +7826,18 @@ assert_eq "config: DONATION + interval carried (#253)" "$(printf '%s' "$blk" | j
 blk2="$(cfgblk '{ "pools":[{"url":"h:3333"}] }')"
 assert_eq "config: max_temp_c null when unset (#253)" "$(printf '%s' "$blk2" | jq -r '.max_temp_c')" "null"
 assert_eq "config: autotune/watchdog default to disabled (#253)" "$(printf '%s' "$blk2" | jq -r '"\(.autotune) \(.watchdog)"')" "disabled disabled"
-# round-trip contract: the config block's keys are EXACTLY the control writable allowlist.
+bash "$ROOT/tests/test-jq-config-input.sh" "$SCRIPT" >/dev/null 2>&1 && ok "config: pool settings and the API token reach jq on a descriptor or the environment" || bad "config: pool settings and the API token reach jq on a descriptor or the environment" "regression failed"
 assert_eq "config: keys == the control writable allowlist, round-trippable (#253)" "$(printf '%s' "$blk2" | jq -r 'keys_unsorted | sort | join(",")')" "DONATION,autotune,max_temp_c,pools,watchdog,watchdog_interval_min"
 
-# #254: config revision + last-change provenance in the feed (rigforge.config_meta).
 echo "== unit: config_meta — revision + last-change provenance (#254) =="
-whash() { # <config-json> -> _writable_config_hash
+whash() {
     local d
     d=$(mktemp -d "$SANDBOX/whash.XXXXXX")
     printf '%s\n' "$1" >"$d/config.json"
     (
         source "$SCRIPT"
         CONFIG_JSON="$d/config.json"
-        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
+        SCRIPT_DIR="$d"
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
         _writable_config_hash
@@ -7853,7 +7850,7 @@ metablk() { # <config-json> [source] [change_id] -> _api_config_meta_json after 
     (
         source "$SCRIPT"
         CONFIG_JSON="$d/config.json"
-        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
+        SCRIPT_DIR="$d"
         CONFIG_META_FILE="$d/meta.json"
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
@@ -7880,7 +7877,7 @@ noopmeta="$(
     (
         source "$SCRIPT"
         CONFIG_JSON="$d/config.json"
-        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
+        SCRIPT_DIR="$d"
         CONFIG_META_FILE="$d/meta.json"
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
@@ -7901,7 +7898,7 @@ rfblk="$(
     (
         source "$SCRIPT"
         CONFIG_JSON="$rfd/config.json" RIGFORGE_APPLIANCE=0
-        RIGFORGE_LIB="$rfd" RIGFORGE_STATE="$rfd"
+        SCRIPT_DIR="$rfd"
         CONFIG_META_FILE="$rfd/meta.json"
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
@@ -7924,7 +7921,7 @@ printf '%s\n' "$CFG_236" >"$missing_d/config.json"
 assert_contains "commit: unreadable staged file rejected" "$( (
     source "$SCRIPT"
     CONFIG_JSON="$missing_d/config.json"
-    RIGFORGE_LIB="$missing_d" RIGFORGE_STATE="$missing_d"
+    SCRIPT_DIR="$missing_d"
     set +e
     PATH="$STUBS:$PATH" _control_commit "$missing_d/nope.json" "$missing_d/bk"
 ) 2>/dev/null)" "rejected"
@@ -7934,7 +7931,7 @@ printf '%s' '{"DONATION":2}' >"$broken_d/s.json"
 assert_contains "commit: unmergeable base config rejected (not committed)" "$( (
     source "$SCRIPT"
     CONFIG_JSON="$broken_d/config.json"
-    RIGFORGE_LIB="$broken_d" RIGFORGE_STATE="$broken_d"
+    SCRIPT_DIR="$broken_d"
     set +e
     PATH="$STUBS:$PATH" _control_commit "$broken_d/s.json" "$broken_d/bk"
 ) 2>/dev/null)" "rejected"
@@ -7945,7 +7942,7 @@ printf '%s' '{"DONATION":9}' >"$recov/s.json"
 (
     source "$SCRIPT"
     CONFIG_JSON="$recov/config.json"
-    RIGFORGE_LIB="$recov" RIGFORGE_STATE="$recov"
+    SCRIPT_DIR="$recov"
     set +e
     PATH="$STUBS:$PATH" _control_commit "$recov/s.json" "$recov/backups" >/dev/null 2>&1
 )
@@ -7961,7 +7958,7 @@ printf '%s' '{"DONATION":6}' >"$modechk/s.json"
 (
     source "$SCRIPT"
     CONFIG_JSON="$modechk/config.json"
-    RIGFORGE_LIB="$modechk" RIGFORGE_STATE="$modechk"
+    SCRIPT_DIR="$modechk"
     set +e
     PATH="$STUBS:$PATH" _control_commit "$modechk/s.json" "$modechk/bk" >/dev/null 2>&1
 )
@@ -7975,7 +7972,7 @@ printf '%s' '{"pools":[{"url":"SECRETMARKER host:3333"}]}' >"$redd/s.json"
 red_out="$( (
     source "$SCRIPT"
     CONFIG_JSON="$redd/config.json"
-    RIGFORGE_LIB="$redd" RIGFORGE_STATE="$redd"
+    SCRIPT_DIR="$redd"
     set +e
     PATH="$STUBS:$PATH" _control_commit "$redd/s.json" "$redd/bk"
 ) 2>/dev/null)"
@@ -8002,7 +7999,7 @@ secret_case() { # <config-json> <staged-json> -> "<verb>|pass=<p>|fp=kept|other|
     out=$( (
         source "$SCRIPT"
         CONFIG_JSON="$d/config.json"
-        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
+        SCRIPT_DIR="$d"
         set +e
         PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups"
     ) 2>/dev/null)
@@ -8016,7 +8013,7 @@ secret_out() { # <config-json> <staged-json> -> the raw _control_commit output (
     d=$(mktemp -d "$SANDBOX/so.XXXXXX")
     printf '%s\n' "$1" >"$d/config.json"
     printf '%s' "$2" >"$d/staged.json"
-    (source "$SCRIPT" && set +e && CONFIG_JSON="$d/config.json" RIGFORGE_LIB="$d" RIGFORGE_STATE="$d" PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups") 2>/dev/null
+    (source "$SCRIPT" && set +e && CONFIG_JSON="$d/config.json" SCRIPT_DIR="$d" PATH="$STUBS:$PATH" _control_commit "$d/staged.json" "$d/backups") 2>/dev/null
 }
 assert_eq "commit: pass OMITTED keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
 assert_eq "commit: pass SENTINEL keeps the stored password (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":{"__secret__":true}}]}')" "committed|pass=STOREDPW|fp=kept|marker=0"
@@ -8076,7 +8073,7 @@ smb_case() { # <staged-file> -> the reject reason
     (
         source "$SCRIPT"
         CONFIG_JSON="$smb/config.json"
-        RIGFORGE_LIB="$smb" RIGFORGE_STATE="$smb"
+        SCRIPT_DIR="$smb"
         set +e
         PATH="$STUBS:$PATH" _control_commit "$1" "$smb/bk"
     ) 2>/dev/null
@@ -8093,7 +8090,7 @@ printf '%s' '{"DONATION":4}' >"$bkfail/s.json"
 bkf_out="$( (
     source "$SCRIPT"
     CONFIG_JSON="$bkfail/config.json"
-    RIGFORGE_LIB="$bkfail" RIGFORGE_STATE="$bkfail"
+    SCRIPT_DIR="$bkfail"
     set +e
     PATH="$STUBS:$PATH" _control_commit "$bkfail/s.json" "$bkfail/backups"
 ) 2>/dev/null)"
@@ -8105,7 +8102,7 @@ cmt_tail() { # <sabotage: none|mv|chmod|sync-pre|sync-post|sync-uncertain> -> "<
     (
         source "$SCRIPT"
         CONFIG_JSON="$mvfail/config.json"
-        RIGFORGE_LIB="$mvfail" RIGFORGE_STATE="$mvfail"
+        SCRIPT_DIR="$mvfail"
         local fail_sync=0 sync_call=0
         case "$1" in sync-pre) fail_sync=1 ;; sync-post) fail_sync=2 ;; sync-uncertain) fail_sync=-2 ;; esac
         _fsync_paths() {
@@ -8214,7 +8211,7 @@ fpa_run() { # <watchdog_interval_min> -> "rc=<n>"; side effects: $FPA/apply-call
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$FPA" RIGFORGE_STATE="$FPA"
+        SCRIPT_DIR="$FPA"
         SYSTEMD_DIR="$FPA/systemd"
         REAL_USER=rfop
         SERVICE_NAME=xmrig
@@ -8255,7 +8252,7 @@ fpa_run_unwritable() { # -> "rc=<n>"; templates still readable, units unwritable
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$FPA" RIGFORGE_STATE="$FPA"
+        SCRIPT_DIR="$FPA"
         SYSTEMD_DIR="$FPA/absent/systemd"
         REAL_USER=rfop
         SERVICE_NAME=xmrig
@@ -8318,7 +8315,7 @@ caf_exec() {
         }
         _wait_miner_live() { return 0; }
         OS_TYPE=Linux
-        RIGFORGE_LIB="$CAF" RIGFORGE_STATE="$CAF"
+        SCRIPT_DIR="$CAF"
         SYSTEMD_DIR="${CAF_SYSTEMD_DIR:-$CAF/systemd}"
         CONFIG_JSON="$CAF/config.json"
         REAL_USER=rfop
@@ -8415,7 +8412,7 @@ cdh_exec() {
             return "${CDH_LIVE_RC:-1}"
         }
         OS_TYPE=Linux
-        RIGFORGE_LIB="$CDH" RIGFORGE_STATE="$CDH"
+        SCRIPT_DIR="$CDH"
         SYSTEMD_DIR="$CDH/systemd"
         CONFIG_JSON="$CDH/config.json"
         REAL_USER=rfop
@@ -8510,7 +8507,7 @@ awd_apply() { # <systemd-dir> -> "rc=<n>"; side effect: $AWD/reached-later-steps
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$AWD" RIGFORGE_STATE="$AWD"
+        SCRIPT_DIR="$AWD"
         SYSTEMD_DIR="$1"
         REAL_USER=rfop
         SERVICE_NAME=xmrig
@@ -8625,7 +8622,7 @@ ca_exec() {
             }
         fi
         OS_TYPE=Linux
-        RIGFORGE_LIB="$CA" RIGFORGE_STATE="$CA"
+        SCRIPT_DIR="$CA"
         CONFIG_JSON="$CA/config.json"
         REAL_USER=rfop
         RIGFORGE_CONTROL_STATE="$CA/state"
@@ -9000,7 +8997,7 @@ else
         source "$SCRIPT"
         OS_TYPE=Linux
         RIGFORGE_CONTROL_STATE="$CSRV2/state"
-        RIGFORGE_LIB="$CSRV2" RIGFORGE_STATE="$CSRV2"
+        SCRIPT_DIR="$CSRV2"
         CONFIG_JSON="$CSRV2/config.json"
         parse_config() { :; }
         _control_commit() { printf 'committed %s' "$CSRV2/backup"; }
@@ -9102,8 +9099,8 @@ assert_contains "record: FORCE records a regression loudly (#214)" "$out" "REGRE
 assert_eq "record: FORCE actually wrote (#214)" "$(jq -r .bench_1m_hs "$PJ/tests/perf-baselines/$host.json")" "9000.0"
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_GATE=1 run_perf)"
 rc=$?
-[ "$rc" -ge 1 ] && ok "judge: regression vs best-ever still fails (#214)" || bad "judge: regression vs best-ever still fails (#214)" "rc=$rc"
-assert_contains "judge: ratchet names best-ever (#214)" "$out" "RATCHET"
+[ "$rc" -ge 1 ] && ok "judge: gate with no history input fails loudly (#214/#793)" || bad "judge: gate with no history input fails loudly (#214/#793)" "rc=$rc"
+assert_contains "judge: the gate names the missing history (#793)" "$out" "no history input"
 rm "$PJ/tests/perf-baselines/$host.json" "$PJ/tests/perf-baselines/$host.history.jsonl"
 out="$(STUB_BENCH_HS=9000.0 E2E_PERF_RECORD=1 run_perf)"
 rc=$?
@@ -9512,7 +9509,7 @@ printf '%s' '{"hashrate":{"total":[1234.5,0,0]},"connection":{"pool":"poolbox.la
 (
     source "$SCRIPT"
     OS_TYPE=Linux RIGFORGE_APPLIANCE=1 RIGFORGE_OS_VERSION_FILE="$FEEDFX/no-os-marker"
-    RIGFORGE_LIB="$FEEDFX" RIGFORGE_STATE="$FEEDFX"
+    SCRIPT_DIR="$FEEDFX"
     CONFIG_JSON="$FEEDFX/config.json"
     CONFIG_META_FILE="$FEEDFX/meta.json"
     RIGFORGE_REVISION_KEY="$FEEDFX/revkey"

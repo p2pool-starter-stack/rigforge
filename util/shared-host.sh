@@ -178,7 +178,7 @@ ProtectKernelModules=true
 RestrictRealtime=true
 OOMPolicy=stop
 Restart=no
-ExecStartPre=+$RIGFORGE_LIB/rigforge.sh shared-host-check
+ExecStartPre=+$(_lib_dir)/rigforge.sh shared-host-check
 EOF
 }
 
@@ -214,10 +214,10 @@ _shared_host_run() {
     printf '%s\0' "${TUNE_POWER_CMD:-}" | sudo systemd-run --quiet --wait --pipe --collect --service-type=exec --slice=rigforge.slice \
         --property=Nice=19 --property=MemoryAccounting=true --working-directory="$PWD" \
         --setenv="RIGFORGE_OPERATOR=$REAL_USER" --setenv="RIGFORGE_APPLIANCE=$RIGFORGE_APPLIANCE" \
-        --setenv="AUTOTUNE_TARGET=${AUTOTUNE_TARGET:-}" \
+        --setenv="AUTOTUNE_TARGET=${AUTOTUNE_TARGET:-}" ${RIGFORGE_STATE:+--setenv="RIGFORGE_STATE=$RIGFORGE_STATE"} ${RIGFORGE_LIB:+--setenv="RIGFORGE_LIB=$RIGFORGE_LIB"} \
         --setenv="AUTOTUNE_SAMPLES=${AUTOTUNE_SAMPLES:-}" --setenv="AUTOTUNE_INTERVAL=${AUTOTUNE_INTERVAL:-}" \
         --setenv="AUTOTUNE_WARMUP=${AUTOTUNE_WARMUP:-}" --setenv="AUTOTUNE_MARGIN=${AUTOTUNE_MARGIN:-}" --setenv="AUTOTUNE_MODES=${AUTOTUNE_MODES:-}" \
-        "$RIGFORGE_LIB/rigforge.sh" shared-host-run "$@"
+        "$(_lib_dir)/rigforge.sh" shared-host-run "$@"
 }
 
 _shared_host_exec() {

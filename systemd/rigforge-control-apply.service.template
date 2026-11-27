@@ -14,7 +14,7 @@ Environment=RIGFORGE_APPLIANCE=$RIGFORGE_APPLIANCE
 RuntimeDirectory=rigforge-control
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
-ExecStart=$RIGFORGE_LIB/rigforge.sh control-apply
+ExecStart=$SCRIPT_DIR/rigforge.sh control-apply
 # #509: systemd's implicit DefaultTimeoutStartSec is 90s, and a full-path change (anything outside
 # CONTROL_FAST_PATH_KEYS — DONATION, pools, autotune, watchdog) spends most of that before it can
 # record anything: restart XMRig, then _apply_pool_check (~15s) and _wait_miner_live

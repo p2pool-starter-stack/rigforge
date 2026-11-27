@@ -23,7 +23,7 @@ hostname() { :; }
 lscpu() { printf 'Model name: Fixture CPU\nFlags: aes avx2\n'; }
 
 OS_TYPE=Linux
-RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+SCRIPT_DIR="$ROOT"
 WORKER_ROOT="$D/worker"
 SYSTEMD_DIR="$D/systemd"
 CONFIG_JSON="$D/config.json"

@@ -43,7 +43,7 @@ set +e
 parse_and_print() {
     (
         CONFIG_JSON="$1"
-        RIGFORGE_LIB="$2" RIGFORGE_STATE="$2"
+        SCRIPT_DIR="$2"
         local var="$3"
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
         printf '%s' "${!var}"
@@ -52,7 +52,7 @@ parse_and_print() {
 parse_rc() {
     (
         CONFIG_JSON="$1"
-        RIGFORGE_LIB="$2" RIGFORGE_STATE="$2"
+        SCRIPT_DIR="$2"
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
     )
 }

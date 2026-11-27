@@ -21,7 +21,7 @@ parse() {
     write_config "$D/input.json" "$1"
     (
         source "$SCRIPT"
-        CONFIG_JSON="$D/input.json" RIGFORGE_LIB=$(dirname "$SCRIPT") RIGFORGE_STATE=$(dirname "$SCRIPT")
+        CONFIG_JSON="$D/input.json" SCRIPT_DIR=$(dirname "$SCRIPT")
         parse_config
     ) 2>&1
 }
@@ -45,7 +45,7 @@ render() {
     mkdir -p "$D/logrotate"
     (
         RIGFORGE_HOME=$(dirname "$SCRIPT") LOGROTATE_DIR="$D/logrotate" source "$SCRIPT"
-        CONFIG_JSON="$D/input.json" RIGFORGE_LIB=$(dirname "$SCRIPT") RIGFORGE_STATE=$(dirname "$SCRIPT") OS_TYPE=Linux LOGROTATE_DIR="$D/logrotate"
+        CONFIG_JSON="$D/input.json" SCRIPT_DIR=$(dirname "$SCRIPT") OS_TYPE=Linux LOGROTATE_DIR="$D/logrotate"
         parse_config >/dev/null
         WORKER_ROOT="$D/worker" CPUINFO="$D/no-cpuinfo"
         mkdir -p "$WORKER_ROOT/xmrig/build"
@@ -191,7 +191,7 @@ fi
 write_config "$D/control.json" "$LEGACY"
 (
     source "$SCRIPT"
-    CONFIG_JSON="$D/control.json" RIGFORGE_LIB=$(dirname "$SCRIPT") RIGFORGE_STATE=$(dirname "$SCRIPT") RIGFORGE_APPLIANCE=0
+    CONFIG_JSON="$D/control.json" SCRIPT_DIR=$(dirname "$SCRIPT") RIGFORGE_APPLIANCE=0
     _fsync_paths() { :; }
     _control_commit "$STAGED" "$D/backups" >/dev/null
 )
@@ -203,7 +203,7 @@ printf '%s' "$BAD_CHANGE" >"$D/bad-change.json"
 before=$(jq -cS . "$D/control.json")
 out=$( (
     source "$SCRIPT"
-    CONFIG_JSON="$D/control.json" RIGFORGE_LIB=$(dirname "$SCRIPT") RIGFORGE_STATE=$(dirname "$SCRIPT") RIGFORGE_APPLIANCE=0
+    CONFIG_JSON="$D/control.json" SCRIPT_DIR=$(dirname "$SCRIPT") RIGFORGE_APPLIANCE=0
     _fsync_paths() { :; }
     _control_commit "$D/bad-change.json" "$D/backups"
 ) 2>&1)

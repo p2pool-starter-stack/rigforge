@@ -1,0 +1,28 @@
+[Unit]
+Description=RigForge control server (writable config endpoint, staged apply)
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=15
+ExecStartPre=+@BIN@/nft -f @OUT@/worker/api-firewall.nft
+ExecStart=/usr/bin/python3 ${CREDENTIALS_DIRECTORY}/server 0.0.0.0 8082 ${STATE_DIRECTORY} ${CREDENTIALS_DIRECTORY}/config
+LoadCredential=config:@LIB@/config.json
+LoadCredential=server:@LIB@/util/control-server.py
+Environment=RIGFORGE_API_PORT=8081
+Environment=RIGFORGE_APPLIANCE=0
+Restart=always
+RestartSec=5
+DynamicUser=yes
+StateDirectory=rigforge-control
+Nice=19
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

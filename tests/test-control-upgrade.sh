@@ -12,7 +12,7 @@ cu_run() { # <staged-json|""> <installed-version> <do:ok|fail|down|buildfail|har
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        RIGFORGE_LIB="$d" RIGFORGE_STATE="$d"
+        SCRIPT_DIR="$d"
         CONFIG_JSON="$d/config.json"
         RIGFORGE_CONTROL_STATE="$d/state"
         RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state"
@@ -83,7 +83,7 @@ ln -s "$dsl/evil.json" "$dsl/state/spool/upgrade-abc123def4567890.json"
 sl="$(
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$dsl" RIGFORGE_STATE="$dsl"
+    SCRIPT_DIR="$dsl"
     CONFIG_JSON="$dsl/config.json"
     RIGFORGE_CONTROL_STATE="$dsl/state"
     CONTROL_UPGRADE_MIN_INTERVAL=0
@@ -174,7 +174,7 @@ EOF
 _run_udo() { (
     source "$SCRIPT"
     set +e # sourcing enables -e; a non-zero _control_upgrade_do must not abort before we echo $?
-    RIGFORGE_LIB="$udoDir" RIGFORGE_STATE="$udoDir"
+    SCRIPT_DIR="$udoDir"
     PATH="$udoDir/bin:$PATH" _control_upgrade_do "v9.9.9" >/dev/null 2>&1
     echo $?
 ); }
@@ -202,7 +202,7 @@ chmod 600 "$cuThr/upgrade-state/upgrade-last"
 sThr="$(
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$cuThr" RIGFORGE_STATE="$cuThr"
+    SCRIPT_DIR="$cuThr"
     CONFIG_JSON="$cuThr/config.json"
     RIGFORGE_CONTROL_STATE="$cuThr/state"
     RIGFORGE_CONTROL_UPGRADE_STATE="$cuThr/upgrade-state"
@@ -227,7 +227,7 @@ ln -s "$cuTs/no-such-dir/lock" "$cuTs/upgrade-state/.upgrade-throttle.lock"
 sTs="$(
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$cuTs" RIGFORGE_STATE="$cuTs"
+    SCRIPT_DIR="$cuTs"
     CONFIG_JSON="$cuTs/config.json"
     RIGFORGE_CONTROL_STATE="$cuTs/state"
     RIGFORGE_CONTROL_UPGRADE_STATE="$cuTs/upgrade-state"
@@ -251,7 +251,7 @@ printf '{"version":"v9.9.9"}\n' >"$cuSt/state/spool/upgrade-abc123def4567890.jso
 (
     source "$SCRIPT"
     OS_TYPE=Linux
-    RIGFORGE_LIB="$cuSt" RIGFORGE_STATE="$cuSt"
+    SCRIPT_DIR="$cuSt"
     CONFIG_JSON="$cuSt/config.json"
     RIGFORGE_CONTROL_STATE="$cuSt/state"
     RIGFORGE_CONTROL_UPGRADE_STATE="$cuSt/upgrade-state"
@@ -272,12 +272,8 @@ assert_eq "started record indexed under changes/<cid> too (#320)" \
     "$([ -f "$cuSt/state/changes/abc123def4567890.json" ] && echo y || echo n)" "y"
 assert_eq "terminal record supersedes started" "$(st "$(cat "$cuSt/state/status.json" 2>/dev/null)")" "applied"
 
-# #308: the control-upgrade oneshot runs as root with NO $HOME, so git can't read root's safe.directory
-# config and fatals on "dubious ownership" of the operator-owned install — every git op then fails and
-# the upgrade silently dies (a real miner-0 finding; the stubbed suite can't reach it since it stubs
-# git). Every `git -C "$SCRIPT_DIR"` in the upgrade path MUST pin -c safe.directory. Drift-guard it.
 echo "== unit: control-upgrade git calls pin safe.directory (#308) =="
-bare_rf_git=$(grep -nE 'git -C "\$SCRIPT_DIR"' "$SCRIPT" | grep -v 'safe.directory' || true)
+bare_rf_git=$(grep -nE 'git -C "\$(SCRIPT_DIR|\(_lib_dir\))"' "$SCRIPT" | grep -v 'safe.directory' || true)
 assert_eq "no control git call omits -c safe.directory (root oneshot has no HOME)" "$bare_rf_git" ""
 
 echo "== unit: _control_upgrade_do reowns what the upgrade creates to the checkout owner (#798) =="
@@ -302,7 +298,7 @@ _reown_run() {
             stat() { echo "$want"; }
             chown() { echo "$2 ${*:3}" >>"$rw_dir/chown.log"; }
             _control_upgrade_steps() { mkdir -p "$rw_dir/tools$rw_n" && touch "$rw_dir/tools$rw_n/new.sh" && { [ -z "$rw_fix" ] || command chown -R "$rw_uid:$rw_gid" "$rw_dir/tools$rw_n"; } && return "$rw_r"; }
-            RIGFORGE_LIB="$rw_dir" RIGFORGE_STATE="$rw_dir"
+            SCRIPT_DIR="$rw_dir"
             _control_upgrade_do v9.9.9
             echo "rc=$?"
         )"$'\n'
@@ -356,7 +352,7 @@ else
     elif PATH="$rg_path" sudo -n true 2>/dev/null; then
         rg_sudo=(sudo -n env "PATH=$rg_path" "RIGFORGE_CONTROL_UPGRADE_STATE=$rg_d")
     fi
-    rg_rc=$(PATH="$rg_path" ${rg_sudo[@]+"${rg_sudo[@]}"} bash -c 'source "$1"; set +e; RIGFORGE_LIB="$2" RIGFORGE_STATE="$2" CONFIG_JSON="$3"; _root_guard_check() { :; }; _control_upgrade_do v9.9.9 >/dev/null 2>&1; echo $?' _ "$SCRIPT" "$rg_d/co" "$rg_d/none.json")
+    rg_rc=$(PATH="$rg_path" ${rg_sudo[@]+"${rg_sudo[@]}"} bash -c 'source "$1"; set +e; SCRIPT_DIR="$2" CONFIG_JSON="$3"; _root_guard_check() { :; }; _control_upgrade_do v9.9.9 >/dev/null 2>&1; echo $?' _ "$SCRIPT" "$rg_d/co" "$rg_d/none.json")
     assert_eq "real-git upgrade to a tag that adds a directory succeeds ($([ "${#rg_sudo[@]}" -gt 0 ] || [ "$(id -u)" -eq 0 ] && echo as root || echo as the owner))" "$rg_rc" "0"
     assert_eq "the new directory is owned by the checkout owner" "$(stat -c '%u:%g' "$rg_d/co/tools/sub" 2>/dev/null || stat -f '%u:%g' "$rg_d/co/tools/sub")" "$rg_owner"
     assert_eq "nothing outside data/, .git included, has another owner" \
@@ -382,7 +378,7 @@ STUB
     case "$1" in pending) : >"$d/upgrade-state/upgrade-pending" ;; owner) printf 'orig' >"$d/upgrade-state/upgrade-pending" ;; link) ln -s "$d/target" "$d/upgrade-state/upgrade-pending" ;; rollback_ok) echo 1 >"$d/upgrade-fail" ;; rollback_fail) echo 9 >"$d/upgrade-fail" ;; esac
     (
         source "$SCRIPT"
-        OS_TYPE=Linux RIGFORGE_LIB="$d" RIGFORGE_STATE="$d" CONFIG_JSON="$d/config.json" RIGFORGE_CONTROL_STATE="$d/state" RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state" CONTROL_UPGRADE_MIN_INTERVAL=0 MODE="$1"
+        OS_TYPE=Linux SCRIPT_DIR="$d" CONFIG_JSON="$d/config.json" RIGFORGE_CONTROL_STATE="$d/state" RIGFORGE_CONTROL_UPGRADE_STATE="$d/upgrade-state" CONTROL_UPGRADE_MIN_INTERVAL=0 MODE="$1"
         _wait_miner_live() { return 0; }
         _root_guard_check() { [ "$MODE" != guard ]; }
         stat() { case "$MODE:$*" in owner:*upgrade-pending*) echo 1000:1000:600:1 ;; *) command stat "$@" ;; esac }

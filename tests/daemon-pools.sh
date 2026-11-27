@@ -23,7 +23,7 @@ daemon_conf() {
 daemon_parse() {
     (
         CONFIG_JSON="$1"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         set +e
         if [ "$#" -gt 1 ]; then
             PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1 || exit $?
@@ -162,7 +162,7 @@ all_daemon_fields='{"daemon":true,"daemon-poll-interval":1,"daemon-job-timeout":
 daemon_render() { # <config> <dir>
     (
         CONFIG_JSON="$1"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         set +e
         PATH="$STUBS:$PATH" parse_config >/dev/null 2>&1
         OS_TYPE=Linux
@@ -207,7 +207,7 @@ daemon_apply_dir=$(mktemp -d "$SANDBOX/daemon-apply.XXXXXX")
 mkdir -p "$daemon_apply_dir/xmrig/build" "$daemon_apply_dir/systemd"
 (
     CONFIG_JSON="$c"
-    RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+    SCRIPT_DIR="$ROOT"
     WORKER_ROOT="$daemon_apply_dir"
     SYSTEMD_DIR="$daemon_apply_dir/systemd"
     LOGROTATE_DIR="$daemon_apply_dir/logrotate"
@@ -228,7 +228,7 @@ jq -cn --arg pool "daemon+http://$daemon_target" '{connection:{pool:$pool,uptime
 daemon_pool_status() { # <healthy|syncing|down|slow|malformed|rpc-error> <config> [summary]
     (
         CONFIG_JSON="$2"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         API_CMD="cat '${3:-$daemon_summary}'"
         DAEMON_CURL_CASE="$1"
         curl() {
@@ -299,7 +299,7 @@ assert_eq "disabled daemon failover does not override active Stratum (#528)" "${
 daemon_doctor() { # <healthy|syncing|down|slow|malformed>
     (
         OS_TYPE=Linux
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_JSON="$c"
         MEMINFO="$DOC/meminfo_ok"
         MSR_MODULE_DIR="$DOC/msrmod"
@@ -344,7 +344,7 @@ assert_contains "stopped-miner doctor flags an unreachable node (#528)" "$(DAEMO
 daemon_apply_check() {
     (
         CONFIG_JSON="$c"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         OS_TYPE=Linux
         API_CMD="cat '$daemon_summary'"
         systemctl() { return 0; }
@@ -370,7 +370,7 @@ daemon_feed() { # <config> <output-dir>
     mkdir -p "$output"
     (
         CONFIG_JSON="$config"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         CONFIG_META_FILE="$output/meta.json"
         RIGFORGE_API_DATA="$output"
         RIGFORGE_CONTROL_STATE="$output/control"

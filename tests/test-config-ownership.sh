@@ -67,7 +67,7 @@ run_setup() {
         export TEST_ACTION_RC="$action_rc"
         source "$SCRIPT"
 
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         ROOT_GUARD_STAMP="$case_dir/root-guard"
         WORKER_ROOT="$case_dir/worker"
         SYSTEMD_DIR="$case_dir/systemd"

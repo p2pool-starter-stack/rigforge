@@ -107,22 +107,6 @@ The service verbs (`status`/`logs`/`start`/`stop`/`restart`/`enable`/`disable`) 
 and macOS: systemd on Linux, a launchd login agent on macOS (`enable`/`disable`). `doctor`,
 `tune --live`, and `autotune` are Linux-only. See [Running on macOS](#running-on-macos).
 
-### Directory layout
-
-RigForge resolves two directories at startup:
-
-- `RIGFORGE_LIB` — the code directory: `rigforge.sh`, `VERSION`, `util/`, `systemd/`. It is read at
-  runtime and never written, so a packaged install can keep it root-owned or read-only.
-- `RIGFORGE_STATE` — the writable state directory: `config.json`, `backups/`, support bundles, the
-  worker build tree at `data/worker`, and the tuning/revision stamps.
-
-Both default to the directory containing `rigforge.sh`, so a source checkout keeps today's single-directory
-layout and an unset-environment run is unchanged; the legacy `RIGFORGE_HOME` override still redirects
-both. Set the pair when the code is shipped apart from the data, as the brew package does
-(`RIGFORGE_LIB` = the installed tree, `RIGFORGE_STATE` = `$(brew --prefix)/var/rigforge`). `setup` renders
-the systemd units with the split baked in: `ExecStart` and the util scripts the units load come from the
-lib directory, and `config.json` is loaded from the state directory.
-
 ### Health check
 
 After setup (and the reboot), confirm everything took effect:
@@ -629,6 +613,17 @@ failed by it. Retry with the one command `sudo rigforge upgrade`; a successful r
 marker. To defer upgrades, `sudo apt-mark hold rigforge` (undo with `apt-mark unhold rigforge`).
 
 ---
+
+## Where files live
+
+RigForge reads code from one directory and writes state to another. Both default to the directory holding `rigforge.sh`, so a git clone keeps everything in one tree and nothing changes unless you set a variable.
+
+| Variable | Default | Holds |
+|---|---|---|
+| `RIGFORGE_LIB` | the directory of `rigforge.sh` | `rigforge.sh`, `util/` scripts, `systemd/` unit templates, `VERSION`, `RIGFORGE_REF`, the `.rigforge-package` marker. Never written by a worker command, so it can be root-owned and read-only. |
+| `RIGFORGE_STATE` | the same directory (`RIGFORGE_HOME` when set) | `config.json`, the `.rigforge-*` markers and sidecars (appliance marker, config provenance, revision key), `config-backups/`, `backups/`, support tarballs and the default worker root `data/worker`. |
+
+`RIGFORGE_HOME` is the older sandbox override: it sets the state directory and the template, `VERSION` and `proposed-grub.sh` lookups, while the `util/` scripts still come from the directory of `rigforge.sh`. Set `RIGFORGE_LIB` and `RIGFORGE_STATE` instead; each wins over it. Rendered units take `ExecStart` and the server script from the lib directory and the `config.json` credential from the state directory. When either variable is set, the miner unit and the scheduled verb units (autotune, watchdog, api-refresh, control-apply, control-upgrade) and the shared-host runner carry it in their environment. Both values must be clean absolute paths (letters, digits, `.`, `_`, `-`, `/`), and as root `RIGFORGE_LIB` must be owned by root and not group- or world-writable; otherwise `rigforge.sh` refuses to start. The `upgrade` verb updates a git checkout in place, so it still needs a writable checkout.
 
 ## Backup & restore
 

@@ -35,7 +35,7 @@ edit() {
         export PATH="$TMP/bin:$PATH" CPUINFO="$TMP/cpuinfo-2m"
         export HUGEPAGES_1G_NR="$TMP/nr-1g-zero" NODE_SYS="$TMP/node"
         source "$ROOT/rigforge.sh"
-        RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+        SCRIPT_DIR="$ROOT"
         GRUB_DEFAULT="$TMP/grub"
         WORKER_ROOT="$TMP"
         MODULES_LOAD_DIR="$TMP/absent"

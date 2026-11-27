@@ -183,7 +183,7 @@ X
     assert_eq "appliance: API refresh timer in /run (#99)" "$([ -f /run/systemd/system/rigforge-api-refresh.timer ] && echo y || echo n)" "y"
     assert_eq "appliance: no rigforge/xmrig unit anywhere under /etc/systemd/system" "$(find /etc/systemd/system \( -name '*.service' -o -name '*.timer' -o -name '*.path' \) 2>/dev/null | grep -c 'xmrig\|rigforge')" "0"
     assert_contains "appliance: unit rendered by real envsubst" "$(cat /run/systemd/system/xmrig.service 2>/dev/null)" "ReadWritePaths=$WORK/data-home/worker"
-    assert_absent "appliance: server unit fully rendered (no unexpanded vars)" "$(cat /run/systemd/system/rigforge-api.service 2>/dev/null)" '$RIGFORGE_'
+    assert_absent "appliance: server unit fully rendered (no unexpanded vars)" "$(cat /run/systemd/system/rigforge-api.service 2>/dev/null)" '$SCRIPT_DIR'
     # Never installs packages: the toolchain reads baked (stub cc + git/cmake/make on PATH).
     assert_contains "appliance: deps declared baked, no install" "$aout" "dependencies are baked into the image"
     assert_absent "appliance: apt-get never invoked" "$acalls" "[apt-get]"
@@ -264,7 +264,7 @@ assert_eq "deploy: api-firewall.nft rendered" "$([ -n "$FW_NFT" ] && echo y || e
 assert_contains "deploy: firewall scopes to the configured source" "$(cat "$FW_NFT" 2>/dev/null)" "ip saddr 10.20.30.40 accept"
 assert_contains "deploy: firewall covers both API ports (api enabled)" "$(cat "$FW_NFT" 2>/dev/null)" "8080, 8081"
 assert_contains "deploy: xmrig unit re-applies the firewall on boot" "$(cat /etc/systemd/system/xmrig.service 2>/dev/null)" "api-firewall.nft"
-assert_absent "deploy: server unit fully rendered (no unexpanded vars)" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" '$RIGFORGE_'
+assert_absent "deploy: server unit fully rendered (no unexpanded vars)" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" '$SCRIPT_DIR'
 assert_eq "in-script default: opencl off" "$(jq -r '.opencl' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "in-script default: cuda off" "$(jq -r '.cuda' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "no bundled template shipped" "$([ -e "$WORK/worker-config" ] && echo present || echo gone)" "gone"
@@ -397,4 +397,4 @@ assert_eq "uninstall: removed the 'rigforge' command from PATH" "$([ -L /usr/loc
 ./rigforge.sh uninstall --yes </dev/null >/dev/null 2>&1
 assert_rc "uninstall is idempotent" "$?" "0"
 
-summarize
+source "$WORK/tests/e2e/split-dirs.sh"

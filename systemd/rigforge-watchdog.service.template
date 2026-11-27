@@ -9,4 +9,4 @@ Type=oneshot
 Environment=RIGFORGE_OPERATOR=$RIGFORGE_OPERATOR
 # No max_temp_c or ACCESS_TOKEN baked in: the verb re-reads config.json every run, so a config edit
 # followed by `apply` needs no unit rewrite — and no token ever lands in a unit file.
-ExecStart=$RIGFORGE_LIB/rigforge.sh watchdog
+ExecStart=$SCRIPT_DIR/rigforge.sh watchdog

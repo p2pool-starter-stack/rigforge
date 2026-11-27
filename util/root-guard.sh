@@ -82,8 +82,8 @@ _rg_record() {
 _root_guard_check() {
     [ "$OS_TYPE" = Linux ] || return 0
     local reason dir fix
-    reason=$(_rg_tree_unsafe "$RIGFORGE_LIB") || return 0
-    dir=$(cd -P "$RIGFORGE_LIB" 2>/dev/null && pwd -P) || dir="$RIGFORGE_LIB"
+    reason=$(_rg_tree_unsafe "$SCRIPT_DIR") || return 0
+    dir=$(cd -P "$SCRIPT_DIR" 2>/dev/null && pwd -P) || dir="$SCRIPT_DIR"
     fix="make the tree root-owned (sudo chown -R root:root $dir && sudo chmod -R go-w $dir)"
     if [ "${1:-}" = 1 ]; then
         warn "root-guard: $reason, so a non-root user can change code that root runs; continuing because --no-root-guard was given. To close this, $fix."

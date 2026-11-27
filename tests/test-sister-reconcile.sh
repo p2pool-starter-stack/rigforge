@@ -9,7 +9,7 @@ source "$SCRIPT"
 eval "$(declare -f _apply_runtime | sed 's/^_apply_runtime/_real_apply_runtime/')"
 OS_TYPE=Linux
 SYSTEMD_DIR="$TEST_DIR/systemd"
-RIGFORGE_LIB="$ROOT" RIGFORGE_STATE="$ROOT"
+SCRIPT_DIR="$ROOT"
 API_BIND=0.0.0.0
 API_PORT=8081
 API_MODE=enabled
