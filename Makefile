@@ -1,4 +1,4 @@
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci check rust-check rust-fmt rust-clippy rust-test rust-deny rust-musl rust-msrv
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci check rust-check rust-fmt rust-clippy rust-test rust-deny rust-musl rust-version rust-msrv
 
 MUSL_TARGET ?= x86_64-unknown-linux-musl
 
@@ -36,6 +36,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-revision-key.sh
 	bash tests/test-homebrew-formula.sh
 	bash tests/manifest-selftest.sh
+	bash tests/test-release-bundle.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
@@ -122,12 +123,20 @@ rust-deny: ## cargo deny check (advisories, licenses, bans, sources) from deny.t
 	@command -v cargo-deny >/dev/null 2>&1 || { echo "cargo-deny is not installed (see rust.yml for the pinned version)" >&2; exit 1; }
 	cargo deny check advisories licenses bans sources
 
-rust-musl: ## --locked release build for MUSL_TARGET (default x86_64) and assert the binary is statically linked
+rust-musl: ## --locked release build for MUSL_TARGET (default x86_64) and assert the binary is statically linked and stripped
 	cargo build --release --locked --target $(MUSL_TARGET) -p rigforge-rs
 	@command -v readelf >/dev/null 2>&1 || { echo "readelf is not installed (binutils)" >&2; exit 1; }
 	@bin=target/$(MUSL_TARGET)/release/rigforge-rs; readelf -h "$$bin" >/dev/null || exit 1; \
 	if readelf -lW "$$bin" | grep -q INTERP || readelf -dW "$$bin" | grep -q NEEDED; then echo "$$bin is not statically linked" >&2; exit 1; fi; \
-	echo "$$bin is statically linked"
+	if readelf -SW "$$bin" | grep -q '\.symtab'; then echo "$$bin is not stripped" >&2; exit 1; fi; \
+	echo "$$bin is statically linked and stripped"
+
+rust-version: ## assert the musl binary for MUSL_TARGET (default x86_64) reports the repository VERSION
+	@bin=target/$(MUSL_TARGET)/release/rigforge-rs; want="rigforge-rs $$(tr -d '[:space:]' <VERSION)"; \
+	if [ ! -x "$$bin" ]; then echo "$$bin missing; run make rust-musl first" >&2; exit 1; fi; \
+	got="$$($$bin --version)"; \
+	if [ "$$got" != "$$want" ]; then echo "$$bin reports '$$got'; expected '$$want'" >&2; exit 1; fi; \
+	echo "$$bin reports $$got"
 
 rust-msrv: ## rust-version in Cargo.toml must equal the pinned toolchain's major.minor, and the workspace must build with it
 	@want=$$(sed -n 's/^rust-version = "\(.*\)"$$/\1/p' Cargo.toml); have=$$(sed -n 's/^channel = "\([0-9]*\.[0-9]*\)\.[0-9]*"$$/\1/p' rust-toolchain.toml); \
