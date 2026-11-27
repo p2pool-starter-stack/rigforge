@@ -120,3 +120,20 @@ jobs:
             printf '## Possible solutions\n\nBump the flagged action pin or fix the flagged workflow line.\n'
           } >"$RUNNER_TEMP/body.md"
           bash scripts/file-security-issue.sh open "$title" "$RUNNER_TEMP/body.md" security-baseline
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # zizmor: artipacked
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          vulnerability-check: true
+          license-check: false
+          comment-summary-in-pr: never

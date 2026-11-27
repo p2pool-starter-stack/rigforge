@@ -18,5 +18,12 @@ grep -q 'security-events: write' "$wf" || fail "analyze job needs security-event
 if grep -E 'uses: github/codeql-action/' "$wf" | grep -vqE '@[0-9a-f]{40} '; then
     fail "codeql-action must be pinned to a full commit SHA"
 fi
+grep -q 'queries: security-extended' "$wf" || fail "CodeQL must run the security-extended suite"
+sec=.github/workflows/security.yml
+grep -q '^    name: Dependency review$' "$sec" || fail "security.yml needs a Dependency review job"
+grep -q "if: github.event_name == 'pull_request'" "$sec" || fail "Dependency review must run on pull requests only"
+grep -q 'fail-on-severity: high' "$sec" || fail "Dependency review must fail on high severity"
+grep -qE 'uses: actions/dependency-review-action@[0-9a-f]{40} ' "$sec" || fail "dependency-review-action must be pinned to a full commit SHA"
+grep -q 'Dependency review' SECURITY.md || fail "SECURITY.md must describe the Dependency review gate"
 grep -q 'CodeQL' SECURITY.md || fail "SECURITY.md must record the CodeQL coverage and the shell gap"
 printf 'ok: codeql workflow\n'

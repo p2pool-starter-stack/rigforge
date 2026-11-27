@@ -29,6 +29,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          queries: security-extended
       - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: /language:${{ matrix.language }}
