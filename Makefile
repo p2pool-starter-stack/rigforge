@@ -1,4 +1,4 @@
-.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci check rust-check rust-fmt rust-clippy rust-test rust-deny rust-musl rust-version rust-msrv
+.PHONY: help test test-suite test-e2e test-e2e-macos smoke coverage e2e-real e2e-pithead e2e-docs-replay lint lint-topology lint-file-budget lint-env-docs fmt lint-yaml lint-md lint-links lint-all lint-actions dev-setup ci check rust-check rust-goldens rust-mutants rust-fmt rust-clippy rust-test rust-deny rust-musl rust-version rust-msrv
 
 MUSL_TARGET ?= x86_64-unknown-linux-musl
 
@@ -108,6 +108,12 @@ check: lint-all test-suite ## Everything: lint-all, the suite, and the Rust gate
 	@if command -v cargo >/dev/null 2>&1; then $(MAKE) rust-check; else echo "cargo unavailable — skipped the Rust gates (CI runs them)"; fi
 
 rust-check: rust-fmt rust-clippy rust-test rust-deny rust-musl rust-msrv ## Every Rust gate (needs the pinned toolchain from rust-toolchain.toml and cargo-deny)
+
+rust-goldens: ## regenerate the jq 1.7.1 goldens and fail on any difference (needs jq 1.7.1; loud skip otherwise)
+	@if [ "$$(jq --version 2>/dev/null)" = jq-1.7.1 ]; then bash scripts/make-goldens.sh jq && git diff --exit-code -- crates/rigforge-core/tests/golden && test -z "$$(git ls-files --others --exclude-standard crates/rigforge-core/tests/golden)"; else echo "jq 1.7.1 unavailable — skipped the golden regeneration check (CI runs it)"; fi
+
+rust-mutants: ## apply every row of tests/rust/mutants.tsv to a scratch copy and require a red run (slow; needs cargo)
+	@if command -v cargo >/dev/null 2>&1; then bash scripts/rust-mutants.sh tests/rust/mutants.tsv; else echo "cargo unavailable — skipped the mutation check"; fi
 
 rust-fmt: ## cargo fmt --all -- --check
 	cargo fmt --all -- --check
