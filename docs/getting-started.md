@@ -51,6 +51,18 @@ so run `rigforge backup` before and `rigforge restore` after. Brew cannot do the
 HugePages, MSR): on Linux, that is `rigforge setup`'s job, and Linuxbrew's user-owned prefix is not a
 safe place for code that root-run units execute, so prefer the git route below on a Linux rig.
 
+### Install with apt (Debian / Ubuntu on Linux)
+
+The apt steps (signing key, source entry, `apt install rigforge`) are in the
+[README](../README.md), under **Prefer `apt`?**. Installing changes nothing on the host: the package puts the
+release bundle in `/usr/lib/rigforge` (without the developer notes under `docs/dev`), links `/usr/bin/rigforge` to it and adds the one-shot upgrade unit.
+Provision with `sudo rigforge setup`. Until `RIGFORGE_STATE` lands (#780), `setup` keeps
+`config.json` and the XMRig build inside `/usr/lib/rigforge`; `apt upgrade` and `apt remove` keep
+them, and `apt purge` deletes them with `/var/lib/rigforge`. For the same reason the
+[queued upgrade](operations.md#upgrading-through-apt), which looks for `/etc/rigforge/config.json`,
+does not start yet: run `sudo rigforge upgrade` after `apt upgrade rigforge`. Neither remove nor purge reverts
+system tuning; that is `rigforge uninstall`.
+
 ---
 
 ## 2. Get the code

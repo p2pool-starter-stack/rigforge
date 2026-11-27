@@ -35,9 +35,11 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
 	bash tests/test-homebrew-formula.sh
+	bash tests/test-build-deb.sh
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
+	bash tests/test-deb-install.sh
 
 e2e-docs-replay: ## Replay documented setup and two reboots in an explicitly supplied disposable KVM guest
 	python3 tests/docs_replay.py

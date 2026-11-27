@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+ROOT=${RIGFORGE_PKG_ROOT:-}
+UNITS="xmrig.service rigforge-upgrade.service rigforge-autotune.timer rigforge-autotune.service rigforge-watchdog.timer rigforge-watchdog.service rigforge-api.service rigforge-api-refresh.timer rigforge-api-refresh.service rigforge-control.service rigforge-control-apply.path rigforge-control-apply.service rigforge-control-upgrade.path rigforge-control-upgrade.service"
+
+case "$1" in
+remove | deconfigure)
+    if [ -d "$ROOT/run/systemd/system" ]; then
+        for unit in $UNITS; do
+            systemctl cat "$unit" >/dev/null 2>&1 || continue
+            systemctl disable --now "$unit"
+        done
+    fi
+    ;;
+esac
+
+exit 0

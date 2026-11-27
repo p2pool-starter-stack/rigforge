@@ -1,0 +1,12 @@
+Package: rigforge
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: all
+Depends: bash, jq, curl, nftables, git, build-essential, cmake, libuv1-dev, libssl-dev, libhwloc-dev, gettext-base, python3, msr-tools, linux-tools-common | linux-cpupower
+Maintainer: RigForge maintainers <maintainers@rigforge.invalid>
+Homepage: https://github.com/p2pool-starter-stack/rigforge
+Description: Provision and run a tuned XMRig worker for RandomX mining
+ RigForge provisions and runs an XMRig worker for a Pithead coordinator,
+ any RandomX Stratum pool, or a solo daemon pool. Installing changes
+ nothing on the host; run "sudo rigforge setup" to provision.

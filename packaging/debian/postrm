@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+
+ROOT=${RIGFORGE_PKG_ROOT:-}
+UNITS="xmrig.service rigforge-upgrade.service rigforge-autotune.timer rigforge-autotune.service rigforge-watchdog.timer rigforge-watchdog.service rigforge-api.service rigforge-api-refresh.timer rigforge-api-refresh.service rigforge-control.service rigforge-control-apply.path rigforge-control-apply.service rigforge-control-upgrade.path rigforge-control-upgrade.service"
+
+case "$1" in
+purge)
+    for unit in $UNITS; do
+        f="$ROOT/etc/systemd/system/$unit"
+        if [ -f "$f" ] && grep -qs /usr/lib/rigforge "$f"; then rm -f "$f"; fi
+    done
+    rm -rf "$ROOT/etc/rigforge" "$ROOT/var/lib/rigforge" "$ROOT/usr/lib/rigforge"
+    if [ -d "$ROOT/run/systemd/system" ]; then systemctl daemon-reload || true; fi
+    ;;
+remove)
+    if [ -d "$ROOT/run/systemd/system" ]; then systemctl daemon-reload || true; fi
+    ;;
+esac
+
+exit 0

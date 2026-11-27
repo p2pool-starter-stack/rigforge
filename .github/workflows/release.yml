@@ -59,6 +59,13 @@ jobs:
           echo "--- SHA256SUMS ---"; cat SHA256SUMS
           bash scripts/build-homebrew-formula.sh "$TAG" SHA256SUMS rigforge.rb "$stage.tar.gz"
 
+      - name: Build the .deb package
+        run: |
+          set -euo pipefail
+          deb=$(SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) bash scripts/build-deb.sh "rigforge-$TAG.tar.gz" "$TAG")
+          sha256sum "$deb" >> SHA256SUMS
+          echo "--- SHA256SUMS (with .deb) ---"; cat SHA256SUMS
+
       - name: Extract release notes from CHANGELOG.md
         run: |
           set -euo pipefail
@@ -86,7 +93,7 @@ jobs:
           # go back to publishing automatically on tag push.
           # Checksums only, by decision (2026-07-11): release signing was removed — see
           # SECURITY.md > Release integrity. SHA256SUMS proves the bundle matches what CI built.
-          assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" SHA256SUMS rigforge.rb)
+          assets=("rigforge-$TAG.zip" "rigforge-$TAG.tar.gz" "rigforge_${TAG#v}_all.deb" SHA256SUMS rigforge.rb)
           gh release create "$TAG" $pre --draft \
             --title "RigForge $TAG" \
             --notes-file RELEASE_NOTES.md \
