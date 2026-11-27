@@ -29,7 +29,8 @@ prepare)
     tip=$(git ls-remote "$ORIGIN_URL" "refs/heads/${branch}")
     if [ -n "$tip" ]; then
         git fetch --depth 1 "$ORIGIN_URL" "$branch"
-        if git diff --name-only HEAD FETCH_HEAD | grep -qvx rigforge.sh; then
+        changed=$(git diff --name-only HEAD FETCH_HEAD)
+        if printf '%s\n' "$changed" | grep -qvx -e rigforge.sh -e ''; then
             echo "branch ${branch} carries changes beyond rigforge.sh; refusing to build on it" >&2
             exit 1
         fi
