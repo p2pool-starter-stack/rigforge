@@ -29,9 +29,10 @@ check 2 "linux.sh rejects extra arguments" env PATH="$BIN" "$BIN/bash" "$ROOT/te
 GATE_LINE="$(grep -F 'scripts/require-success.sh' "$ROOT/.github/workflows/ci.yml")"
 for id in deploy appliance isolation allowlist; do
     check 0 "ci.yml gates the $id step" grep -qE "^ +id: $id\$" "$ROOT/.github/workflows/ci.yml"
-    check 0 "ci.yml passes the $id outcome to the gate" grep -qF "steps.$id.outcome" "$ROOT/.github/workflows/ci.yml"
+    var="$(printf '%s' "$id" | tr '[:lower:]' '[:upper:]')"
+    check 0 "ci.yml maps $var to the $id outcome" grep -qE "^ +$var: \\$\\{\\{ steps\\.$id\\.outcome \\}\\}\$" "$ROOT/.github/workflows/ci.yml"
     case "$GATE_LINE" in
-    *"\"$id=\$"*) echo "PASS: gate line lists $id" ;;
+    *"\"$id=\$$var\""*) echo "PASS: gate line lists $id" ;;
     *)
         echo "FAIL: gate line lists $id"
         FAIL=1
