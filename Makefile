@@ -36,6 +36,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-worker-proof.sh
 	bash tests/test-coverage-cache.sh
 	bash tests/test-revision-key.sh
+	bash tests/test-state-lib.sh
 	bash tests/test-homebrew-formula.sh
 	bash tests/test-e2e-gate.sh
 	bash tests/test-release-bundle.sh
