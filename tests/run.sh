@@ -514,7 +514,7 @@ for u in '-bad:3333' '.bad:3333' 'ba d:3333' 'a;b:3333' 'a/b:3333' 'http://h:333
     parse_rc "$c" "$ROOT"
     assert_rc "invalid host '$u' rejected" "$?" "1"
 done
-# Valid hostname / IPv4 / bracketed-IPv6 accepted.
+bash "$ROOT/tests/test-host-port-message.sh" "$SCRIPT" >/dev/null 2>&1 && ok "a host:port with a user name or password is refused without printing it" || bad "a host:port with a user name or password is refused without printing it" "regression failed"
 for u in 'good-host.lan:3333' '10.0.0.5:3333' '[2001:db8::1]:3333'; do
     c="$(mkconf okhost "{ \"pools\": [{\"url\":\"$u\"}] }")"
     parse_rc "$c" "$ROOT"

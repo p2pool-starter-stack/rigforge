@@ -403,12 +403,12 @@ _uint_in_range() { # <value> <min> <max> -> 0 iff a whole number bash can evalua
 
 _validate_host_port() {
     local _v="$1" _label="$2" _eg="$3" _h _p
+    [[ "$_v" != *@* ]] || error "$_label must be host:port, without a user name or password."
     if ! [[ "$_v" =~ :[0-9]+$ ]]; then
         error "$_label '$_v' must include a port, e.g. $_v:$_eg."
     fi
     _h="${_v%:*}"
     _p="${_v##*:}"
-    # Bound the digit count before arithmetic; huge values otherwise evade the range check.
     if [ "${#_p}" -gt 5 ]; then
         error "$_label port '$_p' in '$_v' has more than five digits; a port is 1-65535."
     fi
