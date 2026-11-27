@@ -8,6 +8,7 @@ TMP="$(mktemp -d)"
 PASS=0
 FAIL=0
 trap 'rm -rf "$TMP"' EXIT
+umask 077
 
 PROBES="$TMP/probes"
 BIN="$TMP/bin"

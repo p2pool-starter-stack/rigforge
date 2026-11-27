@@ -20,7 +20,7 @@ _bench_safe_config() { # <source-or-empty> <destination>
     local src="${1:-}" dst="$2"
     if [ -n "$src" ]; then
         [ -f "$src" ] || return 1
-        jq 'if type != "object" then error("config must be an object") else . end | del(.http, .pools, ."log-file", .benchmark, .bench, ."bench-algo", ."bench-size", .seed, .hash, .submit, .verify, .stress) | .colors = true | .background = false | .autosave = false | .watch = false | ."pause-on-active" = false | ."pause-on-battery" = false' "$src" >"$dst" 2>/dev/null
+        jq 'if type != "object" then error("config must be an object") else . end | with_entries(select(.key | IN("cpu", "randomx", "colors", "print-time", "health-print-time", "verbose", "autosave", "background", "watch", "pause-on-active", "pause-on-battery"))) | .colors = true | .opencl = false | .cuda = false | .background = false | .autosave = false | .watch = false | ."pause-on-active" = false | ."pause-on-battery" = false' "$src" >"$dst" 2>/dev/null
     else
         printf '{}\n' | jq '.colors = true | .background = false | .autosave = false | .watch = false | ."pause-on-active" = false | ."pause-on-battery" = false' >"$dst" 2>/dev/null
     fi
