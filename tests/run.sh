@@ -43,7 +43,7 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
+for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit token-error-text; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"

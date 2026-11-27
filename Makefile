@@ -27,6 +27,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-dependabot-coverage.sh
 	bash tests/test-codeql-workflow.sh
 	bash tests/test-tool-pin-watch.sh
+	bash tests/test-xmrig-bump.sh
 	bash tests/test-osv-file-issue.sh
 	bash tests/test-file-security-issue.sh
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/test-docs-replay.py
@@ -42,6 +43,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-homebrew-formula.sh
 	bash tests/test-release-bundle.sh
 	bash tests/test-env-override-gate.sh
+	python3 tests/test-server-deadline.py
 
 test-e2e: ## Full end-to-end run in disposable Linux containers (needs Docker)
 	bash tests/e2e/linux.sh
