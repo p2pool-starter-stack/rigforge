@@ -86,6 +86,30 @@
       "needs": []
     },
     {
+      "name": "security-backlog-expiry",
+      "file": "tests/test-security-backlog-expiry.sh",
+      "phases": [],
+      "timeout_seconds": 30,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "server-deadline",
+      "file": "tests/test-server-deadline.py",
+      "phases": [],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
       "name": "codeql-workflow",
       "file": "tests/test-codeql-workflow.sh",
       "phases": [],
