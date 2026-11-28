@@ -62,6 +62,7 @@ _script_dir() {
 }
 for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
 [ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find -H "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
+[ "${RIGFORGE_TEST_OVERRIDES:-0}" = 1 ] || unset XMRIG_VERSION XMRIG_COMMIT API_CMD DMIDECODE RDMSR_BIN SERVICE_NAME LOGROTATE_DIR GRUB_DEFAULT FSTAB LIMITS_CONF MODULES_LOAD_DIR MODULES_FILE SYSTEMD_DIR HUGEPAGES_1G_DIR BIN_DIR MEMINFO CPUINFO MSR_MODULE_DIR GOVERNOR_FILE HUGEPAGES_1G_NR NR_HUGEPAGES_FILE CPUFREQ_MAX CPU_SYSFS DMI_DIR SMT_CONTROL LOCKDOWN_FILE RIGFORGE_APPLIANCE_MARKER RIGFORGE_LEGACY_APPLIANCE_UNIT
 # shellcheck source=util/config-apply-state.sh
 source "${RIGFORGE_LIB:-$(_script_dir)}/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
@@ -86,7 +87,6 @@ REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
 SERVICE_NO_START=false
-# Pinned XMRig release for reproducible builds; environment-overridable.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
 # Set to false when the pinned XMRig commit is already built, so a re-run/upgrade skips the (slow)
@@ -105,7 +105,6 @@ fi
 ENABLE_RUNTIME=""
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then ENABLE_RUNTIME="--runtime"; fi
 
-# Writable system paths are overridable for the test sandbox; defaults remain the real locations.
 LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
 GRUB_DEFAULT="${GRUB_DEFAULT:-/etc/default/grub}"
 FSTAB="${FSTAB:-/etc/fstab}"
@@ -117,7 +116,6 @@ HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
 # Directory on PATH where `setup` installs the `rigforge` command (a symlink back to this script).
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 
-# Read-only doctor paths, overridable for tests.
 MEMINFO="${MEMINFO:-/proc/meminfo}"
 # CPU flags source shared with util/proposed-grub.sh's pdpe1gb probe (#338).
 CPUINFO="${CPUINFO:-/proc/cpuinfo}"
@@ -1228,8 +1226,8 @@ _render_xmrig_unit() {
     local msr_line=""
     [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     if [ -n "${MINER_USER:-}" ] && [ "${SHARED_HOST:-false}" != true ]; then msr_line="ExecStartPre=+$(_lib_dir)/rigforge.sh msr-apply"; fi
-    WORKER_ROOT="$WORKER_ROOT" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
-        envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
+    WORKER_ROOT="$WORKER_ROOT" SYSTEMD_DIR="$SYSTEMD_DIR" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
+        envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $SYSTEMD_DIR $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
         <"$(_lib_dir)/systemd/xmrig.service.template" | _shared_host_unit | _unit_split_env | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 }
 
@@ -1343,28 +1341,20 @@ install_watchdog() {
     return "$rc"
 }
 
-# Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
-# JSON from /run/rigforge-api; a systemd timer (`rigforge.sh api-refresh`) recomputes the files every
-# 15 s. Requests never touch the miner. Toggle shape mirrors install_autotune above.
-# Opt-in API firewall (#142): an own `inet rigforge` nft table scoping the read-only API port(s)
-# to `api_allow_from` + loopback. nftables only (Ubuntu 24.04's native firewall — a ufw fallback
-# would double the surface); own table so teardown is a single `destroy`. Matches only the API
-# dports, so SSH and the outbound stratum connection are untouchable by construction. Applied now
-# AND re-applied on boot via xmrig.service (the always-present anchor); removed with the table.
 install_api_firewall() {
     [ "$OS_TYPE" == "Linux" ] || return 0
-    [ -n "${WORKER_ROOT:-}" ] || return 0 # nowhere to stage the rule file yet
-    local nft_file="$WORKER_ROOT/api-firewall.nft"
+    [ -n "${WORKER_ROOT:-}" ] || return 0
+    local nft_file="$SYSTEMD_DIR/rigforge-api-firewall.nft" old_file="$WORKER_ROOT/api-firewall.nft"
     if [ -z "${API_ALLOW_FROM:-}" ]; then
-        if [ -f "$nft_file" ]; then
+        [ -z "${1:-}" ] || return 0
+        if [ -f "$nft_file" ] || [ -f "$old_file" ]; then
             command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
-            sudo rm -f "$nft_file"
+            sudo rm -f "$nft_file" "$old_file"
             log "API firewall removed."
         fi
         return 0
     fi
     command -v nft >/dev/null 2>&1 || error "api_allow_from is set but 'nft' is missing — install nftables (sudo apt-get install nftables) or clear the key."
-    # Port set: :8080 (XMRig's API) always, plus :8081 (the sister API) when it's enabled.
     local ports="8080"
     [ "${API_MODE:-disabled}" = enabled ] && ports="$ports, ${API_PORT:-8081}"
     [ "${CONTROL_MODE:-disabled}" = enabled ] && ports="$ports, ${CONTROL_PORT:-8082}"
@@ -1386,6 +1376,7 @@ NFT
     if ! sudo nft -f "$nft_file"; then
         error "API firewall FAILED to load — nft rejected the ruleset for api_allow_from='$API_ALLOW_FROM'. The API ports are NOT restricted. Fix api_allow_from and re-run."
     fi
+    [ -n "${1:-}" ] || sudo rm -f "$old_file"
     log "API firewall active — port(s) $ports reachable only from $API_ALLOW_FROM and loopback."
 }
 _wait_sister_api() {
@@ -1461,8 +1452,8 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $RIGFORGE_STATE $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" API_PORT="${API_PORT:-8081}" SYSTEMD_DIR="$SYSTEMD_DIR" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $RIGFORGE_STATE $API_PORT $SYSTEMD_DIR $NFT_PATH $RIGFORGE_APPLIANCE' \
         <"$(_lib_dir)/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
@@ -2004,6 +1995,8 @@ main() {
     tune_kernel
     CURRENT_STEP="configuring limits"
     configure_limits
+    CURRENT_STEP="configuring the API firewall"
+    install_api_firewall early >/dev/null
     CURRENT_STEP="installing the service"
     install_service
     CURRENT_STEP="configuring autotune"
@@ -2109,6 +2102,7 @@ upgrade() {
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
+    install_api_firewall early >/dev/null
     install_service
     install_autotune
     install_watchdog
@@ -2240,7 +2234,7 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP"
+    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP" "$SYSTEMD_DIR/rigforge-api-firewall.nft"
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
@@ -4085,6 +4079,7 @@ apply() {
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         parse_config
         _shared_host_prepare
+        install_api_firewall early >/dev/null || true
     fi
     _apply_runtime preserve-run-state || return 1
     local _wd_rc=0 _api_rc=0 _control_rc=0
@@ -4196,18 +4191,9 @@ _control_commit() { # <staged.json> <backups-dir>
         fi
     fi
     _tor_staged_donation_conflict "$change" && return 1
-    # #415: resolve masked pool secrets before jq's array-replacing overlay. Match a stored pool by
-    # (url,user), keep only a real stored secret, and reject any sentinel left unresolved. The raw
-    # config view matters: normalized POOLS_JSON invents pass="x" for an absent password (#429).
     if printf '%s' "$change" | jq -e '(.pools | type) == "array"' >/dev/null 2>&1; then
         local resolved unresolved
-        # One jq, two output lines: the surviving markers first, the resolved config second. The
-        # marker check is a post-condition on the merged pools rather than a second pre-scan — after
-        # the merge, a marker that is STILL there is exactly one the rig could not resolve. Reading it
-        # out of the same pass also covers a marker in a pool key this resolver does not handle, which
-        # a pre-scan of the two known keys would have waved through into config.json, and it leaves a
-        # single failure branch: a scan that cannot RUN is no longer a separate outcome to name.
-        resolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" 'def pkey: [(.url? // ""), (.user? // "")]; def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({}; if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end); def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v | if ($v | type) == "string" and $v != "" then $v else null end; ($base[0] | lut) as $lut | (.pools |= map(if type == "object" then . as $p | reduce ("pass", "tls-fingerprint") as $k (.; ($p | stored($lut; $k)) as $keep | if $keep != null and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true) or ($p | has($k) | not)) then .[$k] = $keep else . end) else . end)) as $r | ([$r.pools[]? | select(type == "object") | to_entries[] | select((.value | type) == "object" and .value.__secret__ == true) | .key] | unique | join(",")), ($r | tojson)' 2>/dev/null) || {
+        resolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" 'def pkey: [(.url? // ""), (.user? // "")]; def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({}; if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end); def stored($lut; $k): ($lut[pkey | tojson] // {}) as $s | $s[$k] as $v | if ($v | type) != "string" or $v == "" then null elif $k == "pass" and $s.socks5 != .socks5 then {"__secret__": true} else $v end; ($base[0] | lut) as $lut | (.pools |= map(if type == "object" then . as $p | reduce ("pass", "tls-fingerprint") as $k (.; ($p | stored($lut; $k)) as $keep | if $keep != null and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true) or ($p | has($k) | not)) then .[$k] = $keep else . end) else . end)) as $r | ([$r.pools[]? | select(type == "object") | to_entries[] | select((.value | type) == "object" and .value.__secret__ == true) | .key] | unique | join(",")), ($r | tojson)' 2>/dev/null) || {
             echo "rejected secret-merge-failed"
             return 1
         }
