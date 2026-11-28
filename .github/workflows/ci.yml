@@ -176,17 +176,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # zizmor: artipacked
-      # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
-      # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
-      # linux.sh runs TWO passes (a fresh container each): the standard deploy, then
-      # RIGFORGE_APPLIANCE=1 (#348) proving the appliance contracts against a real /etc — units in
-      # /run/systemd/system, no package installs, no fstab/limits/logrotate writes, --runtime enables.
-      - name: Run end-to-end suite
-        run: make test-e2e
-      - name: Build the API allowlist kernel test image
-        run: docker build -q -t rigforge-allowlist tests/docker
-      - name: Run API allowlist kernel test
-        run: docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh
+      - name: Run the deploy pass
+        id: deploy
+        if: ${{ !cancelled() }}
+        run: bash tests/e2e/linux.sh deploy
+      - name: Run the appliance pass
+        id: appliance
+        if: ${{ !cancelled() }}
+        run: bash tests/e2e/linux.sh appliance
+      - name: Run the isolation pass
+        id: isolation
+        if: ${{ !cancelled() }}
+        run: bash tests/e2e/linux.sh isolation
+      - name: Run the API allowlist kernel test
+        id: allowlist
+        if: ${{ !cancelled() }}
+        run: |
+          docker build -q -t rigforge-allowlist tests/docker
+          docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh
+      - name: Require every Docker mode
+        if: ${{ always() }}
+        env:
+          DEPLOY: ${{ steps.deploy.outcome }}
+          APPLIANCE: ${{ steps.appliance.outcome }}
+          ISOLATION: ${{ steps.isolation.outcome }}
+          ALLOWLIST: ${{ steps.allowlist.outcome }}
+        run: bash scripts/require-success.sh "deploy=$DEPLOY" "appliance=$APPLIANCE" "isolation=$ISOLATION" "allowlist=$ALLOWLIST"
 
   coverage:
     name: Coverage (kcov + diff-cover)

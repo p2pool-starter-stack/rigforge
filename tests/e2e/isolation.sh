@@ -4,12 +4,12 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if ! command -v docker >/dev/null 2>&1; then
-    echo "SKIP: docker not found — the dependency-free suite (tests/run.sh) covers the rest."
-    exit 0
+    echo "FATAL: docker not found — the isolation test requires a container runtime." >&2
+    exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
-    echo "SKIP: docker daemon not reachable."
-    exit 0
+    echo "FATAL: docker daemon not reachable — the isolation test requires a running container runtime." >&2
+    exit 1
 fi
 
 IMAGE="$(sed -n 's/^FROM //p' "$ROOT/tests/e2e/Dockerfile")"

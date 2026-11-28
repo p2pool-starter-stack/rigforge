@@ -244,7 +244,7 @@ deployment run (executed twice to prove idempotency).
 `ubuntu` container (RigForge's documented Linux target, `linux/amd64`), against a real, disposable
 `/etc`. This validates the Linux-only deploy path with genuine tools (GNU `sed`, `envsubst`, the
 `fstab`/`limits`/GRUB edits and their idempotency) which can't run natively on a macOS host. Only the
-heavy XMRig compile and the package install are stubbed. It skips cleanly if Docker isn't available.
+heavy XMRig compile and the package install are stubbed. `make test-e2e` fails when no container runtime is reachable; `make ci` skips it locally and hosted CI treats it as a failure.
 
 No XMRig binary is compiled by the tests; the heavy native build is stubbed. The suite asserts the
 *orchestration* (clone → patch `donate.h` → cmake → make) and the generated configuration instead.
