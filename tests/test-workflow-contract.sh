@@ -213,8 +213,12 @@ if grep -qF 'continue-on-error' "$CI" "$SEC"; then
     fail "continue-on-error appeared in the CI/Security premerge gates"
 fi
 
-if grep -hvE '^[[:space:]]*if:' "$CI" "$SEC" | sed -E 's/\$\{\{[^}]*\}\}//g' | grep -qF '||'; then
+if grep -hvE '^(    |        )if: ' "$CI" "$SEC" | sed -E 's/\$\{\{[^}]*\}\}//g' | grep -qF '||'; then
     fail "a shell || fallback appeared in the CI/Security premerge gates"
+fi
+
+if grep -qE 'set \+e|;[[:space:]]*(true|:)([[:space:]]|$)|run: *!' "$CI" "$SEC"; then
+    fail "set +e, a ; true/; : swallow or a run: ! inversion appeared in the CI/Security premerge gates"
 fi
 
 for want in \
