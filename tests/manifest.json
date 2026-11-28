@@ -242,6 +242,18 @@
       "needs": []
     },
     {
+      "name": "e2e-gate",
+      "file": "tests/test-e2e-gate.sh",
+      "phases": [],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
       "name": "doctor-json",
       "file": "tests/test-doctor-json.sh",
       "phases": [],
@@ -374,7 +386,12 @@
     {
       "name": "e2e-container",
       "file": "tests/e2e/linux.sh",
-      "phases": [],
+      "phases": [
+        "all",
+        "deploy",
+        "appliance",
+        "isolation"
+      ],
       "timeout_seconds": 1200,
       "inputs": [],
       "exit_codes": {

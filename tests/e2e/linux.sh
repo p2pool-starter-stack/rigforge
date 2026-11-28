@@ -17,13 +17,15 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-MODE="${1-all}"
-case "$#:$MODE" in
-[01]:all | [01]:deploy | [01]:appliance | [01]:isolation) ;;
-*)
+usage() {
     echo "usage: linux.sh [all|deploy|appliance|isolation]" >&2
     exit 2
-    ;;
+}
+[ "$#" -le 1 ] || usage
+MODE="${1-all}"
+case "${1-all}" in
+all | deploy | appliance | isolation) ;;
+*) usage ;;
 esac
 
 if ! command -v docker >/dev/null 2>&1; then
