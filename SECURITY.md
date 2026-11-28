@@ -114,10 +114,13 @@ RigForge is built to be reproducible and tamper-evident:
   least-privilege, read-only `GITHUB_TOKEN` by default.
 - Static analysis. [CodeQL](https://codeql.github.com/) analyzes the Python servers
   (`util/control-server.py`, `util/api-server.py`) and the workflows (`Analyze (python)`,
-  `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly. Shell has no
+  `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly, with the `security-extended` query suite. Shell has no
   CodeQL support, so `rigforge.sh` and the other Bash files stay ShellCheck-only. The repository
   ruleset's `code_scanning` rule is a GitHub setting an owner enables once both analyses have
   reported.
+- Dependency review. The `Dependency review` job in `security.yml` runs on pull requests only and
+  fails when a PR adds or changes a dependency with a high or critical advisory. Neither this check
+  nor the CodeQL analyses are required until the owner makes them so in the repository ruleset.
 
 Bug reports: `rigforge.sh support-bundle` produces a redacted tarball (token and pool password
 structurally removed via jq, wallet masked). Redaction covers RigForge's own fields — review the

@@ -136,7 +136,7 @@ chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
 # Pin the XMRig version/commit to known test values so the build's commit verification (#18) passes
 # without a real clone; the git stub echoes XMRIG_COMMIT for `rev-parse`.
-export XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
+export RIGFORGE_TEST_OVERRIDES=1 XMRIG_VERSION="vTEST" XMRIG_COMMIT="testcommit0000000000000000000000000000"
 
 # 5. Seed config.json (writable HOME_DIR; DONATION 7). Use an explicit (dotted) host so this doesn't
 #    depend on the .local/mDNS appending that PR #15 removes.
@@ -258,12 +258,12 @@ assert_eq "in-script default: http.port 8080" "$(jq -r '.http.port' "$BUILD/conf
 assert_eq "deploy: sister API server unit installed" "$([ -f /etc/systemd/system/rigforge-api.service ] && echo y || echo n)" "y"
 assert_contains "deploy: server unit carries the default bind:port" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" '${CREDENTIALS_DIRECTORY}/server 0.0.0.0 8081'
 assert_eq "deploy: refresh timer installed" "$([ -f /etc/systemd/system/rigforge-api-refresh.timer ] && echo y || echo n)" "y"
-# API firewall (#142): the nft file is rendered against the real /etc for the configured source.
-FW_NFT="$(find "$WORK" -name api-firewall.nft 2>/dev/null | head -1)"
-assert_eq "deploy: api-firewall.nft rendered" "$([ -n "$FW_NFT" ] && echo y || echo n)" "y"
+FW_NFT=/etc/systemd/system/rigforge-api-firewall.nft
+assert_eq "deploy: rigforge-api-firewall.nft rendered" "$([ -f "$FW_NFT" ] && echo y || echo n)" "y"
+assert_eq "deploy: no firewall rules file under the worker root" "$(find "$WORK" -name '*api-firewall.nft' 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_contains "deploy: firewall scopes to the configured source" "$(cat "$FW_NFT" 2>/dev/null)" "ip saddr 10.20.30.40 accept"
 assert_contains "deploy: firewall covers both API ports (api enabled)" "$(cat "$FW_NFT" 2>/dev/null)" "8080, 8081"
-assert_contains "deploy: xmrig unit re-applies the firewall on boot" "$(cat /etc/systemd/system/xmrig.service 2>/dev/null)" "api-firewall.nft"
+assert_contains "deploy: xmrig unit re-applies the firewall on boot" "$(cat /etc/systemd/system/xmrig.service 2>/dev/null)" "/etc/systemd/system/rigforge-api-firewall.nft"
 assert_absent "deploy: server unit fully rendered (no unexpanded vars)" "$(cat /etc/systemd/system/rigforge-api.service 2>/dev/null)" '$SCRIPT_DIR'
 assert_eq "in-script default: opencl off" "$(jq -r '.opencl' "$BUILD/config.json" 2>/dev/null)" "false"
 assert_eq "in-script default: cuda off" "$(jq -r '.cuda' "$BUILD/config.json" 2>/dev/null)" "false"

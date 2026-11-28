@@ -96,7 +96,7 @@ git ls-files -z --cached --others --exclude-standard |
 # --- Run the suite under kcov ------------------------------------------------
 echo "coverage: running tests/run.sh under kcov (this is slower than 'make test')..."
 docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --cap-add SYS_PTRACE \
-    -v "$ROOT:/src" -v "$JQ_BIN:/usr/local/bin/jq:ro" -w /src \
+    -v "$ROOT:/src" -v "$JQ_BIN:/usr/local/bin/jq:ro" -w /src -e RIGFORGE_TEST_OVERRIDES=1 \
     --entrypoint kcov "$KCOV_IMAGE" \
     --include-pattern=/src/rigforge.sh,/src/util/proposed-grub.sh,/src/util/config-apply-state.sh,/src/util/randomx.sh,/src/util/benchmark.sh,/src/util/stress.sh,/src/util/control-guards.sh,/src/util/xmrig-overlay.sh \
     --clean /src/coverage ./tests/run.sh

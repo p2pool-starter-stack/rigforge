@@ -251,7 +251,10 @@ No XMRig binary is compiled by the tests; the heavy native build is stubbed. The
 
 **`make coverage`** measures line coverage of `rigforge.sh` + the shell helpers in `util/` by running the
 suite under [kcov](https://github.com/SimonKagstrom/kcov) (in a digest-pinned container, since kcov is
-Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`,
+Linux/ptrace based). The black-box tests run the *real* script against a sandbox via `RIGFORGE_HOME`
+and the sandbox overrides (system paths, `XMRIG_VERSION`, `XMRIG_COMMIT`, `API_CMD`), which `rigforge.sh`
+honours only with `RIGFORGE_TEST_OVERRIDES=1`; the Makefile exports it, so run a single test file as
+`RIGFORGE_TEST_OVERRIDES=1 bash tests/<file>.sh`. Coverage passes it into the kcov container,
 so both the sourced functions and the command-dispatch paths are credited. CI enforces two gates: a
 committed **total floor** ([`tests/coverage-floor.txt`](tests/coverage-floor.txt), ratcheted up over
 time) and, the important lever, **patch coverage** (`diff-cover` against the PR's base branch,
