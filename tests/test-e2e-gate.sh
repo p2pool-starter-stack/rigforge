@@ -33,6 +33,20 @@ check 2 "linux.sh rejects an unknown mode" env PATH="$BIN" "$BIN/bash" "$ROOT/te
 check 2 "linux.sh rejects an empty mode" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" ""
 check 2 "linux.sh rejects extra arguments" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" deploy extra
 
+mkdir -p "$BIN/live" "$BIN/root/tests/e2e"
+cp "$ROOT/tests/e2e/linux.sh" "$ROOT/tests/e2e/Dockerfile" "$BIN/root/tests/e2e/"
+printf '#!/bin/sh\necho isolation\n' >"$BIN/root/tests/e2e/isolation.sh"
+printf '#!/bin/sh\ncase "$*" in\n*RIGFORGE_APPLIANCE=1*) echo appliance ;;\nrun*) echo deploy ;;\nesac\n' >"$BIN/live/docker"
+chmod +x "$BIN/live/docker"
+ran() {
+    env PATH="$BIN/live:$BIN" "$BIN/bash" "$BIN/root/tests/e2e/linux.sh" "$@" | grep -xE 'deploy|appliance|isolation' | tr '\n' ' '
+}
+check 0 "linux.sh deploy runs only the deploy pass" test "$(ran deploy)" = "deploy "
+check 0 "linux.sh appliance runs only the appliance pass" test "$(ran appliance)" = "appliance "
+check 0 "linux.sh isolation runs only the isolation pass" test "$(ran isolation)" = "isolation "
+check 0 "linux.sh all runs every pass in order" test "$(ran all)" = "deploy appliance isolation "
+check 0 "linux.sh runs every pass by default" test "$(ran)" = "deploy appliance isolation "
+
 GATE_LINE="$(grep -F 'scripts/require-success.sh' "$ROOT/.github/workflows/ci.yml")"
 for id in deploy appliance isolation allowlist; do
     check 0 "ci.yml gates the $id step" grep -qE "^ +id: $id\$" "$ROOT/.github/workflows/ci.yml"
@@ -53,6 +67,7 @@ for id in deploy appliance isolation allowlist; do
     esac
 done
 check 0 "ci.yml always runs the gate step" bash -c 'grep -A1 -F -- "- name: Require every Docker mode" "$1" | grep -qE "^ +if: \\\$\{\{ always\(\) \}\}\$"' _ "$ROOT/.github/workflows/ci.yml"
+check 1 "ci.yml lets no step continue on error" grep -q 'continue-on-error' "$ROOT/.github/workflows/ci.yml"
 
 G="$ROOT/scripts/require-success.sh"
 check 0 "gate: all children success" bash "$G" a=success b=success
