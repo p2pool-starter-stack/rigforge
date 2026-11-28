@@ -31,6 +31,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-xmrig-bump.sh
 	bash tests/test-osv-file-issue.sh
 	bash tests/test-file-security-issue.sh
+	bash tests/test-workflow-contract.sh
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/test-docs-replay.py
 	bash tests/test-api-allowlist-probe.sh
 	bash tests/test-e2e-docs-guest.sh

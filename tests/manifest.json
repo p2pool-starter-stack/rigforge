@@ -290,6 +290,18 @@
       "needs": []
     },
     {
+      "name": "workflow-contract",
+      "file": "tests/test-workflow-contract.sh",
+      "phases": [],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
       "name": "docs-replay-unit",
       "file": "tests/test-docs-replay.py",
       "phases": [],

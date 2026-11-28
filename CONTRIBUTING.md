@@ -45,7 +45,8 @@ pipx install pre-commit   # or: pip install pre-commit
 pre-commit install
 ```
 
-This runs `make lint` (ShellCheck + shfmt over the Makefile's `SHELL_FILES`),
+This runs `make lint` (ShellCheck + shfmt over the Makefile's `SHELL_FILES`), `make lint-md`,
+`make lint-yaml` and `make lint-actions` (actionlint, when a workflow file changes),
 [gitleaks](https://github.com/gitleaks/gitleaks) secret scanning (the same pinned version CI runs, so
 a committed token or pool credential is caught before it's pushed), and a few hygiene checks:
 private-key detection, a large-file guard, and final-newline and trailing-whitespace fixers.
@@ -92,10 +93,11 @@ to stdout, and a contributor deliberately redirects and reviews it.
 
 ### Config & docs linting
 
-The YAML, Markdown, and link checks gate in CI and have matching Make targets for local runs:
+The YAML, workflow, Markdown, and link checks gate in CI and have matching Make targets for local runs:
 
 ```bash
 make lint-yaml     # yamllint the workflows + configs   (.yamllint)
+make lint-actions  # actionlint the workflows           (bad needs/refs, invalid runners, shell bugs in run blocks)
 make lint-md       # markdownlint the docs              (.markdownlint-cli2.yaml + npm lockfile; needs Node 22+)
 make lint-links    # lychee link-check the docs         (.lychee.toml; needs lychee — runs weekly in CI)
 make lint-all      # shell + yaml + markdown + workflows in one go
@@ -104,6 +106,40 @@ make ci            # everything CI runs that can run locally (adds the container
 
 The Markdown linter is pinned in `package.json` + `package-lock.json`, which `make lint-md` installs
 from with `npm ci`; validate a pin update with `make lint-md`.
+
+### CI failure categories
+
+Every step in `.github/workflows/ci.yml` and `.github/workflows/security.yml` carries a
+`setup:`/`assert:`/`cleanup:`/`scan:` category as the first word of its name and an id prefixed by
+that category, and every job ends with an `if: always()` `assert: categorize outcome` step
+(`scripts/ci-categorize.sh`) that prints each step's outcome under its category to the job summary.
+A red gate therefore names the category that broke: `setup-*` rows mean the toolchain never came
+up, `assert-*` rows are the gate's own verdict, `scan-*` rows are a gitleaks or zizmor finding that
+blocks the merge, and a red `cleanup-*` row means the allowlist kernel-test image built but could
+not be removed (a leaked container or a broken Docker daemon). The categorize step runs the helper
+from the checkout, so when `setup: Checkout` itself fails that step fails too and prints no table;
+the red `setup-checkout` step is then the category. `tests/test-workflow-contract.sh`
+(in `make test-suite`) fails when a step loses its category, id, or categorize coverage, when a step
+or job gains an unapproved or misplaced `if:` condition, or when a preserved gate (the full-history
+gitleaks scan and its checksum-verified install, the online zizmor advisory audit, the file-budget base check,
+the allowlist kernel-test pair, the stock-home matrix, the Homebrew formula proof and its OS matrix,
+every `make lint*`/`make test*` entry point) stops appearing with its exact command. The test pins
+workflow text, not hosted execution: a green hosted run is what proves the environment itself stayed
+honest.
+
+Why the workflows look the way they do: the lint, coverage and stock-home checkouts and the gitleaks
+checkout fetch full history, because gitleaks scans every commit, diff-cover compares against the
+base branch, and `FILE_BUDGET_REQUIRE_BASE=1` makes the file-budget gate fail rather than skip its
+ceilings-only-go-down half when `origin/develop` is missing. Tool installs (shellcheck, shfmt,
+actionlint, gitleaks) are pinned and checksum-verified; the lint job unpacks shellcheck and shfmt in
+`RUNNER_TEMP` so the file-budget gate never counts an unpacked toolchain as a source file; keep
+`GITLEAKS_VERSION` in lockstep with the gitleaks pre-commit hook. gitleaks runs with `--redact` so a
+match never reaches the public log, and zizmor runs its online audits with `GH_TOKEN` so an advisory
+against a pinned action fails the gate. gitleaks skips the weekly schedule, which exists only for
+zizmor's advisory re-audit; history does not change between pushes. Checkouts set
+`persist-credentials: false` because CI never pushes. The Ubuntu test suite still drives the
+deprecated Darwin paths through stubs (#493), and the container e2e runs the standard deploy,
+`RIGFORGE_APPLIANCE=1` (#348) and the isolation pass.
 
 Dependabot opens bump PRs (labelled `dependencies` so they queue first) for every manifest it can
 read: GitHub Actions, the pre-commit hooks, the Python CI tools in `tools/requirements-ci.txt`, the

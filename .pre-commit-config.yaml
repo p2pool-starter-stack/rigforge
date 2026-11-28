@@ -45,3 +45,9 @@ repos:
         language: system
         files: \.(ya?ml)$
         pass_filenames: false
+      - id: make-lint-actions
+        name: actionlint (make lint-actions)
+        entry: make lint-actions
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        pass_filenames: false

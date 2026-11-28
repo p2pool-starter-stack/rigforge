@@ -18,21 +18,22 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
           persist-credentials: false # zizmor: artipacked
-      - name: Install pinned Python CI tools
+      - name: "setup: Install pinned Python CI tools"
+        id: setup_py_tools
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/ci-python-tools"
           "$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt
           echo "$RUNNER_TEMP/ci-python-tools/bin" >>"$GITHUB_PATH"
-      # Via `make lint-yaml` so the file set + .yamllint config live in one place and can't drift from local.
-      - name: Run yamllint (make lint-yaml)
+      - name: "assert: yamllint (make lint-yaml)"
+        id: assert_lint_yaml
         run: make lint-yaml
-      # actionlint checks the workflows for CORRECTNESS (bad needs/refs, invalid runners, shell bugs
-      # in run blocks); zizmor in security.yml audits them for security. Pinned + checksum-verified,
-      # same discipline as the shellcheck/gitleaks installs.
-      - name: Install pinned actionlint
+      - name: "setup: Install pinned actionlint"
+        id: setup_actionlint
         env:
           ACTIONLINT_VERSION: "1.7.12"
           ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
@@ -44,22 +45,46 @@ jobs:
           tar -xzf "$tarball" actionlint
           sudo install actionlint /usr/local/bin/
           actionlint --version
-      - name: Run actionlint (make lint-actions)
+      - name: "assert: actionlint (make lint-actions)"
+        id: assert_lint_actions
         run: make lint-actions
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_LINT_ACTIONS: ${{ steps.assert_lint_actions.outcome }}
+          CAT_ASSERT_LINT_YAML: ${{ steps.assert_lint_yaml.outcome }}
+          CAT_SETUP_ACTIONLINT: ${{ steps.setup_actionlint.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+          CAT_SETUP_PY_TOOLS: ${{ steps.setup_py_tools.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   lint-md:
     name: Lint (markdownlint)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
           persist-credentials: false # zizmor: artipacked
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        id: setup_node
+        name: "setup: Install Node.js 22"
         with:
           node-version: "22"
           package-manager-cache: false
-      - name: Run markdownlint (make lint-md)
+      - name: "assert: markdownlint (make lint-md)"
+        id: assert_lint_md
         run: make lint-md
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_LINT_MD: ${{ steps.assert_lint_md.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+          CAT_SETUP_NODE: ${{ steps.setup_node.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   lint:
     name: Lint (shellcheck + shfmt)
@@ -69,28 +94,18 @@ jobs:
       SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
       SHFMT_VERSION: "3.14.1"
       SHFMT_SHA256: "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf"
-      # The file-budget gate's "ceilings only go down" half needs origin/develop to diff the budget
-      # against. Without this it would SKIP that half and still exit 0 — a green that proves less
-      # than it looks like it does — so here it is fatal instead (#407).
       FILE_BUDGET_REQUIRE_BASE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
-          persist-credentials: false # no pushes from CI; don't leave the token in .git/config (zizmor: artipacked)
-          # Full history so origin/develop resolves for the file-budget gate above; the default
-          # shallow fetch gives the PR ref only. Paired with FILE_BUDGET_REQUIRE_BASE, so if this
-          # line is ever dropped the job REDS instead of quietly running half the gate.
+          persist-credentials: false # zizmor: artipacked
           fetch-depth: 0
-      # Install PINNED, checksum-verified shellcheck + shfmt instead of the runner's preinstalled
-      # builds, so lint/format results are reproducible and don't drift with the runner image (#6).
-      # Downloaded straight from the upstream releases — no `apt-get update`, avoiding the mirror
-      # flakiness pithead hit in its #64.
-      - name: Install pinned ShellCheck
+      - name: "setup: Install pinned ShellCheck"
+        id: setup_shellcheck
         run: |
           set -euo pipefail
-          # Unpack in RUNNER_TEMP, not the workspace: the file-budget gate measures untracked,
-          # non-gitignored files too (that is how a new file is caught before `git add`), and an
-          # extracted toolchain in the repo root reads as a 674-line source file it must budget.
           cd "$RUNNER_TEMP"
           tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
           curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${tarball}" -o "$tarball"
@@ -98,34 +113,47 @@ jobs:
           tar -xJf "$tarball"
           sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
           shellcheck --version
-      - name: Install pinned shfmt
+      - name: "setup: Install pinned shfmt"
+        id: setup_shfmt
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP" # same reason as ShellCheck above — keep the download out of the workspace
+          cd "$RUNNER_TEMP"
           curl -fsSL "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64" -o shfmt
           echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -
           sudo install shfmt /usr/local/bin/shfmt
           shfmt --version
-      # Lint via `make lint` so the file list lives in one place (the Makefile's SHELL_FILES) and CI
-      # can't drift out of sync with local `make lint` — e.g. a newly added tests/*.sh going unchecked.
-      - name: Run shellcheck + shfmt (make lint)
+      - name: "assert: shellcheck + shfmt (make lint)"
+        id: assert_lint
         run: make lint
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_LINT: ${{ steps.assert_lint.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+          CAT_SETUP_SHELLCHECK: ${{ steps.setup_shellcheck.outcome }}
+          CAT_SETUP_SHFMT: ${{ steps.setup_shfmt.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   test:
     name: Test suite
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
           persist-credentials: false # zizmor: artipacked
-      # Ubuntu is RigForge's supported target. macOS is deprecated (#493): no Mac runner, no native
-      # macOS job below. The suite still exercises the Darwin code paths here via stubs (OS_TYPE=Darwin
-      # + faked sysctl/launchctl) — kept deliberately, since it's the only remaining regression
-      # coverage for the deprecated-but-still-working Darwin paths and costs nothing extra to run on
-      # this Ubuntu job. It proves logic only, not real macOS behavior (BSD sed/stat/date, real
-      # launchd) — contributors on macOS can still run `make test` locally for that.
-      - name: Run test suite
+      - name: "assert: test suite (make test-suite)"
+        id: assert_test_suite
         run: make test-suite
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_TEST_SUITE: ${{ steps.assert_test_suite.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   apt-feed:
     name: APT feed (sign, verify, tamper)
@@ -133,12 +161,24 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
           persist-credentials: false
-      - name: Install packaging tools
+      - name: "setup: Install packaging tools"
+        id: setup_packaging_tools
         run: sudo apt-get update && sudo apt-get install -y apt-utils
-      - name: Run the apt feed test
+      - name: "assert: apt feed test"
+        id: assert_apt_feed
         run: sudo bash tests/test-apt-feed.sh
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_APT_FEED: ${{ steps.assert_apt_feed.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+          CAT_SETUP_PACKAGING_TOOLS: ${{ steps.setup_packaging_tools.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   stock-home:
     name: Stock home setup (${{ matrix.label }})
@@ -156,65 +196,103 @@ jobs:
             expect: working
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Verify native prerequisites
+      - name: "setup: Verify native prerequisites"
+        id: setup_prereqs
         run: |
           command -v git curl
           systemctl --version
-      - name: Run documented setup beneath a private home
+      - name: "assert: documented setup beneath a private home"
+        id: assert_stock_home
         env:
           TEST_REVISION: ${{ matrix.revision }}
           TEST_EXPECTATION: ${{ matrix.expect }}
         run: timeout 1800 bash tests/test-stock-home.sh "$TEST_REVISION" "$TEST_EXPECTATION"
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_STOCK_HOME: ${{ steps.assert_stock_home.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+          CAT_SETUP_PREREQS: ${{ steps.setup_prereqs.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   e2e:
     name: End-to-end (Docker)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
           persist-credentials: false # zizmor: artipacked
-      # Runs the real script end-to-end inside a disposable Ubuntu container (RigForge's documented
-      # Linux target), exercising the genuine Linux deploy path and /etc idempotency with real tools.
-      # linux.sh runs TWO passes (a fresh container each): the standard deploy, then
-      # RIGFORGE_APPLIANCE=1 (#348) proving the appliance contracts against a real /etc — units in
-      # /run/systemd/system, no package installs, no fstab/limits/logrotate writes, --runtime enables.
-      - name: Run end-to-end suite
+      - name: "assert: end-to-end suite (make test-e2e)"
+        id: assert_e2e
         run: make test-e2e
-      - name: Build the API allowlist kernel test image
+      - name: "setup: Build the API allowlist kernel test image"
+        id: setup_allowlist_image
         run: docker build -q -t rigforge-allowlist tests/docker
-      - name: Run API allowlist kernel test
+      - name: "assert: API allowlist kernel test"
+        id: assert_allowlist
         run: docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh
+      - name: "cleanup: Remove the API allowlist kernel test image"
+        id: cleanup_allowlist_image
+        if: always() && steps.setup_allowlist_image.outcome == 'success'
+        run: docker rmi rigforge-allowlist
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_ALLOWLIST: ${{ steps.assert_allowlist.outcome }}
+          CAT_ASSERT_E2E: ${{ steps.assert_e2e.outcome }}
+          CAT_CLEANUP_ALLOWLIST_IMAGE: ${{ steps.cleanup_allowlist_image.outcome }}
+          CAT_SETUP_ALLOWLIST_IMAGE: ${{ steps.setup_allowlist_image.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   coverage:
     name: Coverage (kcov + diff-cover)
     runs-on: ubuntu-24.04
     env:
-      PATCH_COVERAGE_MIN: "90" # new/changed lines in rigforge.sh + util must be this % covered
-      # Diff the PR against the branch it targets (develop or main). On a push, github.base_ref is empty,
-      # so fall back to the pushed branch itself — that's an empty diff that trivially passes.
+      PATCH_COVERAGE_MIN: "90"
       BASE_REF: ${{ github.base_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
-          fetch-depth: 0 # diff-cover needs history to diff the PR against its base branch
-          persist-credentials: false # the fetch below is read-only on a public repo (zizmor: artipacked)
-      - name: Fetch base branch for diff-cover
+          fetch-depth: 0
+          persist-credentials: false # zizmor: artipacked
+      - name: "setup: Fetch base branch for diff-cover"
+        id: setup_base_fetch
         run: git fetch --no-tags origin "$BASE_REF"
-      - name: Measure coverage (kcov) + enforce the total floor
+      - name: "assert: total coverage floor (kcov)"
+        id: assert_coverage_floor
         run: make coverage
-      # Patch coverage is the real lever: it requires NEW/CHANGED lines to be tested, which is what keeps
-      # coverage from rotting. Self-contained (no Codecov) — reads the Cobertura report from kcov.
-      - name: Install pinned Python CI tools
+      - name: "setup: Install pinned Python CI tools"
+        id: setup_py_tools
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/ci-python-tools"
           "$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt
           echo "$RUNNER_TEMP/ci-python-tools/bin" >>"$GITHUB_PATH"
-      - name: Enforce patch coverage on changed lines
+      - name: "assert: patch coverage on changed lines (diff-cover)"
+        id: assert_patch_coverage
         run: diff-cover coverage/cobertura.xml --compare-branch="origin/$BASE_REF" --fail-under="${PATCH_COVERAGE_MIN}"
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_COVERAGE_FLOOR: ${{ steps.assert_coverage_floor.outcome }}
+          CAT_ASSERT_PATCH_COVERAGE: ${{ steps.assert_patch_coverage.outcome }}
+          CAT_SETUP_BASE_FETCH: ${{ steps.setup_base_fetch.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+          CAT_SETUP_PY_TOOLS: ${{ steps.setup_py_tools.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
 
   homebrew:
     name: Homebrew formula (${{ matrix.os }})
@@ -226,9 +304,12 @@ jobs:
         os: [ubuntu-24.04, macos-15]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: setup_checkout
+        name: "setup: Checkout"
         with:
           persist-credentials: false
-      - name: Tap the checkout and install the formula
+      - name: "assert: tap, install and test the formula"
+        id: assert_brew_formula
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
@@ -242,10 +323,19 @@ jobs:
           test "$(rigforge --version)" = "RigForge $want"
           test -f "$(brew --prefix rigforge)/libexec/.rigforge-package"
           test "$(cat "$(brew --prefix rigforge)/libexec/.rigforge-package")" = brew
-      - name: Report whether sudo finds the brew command
+      - name: "assert: report whether sudo finds the brew command"
+        id: assert_sudo_resolution
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           eval "$("$(compgen -G "/home/*/.linuxbrew/bin/brew")" shellenv)"
           if sudo -n sh -c 'command -v rigforge'; then echo "sudo resolves rigforge"; else echo "sudo does not resolve rigforge"; fi
           sudo -n "$(command -v rigforge)" --version
+      - name: "assert: categorize outcome"
+        id: assert_categorize
+        if: always()
+        env:
+          CAT_ASSERT_BREW_FORMULA: ${{ steps.assert_brew_formula.outcome }}
+          CAT_ASSERT_SUDO_RESOLUTION: ${{ steps.assert_sudo_resolution.outcome }}
+          CAT_SETUP_CHECKOUT: ${{ steps.setup_checkout.outcome }}
+        run: bash scripts/ci-categorize.sh "$GITHUB_JOB"
