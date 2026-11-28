@@ -7,7 +7,8 @@ Legacy per-host `xmrig --bench=1M` baselines for the `e2e-real` `perf` phase —
 `E2E_PERF_HISTORY` (JSON lines of earlier emitted results), so nothing needs committing. These files are
 read only when `E2E_PERF_HISTORY` is unset and are no longer the way to record; delete them once every
 rig's history lives in the caller's store. In report mode (the default) a regression against them is
-printed, not failed; `E2E_PERF_GATE=1` restores the failing gate.
+printed, not failed; the gate (`E2E_PERF_MODE=gate`) judges against `E2E_PERF_HISTORY`, not these
+files.
 
 One `<hostname>.json` per rig: `{"bench_1m_hs": <H/s>, "cpu": "...", "recorded": "YYYY-MM-DD"}`.
 
@@ -29,10 +30,10 @@ Every `E2E_PERF_RECORD=1` run also appends `{tag, recorded, bench_1m_hs}` to
 E2E_PERF_TAG=v1.4.0 E2E_PERF_RECORD=1 sudo bash tests/e2e-real.sh perf
 ```
 
-Commit both files. The perf gate checks new measurements against the current baseline **and**
-against the best entry in the history (same tolerance), so refreshing the baseline every release
-can never ratchet hashrate downward a few percent at a time — a slow multi-release drift fails
-loudly as `perf RATCHET`.
+Commit both files. Recording judges a new measurement against the current baseline **and**
+against the best entry in the history (same tolerance) before it writes, so refreshing the baseline
+every release can never ratchet hashrate downward a few percent at a time — a slow multi-release
+drift fails loudly as `perf RATCHET`.
 
 ## Optional public verification
 
