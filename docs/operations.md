@@ -72,6 +72,20 @@ not checked. A root-owned tree passes silently.
 - To close the gap instead, make the tree root-owned: `sudo chown -R root:root <tree> && sudo chmod -R
   go-w <tree>`, then delete `/etc/rigforge-root-guard`. Afterwards, update the checkout with `sudo git`.
 
+On a tree that passes the guard, `setup`, `upgrade`, `apply`, `tune`, `bios` and `restore` keep the worker
+folder (`data/worker` by default: the miner binary and its checksum, the tune files, the markers and the log)
+owned by root and writable by no one else, instead of handing it to the operator. Every folder above the
+worker folder, as given and with links resolved, must pass the same test; otherwise the folder is handed to
+the operator as before. When root takes the folder back, it removes every symbolic link inside it and names
+them in a warning. If the miner binary was not root-owned, `setup` or `upgrade` rebuilds it (in the same
+run, or in the next one when another command took the folder back). When root cannot take the folder back,
+`setup`, `upgrade` and `restore` stop. `config.json` stays the operator's, and with `miner_user` set the
+miner's config and log are still handed to that user. On such a tree `config-backups/` stays root-owned too
+(a link there is followed, and the folders above its target must pass as well), and each snapshot in it is
+handed to the operator, so `cp config-backups/<file> config.json` still works without `sudo`. Run `setup`,
+`upgrade` and `apply` on such a tree with `sudo`, because the operator account can no longer write the
+worker folder.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
@@ -611,7 +625,7 @@ A first install, a reinstall of the same version and a host without a config que
 
 The one-shot runs `rigforge package-upgrade`, which is `upgrade` outside dpkg: it rebuilds XMRig
 only when the pin, compiled minimum or checksum requires it, re-renders every unit, and restarts
-the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and hands the tree and units back to them. Follow it with `journalctl -u rigforge-upgrade`.
+the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and sets file ownership the way `upgrade` does. Follow it with `journalctl -u rigforge-upgrade`.
 
 If it fails, the previous build keeps running, the marker stays, `/var/lib/rigforge/upgrade-failed`
 records the failure, and both `rigforge status` and `rigforge doctor` report it. dpkg is never
@@ -619,6 +633,17 @@ failed by it. Retry with the one command `sudo rigforge upgrade`; a successful r
 marker. To defer upgrades, `sudo apt-mark hold rigforge` (undo with `apt-mark unhold rigforge`).
 
 ---
+
+## Where files live
+
+RigForge reads code from one directory and writes state to another. Both default to the directory holding `rigforge.sh`, so a git clone keeps everything in one tree and nothing changes unless you set a variable.
+
+| Variable | Default | Holds |
+|---|---|---|
+| `RIGFORGE_LIB` | the directory of `rigforge.sh` | `rigforge.sh`, `util/` scripts, `systemd/` unit templates, `VERSION`, `RIGFORGE_REF`, the `.rigforge-package` marker. Never written by a worker command, so it can be root-owned and read-only. |
+| `RIGFORGE_STATE` | the same directory (`RIGFORGE_HOME` when set) | `config.json`, the `.rigforge-*` markers and sidecars (appliance marker, config provenance, revision key), `config-backups/`, `backups/`, support tarballs and the default worker root `data/worker`. |
+
+`RIGFORGE_HOME` is the older sandbox override: it sets the state directory and the template, `VERSION` and `proposed-grub.sh` lookups, while the `util/` scripts still come from the directory of `rigforge.sh`. Set `RIGFORGE_LIB` and `RIGFORGE_STATE` instead; each wins over it. Rendered units take `ExecStart` and the server script from the lib directory and the `config.json` credential from the state directory. When either variable is set, the miner unit and the scheduled verb units (autotune, watchdog, api-refresh, control-apply, control-upgrade) and the shared-host runner carry it in their environment. Both values must be clean absolute paths (letters, digits, `.`, `_`, `-`, `/`), and as root `RIGFORGE_LIB` must be owned by root and not group- or world-writable; otherwise `rigforge.sh` refuses to start. The `upgrade` verb updates a git checkout in place, so it still needs a writable checkout.
 
 ## Backup & restore
 
@@ -845,7 +870,8 @@ How a change flows:
 **Recovery.** Every applied change leaves a timestamped snapshot in `config-backups/` (owner-readable,
 the newest `KEEP_CONFIG_BACKUPS`, default 20, are kept). The retention sweep runs on every outcome
 that got as far as snapshotting, not on the applied ones alone (#438) — a rig stuck on a failing
-disk keeps a capped, operator-owned backup directory rather than an unbounded root-owned one. To
+disk keeps a capped backup directory rather than an unbounded one. The snapshots are handed to the
+operator; on a root-owned tree the directory itself stays root-owned (see the root guard above). To
 inspect or roll back by hand:
 
 ```bash

@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodic RigForge autotune
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

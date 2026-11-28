@@ -1,5 +1,14 @@
 #![forbid(unsafe_code)]
 
+pub mod emit;
+pub mod error;
+pub mod json;
+pub mod limits;
+pub mod num;
+pub mod ops;
+pub mod sha256;
+pub mod text;
+
 use std::ffi::OsString;
 
 pub fn version_line(name: &str, version: &str) -> String {
