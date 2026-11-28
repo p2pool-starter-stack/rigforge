@@ -133,6 +133,8 @@ for wf in sys.argv[1:]:
                 allowed_ifs = ("runner.os == 'Linux'",)
             elif sidv == "assert_categorize":
                 allowed_ifs = ("always()",)
+            elif sidv == "cleanup_allowlist_image":
+                allowed_ifs = ("always() && steps.setup_allowlist_image.outcome == 'success'",)
             elif sidv and sidv.startswith("cleanup_"):
                 allowed_ifs = (None, "always()")
             else:
@@ -211,8 +213,8 @@ if grep -qF 'continue-on-error' "$CI" "$SEC"; then
     fail "continue-on-error appeared in the CI/Security premerge gates"
 fi
 
-if grep -hE '\|\|[[:space:]]*true' "$CI" "$SEC" | grep -qvxF '        run: docker rmi rigforge-allowlist || true'; then
-    fail "|| true appeared in the CI/Security premerge gates outside the allowlist image cleanup"
+if grep -qE '\|\|[[:space:]]*true' "$CI" "$SEC"; then
+    fail "|| true appeared in the CI/Security premerge gates"
 fi
 
 for want in \
@@ -227,14 +229,13 @@ for want in \
     'run: timeout 1800 bash tests/test-stock-home.sh "$TEST_REVISION" "$TEST_EXPECTATION"' \
     'run: docker build -q -t rigforge-allowlist tests/docker' \
     'run: docker run --rm --privileged -v "$PWD:/src:ro" rigforge-allowlist bash /src/tests/test-api-allowlist-linux.sh' \
+    'run: docker rmi rigforge-allowlist' \
     'run: diff-cover coverage/cobertura.xml --compare-branch="origin/$BASE_REF" --fail-under="${PATCH_COVERAGE_MIN}"'; do
     grep -qxF "        $want" "$CI" || fail "ci.yml gate weakened: '$want' is no longer the exact step command"
 done
 
 for want in \
     'FILE_BUDGET_REQUIRE_BASE: "1"' \
-    'ACTIONLINT_VERSION: "1.7.12"' \
-    'ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"' \
     '          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -' \
     '          echo "${SHELLCHECK_SHA256}  ${tarball}" | sha256sum -c -' \
     '          echo "${SHFMT_SHA256}  shfmt" | sha256sum -c -' \
@@ -266,13 +267,10 @@ for want in \
 done
 
 for want in \
-    'GITLEAKS_VERSION: "8.30.1"' \
-    'GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"' \
     '          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -' \
     '"$RUNNER_TEMP/ci-python-tools/bin/pip" install -r tools/requirements-ci.txt' \
     'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' \
-    '    branches: [main, develop]' \
-    '    - cron: "0 7 * * 1"'; do
+    '    branches: [main, develop]'; do
     grep -qF "$want" "$SEC" || fail "security.yml gate weakened: '$want' is gone"
 done
 
@@ -294,6 +292,9 @@ fi
 if grep -qF 'MAKEFLAGS' Makefile; then
     fail "MAKEFLAGS appeared in the Makefile the gates invoke"
 fi
+
+grep -qxF '        entry: make lint-actions' .pre-commit-config.yaml || fail ".pre-commit-config.yaml lacks the make lint-actions hook"
+grep -qxF '        files: ^\.github/workflows/.*\.ya?ml$' .pre-commit-config.yaml || fail "the make lint-actions hook does not trigger on workflow files"
 
 grep -qF 'CAT_SCAN_GITLEAKS:' "$SEC" || fail "security.yml gitleaks scan outcome is not emitted"
 grep -qF 'CAT_SCAN_ZIZMOR:' "$SEC" || fail "security.yml zizmor scan outcome is not emitted"

@@ -45,7 +45,8 @@ pipx install pre-commit   # or: pip install pre-commit
 pre-commit install
 ```
 
-This runs `make lint` (ShellCheck + shfmt over the Makefile's `SHELL_FILES`),
+This runs `make lint` (ShellCheck + shfmt over the Makefile's `SHELL_FILES`), `make lint-md`,
+`make lint-yaml` and `make lint-actions` (actionlint, when a workflow file changes),
 [gitleaks](https://github.com/gitleaks/gitleaks) secret scanning (the same pinned version CI runs, so
 a committed token or pool credential is caught before it's pushed), and a few hygiene checks:
 private-key detection, a large-file guard, and final-newline and trailing-whitespace fixers.
