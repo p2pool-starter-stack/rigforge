@@ -23,9 +23,10 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then _tty=y; fi
 C_RESET="${_tty:+\033[0m}"
 C_GREEN="${_tty:+\033[1;32m}"
 C_YELLOW="${_tty:+\033[1;33m}"
-C_RED="${_tty:+\033[1;31m}"
+# shellcheck disable=SC2034
 C_BLUE="${_tty:+\033[1;34m}"
-readonly C_RESET C_GREEN C_YELLOW C_RED C_BLUE
+C_RED="${_tty:+\033[1;31m}"
+readonly C_RESET C_GREEN C_YELLOW C_RED
 unset _tty
 
 log() { echo -e "${C_GREEN}[INFO]${C_RESET} $1"; }
@@ -47,18 +48,17 @@ on_err() {
     echo "  Re-run with 'bash -x $0' to trace the exact command." >&2
 }
 
-# --- Global Variables ---
-OS_TYPE="$(uname -s)" # Darwin: DEPRECATED 2026-09-14, unsupported/untested going forward (#493)
-# Resolve symlinks to the real script directory, so an on-PATH link still finds config and assets.
-# Portable (no `readlink -f`, which BSD/macOS lacks): follow links one hop at a time.
+OS_TYPE="$(uname -s)"
 _script_dir() {
-    local src="${1:-${BASH_SOURCE[0]}}" dir
+    local src="${1:-${BASH_SOURCE[0]}}" dir d
     while [ -L "$src" ]; do
-        dir=$(cd -P "$(dirname "$src")" &>/dev/null && pwd)
+        case "$src" in */*) d="${src%/*}" ;; *) d=. ;; esac
+        dir=$(cd -P "${d:-/}" &>/dev/null && pwd)
         src=$(readlink "$src")
         case "$src" in /*) ;; *) src="$dir/$src" ;; esac
     done
-    cd -P "$(dirname "$src")" &>/dev/null && pwd
+    case "$src" in */*) d="${src%/*}" ;; *) d=. ;; esac
+    cd -P "${d:-/}" &>/dev/null && pwd
 }
 for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
 [ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find -H "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
@@ -414,9 +414,27 @@ _validate_host_port() {
     esac
 }
 
+_jvals() {
+    local _jx _je='def e: if type == "string" then gsub("\u0000"; "") | sub("\n+\\z"; "") else . end;'
+    _JV=()
+    while IFS= read -r -d '' _jx; do _JV+=("$_jx"); done < <(jq -j "$_je ($1) | e, \"\\u0000\"" "${@:2}" && printf '0\0' || printf '1\0')
+    [ "${_JV[${#_JV[@]} - 1]}" = 0 ]
+}
+
+_unit_value() {
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        "$2"*)
+            printf '%s' "${line#"$2"}"
+            return 0
+            ;;
+        esac
+    done < <(systemctl cat "$1" 2>/dev/null)
+}
+
 parse_config() {
     log "Parsing configuration..."
-    # A missing config (e.g. `apply`/`tune` before `setup`) is a different, clearer error than bad JSON.
     if [ ! -f "$CONFIG_JSON" ]; then
         error "No configuration at $CONFIG_JSON — run 'sudo $0 setup' first (it creates one on first run)."
     fi
@@ -425,15 +443,14 @@ parse_config() {
         error "$CONFIG_JSON is not valid JSON."
     fi
     _tor_socks5 >/dev/null
+    _jvals '(.HOME_DIR // "DYNAMIC_HOME"), (.DONATION // 0), (.ACCESS_TOKEN // ""), (.api_allow_from // ""), (.autotune // "disabled"), (.watchdog // "disabled"), (.watchdog_interval_min // 5), (.max_temp_c // ""), (.hugepages_reserve_extra_mb // 0), (.hugepages_pool_ceiling_mb // 0), (.threads // ""), (.add_to_path // false), (.api // "disabled"), (.api_port // 8081), (.api_bind // "0.0.0.0"), (.control // "disabled"), (.control_port // 8082), (.control_bind // "0.0.0.0"), (.control_upgrade // "disabled"), (.miner_user // ""), (.rig_id | if type == "string" and test("\\S") then . else "" end)' "$CONFIG_JSON"
+    _CV=("${_JV[@]}")
 
-    # HOME_DIR becomes a filesystem path we mkdir/cd/write under (with sudo), so validate it via the
-    # shared resolver (the same one the privileged uninstall/backup/restore use, so none of them can act
-    # on an unvalidated path).
-    RAW_HOME=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON")
+    RAW_HOME=${_CV[0]}
     if ! WORKER_ROOT=$(_worker_root_for_home "$RAW_HOME"); then
         error "HOME_DIR must be \"DYNAMIC_HOME\" or an absolute path (letters, digits, . _ - /); got: '$RAW_HOME'."
     fi
-    DONATION=$(jq -r '.DONATION // 0' "$CONFIG_JSON")
+    DONATION=${_CV[1]}
     if ! _uint_in_range "$DONATION" 0 100; then
         error "DONATION must be an integer between 0 and 100 (got: $DONATION)."
     fi
@@ -468,92 +485,62 @@ parse_config() {
 
     POOLS_JSON=$(jq -c --slurpfile base /dev/fd/3 '[$base[0], [.pools[] | with_entries(select(.key == "daemon" or .key == "daemon-poll-interval" or .key == "daemon-job-timeout" or .key == "daemon-zmq-port") | if (.key != "daemon") and (.value | type == "number") and (.value == (.value | floor)) then .value |= floor else . end)]] | transpose | map((.[0] + .[1]) | if (.url | type == "string" and (startswith("daemon+http://") or startswith("daemon+https://"))) and (has("daemon") | not) then .daemon = true else . end)' "$CONFIG_JSON" 3<<<"$POOLS_JSON") || error "Could not parse daemon pool fields."
     while IFS= read -r _pool; do
-        _u=$(jq -r '.url' <<<"$_pool")
-        _user=$(jq -r '.user' <<<"$_pool")
-        _pass=$(jq -r '.pass' <<<"$_pool")
+        _jvals '.url, .user, .pass, (.socks5 // ""), (has("socks5") and .socks5 == ""), (."tls-fingerprint" // ""), (has("tls-fingerprint") and ."tls-fingerprint" == ""), .keepalive, .tls, .enabled, (.pass | type), (try (has("rig-id") == false or (."rig-id" | type == "string" and (test("[^A-Za-z0-9._:@+-]") | not))) catch false), (try (has("nicehash") == false or (.nicehash | type == "boolean")) catch false), (try (has("sni") == false or (.sni | type == "boolean")) catch false), (try (.algo == null or (.algo | IN("rx/0", "rx/2", "rx/wow", "rx/arq", "rx/graft", "rx/sfx", "rx/yada"))) catch false), (try (.coin == null or (.coin | ascii_downcase | IN("monero", "xmr", "arqma", "arq", "graft", "grft", "wownero", "wow", "zephyr", "zeph", "townforge", "yadacoin", "yda"))) catch false)' <<<"$_pool"
+        _u=${_JV[0]}
+        _user=${_JV[1]}
+        _pass=${_JV[2]}
         [ -n "$_u" ] || error "A pool entry has no url — set 'pools[].url' (host:port) in $CONFIG_JSON."
         _validate_pool_url "$_pool" 3333 "$_u"
-        # SOCKS5 proxy (#400), per pool, emitted only when set. XMRig dials the pool through it and
-        # sends the HOSTNAME in the CONNECT request (Client::Socks5::connect uses ATYP 0x03 for
-        # anything that is not an IP literal), so the proxy resolves the name — which is what lets a
-        # v3 .onion stratum work with no `socks5h` variant to ask for. Same host:port rules as the
-        # pool url, via the shared validator, so an onion pool and its proxy cannot be judged by two
-        # different standards.
-        # #408: `""` is not "unset", and the two predicates used to disagree about that. The emit
-        # step above keys on jq truthiness, so an empty string IS written into the generated
-        # config; `// empty` here makes it indistinguishable from absent, so it skipped validation
-        # entirely. Reject it rather than dropping the key — dropping is a silent downgrade for
-        # tls-fingerprint (see below), and one rule for both keys stops them drifting apart again.
-        if [ "$(jq -r 'has("socks5") and .socks5 == ""' <<<"$_pool")" = "true" ]; then
+        if [ "${_JV[4]}" = "true" ]; then
             error "Pool socks5 is an empty string — remove the key, or give it a host:port such as 127.0.0.1:9050."
         fi
-        _s5=$(jq -r '.socks5 // empty' <<<"$_pool")
+        _s5=${_JV[3]}
         if [ -n "$_s5" ]; then
             _validate_host_port "$_s5" "Pool socks5" 9050
         fi
         if [ -n "$_user" ] && ! [[ "$_user" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
             error "Pool user '$_user' has invalid characters (allowed: letters, digits, . _ - : @ +)."
         fi
-        if ! jq -e 'has("rig-id") == false or (."rig-id" | type == "string" and (test("[^A-Za-z0-9._:@+-]") | not))' <<<"$_pool" >/dev/null 2>&1; then
+        if [ "${_JV[11]}" != true ]; then
             error "Pool rig-id must be a string using only these characters: letters, digits, . _ - : @ + (or empty)."
         fi
-        for _f in nicehash sni; do
-            if ! jq -e --arg f "$_f" 'has($f) == false or (.[$f] | type == "boolean")' <<<"$_pool" >/dev/null 2>&1; then
-                error "Pool $_f must be true or false."
-            fi
-        done
-        if ! jq -e '.algo == null or (.algo | IN("rx/0", "rx/2", "rx/wow", "rx/arq", "rx/graft", "rx/sfx", "rx/yada"))' <<<"$_pool" >/dev/null 2>&1; then
+        [ "${_JV[12]}" = true ] || error "Pool nicehash must be true or false."
+        [ "${_JV[13]}" = true ] || error "Pool sni must be true or false."
+        if [ "${_JV[14]}" != true ]; then
             error "Pool algo must be a supported RandomX algorithm (rx/0, rx/2, rx/wow, rx/arq, rx/graft, rx/sfx, rx/yada): HugePages reservation and tune --bench assume a RandomX scratchpad."
         fi
-        if ! jq -e '.coin == null or (.coin | ascii_downcase | IN("monero", "xmr", "arqma", "arq", "graft", "grft", "wownero", "wow", "zephyr", "zeph", "townforge", "yadacoin", "yda"))' <<<"$_pool" >/dev/null 2>&1; then
+        if [ "${_JV[15]}" != true ]; then
             error "Pool coin must be a supported RandomX coin (monero/XMR, arqma/ARQ, graft/GRFT, wownero/WOW, zephyr/ZEPH, townforge, yadacoin/YDA): HugePages reservation and tune --bench assume a RandomX scratchpad."
         fi
-        if [ "$(jq -r '.pass | type' <<<"$_pool")" != "string" ]; then
-            error "Pool pass must be a string (got a $(jq -r '.pass | type' <<<"$_pool")). A masked-secret marker from the API feed is not a password — send the real value, or omit 'pass' entirely."
+        if [ "${_JV[10]}" != "string" ]; then
+            error "Pool pass must be a string (got a ${_JV[10]}). A masked-secret marker from the API feed is not a password — send the real value, or omit 'pass' entirely."
         fi
         if ! [[ "$_pass" =~ ^[[:graph:]]+$ ]]; then
             error "Pool pass must be non-empty with no spaces or control characters."
         fi
-        # TLS fingerprint pin (#115): xmrig does NO cert verification for stratum without a pin
-        # (v6.26.0 Tls.cpp:186 verifyFingerprint returns true when the pin is a NULL pointer), so
-        # the fingerprint is the
-        # ONLY server authentication stratum-TLS has. 64 hex chars, either case (xmrig compares
-        # case-insensitively); passed verbatim, never normalized. A pin without tls:true is a hard
-        # error — a silently-ignored pin would leave the operator believing they're protected.
-        # #408: an EMPTY pin is not an absent one, and the difference is security-relevant. XMRig
-        # v6.26.0 skips verification only when the pin is a null pointer; `""` parses to a non-null
-        # empty String (Pool.cpp:129 -> String::operator=(const char *)), so Tls.cpp:186 falls
-        # through to strncasecmp against every certificate and matches none — the pool never
-        # connects. That is why this rejects rather than dropping the key: dropping it would turn
-        # "refuse every cert" into "verify nothing", a silent downgrade introduced by the fix.
-        if [ "$(jq -r 'has("tls-fingerprint") and ."tls-fingerprint" == ""' <<<"$_pool")" = "true" ]; then
+        if [ "${_JV[6]}" = "true" ]; then
             error "Pool tls-fingerprint is an empty string. Remove the key to connect without a pin, or set the cert's SHA-256 as 64 hex chars. An empty pin is not the same as no pin: xmrig compares it against every certificate and matches none, so the pool never connects."
         fi
-        _fp=$(jq -r '."tls-fingerprint" // empty' <<<"$_pool")
+        _fp=${_JV[5]}
         if [ -n "$_fp" ]; then
             if ! [[ "$_fp" =~ ^[0-9A-Fa-f]{64}$ ]]; then
                 error "Pool tls-fingerprint must be the cert's SHA-256 as 64 hex chars (no colons). Get it with: echo | openssl s_client -connect $_u 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':'"
             fi
-            if [ "$(jq -r '.tls' <<<"$_pool")" != "true" ]; then
+            if [ "${_JV[8]}" != "true" ]; then
                 error "Pool '$_u' sets tls-fingerprint but not \"tls\": true — the pin only applies to a TLS connection; set both or remove the fingerprint."
             fi
         fi
+        _k=7
         for _f in keepalive tls enabled; do
-            _bv=$(jq -r --arg f "$_f" '.[$f]' <<<"$_pool")
+            _bv=${_JV[_k]}
+            _k=$((_k + 1))
             case "$_bv" in true | false) ;; *) error "Pool $_f must be true or false (got: $_bv)." ;; esac
         done
     done < <(jq -c '.[]' <<<"$POOLS_JSON")
 
-    # HTTP API token (OPTIONAL). By default the rig's read-only xmrig API is left OPEN — no token,
-    # matching Pithead's stock no-auth probe of GET http://<rig>:8080/1/summary. Set ACCESS_TOKEN to
-    # require a Bearer token instead and match it dashboard-side; see docs/pithead-integration.md.
-    ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
+    ACCESS_TOKEN=${_CV[2]}
 
-    # Opt-in firewall scoping (#142): restrict the read-only API port(s) to one source + loopback.
-    # Empty (default) = RigForge manages no firewall. Accepts IPv4 or IPv6 address/CIDR (#243): the
-    # strict per-family charset is the injection guard (the value reaches an nft file), and
-    # API_ALLOW_FAMILY (ip|ip6) picks the nft match keyword.
-    API_ALLOW_FROM=$(jq -r '.api_allow_from // empty' "$CONFIG_JSON")
+    API_ALLOW_FROM=${_CV[3]}
     API_ALLOW_FAMILY=ip
     if [ -n "$API_ALLOW_FROM" ]; then
         if [[ "$API_ALLOW_FROM" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
@@ -589,11 +576,7 @@ parse_config() {
         [[ "$_att" =~ ^[A-Za-z0-9._:@+-]+$ ]] || error "ACCESS_TOKENS.\"$_atn\" has invalid characters (allowed: letters, digits, . _ - : @ +)."
     done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$ACCESS_TOKENS_JSON")
 
-    # Opt-in periodic live auto-tuning (#46, #95): tri-state. "disabled" (default) installs no timer;
-    # "performance" schedules a periodic tune for raw H/s; "efficiency" schedules one for hashrate-per-watt.
-    # Legacy booleans still parse (true -> performance, false -> disabled); a typo hard-errors rather than
-    # silently disabling tuning. AUTOTUNE_TARGET (perf|efficiency) is what autotune() and the unit consume.
-    _at=$(jq -r '.autotune // "disabled"' "$CONFIG_JSON")
+    _at=${_CV[4]}
     case "$_at" in
     disabled | false | off | none | null | "") AUTOTUNE_MODE=disabled ;;
     performance | perf | true | on) AUTOTUNE_MODE=performance ;;
@@ -602,94 +585,61 @@ parse_config() {
     esac
     case "$AUTOTUNE_MODE" in efficiency) AUTOTUNE_TARGET=efficiency ;; *) AUTOTUNE_TARGET=perf ;; esac
 
-    # Opt-in miner watchdog (#139): a periodic health check (same timer machinery as autotune) that
-    # restarts a WEDGED miner — process alive, 0 H/s or API dead, the case systemd's Restart= can't
-    # see — and, when max_temp_c is set, stops the miner above that temperature (restarting 5°C
-    # below). A typo hard-errors: a recovery mechanism must not be silently disabled.
-    _wd=$(jq -r '.watchdog // "disabled"' "$CONFIG_JSON")
+    _wd=${_CV[5]}
     case "$_wd" in
     disabled | false | off | none | null | "") WATCHDOG_MODE=disabled ;;
     enabled | true | on) WATCHDOG_MODE=enabled ;;
     *) error "Invalid \"watchdog\" value '$_wd' in config.json — use \"disabled\" or \"enabled\"." ;;
     esac
-    WATCHDOG_INTERVAL_MIN=$(jq -r '.watchdog_interval_min // 5' "$CONFIG_JSON")
+    WATCHDOG_INTERVAL_MIN=${_CV[6]}
     if ! _uint_in_range "$WATCHDOG_INTERVAL_MIN" 1 1440; then
         error "watchdog_interval_min must be a whole number of minutes, 1-1440 (got: $WATCHDOG_INTERVAL_MIN)."
     fi
-    # Empty (the default) = no thermal cutoff. Opt-in because thermal_zone0's meaning varies by
-    # board — a wrong cutoff on an unchecked sensor is worse than none. 40-110: below 40 a loaded
-    # rig would never restart, above 110 is past any CPU's limit.
-    MAX_TEMP_C=$(jq -r '.max_temp_c // empty' "$CONFIG_JSON")
+    MAX_TEMP_C=${_CV[7]}
     if [ -n "$MAX_TEMP_C" ]; then
         _uint_in_range "$MAX_TEMP_C" 40 110 || error "max_temp_c must be empty (no thermal cutoff) or a whole number 40-110 °C (got: $MAX_TEMP_C)."
         MAX_TEMP_C=$((10#$MAX_TEMP_C))
     fi
 
-    # Co-resident reservation headroom (#305): MB of HugePages to leave for another workload on the box
-    # (a co-located pithead stack), ADDED to RigForge's computed mining need when it sizes the GRUB
-    # reservation and the runtime pool. RigForge stays the sole writer of the reservation; the caller
-    # just declares "leave this much for the rest of the box." Default 0 (miner-only sizing). The upper
-    # bound is generous (64 GB of 2MB pages) — this is a deliberate reservation, not a typo guard.
-    HUGEPAGES_RESERVE_EXTRA_MB=$(jq -r '.hugepages_reserve_extra_mb // 0' "$CONFIG_JSON")
+    HUGEPAGES_RESERVE_EXTRA_MB=${_CV[8]}
     if ! _uint_in_range "$HUGEPAGES_RESERVE_EXTRA_MB" 0 65536; then
         error "hugepages_reserve_extra_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_RESERVE_EXTRA_MB)."
     fi
-    # Total-pool ceiling (#398): a HARD CAP on the runtime pool RigForge will grow to, expressed in MB —
-    # unlike hugepages_reserve_extra_mb (which ADDS declared headroom into the computed requirement),
-    # this bounds the WRITE itself. It exists because no value of hugepages_reserve_extra_mb can fix a
-    # double-count between that requirement and the grow-only write's availability check (rigforge#398):
-    # a co-resident consumer's already-held pages land inside the requirement (as declared headroom) and
-    # are simultaneously excluded from "available," so the shortfall the grow-only write computes counts
-    # the same pages twice. A ceiling stops the WRITE from ever exceeding the box's declared honest
-    # capacity, regardless of how that upstream arithmetic comes out. Default 0 = no ceiling (today's
-    # behavior, unchanged) — only a caller that declares this key opts into the cap. An odd MB value
-    # FLOORS to the 2MB page below (e.g. 5121 -> 2560 pages, 5120MB effective) — a cap must round
-    # toward less memory, never more.
-    HUGEPAGES_POOL_CEILING_MB=$(jq -r '.hugepages_pool_ceiling_mb // 0' "$CONFIG_JSON")
+    HUGEPAGES_POOL_CEILING_MB=${_CV[9]}
     if ! _uint_in_range "$HUGEPAGES_POOL_CEILING_MB" 0 65536; then
         error "hugepages_pool_ceiling_mb must be a whole number of MB, 0-65536 (got: $HUGEPAGES_POOL_CEILING_MB)."
     fi
-    # First-class thread cap (#305): a CEILING on the RandomX thread count — min(auto-detected, threads).
-    # Empty (default) = let XMRig/L3 sizing pick. A co-located miner sets this (e.g. nproc-2) to leave
-    # the stack cores free. Sizing and the generated cpu.rx both honour it; it never raises the count.
-    THREADS_CAP=$(jq -r '.threads // empty' "$CONFIG_JSON")
+    THREADS_CAP=${_CV[10]}
     if [ -n "$THREADS_CAP" ]; then
         if ! _uint_in_range "$THREADS_CAP" 1 1024; then
             error "threads must be empty (auto) or a whole number 1-1024 (got: $THREADS_CAP)."
         fi
     fi
 
-    # Opt-in: install a `rigforge` command on PATH (a symlink in BIN_DIR). Off by default — setup makes
-    # no system-wide convenience change you didn't ask for.
-    ADD_TO_PATH=$(jq -r '.add_to_path // false' "$CONFIG_JSON")
+    ADD_TO_PATH=${_CV[11]}
 
-    # Opt-in read-only sister API (#99): serves XMRig's /2/summary enriched with RigForge state
-    # (tune/power/health/provenance) on its own port. Same posture as :8080 — read-only, LAN-bound,
-    # gated by ACCESS_TOKEN or any named ACCESS_TOKENS entry (#516).
-    _api=$(jq -r '.api // "disabled"' "$CONFIG_JSON")
+    _api=${_CV[12]}
     case "$_api" in
     disabled | false | off | none | null | "") API_MODE=disabled ;;
     enabled | true | on) API_MODE=enabled ;;
     *) error "Invalid \"api\" value '$_api' in config.json — use \"disabled\" or \"enabled\"." ;;
     esac
-    API_PORT=$(jq -r '.api_port // 8081' "$CONFIG_JSON")
+    API_PORT=${_CV[13]}
     if ! _uint_in_range "$API_PORT" 1 65535; then error "api_port must be a port number 1-65535 (got: $API_PORT)."; fi
     if [ "$API_PORT" = 8080 ]; then error "api_port 8080 collides with XMRig's own API — pick another port."; fi
-    API_BIND=$(jq -r '.api_bind // "0.0.0.0"' "$CONFIG_JSON")
+    API_BIND=${_CV[14]}
     [[ "$API_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "api_bind must be an IP address (got: $API_BIND)."
 
-    # Opt-in WRITABLE control path (#236): a SEPARATE authenticated endpoint that lets the stack
-    # apply config changes THROUGH RigForge (see docs/adr/0001), authenticated by ACCESS_TOKEN or any ACCESS_TOKENS entry (#516).
-    _control=$(jq -r '.control // "disabled"' "$CONFIG_JSON")
+    _control=${_CV[15]}
     case "$_control" in
     disabled | false | off | none | null | "") CONTROL_MODE=disabled ;;
-    enabled | true | on) CONTROL_MODE=enabled API_MODE=enabled ;; # #507: control implies api (unobservable without the read feed) — never the reverse, and api stays out of CONTROL_WRITABLE_KEYS below so it's never remote-settable
+    enabled | true | on) CONTROL_MODE=enabled API_MODE=enabled ;;
     *) error "Invalid \"control\" value '$_control' in config.json — use \"disabled\" or \"enabled\"." ;;
     esac
-    CONTROL_PORT=$(jq -r '.control_port // 8082' "$CONFIG_JSON")
+    CONTROL_PORT=${_CV[16]}
     if ! _uint_in_range "$CONTROL_PORT" 1 65535; then error "control_port must be a port number 1-65535 (got: $CONTROL_PORT)."; fi
     if [ "$CONTROL_PORT" = 8080 ]; then error "control_port 8080 collides with XMRig's own API — pick another port."; fi
-    CONTROL_BIND=$(jq -r '.control_bind // "0.0.0.0"' "$CONFIG_JSON")
+    CONTROL_BIND=${_CV[17]}
     [[ "$CONTROL_BIND" =~ ^[0-9A-Fa-f.:]+$ ]] || error "control_bind must be an IP address (got: $CONTROL_BIND)."
     if [ "$CONTROL_MODE" = enabled ]; then
         if [ "${API_MODE:-disabled}" = enabled ] && [ "$CONTROL_PORT" = "$API_PORT" ]; then
@@ -701,10 +651,7 @@ parse_config() {
         [ -n "${API_ALLOW_FROM:-}" ] || error "control: \"enabled\" requires api_allow_from — the writable path must be pinned to the stack host. Set api_allow_from in config.json."
     fi
 
-    # Opt-in REMOTE UPGRADE (#308, ADR 0002): a SECOND switch, layered on control:"enabled", that lets
-    # the stack trigger a rig to upgrade its own RigForge to the latest release. Default off, and it
-    # does NOT come up just because `control` is on. Rides the control channel's own auth, no auth of its own.
-    _cu=$(jq -r '.control_upgrade // "disabled"' "$CONFIG_JSON")
+    _cu=${_CV[18]}
     case "$_cu" in
     disabled | false | off | none | null | "") CONTROL_UPGRADE=disabled ;;
     enabled | true | on) CONTROL_UPGRADE=enabled ;;
@@ -720,10 +667,7 @@ parse_config() {
         warn "api_allow_from is IPv6 but api_bind/control_bind are IPv4 (0.0.0.0) — the APIs aren't reachable over IPv6, so the v6 scope takes no effect. Set api_bind/control_bind to \"::\" to serve + scope IPv6."
     fi
 
-    # Privilege separation (#140): run the miner as this dedicated non-root system user. Empty
-    # (default) keeps today's root behavior exactly. `root` is rejected — it would silently mean
-    # "no separation". useradd-portable names only.
-    MINER_USER=$(jq -r '.miner_user // empty' "$CONFIG_JSON")
+    MINER_USER=${_CV[19]}
     if [ -n "$MINER_USER" ]; then
         if [ "$MINER_USER" = "root" ]; then
             error "miner_user must be a non-root system username (empty = run as root, the default)."
@@ -737,7 +681,7 @@ parse_config() {
         _randomx_auto_pick_log
     fi
     export RX_MODE
-    RIG_ID=$(jq -r '.rig_id | if type == "string" and test("\\S") then . else empty end' "$CONFIG_JSON")
+    RIG_ID=${_CV[20]}
 
     _shared_host_parse
     _warn_unknown_config_keys
@@ -752,41 +696,43 @@ parse_config() {
 _warn_unknown_config_keys() {
     local known="pools ACCESS_TOKEN ACCESS_TOKENS DONATION autotune add_to_path HOME_DIR api api_port api_bind api_allow_from miner_user RIG_NAME watchdog watchdog_interval_min max_temp_c control control_port control_bind control_upgrade tor_socks5 hugepages_reserve_extra_mb hugepages_pool_ceiling_mb threads shared_host xmrig rig_id"
     local known_pool="url user pass keepalive tls enabled tls-fingerprint socks5 rig-id nicehash algo coin sni daemon daemon-poll-interval daemon-job-timeout daemon-zmq-port"
-    local k lk m lm hit hint unknown_seen=0
-    while IFS= read -r k; do
+    local k lk m hit hint unknown_seen=0 kl
+    kl=$(printf '%s' "$known" | tr '[:upper:]' '[:lower:]')
+    while IFS= read -r k && IFS= read -r lk <&3; do
         case "$k" in _*) continue ;; esac
         hit=""
         hint=""
-        lk=$(printf '%s' "$k" | tr '[:upper:]' '[:lower:]')
+        set -- $kl
         for m in $known; do
             if [ "$k" = "$m" ]; then
                 hit=1
                 break
             fi
-            lm=$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')
-            if [ "$lk" = "$lm" ]; then hint="$m"; fi
+            if [ "$lk" = "$1" ]; then hint="$m"; fi
+            shift
         done
         if [ -n "$hit" ]; then continue; fi
         if [ -n "$hint" ]; then warn "config.json: unknown key \"$k\" is ignored — did you mean \"$hint\"?"; else warn "config.json: unknown key \"$k\" is ignored."; fi
         unknown_seen=1
-    done < <(jq -r 'keys[]' "$CONFIG_JSON" 2>/dev/null || true)
-    while IFS= read -r k; do
+    done 3< <(jq -r 'keys[] | ascii_downcase' "$CONFIG_JSON" 2>/dev/null || true) < <(jq -r 'keys[]' "$CONFIG_JSON" 2>/dev/null || true)
+    kl=$(printf '%s' "$known_pool" | tr '[:upper:]' '[:lower:]')
+    while IFS= read -r k && IFS= read -r lk <&3; do
         case "$k" in _*) continue ;; esac
         hit=""
         hint=""
-        lk=$(printf '%s' "$k" | tr '[:upper:]' '[:lower:]')
+        set -- $kl
         for m in $known_pool; do
             if [ "$k" = "$m" ]; then
                 hit=1
                 break
             fi
-            lm=$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')
-            if [ "$lk" = "$lm" ]; then hint="$m"; fi
+            if [ "$lk" = "$1" ]; then hint="$m"; fi
+            shift
         done
         if [ -n "$hit" ]; then continue; fi
         if [ -n "$hint" ]; then warn "config.json: unknown pool field \"$k\" is ignored — did you mean \"$hint\"?"; else warn "config.json: unknown pool field \"$k\" is ignored."; fi
         unknown_seen=1
-    done < <(jq -r '(.pools // []) | map(keys[]) | unique | .[]' "$CONFIG_JSON" 2>/dev/null || true)
+    done 3< <(jq -r '(.pools // []) | map(keys[]) | unique | .[] | ascii_downcase' "$CONFIG_JSON" 2>/dev/null || true) < <(jq -r '(.pools // []) | map(keys[]) | unique | .[]' "$CONFIG_JSON" 2>/dev/null || true)
     if [ "$unknown_seen" = 1 ]; then warn "See config.reference.json for every supported key."; fi
 }
 
@@ -4730,10 +4676,11 @@ watchdog() {
 
 # shellcheck source=util/doctor-report.sh
 source "${RIGFORGE_LIB:-$(_script_dir)}/util/doctor-report.sh"
-# Read a /sys/class/dmi/id field (board/BIOS identity; world-readable). Empty if missing. #78.
 _dmi() {
+    local v=""
     [ -r "$DMI_DIR/$1" ] || return 0
-    tr -d '\n' <"$DMI_DIR/$1" 2>/dev/null
+    { v=$(<"$DMI_DIR/$1"); } 2>/dev/null || true
+    printf '%s' "${v//$'\n'/}"
     return 0
 }
 
@@ -4758,7 +4705,7 @@ _cpu_eff_khz() {
     local f v sum=0 n=0
     for f in "$CPU_SYSFS"/cpu[0-9]*/cpufreq/scaling_cur_freq; do
         [ -r "$f" ] || continue
-        v=$(cat "$f" 2>/dev/null)
+        { v=$(<"$f"); } 2>/dev/null
         case "$v" in '' | *[!0-9]*) continue ;; esac
         sum=$((sum + v))
         n=$((n + 1))
@@ -4966,8 +4913,8 @@ _api_tune_json() {
     fi
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl cat rigforge-autotune.timer >/dev/null 2>&1; then
         aten=true
-        atgt=$(systemctl cat rigforge-autotune.service 2>/dev/null | sed -nE 's/^Environment=AUTOTUNE_TARGET=//p' | head -1)
-        asched=$(systemctl cat rigforge-autotune.timer 2>/dev/null | sed -nE 's/^OnCalendar=//p' | head -1)
+        atgt=$(_unit_value rigforge-autotune.service Environment=AUTOTUNE_TARGET=)
+        asched=$(_unit_value rigforge-autotune.timer OnCalendar=)
         anext=$(systemctl show rigforge-autotune.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
     fi
     jq -n --argjson applied "$applied" --argjson target "$target" --argjson best "$best" --argjson n "$n" --argjson aten "$aten" --arg atgt "$atgt" --arg asched "$asched" --arg anext "$anext" '{applied: $applied, target: $target, last_best_hs: $best, candidates_tried: $n, autotune: {enabled: $aten, target: (if $atgt == "" then null else $atgt end), schedule: (if $asched == "" then null else $asched end), next: (if $anext == "" then null else $anext end)}}'
@@ -4978,8 +4925,8 @@ _health_json() {
     local sa=false hp_total="" hp1g="" gov="" msr_st="" wr="" logf="" mem pop nch spd rated smt="" bv="" bn="" pct="" thr=null xmp=null effk maxk
     if [ "$OS_TYPE" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then sa=true; fi
     hp_total=$(awk '/^HugePages_Total:/ {print $2}' "$MEMINFO" 2>/dev/null || true)
-    hp1g=$(cat "$HUGEPAGES_1G_NR" 2>/dev/null || true)
-    gov=$(cat "$GOVERNOR_FILE" 2>/dev/null || true)
+    { hp1g=$(<"$HUGEPAGES_1G_NR"); } 2>/dev/null || true
+    { gov=$(<"$GOVERNOR_FILE"); } 2>/dev/null || true
     wr=$(_worker_root_from_config)
     [ -n "$wr" ] && logf=$(jq -r '."log-file" // empty' "$wr/xmrig/build/config.json" 2>/dev/null || true)
     msr_st=$(_msr_log_status "${logf:-/nonexistent}" | cut -f1)
@@ -4988,11 +4935,11 @@ _health_json() {
     if [ "${rated:-0}" -gt 0 ] 2>/dev/null && [ "${spd:-0}" -gt 0 ] 2>/dev/null; then
         if [ "$spd" -lt "$rated" ]; then xmp=false; else xmp=true; fi
     fi
-    smt=$(cat "$SMT_CONTROL" 2>/dev/null || true)
+    { smt=$(<"$SMT_CONTROL"); } 2>/dev/null || true
     bv=$(_dmi board_vendor)
     bn=$(_dmi board_name)
     if [ "$sa" = true ]; then
-        maxk=$(cat "$CPUFREQ_MAX" 2>/dev/null || true)
+        { maxk=$(<"$CPUFREQ_MAX"); } 2>/dev/null || true
         effk=$(_cpu_eff_khz)
         if [ -n "$effk" ] && [ "${maxk:-0}" -gt 0 ] 2>/dev/null; then
             pct=$((effk * 100 / maxk))
@@ -5014,7 +4961,7 @@ _watchdog_json() {
     fi
     wr=$(_worker_root_from_config)
     [ -n "$wr" ] && [ -f "$wr/watchdog.thermal-hold" ] && hold=true
-    strikes=$(cat "$wr/watchdog.fails" 2>/dev/null || true)
+    { strikes=$(<"$wr/watchdog.fails"); } 2>/dev/null || true
     [[ "$strikes" =~ ^[0-9]+$ ]] || strikes=0
     t=$(_read_temp 2>/dev/null || true)
     jq -n --argjson hold "$hold" --arg mt "${MAX_TEMP_C:-}" --arg t "$t" --arg s "$strikes" '{mode: "enabled", thermal_hold: $hold, max_temp_c: (if $mt == "" then null else ($mt | tonumber) end), resumes_below_c: (if $mt == "" then null else (($mt | tonumber) - 5) end), temp_c: (if $t == "" then null else ($t | tonumber) end), strikes: ($s | tonumber)}'
@@ -5081,11 +5028,17 @@ _api_config_meta_json() {
 _api_control_json() {
     jq -c '{change_id, status, reason}' "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/status.json" 2>/dev/null || echo null
 }
-_api_control_history_json() { for f in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/changes"/*.json; do [ -f "$f" ] && jq -c '{change_id, status, reason}' "$f" 2>/dev/null; done | jq -cs '.' || true; } # #519: per-file so one malformed entry drops only itself; || true as the loop's rc leaks through pipefail
-_api_rigforge_block() {                                                                                                                                                                                            # <hashrate|"">
-    jq -n --arg v "$(cat "$(_lib_dir)/VERSION" 2>/dev/null || echo unknown)" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$(cat "$(_lib_dir)/RIGFORGE_REF" 2>/dev/null || echo '')" --arg os "$(_feed_os_version)" --arg rid "${RIG_ID:-}" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), os_version: (if $os == "" then null else $os end), rig_id: (if $rid == "" then null else $rid end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
+_api_control_history_json() {
+    local f fs=(/dev/null)
+    for f in "${RIGFORGE_CONTROL_STATE:-/var/lib/rigforge-control}/changes"/*.json; do [ -f "$f" ] && fs+=("$f"); done
+    jq -cn '[inputs | {change_id, status, reason}]' "${fs[@]}" 2>/dev/null || for f in "${fs[@]}"; do jq -c '{change_id, status, reason}' "$f" 2>/dev/null; done | jq -cs '.' || true
 }
-# Produce response bodies atomically; the idle timer keeps probes off the request path (#164).
+_api_rigforge_block() {
+    local ver stamp
+    { ver=$(<"$(_lib_dir)/VERSION"); } 2>/dev/null || ver=unknown
+    { stamp=$(<"$(_lib_dir)/RIGFORGE_REF"); } 2>/dev/null || stamp=""
+    jq -n --arg v "$ver" --arg appliance "$RIGFORGE_APPLIANCE" --arg stamp "$stamp" --arg os "$(_feed_os_version)" --arg rid "${RIG_ID:-}" --arg xv "$XMRIG_VERSION" --arg xc "$XMRIG_COMMIT" --argjson tune "$(_api_tune_json)" --argjson power "$(_api_power_json "$1")" --argjson health "$(_health_json)" --argjson watchdog "$(_watchdog_json)" --argjson config "$(_api_config_json)" --argjson config_meta "$(_api_config_meta_json)" --argjson control "$(_api_control_json)" --argjson control_history "$(_api_control_history_json)" '{version: $v, appliance: ($appliance == "1"), stamp: (if $stamp == "" then null else $stamp end), os_version: (if $os == "" then null else $os end), rig_id: (if $rid == "" then null else $rid end), xmrig_version: $xv, xmrig_commit: $xc, tune: $tune, power: $power, health: $health, watchdog: $watchdog, config: $config, config_meta: $config_meta, control: $control, control_history: $control_history}'
+}
 api_refresh() {
     [ "$OS_TYPE" = Linux ] || error "api-refresh is driven by the rigforge-api-refresh systemd timer and is Linux-only."
     RIGFORGE_TOLERATE_DONATION_TOR=1 parse_config >/dev/null

@@ -258,7 +258,6 @@ mkconf() { # <name> <json>
 
 # A minimal valid pool, for tests that just need *a* pool present.
 POOL='"pools": [{"url": "h:3333"}]'
-
 # ---------------------------------------------------------------------------
 # PR #15 (#14) removed the .local/mDNS appending: the pool url's host is used verbatim, whether it's a
 # short name, an FQDN, or an IP. The dotless case is the regression guard — it must NOT become
@@ -7383,6 +7382,7 @@ assert_eq "api-refresh: a broken health block leaves health.json serving the pre
 assert_eq "api-refresh: tune.json still updates despite the health failure (#276)" "$(jq -r '.applied' "$APIQ/data/tune.json")" "true"
 assert_eq "api-refresh: summary.json still updates despite the health failure (#276)" "$(jq -r '.rigforge.xmrig_version' "$APIQ/data/summary.json")" "x"
 source "$ROOT/tests/test-api-refresh-liveness.sh"
+bash "$ROOT/tests/test-api-refresh-spawns.sh" "$SCRIPT" >/dev/null 2>&1 && ok "api-refresh starts a bounded number of programs and parses config as before (#818)" || bad "api-refresh starts a bounded number of programs and parses config as before (#818)" "regression failed"
 bash "$ROOT/tests/test-tune-files-regular.sh" "$SCRIPT" >/dev/null 2>&1 && ok "tune feed reads only regular files" || bad "tune feed reads only regular files" "regression failed"
 out="$( (RIGFORGE_HOME="$APIQ" bash "$SCRIPT" api-refresh </dev/null) 2>&1 || true)"
 if [ "$(uname -s)" = Linux ]; then
