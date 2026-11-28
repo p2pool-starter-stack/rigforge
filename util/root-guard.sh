@@ -64,6 +64,44 @@ _rg_tree_unsafe() {
     return 1
 }
 
+_rg_keeps_root() {
+    local d
+    [ "$OS_TYPE" = Linux ] && ! _rg_tree_unsafe "$SCRIPT_DIR" >/dev/null || return 1
+    for d in "$@"; do
+        ! _rg_chain_unsafe "$d" >/dev/null || return 1
+    done
+}
+
+_rg_worker_kept() {
+    local real
+    [ -d "${WORKER_ROOT:-}" ] && real=$(cd -P "$WORKER_ROOT" && pwd -P) && _rg_keeps_root "$(dirname "$WORKER_ROOT")" "$(dirname "$real")" && printf '%s' "$real"
+}
+
+_rg_claim_worker() {
+    local real gone
+    real=$(_rg_worker_kept) || return 1
+    if [ -n "$(find "$real/xmrig/build/xmrig" -maxdepth 0 ! -user 0 2>/dev/null)" ]; then
+        # shellcheck disable=SC2034
+        XMRIG_REBUILD=true
+        sudo rm -f "$real/xmrig/.rigforge-commit"
+        warn "root-guard: the miner in $WORKER_ROOT was not root-owned, so the next setup or upgrade rebuilds it."
+    fi
+    if sudo chown -R 0:0 "$real" && sudo chmod -R go-w "$real" && gone=$(sudo find "$real" -type l -print -delete); then
+        [ -z "$gone" ] || warn "root-guard: removed symbolic links inside $WORKER_ROOT: ${gone//$'\n'/ }"
+        return 0
+    fi
+    warn "root-guard: could not keep $WORKER_ROOT root-owned."
+    return 1
+}
+
+_rg_config_snapshot() {
+    local d="${1%/*}" r t=""
+    mkdir -p "$d" && r=$(cd -P "$d" && pwd -P) && { [ "$(id -u)" -ne 0 ] || ! _rg_keeps_root "$(dirname "$d")" "$(dirname "$r")" || { sudo chown 0:0 "$r" && sudo chmod 755 "$r"; }; } &&
+        t=$(mktemp "$r/.config-snapshot.XXXXXX") && cat "$CONFIG_JSON" >"$t" && { mv -fT "$t" "$r/${1##*/}" 2>/dev/null || mv -fh "$t" "$r/${1##*/}"; } && return 0
+    rm -f "$t"
+    return 1
+}
+
 _rg_allowed() {
     [ -f "$ROOT_GUARD_STAMP" ] && [ "$(cat "$ROOT_GUARD_STAMP" 2>/dev/null)" = "allow $1" ] &&
         ! _rg_chain_unsafe "$ROOT_GUARD_STAMP" >/dev/null

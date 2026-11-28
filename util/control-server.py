@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -226,11 +227,27 @@ def _with_age(body_bytes):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        self._reaper = threading.Timer(self.timeout, self._drop)
+        self._reaper.daemon = True
+        self._reaper.start()
+        try:
+            super().handle()
+        except ConnectionError:
+            pass
+        self._reaper.cancel()
+
+    def _drop(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
     def log_message(self, *_):  # quiet by design — a config write must not spill headers to the journal
         pass
 
     def _send(self, code, reason, obj):
-        body = json.dumps(obj).encode()
+        body = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
         self.send_response_only(code, reason)  # no Server/Date banner, same wire discipline as the read API
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -258,10 +275,6 @@ class Handler(BaseHTTPRequestHandler):
         parts = self.path.split("?", 1)
         if parts[0] != "/status":
             return self._send(404, "Not Found", {"error": "not found"})
-        # #255: ?change_id=<16hex> returns THAT change's recorded outcome (or 404), so a caller whose
-        # confirmation got stepped on by a concurrent change can still read its own result. The no-arg
-        # form stays most-recent for compatibility. Validate the id as 16 hex before it becomes a path
-        # component — never allow traversal.
         cid = urllib.parse.parse_qs(parts[1]).get("change_id", [""])[0] if len(parts) == 2 else ""
         if cid:
             if not re.fullmatch(r"[0-9a-f]{16}", cid):
@@ -285,14 +298,7 @@ class Handler(BaseHTTPRequestHandler):
                     body = f.read()
             except OSError:
                 return self._send(503, "Service Unavailable", {"status": "no change applied yet"})
-        body = _with_age(body)  # #344 (item 3): a recorded-at stamp alone can read as fresh for days
-        self.send_response_only(200, "OK")
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-        self.close_connection = True
+        self._send(200, "OK", _with_age(body))
 
     def _read_json_body(self):
         """Shared body reader for /apply and /upgrade: enforce content-type, length cap, and JSON.
@@ -314,6 +320,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send(400, "Bad Request", {"error": "body is not valid JSON"})
             return None
+        self._reaper.cancel()
         return obj
 
     def do_POST(self):
@@ -327,12 +334,6 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "Not Found", {"error": "not found"})
 
     def _handle_upgrade(self):
-        # #308 (ADR 0002): the remote code-update surface. Gated by control_upgrade — a SECOND opt-in on
-        # top of `control`, so enabling remote tuning does not silently grant remote RCE. The version in
-        # the body IS the target (D4): the dashboard re-derives latest host-side, the rig makes no version
-        # check of its own — the applier bounds the supplied target, refusing anything that is not a real,
-        # reachable release newer than the one installed (D4/D10). We only stage the intent here; the
-        # unprivileged receiver never fetches or runs anything.
         if not UPGRADE_ENABLED:
             return self._send(403, "Forbidden", {"error": "remote upgrade is disabled on this rig; set control_upgrade: \"enabled\" locally to allow it"})
         body = self._read_json_body()
@@ -371,7 +372,6 @@ class Handler(BaseHTTPRequestHandler):
         tor_unsafe = donation_tor_reasons(change)
         if tor_unsafe:
             return self._send(400, "Bad Request", {"error": "refused via the remote control path: %s; change it locally on the rig with rigforge.sh if intended" % "; ".join(tor_unsafe)})
-        # Re-serialize exactly the accepted keys (defence-in-depth: never stage a raw body) and hand off.
         staged = json.dumps({k: change[k] for k in change}).encode()
         warning = None
         try:
@@ -429,4 +429,4 @@ if __name__ == "__main__":
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
             notify.connect("\0" + address[1:] if address.startswith("@") else address)
             notify.sendall(b"READY=1")
-    server.serve_forever()
+    server.serve_forever(poll_interval=30)

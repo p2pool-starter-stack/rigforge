@@ -1,0 +1,41 @@
+[Unit]
+Description=XMRig High-Performance Miner Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rfminer
+
+ExecStartPre=+-/usr/bin/cpupower frequency-set -g performance
+ExecStartPre=+@LIB@/rigforge.sh msr-apply
+ExecStartPre=+-/bin/sh -c 'test -f @OUT@/rigforge-api-firewall.nft && /usr/sbin/nft -f @OUT@/rigforge-api-firewall.nft || true'
+
+WorkingDirectory=@OUT@/worker/xmrig/build
+ExecStart=@OUT@/worker/xmrig/build/xmrig --config=@OUT@/worker/xmrig/build/config.json
+
+Restart=always
+RestartSec=10s
+
+# Unlock memory limits to allow HugePages allocation (scopes the privilege to THIS service rather than
+# granting every user unlimited memlock).
+LimitMEMLOCK=infinity
+# An unprivileged miner still needs to raise its own priority (cpu.priority: 2). Harmless for root.
+LimitNICE=-20
+
+# --- Hardening (defense-in-depth) ---
+# Deliberately conservative: every directive here is safe for a RandomX miner. We do NOT set
+# PrivateDevices/DeviceAllow (would hide /dev/cpu/*/msr and break the MSR mod), MemoryDenyWriteExecute
+# (would break the RandomX JIT), or ProtectKernelModules (can block msr access).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+PrivateTmp=true
+# The miner only ever writes under its worker root (config, build, log).
+ReadWritePaths=@OUT@/worker
+
+[Install]
+WantedBy=multi-user.target

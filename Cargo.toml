@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/rigforge-core", "crates/rigforge-rs"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unreachable = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+strip = true
+panic = "unwind"

@@ -94,4 +94,5 @@ check "a gain inside the combined noise band of both candidates is refused" reje
 check "efficiency: a slower candidate with more hashrate per watt wins through the hpw memo" accept "$(TUNE_TARGET=efficiency _accept_better 900 lean 1000 hungry && echo accept || echo reject)"
 printf 'lean\t135\nhungry\t187.5\n' >>"$MEMO_SD_FILE"
 check "efficiency: the same win inside the combined noise band is refused" reject "$(TUNE_TARGET=efficiency _accept_better 900 lean 1000 hungry && echo accept || echo reject)"
+bash "$(dirname "${BASH_SOURCE[0]}")/test-tune-gate.sh" "$SCRIPT" || fail=1
 exit "$fail"

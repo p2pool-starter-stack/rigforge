@@ -1,0 +1,21 @@
+[Unit]
+Description=RigForge sister API server (persistent, serves pre-computed state)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 ${CREDENTIALS_DIRECTORY}/server 0.0.0.0 8081 /run/rigforge-api ${CREDENTIALS_DIRECTORY}/config
+LoadCredential=config:@LIB@/config.json
+LoadCredential=server:@LIB@/util/api-server.py
+Restart=always
+RestartSec=5
+DynamicUser=yes
+Nice=19
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 # shellcheck shell=bash
 
 _package_channel() {
-    local marker="${RIGFORGE_PACKAGE_MARKER:-$SCRIPT_DIR/.rigforge-package}" v
+    local marker="${RIGFORGE_PACKAGE_MARKER:-$(_lib_dir)/.rigforge-package}" v
     [ -f "$marker" ] || return 1
     v=$(tr -d '[:space:]' <"$marker")
     case "$v" in apt | brew) printf '%s' "$v" ;; *) return 1 ;; esac
