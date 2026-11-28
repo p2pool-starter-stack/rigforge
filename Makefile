@@ -40,6 +40,7 @@ test-suite: ## rigforge test suite: unit + black-box, every CPU/OS profile simul
 	bash tests/test-revision-key.sh
 	bash tests/test-state-lib.sh
 	bash tests/test-homebrew-formula.sh
+	bash tests/manifest-selftest.sh
 	bash tests/test-release-bundle.sh
 	python3 tests/test-server-deadline.py
 
