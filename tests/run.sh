@@ -2915,7 +2915,7 @@ np_out="$(
 )"
 assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
 assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
-bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" "regression failed"
+bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real, tune gate (#814, #842)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real, tune gate (#814, #842)" "regression failed"
 
 # `tune --now` is the on-demand spelling of the autotune engine: it must reach autotune() AND map the
 # --perf/--efficiency flag onto the target. Drive the same stubbed sweep as above through `tune --now`.

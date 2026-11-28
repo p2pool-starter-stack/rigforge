@@ -207,5 +207,42 @@ printf 'STALE\n' >"$D/home/worker/tune-overrides-pre.json"
 check "restore removed the stale snapshot" n "$([ -f "$D/home/worker/tune-overrides-pre.json" ] && echo y || echo n)"
 check "restore's tuning stands (recovery cannot undo it)" "$PRE" "$(cat "$D/home/worker/tune-overrides.json")"
 
+echo "== a failed restore copy and a failed clear stay fatal (#842) =="
+printf 'CANDIDATE\n' >"$D/home/worker/tune-overrides.json"
+(
+    stub_env
+    cd "$D"
+    cp() {
+        case "$2" in */home/worker/*) return 1 ;; esac
+        command cp "$@"
+    }
+    set -e
+    restore -y "$D/backup.tar.gz" </dev/null >"$D/restore.out" 2>&1
+)
+check "restore exits non-zero when the tuning copy fails" 1 "$([ $? -ne 0 ] && echo 1 || echo 0)"
+check "restore does not claim it restored the tuning" 0 "$(grep -c 'Restored:.*tune-overrides.json' "$D/restore.out")"
+(
+    stub_env
+    cd "$D"
+    sudo() {
+        [ "$1" = rm ] && return 1
+        "$@"
+    }
+    tune --clear </dev/null >"$D/clear.out" 2>&1
+)
+check "tune --clear exits non-zero when the removal fails" 1 "$([ $? -ne 0 ] && echo 1 || echo 0)"
+check "tune --clear does not claim it cleared" 0 "$(grep -c 'Cleared tuning state' "$D/clear.out")"
+
+echo "== autotune cleanup restores before it drops the snapshot (#842) =="
+printf '%s\n' "$PRE" >"$SNAP"
+SEEN=$(
+    stub_env
+    _AUTOTUNE_DIRTY=1 _AUTOTUNE_PRE_MODE=3 _AUTOTUNE_OVR_FILE="$OVER"
+    _autotune_settle() { [ -f "$SNAP" ] && echo present || echo gone; }
+    _autotune_cleanup 2>/dev/null | tail -1
+)
+check "the snapshot still exists while the restore runs" present "$SEEN"
+check "the snapshot is gone after cleanup" n "$([ -f "$SNAP" ] && echo y || echo n)"
+
 echo "tune gate tests: fail=$fail"
 exit "$fail"
