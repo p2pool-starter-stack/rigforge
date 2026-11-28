@@ -6,10 +6,9 @@ on:
   pull_request:
   workflow_dispatch: # dispatched onto bot branches (xmrig-bump #225) whose token-created PRs can't self-trigger
 
-concurrency:
-  group: "${{ github.workflow }}-${{ github.event_name == 'pull_request' && 'pr-' || 'push-' }}${{ github.event.pull_request.number || github.ref_name }}"
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+# Least privilege: every job here only reads the repo to lint/test/build — nothing publishes or
+# writes. Set the floor once at the top so all jobs inherit a read-only GITHUB_TOKEN (zizmor:
+# excessive-permissions).
 permissions:
   contents: read
 
