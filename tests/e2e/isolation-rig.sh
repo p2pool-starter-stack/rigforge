@@ -121,7 +121,7 @@ assert_contains "the built source is the pinned one" "$(cat "$WORK/data-home/wor
 
 echo "== local upgrade with an XMRig pin change =="
 before="$(upstream_hits)"
-out="$(export XMRIG_VERSION=viso2 XMRIG_COMMIT="$PIN_viso2" && rf upgrade)"
+out="$(export RIGFORGE_TEST_OVERRIDES=1 XMRIG_VERSION=viso2 XMRIG_COMMIT="$PIN_viso2" && rf upgrade)"
 rc=$?
 assert_rc "upgrade with a changed pin exits 0" "$rc" "0"
 [ "$rc" = 0 ] || tail_out "$out"
@@ -160,7 +160,7 @@ before="$(upstream_hits)"
 out="$(rf upgrade --check)"
 assert_rc "upgrade --check with the proxy down exits 0" "$?" "0"
 assert_contains "upgrade --check with the proxy down says so" "$out" "through tor_socks5 (no direct fallback)"
-out="$(export XMRIG_VERSION=viso1 XMRIG_COMMIT="$PIN_viso1" && rf upgrade)"
+out="$(export RIGFORGE_TEST_OVERRIDES=1 XMRIG_VERSION=viso1 XMRIG_COMMIT="$PIN_viso1" && rf upgrade)"
 rc=$?
 assert_eq "upgrade with the proxy down fails instead of going direct" "$([ "$rc" -ne 0 ] && echo failed || echo succeeded)" "failed"
 assert_contains "the live source is untouched by the failed upgrade" "$(cat "$WORK/data-home/worker/xmrig/src/donate.h" 2>/dev/null)" "kBuild = 3"

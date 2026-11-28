@@ -33,7 +33,13 @@ JOB_IF_RE = re.compile(r'^    if: (.+)$')
 FULL_HISTORY = {"ci.yml": {"lint", "stock-home", "coverage"}, "security.yml": {"gitleaks"}}
 FORK_GUARD = ("github.event_name != 'pull_request' || "
               "github.event.pull_request.head.repo.full_name == github.repository")
-JOB_IF_ALLOWED = {"apt-feed": FORK_GUARD, "gitleaks": "github.event_name != 'schedule'"}
+JOB_IF_ALLOWED = {
+    "apt-feed": FORK_GUARD,
+    "gitleaks": "github.event_name != 'schedule'",
+    "backlog-expiry": "github.event_name == 'pull_request' && (github.base_ref == 'develop' || startsWith(github.base_ref, 'develop-v'))",
+    "zizmor-issue": "${{ always() && (github.event_name == 'schedule' || inputs.file_issue) && (needs.zizmor.result == 'success' || needs.zizmor.result == 'failure') }}",
+    "dependency-review": "github.event_name == 'pull_request'",
+}
 problems = []
 
 

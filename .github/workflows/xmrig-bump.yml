@@ -6,11 +6,19 @@ name: XMRig pin bump
 # rigs, and the changelog entry is curated at release time like every other change.
 on:
   schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC, an hour before the zizmor re-audit
+    - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      notes_tag:
+        description: "Dry run: only check this upstream tag's release notes for security wording"
+        default: ""
 
 permissions:
   contents: read
+
+concurrency:
+  group: xmrig-bump
+  cancel-in-progress: false
 
 jobs:
   bump:
@@ -37,12 +45,11 @@ jobs:
           set -Eeuo pipefail
           current=$(grep -oE 'XMRIG_VERSION:-v[0-9.]+' rigforge.sh | head -1 | sed 's/^XMRIG_VERSION:-//')
           latest=$(gh api repos/xmrig/xmrig/releases/latest --jq .tag_name)
-          # Third-party input: validate hard before it goes anywhere near a command or a ref.
           if ! printf '%s' "$latest" | grep -qE '^v[0-9]+(\.[0-9]+)*$'; then
             echo "::error::upstream tag '$latest' failed validation"; exit 1
           fi
-          if [ "$current" = "$latest" ]; then
-            echo "pin is current ($current)"
+          if ! bash scripts/xmrig-bump.sh newer "$current" "$latest"; then
+            echo "pin is current or ahead (pinned $current, upstream $latest)"
             echo "stale=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
@@ -52,8 +59,13 @@ jobs:
           if ! printf '%s' "$commit" | grep -qE '^[0-9a-f]{40}$'; then
             echo "::error::could not resolve ${latest} to a commit"; exit 1
           fi
-          existing=$(gh pr list --state open --head "bot/xmrig-${latest}" --json number --jq length)
-          if [ "$existing" != "0" ]; then
+          pr_state=$(bash scripts/xmrig-bump.sh state "bot/xmrig-${latest}")
+          if [ "$pr_state" = declined ]; then
+            echo "bump for ${latest} was declined (PR closed) — leaving the human decision alone"
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$pr_state" = open ]; then
             echo "PR for ${latest} already open"
             echo "stale=false" >>"$GITHUB_OUTPUT"
             exit 0
@@ -64,6 +76,30 @@ jobs:
             echo "latest=$latest"
             echo "commit=$commit"
           } >>"$GITHUB_OUTPUT"
+      - name: Flag security wording in the release notes
+        id: notes
+        if: steps.detect.outputs.stale == 'true' || inputs.notes_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.notes_tag || steps.detect.outputs.latest }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s' "$TAG" | grep -qE '^v[0-9]+(\.[0-9]+)*$' || { echo "::error::tag failed validation"; exit 1; }
+          if ! gh api "repos/xmrig/xmrig/releases/tags/${TAG}" --jq .body | grep -qiE 'CVE-[0-9]|security|vulnerab'; then
+            echo "no security wording in ${TAG} notes"
+            exit 0
+          fi
+          echo "security=true" >>"$GITHUB_OUTPUT"
+          expires=$(date -u -d '+30 days' +%F)
+          {
+            printf '## What'"'"'s the problem\n\nThe upstream XMRig %s release notes mention a security fix. The advisory text is not copied here; read the notes.\n\n' "$TAG"
+            printf '## What it impacts\n\nEvery rig built from the pinned XMRig commit until the pin moves.\n\n'
+            printf '## How I found it\n\nThe daily XMRig release watch matched CVE, security or vulnerability wording in https://github.com/xmrig/xmrig/releases/tag/%s.\n\n' "$TAG"
+            printf '## How important is it\n\nexpires: %s. Read the notes first; the wording match can be a false positive.\n\n' "$expires"
+            printf '## Acceptance criteria\n\n- The XMRig pin is at or past %s, or the notes are judged not to affect rigs and this issue says why.\n\n' "$TAG"
+            printf '## Possible solutions\n\nMerge the bump PR for %s once its checks pass.\n' "$TAG"
+          } >"$RUNNER_TEMP/notes.md"
+          bash scripts/file-security-issue.sh open "Security: XMRig ${TAG} release notes mention a security fix" "$RUNNER_TEMP/notes.md" dependencies
       - name: Build-verify the new pin (build only — nothing is executed beyond --version)
         if: steps.detect.outputs.stale == 'true'
         env:
@@ -89,18 +125,14 @@ jobs:
           CURRENT: ${{ steps.detect.outputs.current }}
           TAG: ${{ steps.detect.outputs.latest }}
           COMMIT: ${{ steps.detect.outputs.commit }}
+          SECURITY: ${{ steps.notes.outputs.security }}
         run: |
           set -Eeuo pipefail
+          labels=(--label dependencies)
+          [ "$SECURITY" = true ] && labels+=(--label security)
           branch="bot/xmrig-${TAG}"
-          git checkout -b "$branch"
-          sed -i "s|XMRIG_VERSION:-${CURRENT}|XMRIG_VERSION:-${TAG}|" rigforge.sh
-          sed -i "s|XMRIG_COMMIT:-[0-9a-f]\{40\}|XMRIG_COMMIT:-${COMMIT}|" rigforge.sh
-          grep -q "XMRIG_VERSION:-${TAG}" rigforge.sh
-          grep -q "XMRIG_COMMIT:-${COMMIT}" rigforge.sh
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: bump the XMRig pin to ${TAG} (bot, build-verified)"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          export ORIGIN_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          bash scripts/xmrig-bump.sh prepare "$branch" "$CURRENT" "$TAG" "$COMMIT"
           {
             printf 'Automated pin bump (#225): upstream released %s (pinned: %s).\n\n' "$TAG" "$CURRENT"
             printf -- '- Commit resolved from the release tag and verified: %s\n' "$COMMIT"
@@ -109,7 +141,7 @@ jobs:
             printf 'Deploys via the normal path after merge: upgrade rebuilds only where the pin changed.\n'
             printf 'Changelog gets its line at release curation, like every pin bump.\n'
           } >/tmp/pr-body.md
-          gh pr create --base develop --head "$branch" --label dependencies \
+          gh pr create --base develop --head "$branch" "${labels[@]}" \
             --title "chore: bump the XMRig pin to ${TAG} (bot, build-verified)" \
             --body-file /tmp/pr-body.md
           # A token-created PR does not trigger `on: pull_request` — dispatch the two required

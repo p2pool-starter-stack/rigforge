@@ -44,7 +44,7 @@ onion_dir="$(mktemp -d "$SANDBOX/onion.XXXXXX")"
 assert_eq "onion setup defaults on EOF" "$(jq -r '.pools[0].socks5' "$onion_dir/config.json")" "127.0.0.1:9050"
 
 proxy_config="$SANDBOX/proxy-doctor.json"
-printf '%s\n' '{"pools":[{"url":"pool.onion:3333","socks5":"127.0.0.1:9050"}]}' >"$proxy_config"
+(umask 077 && printf '%s\n' '{"pools":[{"url":"pool.onion:3333","socks5":"127.0.0.1:9050"}]}' >"$proxy_config")
 proxy_extra='CONFIG_JSON="$proxy_config"; _tcp_probe() { return 1; }'
 out="$(run_pool_doctor y "cat \"$DOC/api_connected.json\"" "$proxy_extra")"
 assert_rc "missing proxy does not fail otherwise connected mining" "$?" 0
