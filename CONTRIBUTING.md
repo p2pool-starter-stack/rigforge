@@ -166,9 +166,11 @@ RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-st
 2. Make your change and confirm `shellcheck` passes.
 3. Open a PR against `develop` and fill out the template.
    Before you submit any bench proof, finish `make lint-all` and `make test`
-   (the suite includes the offline contract credential checks), then name the
-   base explicitly (`--base develop`). Resubmit with the original idempotency
-   key, never a fresh one. Cancelling superseded runs stays manual.
+   (the suite includes the offline contract credential checks), then submit
+   with `bench-ci submit --base develop`. Retry a submission whose outcome is
+   unknown with its original `--idempotency-key`; a deliberate rerun of a
+   completed job omits the key so the client generates a fresh one. Cancelling
+   superseded runs stays manual.
 4. A PR into `develop` merges on green required checks and review of the head SHA.
    Merges are explicit, never automatic: bring the branch up to date with
    `develop`, then `gh pr merge --squash`. Only the owner's account merges; a PR
