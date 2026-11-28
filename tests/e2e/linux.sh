@@ -24,7 +24,12 @@ usage() {
 [ "$#" -le 1 ] || usage
 MODE="${1-all}"
 case "${1-all}" in
-all | deploy | appliance | isolation) ;;
+all)
+    PASSES="deploy appliance isolation"
+    ;;
+deploy | appliance | isolation)
+    PASSES="$1"
+    ;;
 *) usage ;;
 esac
 
@@ -52,16 +57,14 @@ run_pass() { # <label> [docker env args...] — one disposable container per pas
         "$IMAGE" bash /src/tests/e2e/in-container.sh
 }
 
+pass_deploy() { run_pass "deploy"; }
+pass_appliance() { run_pass "appliance" -e RIGFORGE_APPLIANCE=1; }
+pass_isolation() { bash "$ROOT/tests/e2e/isolation.sh"; }
+
 STATUS=0
-case "$MODE" in
-all | deploy) run_pass "deploy" || STATUS=1 ;;
-esac
-case "$MODE" in
-all | appliance) run_pass "appliance" -e RIGFORGE_APPLIANCE=1 || STATUS=1 ;;
-esac
-case "$MODE" in
-all | isolation) bash "$ROOT/tests/e2e/isolation.sh" || STATUS=1 ;;
-esac
+for pass in $PASSES; do
+    "pass_$pass" || STATUS=1
+done
 echo ""
 if [ "$STATUS" = 0 ]; then
     echo "rigforge e2e ($MODE): passed"

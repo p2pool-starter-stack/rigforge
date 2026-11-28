@@ -400,6 +400,11 @@
       },
       "needs": [
         "needs_docker"
+      ],
+      "all_runs": [
+        "deploy",
+        "appliance",
+        "isolation"
       ]
     },
     {
