@@ -55,6 +55,10 @@ fi
 for need in 'depends_on "bash"' 'depends_on "jq"' 'depends_on "flock"' '.rigforge-package' 'write_env_script' 'rigforge --version' 'test do'; do
     grep -qF "$need" "$formula" || fail "formula lacks: $need"
 done
+grep -q 'RIGFORGE_STATE: "#{var}/rigforge"' "$formula" || fail "formula does not export RIGFORGE_STATE"
+grep -q 'RIGFORGE_LIB' "$formula" && fail "formula must not set RIGFORGE_LIB: libexec is user-owned and the root guard would refuse it"
+grep -qF 'user-writable tree' "$formula" || fail "formula lacks the user-writable code tree caveat"
+grep -qF 'copy the old file to' "$formula" || fail "formula lacks the config migration caveat"
 grep -q 'service do\|plist' "$formula" && fail "formula must not define a service"
 printf 'PASS: formula wraps rigforge.sh, marks the tree and defines no service\n'
 
