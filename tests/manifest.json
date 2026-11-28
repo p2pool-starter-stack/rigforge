@@ -549,6 +549,30 @@
         "1": "fail"
       },
       "needs": []
+    },
+    {
+      "name": "security-backlog-expiry",
+      "file": "tests/test-security-backlog-expiry.sh",
+      "phases": [],
+      "timeout_seconds": 60,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
+    },
+    {
+      "name": "server-deadline",
+      "file": "tests/test-server-deadline.py",
+      "phases": [],
+      "timeout_seconds": 120,
+      "inputs": [],
+      "exit_codes": {
+        "0": "pass",
+        "1": "fail"
+      },
+      "needs": []
     }
   ]
 }
