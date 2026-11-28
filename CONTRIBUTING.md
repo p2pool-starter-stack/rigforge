@@ -165,6 +165,11 @@ RigForge uses a two-branch model (same as [Pithead](https://github.com/p2pool-st
 1. Fork the repo and create a topic branch off `develop`.
 2. Make your change and confirm `shellcheck` passes.
 3. Open a PR against `develop` and fill out the template.
+   Before you submit any bench proof, finish `make lint-all` and the offline
+   contract checks, then name the base explicitly (`--base develop`). Resubmit
+   with the original idempotency key, never a fresh one. CI runs the heavy jobs
+   (suite, stock-home, end-to-end, coverage) only after the three lint jobs pass.
+   Cancelling superseded runs stays manual; there is no automatic cancellation.
 4. A PR into `develop` merges on green required checks and review of the head SHA.
    Merges are explicit, never automatic: bring the branch up to date with
    `develop`, then `gh pr merge --squash`. Only the owner's account merges; a PR
