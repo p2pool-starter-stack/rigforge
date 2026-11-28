@@ -28,8 +28,27 @@ _rx_probe_reap() {
     rm -rf "$2"
 }
 
+_rx_service_cpus() {
+    local prop v
+    command -v systemctl >/dev/null 2>&1 && command -v taskset >/dev/null 2>&1 || return 0
+    for prop in EffectiveCPUs AllowedCPUs CPUAffinity; do
+        v=$(systemctl show "${SERVICE_NAME:-xmrig}.service" -p "$prop" --value 2>/dev/null) || continue
+        v=${v//[[:space:]]/,}
+        while [[ $v == *,,* ]]; do v=${v//,,/,}; done
+        v=${v#,}
+        v=${v%,}
+        [ -n "$v" ] || continue
+        if ! taskset -c "$v" true 2>/dev/null; then
+            warn "Ignoring $prop='$v' reported for ${SERVICE_NAME:-xmrig}.service: not a usable CPU list; the thread probe stays unpinned."
+            continue
+        fi
+        printf '%s' "$v"
+        return 0
+    done
+}
+
 _rx_probe_auto() {
-    local bin sinkdir sink pid deadline arr="" oldtrap
+    local bin sinkdir sink pid deadline arr="" oldtrap cpus pin=()
     bin="$WORKER_ROOT/xmrig/build/xmrig"
     case "$PWD" in "$WORKER_ROOT/xmrig/build" | "$WORKER_ROOT/xmrig.new/build") [ -f "$PWD/xmrig" ] && [ -x "$PWD/xmrig" ] && bin="$PWD/xmrig" ;; esac
     { [ "${OS_TYPE:-}" = Linux ] && [ -x "$bin" ] && command -v jq >/dev/null 2>&1; } || return 2
@@ -43,7 +62,9 @@ _rx_probe_auto() {
         return 1
     }
     chmod 600 "$sink"
-    "$bin" --config "$sink" </dev/null >"$sinkdir/out.log" 2>&1 &
+    cpus=$(_rx_service_cpus)
+    [ -z "$cpus" ] || pin=(taskset -c "$cpus")
+    "${pin[@]+"${pin[@]}"}" "$bin" --config "$sink" </dev/null >"$sinkdir/out.log" 2>&1 &
     pid=$!
     oldtrap=$(trap -p INT TERM HUP)
     # shellcheck disable=SC2064
