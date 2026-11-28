@@ -121,22 +121,25 @@ from the checkout, so when `setup: Checkout` itself fails that step fails too an
 the red `setup-checkout` step is then the category. `tests/test-workflow-contract.sh`
 (in `make test-suite`) fails when a step loses its category, id, or categorize coverage, when a step
 or job gains an unapproved or misplaced `if:` condition, or when a preserved gate (the full-history
-gitleaks scan and its pinned install, the online zizmor advisory audit, the file-budget base check,
+gitleaks scan and its checksum-verified install, the online zizmor advisory audit, the file-budget base check,
 the allowlist kernel-test pair, the stock-home matrix, the Homebrew formula proof and its OS matrix,
 every `make lint*`/`make test*` entry point) stops appearing with its exact command. The test pins
 workflow text, not hosted execution: a green hosted run is what proves the environment itself stayed
 honest.
 
 Why the workflows look the way they do: the lint, coverage and stock-home checkouts and the gitleaks
-checkout fetch full history, because gitleaks scans every commit, diff-cover compares against the base
-branch, and `FILE_BUDGET_REQUIRE_BASE=1` makes the file-budget gate fail rather than skip its
+checkout fetch full history, because gitleaks scans every commit, diff-cover compares against the
+base branch, and `FILE_BUDGET_REQUIRE_BASE=1` makes the file-budget gate fail rather than skip its
 ceilings-only-go-down half when `origin/develop` is missing. Tool installs (shellcheck, shfmt,
 actionlint, gitleaks) are pinned and checksum-verified; the lint job unpacks shellcheck and shfmt in
-`RUNNER_TEMP` so the file-budget gate never counts an unpacked toolchain as a source file; keep `GITLEAKS_VERSION` in lockstep with the
-gitleaks pre-commit hook. gitleaks runs with `--redact` so a match never reaches the public log, and
-zizmor runs its online audits with `GH_TOKEN` so an advisory against a pinned action fails the gate.
-The Ubuntu test suite still drives the deprecated Darwin paths through stubs (#493), and the container
-e2e runs two passes, the standard deploy and `RIGFORGE_APPLIANCE=1` (#348).
+`RUNNER_TEMP` so the file-budget gate never counts an unpacked toolchain as a source file; keep
+`GITLEAKS_VERSION` in lockstep with the gitleaks pre-commit hook. gitleaks runs with `--redact` so a
+match never reaches the public log, and zizmor runs its online audits with `GH_TOKEN` so an advisory
+against a pinned action fails the gate. gitleaks skips the weekly schedule, which exists only for
+zizmor's advisory re-audit; history does not change between pushes. Checkouts set
+`persist-credentials: false` because CI never pushes. The Ubuntu test suite still drives the
+deprecated Darwin paths through stubs (#493), and the container e2e runs the standard deploy,
+`RIGFORGE_APPLIANCE=1` (#348) and the isolation pass.
 
 Dependabot opens bump PRs (labelled `dependencies` so they queue first) for every manifest it can
 read: GitHub Actions, the pre-commit hooks, the Python CI tools in `tools/requirements-ci.txt`, the
