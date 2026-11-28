@@ -2915,7 +2915,7 @@ np_out="$(
 )"
 assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
 assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
-bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" "regression failed"
+bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real, tune gate (#814, #842)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real, tune gate (#814, #842)" "regression failed"
 
 # `tune --now` is the on-demand spelling of the autotune engine: it must reach autotune() AND map the
 # --perf/--efficiency flag onto the target. Drive the same stubbed sweep as above through `tune --now`.
@@ -6016,7 +6016,7 @@ CL347="$TN/calls347.log"
 rm -f "$FLAG347"
 : >"$CL347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CL347" LOGROTATE_DIR="$TN/logrotate" \
-    FLAG347="$FLAG347" API_CMD='sleep 60 & echo $! >"$FLAG347"; wait; echo 1500' \
+    FLAG347="$FLAG347" API_CMD='sleep 60 9>&- & echo $! >"$FLAG347"; wait; echo 1500' \
     TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
     TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
     exec bash "$SCRIPT" tune --live </dev/null >"$TN/abort347.out" 2>&1) &
@@ -6785,7 +6785,7 @@ rm -f "$FLAGAT347" "$ACTR347"
 : >"$CLAT347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CLAT347" LOGROTATE_DIR="$TN/logrotate" \
     FLAGAT347="$FLAGAT347" ACTR347="$ACTR347" \
-    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then sleep 60 & echo $! >"$FLAGAT347"; wait; fi; echo 1200' \
+    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then sleep 60 9>&- & echo $! >"$FLAGAT347"; wait; fi; echo 1200' \
     AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 \
     exec bash "$SCRIPT" autotune </dev/null >"$TN/abortat347.out" 2>&1) &
 PIDAT347=$!

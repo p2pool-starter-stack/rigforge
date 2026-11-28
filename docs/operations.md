@@ -97,7 +97,7 @@ worker folder.
 | `stress [--minutes N]` | Linux stability test after firmware changes; default 30 minutes, range 1–1440. Stops the miner, samples temperature under offline load, and restores its prior state. See [Self-tests](#self-tests). |
 | `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them, an optional, one-time step. Live variants: `--now` / `--short` (a quick prefetch re-tune against the running miner, the *run a live tune now* path), `--now --long` (a full live search of every knob, = `--live`), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
 | `bios` | Guided, resumable walk-through of the BIOS/UEFI changes for your hardware — the settings `tune` can't reach from the OS (Secure Boot when kernel lockdown is blocking the MSR mod, memory profile XMP/EXPO/DOCP, SMT, PBO/Eco-Mode, NUMA-per-socket NPS on EPYC; `--efficiency` picks the low-power set). Detects the current firmware state via the same probes `doctor` uses, hands you a board-specific checklist one item at a time, saves the pending items, and on the next run re-verifies which changes actually took. RigForge never writes BIOS itself; plan for console access (keyboard/KVM) for the reboot-into-BIOS step. Linux-only. See [Guided BIOS tuning](#guided-bios-tuning). |
-| `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
+| `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. An overlap with a running tune/autotune sweep is skipped with status 0 (the skip reason is logged), so the timer can't double-sweep and `upgrade` still completes. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `watchdog` | One health check per run — the scheduled recovery verb, like `autotune`. You normally don't type it; set `"watchdog": "enabled"` in `config.json` and setup installs a timer that runs it every `watchdog_interval_min` minutes: two consecutive checks seeing 0 H/s or a dead API restart the wedged miner, and with `max_temp_c` set it stops the miner above that temperature (starting it again 5 °C below). Linux-only. See [Watchdog](#watchdog-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
@@ -264,7 +264,13 @@ standalone `autotune` verb still works and is what the scheduled timer below run
 Live sweeps apply each candidate to the running miner as they measure it. If a sweep is interrupted
 (Ctrl+C, a dropped SSH session) or errors out mid-run, RigForge restores the tuning that was in place
 before the sweep and restarts the miner on it — a half-measured candidate is never left running or
-saved to `tune-overrides.json`.
+saved to `tune-overrides.json`. A sweep killed harder than that (SIGKILL, OOM, power loss) is covered
+too: the pre-sweep tuning is snapshotted in `tune-overrides-pre.json`, and the next `tune` or
+`autotune` restores it before reading its baseline; `tune --clear`, and `restore` when the backup
+carries tuning, drop the snapshot.
+Sweeps also serialize: only one tune/autotune runs at a time — a second manual `tune` refuses with a
+nonzero exit while one is in progress, and an overlapping `autotune` (timer run included) skips with
+status 0.
 
 For a hands-off schedule, set `autotune` in `config.json` to a target and re-run `setup`. RigForge
 installs a systemd timer that periodically optimizes the prefetch mode against your live miner:
