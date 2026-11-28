@@ -794,19 +794,13 @@ _warn_unknown_config_keys() {
 
 prepare_workspace() {
     log "Preparing workspace at $WORKER_ROOT..."
-
-    if [ ! -d "$WORKER_ROOT" ]; then
-        mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
+    [ -d "$WORKER_ROOT" ] || mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
+    if [ "$(id -u)" -eq 0 ] && _rg_claim_worker; then
+        log "The code tree is root-owned, so $WORKER_ROOT stays root-owned."
+    elif [ "$(id -u)" -eq 0 ] || [ ! -w "$WORKER_ROOT" ]; then
+        ! _rg_worker_kept >/dev/null || error "The code tree is root-owned, so $WORKER_ROOT must be root-owned before the build; run this with sudo and check that root can change that folder."
+        sudo chown -R "$REAL_USER$([ "$OS_TYPE" = Darwin ] || printf ':%s' "$REAL_USER")" "$WORKER_ROOT"
     fi
-
-    if [ "${EUID:-$(id -u)}" -eq 0 ] || [ ! -w "$WORKER_ROOT" ]; then
-        if [ "$OS_TYPE" == "Darwin" ]; then
-            sudo chown -R "$REAL_USER" "$WORKER_ROOT"
-        else
-            sudo chown -R "$REAL_USER":"$REAL_USER" "$WORKER_ROOT"
-        fi
-    fi
-
     cd "$WORKER_ROOT"
 }
 
@@ -1788,7 +1782,7 @@ _reown_worker() {
     Darwin) owner="$REAL_USER" ;;
     *) return 0 ;;
     esac
-    if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
+    if ! _rg_claim_worker && ! _rg_worker_kept >/dev/null && [ -e "${WORKER_ROOT:-}" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
     if [ -f "$CONFIG_JSON" ]; then
         sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true
         sudo chmod 600 "$CONFIG_JSON" 2>/dev/null || true
@@ -1950,7 +1944,7 @@ _setup_plan() {
     else
         _p "linking the rigforge command" "add_to_path is off — no symlink"
     fi
-    _p "reconciling file ownership" "chown the worker tree back to $REAL_USER${MINER_USER:+ (config+log to $MINER_USER)}"
+    _p "reconciling file ownership" "$(_rg_keeps_root "$(dirname "$WORKER_ROOT")" && echo "keep the worker tree root-owned" || echo "chown the worker tree back to $REAL_USER")${MINER_USER:+ (config+log to $MINER_USER)}"
     _p "finishing up" "print the summary$([ "$OS_TYPE" = Linux ] && echo ' (and the reboot notice when HugePages changed)')"
     echo "Dry run — nothing was changed. Run 'sudo $0 setup' to apply."
 }
@@ -3595,17 +3589,17 @@ restore() {
     local backups snap && backups="$(_state_dir)/config-backups"
     if [ -f "$CONFIG_JSON" ]; then
         snap="$backups/config-$(date -u +%Y%m%d-%H%M%S)-restore-$$.json"
-        if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$snap"); then
-            rm -f "$snap"
+        if ! _rg_config_snapshot "$snap"; then
             error "Could not snapshot config.json to $backups — existing config left untouched."
         fi
         _sweep_config_backups "$backups" || true
         log "Previous config saved to $snap"
     fi
     _config_replace "$STAGE_DIR/config.json" || error "Could not write $CONFIG_JSON."
-    _stamp_config_meta restore # #254: attribute this config to a restore (bumps revision if it differs)
+    _stamp_config_meta restore
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
+    [ "$(id -u)" -ne 0 ] || WORKER_ROOT="$wr" _rg_claim_worker || ! WORKER_ROOT="$wr" _rg_worker_kept >/dev/null || error "Could not keep $wr root-owned; the tuning was not restored."
     for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
         if [ -f "$STAGE_DIR/$f" ]; then
             mkdir -p "$wr" 2>/dev/null || sudo mkdir -p "$wr"
@@ -4235,13 +4229,10 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "rejected invalid-config:$(printf '%s' "$msg" | grep -o '\[ERROR\][^\"]*' | head -1 | sed "s/'.*//")"
         return 1
     fi
-    # Only now, with a valid candidate, snapshot the old config and commit. A backup is a HARD
-    # precondition (ADR): never commit a change without first snapshotting the config it replaces —
-    # if the snapshot can't be written, reject the whole change and leave config.json untouched.
     stamp=$(date -u +%Y%m%d-%H%M%S)
     backup="$backups/config-$stamp.json"
-    if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$backup"); then
-        rm -f "$cand" "$backup" # #438: a cp that died mid-copy leaves a TRUNCATED snapshot behind
+    if ! _rg_config_snapshot "$backup"; then
+        rm -f "$cand"
         echo "rejected backup-failed"
         return 1
     fi
@@ -4282,29 +4273,16 @@ _control_commit() { # <staged.json> <backups-dir>
     return 0
 }
 
-# Prune config-backups/ to the retention cap and hand it to the operator so they can inspect or
-# restore old configs without sudo (recovery = `cp config-backups/config-<stamp>.json config.json`
-# then `sudo rigforge apply`). Override the cap with KEEP_CONFIG_BACKUPS. #438: named for BOTH jobs.
-_sweep_config_backups() { # <backups-dir>
+_sweep_config_backups() {
     local dir="$1" keep="${KEEP_CONFIG_BACKUPS:-20}" old
     # shellcheck disable=SC2012  # names are controlled (config-YYYYmmdd-HHMMSS.json); ls -t orders by recency
     old=$(ls -t "$dir"/config-*.json 2>/dev/null | tail -n +"$((keep + 1))" || true)
     [ -z "$old" ] || printf '%s\n' "$old" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
-    if [ "$(id -u)" -eq 0 ] && [ -n "${REAL_USER:-}" ]; then sudo chown -R "$REAL_USER" "$dir" 2>/dev/null || true; fi
+    [ "$(id -u)" -eq 0 ] && [ -n "${REAL_USER:-}" ] || return 0
+    if _rg_keeps_root "$(dirname "$dir")"; then sudo chown -h "$REAL_USER" "$dir"/config-*.json; else sudo chown -R "$REAL_USER" "$dir"; fi 2>/dev/null || true
 }
 
-# The apply + liveness check control-apply gates its rollback on. Split out so tests can stub it.
-# #395: apply's exit status was discarded here — the liveness wait ran regardless and its verdict
-# became the whole answer, so an apply that failed for a reason the miner's hashrate cannot show
-# (a watchdog unit that would not write) still reported success. Gate on it: a failed apply is a
-# failed apply, and control_apply's rollback branch is the designed response to one.
 _control_do_apply() {
-    # #396: sampled BEFORE the apply, like its fast-path sibling — a rig can be LEGITIMATELY stopped when
-    # a change lands (thermal hold, manual stop) and `apply` leaves it that way. Without this the wait
-    # below would read the operator's own decision as this change's failure, roll a good change back, and
-    # then blame a "liveness failure" nobody could observe (the rollback re-apply leaves it held too).
-    # Success is "the run-state did not DEGRADE": only a rig that WAS live must come back live. Sampled
-    # here, not read out of _apply_runtime, so this function stays checkable on its own.
     local was_held=no
     _miner_deliberately_stopped && was_held=yes
     apply >/dev/null 2>&1 || return 1

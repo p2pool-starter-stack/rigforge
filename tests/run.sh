@@ -43,7 +43,7 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit token-error-text; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
+for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit token-error-text worker-root-owned; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -3939,6 +3939,7 @@ chmod +x "$ROW/bin"/*
     OS_TYPE=Linux
     MINER_USER=rf-test-miner
     REAL_USER=rfop
+    _rg_tree_unsafe() { echo tree; }
     WORKER_ROOT="$ROW/home/worker"
     CONFIG_JSON="$ROW/nonexistent.json"
     sudo() { "$@"; }
@@ -4907,9 +4908,6 @@ assert_contains "doctor: inactive service -> WARN (#audit)" "$out" "is not activ
 assert_contains "doctor: inactive service counts as an issue (#audit)" "$out" "issue(s) found"
 assert_absent "doctor: clock-under-load check is skipped when the service is inactive (#audit)" "$out" "CPU clock under load"
 
-# #audit: _reown_worker hands the files setup/tune/apply wrote as root back to the operator (so they can
-# edit config.json + re-run without sudo). As root it chowns WORKER_ROOT + config.json to REAL_USER; not
-# root, it's a no-op. (sudo is a passthrough stub, so the chown stub records the real call.)
 echo "== unit: _reown_worker reconciles file ownership (#audit) =="
 RW="$(mktemp -d "$SANDBOX/reown.XXXXXX")"
 mkdir -p "$RW/worker" "$RW/asroot" "$RW/asuser"
@@ -4919,9 +4917,10 @@ printf '#!/usr/bin/env bash\necho 1000\n' >"$RW/asuser/id"
 printf '#!/usr/bin/env bash\necho "[chown] $*" >>"$CHOWN_LOG"\n' >"$RW/asroot/chown"
 cp "$RW/asroot/chown" "$RW/asuser/chown"
 chmod +x "$RW/asroot/id" "$RW/asuser/id" "$RW/asroot/chown" "$RW/asuser/chown"
-reown() { # <asroot|asuser>
+reown() {
     (
         source "$SCRIPT"
+        _rg_tree_unsafe() { echo tree; }
         OS_TYPE=Linux
         REAL_USER=rfop
         WORKER_ROOT="$RW/worker"
@@ -4937,10 +4936,10 @@ out="$(reown asroot)"
 assert_contains "reown (root): chowns the worker root to the operator (#audit)" "$out" "[chown] -R rfop:rfop $RW/worker"
 assert_contains "reown (root): chowns config.json to the operator (#audit)" "$out" "[chown] rfop:rfop $RW/config.json"
 assert_eq "reown (non-root): no-op, nothing chowned (#audit)" "$(reown asuser)" ""
-# macOS chowns to the user WITHOUT an explicit group; an unknown OS is a no-op.
-reown_os() { # <OS_TYPE>
+reown_os() {
     (
         source "$SCRIPT"
+        _rg_tree_unsafe() { echo tree; }
         OS_TYPE="$1"
         REAL_USER=rfop
         WORKER_ROOT="$RW/worker"
