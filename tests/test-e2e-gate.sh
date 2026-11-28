@@ -39,10 +39,11 @@ for id in deploy appliance isolation allowlist; do
     var="$(printf '%s' "$id" | tr '[:lower:]' '[:upper:]')"
     check 0 "ci.yml maps $var to the $id outcome" grep -qE "^ +$var: \\$\\{\\{ steps\\.$id\\.outcome \\}\\}\$" "$ROOT/.github/workflows/ci.yml"
     case "$id" in
-    allowlist) run="tests/test-api-allowlist-linux.sh" ;;
-    *) run="bash tests/e2e/linux.sh $id" ;;
+    allowlist) run='docker run .* bash /src/tests/test-api-allowlist-linux\.sh' ;;
+    *) run="run: bash tests/e2e/linux\\.sh $id" ;;
     esac
-    check 0 "ci.yml runs $run in the $id step" bash -c 'grep -A4 -E "^ +id: $1\$" "$2" | grep -qF -- "$3"' _ "$id" "$ROOT/.github/workflows/ci.yml" "$run"
+    check 0 "ci.yml runs the $id pass in the $id step" bash -c 'grep -A4 -E "^ +id: $1\$" "$2" | grep -qE -- "^ +$3\$"' _ "$id" "$ROOT/.github/workflows/ci.yml" "$run"
+    check 0 "ci.yml runs the $id step after a failed sibling" bash -c 'grep -A1 -E "^ +id: $1\$" "$2" | grep -qE "^ +if: \\\$\{\{ !cancelled\(\) \}\}\$"' _ "$id" "$ROOT/.github/workflows/ci.yml"
     case "$GATE_LINE" in
     *"\"$id=\$$var\""*) echo "PASS: gate line lists $id" ;;
     *)
@@ -51,6 +52,7 @@ for id in deploy appliance isolation allowlist; do
         ;;
     esac
 done
+check 0 "ci.yml always runs the gate step" bash -c 'grep -A1 -F -- "- name: Require every Docker mode" "$1" | grep -qE "^ +if: \\\$\{\{ always\(\) \}\}\$"' _ "$ROOT/.github/workflows/ci.yml"
 
 G="$ROOT/scripts/require-success.sh"
 check 0 "gate: all children success" bash "$G" a=success b=success
