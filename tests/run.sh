@@ -43,7 +43,7 @@ export RIGFORGE_CONTROL_LOCK="$SANDBOX/control.lock" RIGFORGE_REVISION_KEY="$SAN
 command -v python3 >/dev/null 2>&1 && { python3 "$ROOT/tests/test-thread-profile.py" && assert_rc "XMRig thread profile regression (#588)" 0 0 || bad "XMRig thread profile regression (#588)" "python suite failed"; } || echo "  SKIP: python3 not present (kcov container); the thread-profile suite runs in the other CI jobs"
 bash "$ROOT/tests/test-suite-liveness.sh"
 assert_rc "aggregate suite liveness regression (#549)" "$?" 0
-for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
+for _t in xmrig-overlay thread-placement xmrig-logging config-ownership feed-identity grub-edit token-error-text worker-root-owned; do bash "$ROOT/tests/test-$_t.sh" "$SCRIPT" || FAIL=$((FAIL + 1)); done
 bash "$ROOT/tests/test-config-apply-state.sh" "$SCRIPT"
 assert_rc "config apply state detects source drift (#445)" "$?" 0
 bash "$ROOT/tests/test-hugepages-ceiling.sh"
@@ -161,7 +161,7 @@ EOF
     cat >"$bin/envsubst" <<'EOF'
 #!/usr/bin/env bash
 sed -e "s|\$BUILD_DIR|${BUILD_DIR:-}|g" -e "s|\$CPUPOWER_PATH|${CPUPOWER_PATH:-}|g" -e "s|\$WORKER_ROOT|${WORKER_ROOT:-}|g" \
-    -e "s|\$NFT_PATH|${NFT_PATH:-}|g" \
+    -e "s|\$NFT_PATH|${NFT_PATH:-}|g" -e "s|\$SYSTEMD_DIR|${SYSTEMD_DIR:-}|g" \
     -e "s|\$SERVICE_NAME|${SERVICE_NAME:-}|g" -e "s|\$RIGFORGE_OPERATOR|${RIGFORGE_OPERATOR:-}|g" -e "s|\$RIGFORGE_APPLIANCE|${RIGFORGE_APPLIANCE:-}|g" \
     -e "s|\$SCRIPT_DIR|${SCRIPT_DIR:-}|g" -e "s|\$RIGFORGE_STATE|${RIGFORGE_STATE:-${SCRIPT_DIR:-}}|g" -e "s|\$AUTOTUNE_ONCALENDAR|${AUTOTUNE_ONCALENDAR:-}|g" \
     -e "s|\$AUTOTUNE_TARGET|${AUTOTUNE_TARGET:-}|g" -e "s|\$API_BIND|${API_BIND:-}|g" -e "s|\$API_PORT|${API_PORT:-}|g" \
@@ -2915,7 +2915,7 @@ np_out="$(
 )"
 assert_contains "autotune efficiency warns + falls back without power (#95)" "$np_out" "none available"
 assert_eq "autotune efficiency-no-power still picks raw-fastest (#95)" "$(jq -r '.randomx.scratchpad_prefetch_mode' "$ovf")" "1"
-bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real (#814)" "regression failed"
+bash "$ROOT/tests/test-autotune-noise.sh" "$SCRIPT" >/dev/null 2>&1 && ok "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real, tune gate (#814, #842)" || bad "autotune scores watt-less candidates on raw H/s, re-measures winners, live stddev is real, tune gate (#814, #842)" "regression failed"
 
 # `tune --now` is the on-demand spelling of the autotune engine: it must reach autotune() AND map the
 # --perf/--efficiency flag onto the target. Drive the same stubbed sweep as above through `tune --now`.
@@ -3939,6 +3939,7 @@ chmod +x "$ROW/bin"/*
     OS_TYPE=Linux
     MINER_USER=rf-test-miner
     REAL_USER=rfop
+    _rg_tree_unsafe() { echo tree; }
     WORKER_ROOT="$ROW/home/worker"
     CONFIG_JSON="$ROW/nonexistent.json"
     sudo() { "$@"; }
@@ -4907,9 +4908,6 @@ assert_contains "doctor: inactive service -> WARN (#audit)" "$out" "is not activ
 assert_contains "doctor: inactive service counts as an issue (#audit)" "$out" "issue(s) found"
 assert_absent "doctor: clock-under-load check is skipped when the service is inactive (#audit)" "$out" "CPU clock under load"
 
-# #audit: _reown_worker hands the files setup/tune/apply wrote as root back to the operator (so they can
-# edit config.json + re-run without sudo). As root it chowns WORKER_ROOT + config.json to REAL_USER; not
-# root, it's a no-op. (sudo is a passthrough stub, so the chown stub records the real call.)
 echo "== unit: _reown_worker reconciles file ownership (#audit) =="
 RW="$(mktemp -d "$SANDBOX/reown.XXXXXX")"
 mkdir -p "$RW/worker" "$RW/asroot" "$RW/asuser"
@@ -4919,9 +4917,10 @@ printf '#!/usr/bin/env bash\necho 1000\n' >"$RW/asuser/id"
 printf '#!/usr/bin/env bash\necho "[chown] $*" >>"$CHOWN_LOG"\n' >"$RW/asroot/chown"
 cp "$RW/asroot/chown" "$RW/asuser/chown"
 chmod +x "$RW/asroot/id" "$RW/asuser/id" "$RW/asroot/chown" "$RW/asuser/chown"
-reown() { # <asroot|asuser>
+reown() {
     (
         source "$SCRIPT"
+        _rg_tree_unsafe() { echo tree; }
         OS_TYPE=Linux
         REAL_USER=rfop
         WORKER_ROOT="$RW/worker"
@@ -4937,10 +4936,10 @@ out="$(reown asroot)"
 assert_contains "reown (root): chowns the worker root to the operator (#audit)" "$out" "[chown] -R rfop:rfop $RW/worker"
 assert_contains "reown (root): chowns config.json to the operator (#audit)" "$out" "[chown] rfop:rfop $RW/config.json"
 assert_eq "reown (non-root): no-op, nothing chowned (#audit)" "$(reown asuser)" ""
-# macOS chowns to the user WITHOUT an explicit group; an unknown OS is a no-op.
-reown_os() { # <OS_TYPE>
+reown_os() {
     (
         source "$SCRIPT"
+        _rg_tree_unsafe() { echo tree; }
         OS_TYPE="$1"
         REAL_USER=rfop
         WORKER_ROOT="$RW/worker"
@@ -5259,14 +5258,9 @@ mkdir -p "$UN/etc/systemd/system" "$UN/etc/logrotate.d" "$UN/etc/security" "$UN/
 : >"$UN/etc/logrotate.d/xmrig"
 : >"$UN/etc/modules-load.d/msr.conf"
 : >"$UN/home/worker/xmrig/build/xmrig"
-# #273: pre-seed every optional unit uninstall's removal branches (rigforge.sh:1750-1759 area) are
-# responsible for — the full set the sandbox has never installed before, so those branches never ran in
-# any test. Cross-checked 1:1 against systemd/*.template (minus xmrig.service.template, already seeded
-# above) so this list can't silently drift from what setup/install_* actually ship. One list, reused
-# below for the post-uninstall removal assertions, so the two can't drift from EACH OTHER either.
 UN_OPT_UNITS="rigforge-api.service rigforge-api-refresh.service rigforge-api-refresh.timer
 rigforge-control.service rigforge-control-apply.service rigforge-control-apply.path
-rigforge-autotune.service rigforge-autotune.timer rigforge-watchdog.service rigforge-watchdog.timer"
+rigforge-autotune.service rigforge-autotune.timer rigforge-watchdog.service rigforge-watchdog.timer rigforge-api-firewall.nft"
 for _u in $UN_OPT_UNITS; do
     : >"$UN/etc/systemd/system/$_u"
 done
@@ -6022,7 +6016,7 @@ CL347="$TN/calls347.log"
 rm -f "$FLAG347"
 : >"$CL347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CL347" LOGROTATE_DIR="$TN/logrotate" \
-    FLAG347="$FLAG347" API_CMD='sleep 60 & echo $! >"$FLAG347"; wait; echo 1500' \
+    FLAG347="$FLAG347" API_CMD='sleep 60 9>&- & echo $! >"$FLAG347"; wait; echo 1500' \
     TUNE_LIVE_WARMUP=0 TUNE_LIVE_INTERVAL=0 TUNE_LIVE_SAMPLES=1 \
     TUNE_SEEDS=auto TUNE_PREFETCH_MODES="0 1" TUNE_YIELDS=false TUNE_THREADS=-1 TUNE_MAX_ROUNDS=1 \
     exec bash "$SCRIPT" tune --live </dev/null >"$TN/abort347.out" 2>&1) &
@@ -6791,7 +6785,7 @@ rm -f "$FLAGAT347" "$ACTR347"
 : >"$CLAT347"
 (cd "$TN" && RIGFORGE_HOME="$PWD" PATH="$STUBS:$PATH" CALL_LOG="$CLAT347" LOGROTATE_DIR="$TN/logrotate" \
     FLAGAT347="$FLAGAT347" ACTR347="$ACTR347" \
-    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then sleep 60 & echo $! >"$FLAGAT347"; wait; fi; echo 1200' \
+    API_CMD='c=$(cat "$ACTR347" 2>/dev/null||echo 0);c=$((c+1));echo "$c">"$ACTR347";if [ "$c" -ge 2 ]; then sleep 60 9>&- & echo $! >"$FLAGAT347"; wait; fi; echo 1200' \
     AUTOTUNE_WARMUP=0 AUTOTUNE_SAMPLES=1 AUTOTUNE_INTERVAL=0 \
     exec bash "$SCRIPT" autotune </dev/null >"$TN/abortat347.out" 2>&1) &
 PIDAT347=$!
@@ -7169,7 +7163,7 @@ run_fw() { # <allow_from> <api_mode>
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        WORKER_ROOT="$FW"
+        WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
         API_ALLOW_FROM="$1"
         API_MODE="$2"
         API_PORT=8081
@@ -7179,8 +7173,8 @@ run_fw() { # <allow_from> <api_mode>
 }
 : >"$FW/calls.log"
 out="$(run_fw "192.168.1.10" disabled)"
-assert_eq "firewall: nft file written when api_allow_from set (#142)" "$([ -f "$FW/api-firewall.nft" ] && echo y || echo n)" "y"
-nft_body="$(cat "$FW/api-firewall.nft")"
+assert_eq "firewall: nft file written when api_allow_from set (#142)" "$([ -f "$FW/rigforge-api-firewall.nft" ] && echo y || echo n)" "y"
+nft_body="$(cat "$FW/rigforge-api-firewall.nft")"
 assert_contains "firewall: own inet rigforge table (#142)" "$nft_body" "table inet rigforge"
 assert_contains "firewall: loopback always accepted (#142)" "$nft_body" 'iifname "lo" accept'
 assert_contains "firewall: the configured source is accepted (#142)" "$nft_body" "ip saddr 192.168.1.10 accept"
@@ -7188,36 +7182,34 @@ assert_contains "firewall: :8080 guarded, others dropped (#142)" "$nft_body" "tc
 assert_contains "firewall: applied via nft -f (#142)" "$(cat "$FW/calls.log")" "[nft] -f"
 assert_contains "firewall: blocked requests have a measurable counter (#586)" "$nft_body" "counter drop"
 run_fw "192.168.1.0/24" enabled >/dev/null
-assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/api-firewall.nft")" "8080, 8081"
-# Cleared -> table destroyed, file removed.
+assert_contains "firewall: sister-API port joins the set when enabled (#142)" "$(cat "$FW/rigforge-api-firewall.nft")" "8080, 8081"
 : >"$FW/calls.log"
 run_fw "" disabled >/dev/null
-assert_eq "firewall: file removed when cleared (#142)" "$([ -f "$FW/api-firewall.nft" ] && echo y || echo n)" "n"
+assert_eq "firewall: file removed when cleared (#142)" "$([ -f "$FW/rigforge-api-firewall.nft" ] && echo y || echo n)" "n"
 assert_contains "firewall: table destroyed on teardown (#142)" "$(cat "$FW/calls.log")" "[nft] destroy table inet rigforge"
-# #243: an IPv6 api_allow_from renders an `ip6 saddr` rule (the inet table carries both families).
 run_fw6() {
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        WORKER_ROOT="$FW"
+        WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
         API_ALLOW_FROM="$1"
         API_ALLOW_FAMILY="$2"
         API_MODE=disabled
         API_PORT=8081
         set +e
         PATH="$STUBS:$PATH" CALL_LOG="$FW/calls.log" install_api_firewall >/dev/null 2>&1
-        cat "$FW/api-firewall.nft" 2>/dev/null
+        cat "$FW/rigforge-api-firewall.nft" 2>/dev/null
     )
 }
 assert_contains "firewall: IPv6 source renders ip6 saddr (#243)" "$(run_fw6 "fd00::/64" ip6)" "ip6 saddr fd00::/64 accept"
 assert_contains "firewall: IPv4 source still renders ip saddr (#243)" "$(run_fw6 "10.0.0.9" ip)" "ip saddr 10.0.0.9 accept"
-# nft missing while enabled -> hard error (never silently leave the port open thinking it's guarded).
+bash "$ROOT/tests/test-api-firewall-path.sh" "$SCRIPT" >/dev/null 2>&1 && ok "firewall: rules file lives in the unit folder and replaces the worker-root copy (#836)" || bad "firewall: rules file lives in the unit folder and replaces the worker-root copy (#836)" "regression failed"
 NONFT="$(mktemp -d "$SANDBOX/nonft.XXXXXX")"
 for cmd in sudo tee; do cp "$STUBS/$cmd" "$NONFT/" 2>/dev/null || true; done
 out="$( (
     source "$SCRIPT"
     OS_TYPE=Linux
-    WORKER_ROOT="$FW"
+    WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
     API_ALLOW_FROM=10.0.0.1
     set +e
     PATH="$NONFT" install_api_firewall 2>&1
@@ -7232,7 +7224,7 @@ chmod +x "$BADNFT/nft"
 fwrej="$( (
     source "$SCRIPT"
     OS_TYPE=Linux
-    WORKER_ROOT="$FW"
+    WORKER_ROOT="$FW" SYSTEMD_DIR="$FW"
     API_ALLOW_FROM="fd00::/64"
     API_ALLOW_FAMILY=ip6
     API_MODE=disabled
@@ -7645,7 +7637,7 @@ run_ctl_fw() { # <api_mode> <control_mode> -> the rendered nft rule
     (
         source "$SCRIPT"
         OS_TYPE=Linux
-        WORKER_ROOT="$CPS/wr"
+        WORKER_ROOT="$CPS/wr" SYSTEMD_DIR="$CPS/wr"
         mkdir -p "$CPS/wr"
         API_ALLOW_FROM=10.0.0.5
         API_MODE="$1"
@@ -7654,7 +7646,7 @@ run_ctl_fw() { # <api_mode> <control_mode> -> the rendered nft rule
         CONTROL_PORT=8082
         set +e
         PATH="$STUBS:$PATH" install_api_firewall >/dev/null 2>&1
-        cat "$CPS/wr/api-firewall.nft" 2>/dev/null
+        cat "$CPS/wr/rigforge-api-firewall.nft" 2>/dev/null
     )
 }
 assert_contains "firewall scopes control_port when control enabled (#236)" "$(run_ctl_fw disabled enabled)" "8082"
@@ -7742,7 +7734,7 @@ assert_eq "status: warnings[] flags a max_temp_c change (#257)" "$(jq -r '.warni
     _control_status "$wst/s3.json" applied cidP "pools,DONATION" "" ""
 ) 2>/dev/null
 assert_eq "status: no warnings for a non-thermal change (#257)" "$(jq -c '.warnings' "$wst/s3.json")" "[]"
-# #255: _control_status also indexes each outcome under changes/<cid>.json so a caller can query it.
+bash "$ROOT/tests/test-control-status-write.sh" "$SCRIPT" >/dev/null 2>&1 && ok "control status records are written through a private temporary folder and replace links at their names" || bad "control status records are written through a private temporary folder and replace links at their names" "regression failed"
 csidx="$(mktemp -d "$SANDBOX/csidx.XXXXXX")"
 (
     source "$SCRIPT"
@@ -8033,20 +8025,18 @@ assert_eq "commit: sentinel rejected when the user changed (#415)" "$(secret_cas
 assert_eq "commit: fingerprint sentinel on a pool with no stored pin rejected (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h2:3333","tls":true,"tls-fingerprint":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
 sc_unres="$(secret_out "$CFG_415" '{"pools":[{"url":"other:4444","pass":{"__secret__":true}}]}')"
 assert_contains "commit: the rejection names the unresolvable key (#415)" "$sc_unres" "unresolvable-secret-marker:pass"
-# The check is a post-condition on the merged pools, not a scan of the two keys the resolver knows,
-# so a marker in ANY pool key is refused rather than written into config.json under a confusing
-# error from some later validator that never heard of markers.
 assert_eq "commit: a marker in a pool key the resolver does not handle is refused too (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
-# A pool that never had a secret keeps working: omitting `pass` on a brand-new pool is not an error,
-# it just means there is nothing to carry over.
 assert_eq "commit: a brand-new pool with no pass still commits (#415)" "$(secret_case "$CFG_415" '{"pools":[{"url":"other:4444"}]}')" "committed|pass=ABSENT|fp=ABSENT|marker=0"
-# #408 is untouched: an EXPLICIT empty string is still not "leave it alone".
 assert_eq "commit: an explicit empty pass is still rejected, not treated as keep (#415/#408)" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"pass":""}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
-
-# The end-to-end shape the issue reports: take the masked block the feed actually serves, send its
-# `pools` straight back as a control change (the only thing a consumer of that feed CAN send), and
-# require the stored password to come out byte-identical. This is the round-trip that used to leave
-# the rig mining as "x" while reporting success.
+CFG_S4='{ "pools": [{"url":"h:3333","user":"w.rig","pass":"STOREDPW","socks5":"tor-a:9050"}], "DONATION": 1 }'
+assert_eq "commit: an unchanged socks5 keeps the stored password" "$(secret_case "$CFG_S4" '{"pools":[{"url":"h:3333","user":"w.rig","socks5":"tor-a:9050"}]}')" "committed|pass=STOREDPW|fp=ABSENT|marker=0"
+assert_eq "round-trip: replaying a proxied pool's own feed keeps the password" "$(secret_case "$CFG_S4" "$(cfgblk "$CFG_S4" | jq -c '{pools: .pools}')")" "committed|pass=STOREDPW|fp=ABSENT|marker=0"
+assert_eq "commit: a changed socks5 with the pass SENTINEL is rejected" "$(secret_case "$CFG_S4" '{"pools":[{"url":"h:3333","user":"w.rig","socks5":"proxy-b:1080","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=ABSENT|marker=0"
+assert_eq "commit: a changed socks5 with pass OMITTED is rejected" "$(secret_case "$CFG_S4" '{"pools":[{"url":"h:3333","user":"w.rig","socks5":"proxy-b:1080"}]}')" "rejected|pass=STOREDPW|fp=ABSENT|marker=0"
+assert_eq "commit: a removed socks5 with pass OMITTED is rejected" "$(secret_case "$CFG_S4" '{"pools":[{"url":"h:3333","user":"w.rig"}]}')" "rejected|pass=STOREDPW|fp=ABSENT|marker=0"
+assert_eq "commit: an added socks5 with the pass SENTINEL is rejected" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"socks5":"proxy-b:1080","pass":{"__secret__":true}}]}')" "rejected|pass=STOREDPW|fp=kept|marker=0"
+assert_contains "commit: a socks5 change without the password names pass" "$(secret_out "$CFG_S4" '{"pools":[{"url":"h:3333","user":"w.rig","socks5":"proxy-b:1080"}]}')" "unresolvable-secret-marker:pass"
+assert_eq "commit: a socks5 change carrying the password commits and keeps the pin" "$(secret_case "$CFG_415" '{"pools":[{"url":"h:3333","user":"w.rig","tls":true,"socks5":"proxy-b:1080","pass":"RESENTPW"}]}')" "committed|pass=RESENTPW|fp=kept|marker=0"
 rt_pools="$(cfgblk "$CFG_415" | jq -c '{pools: .pools}')"
 assert_contains "round-trip: the feed's pools carry the sentinel, not the value (#415)" "$rt_pools" '"__secret__":true'
 assert_absent "round-trip: the feed's pools carry no password (#415)" "$rt_pools" "STOREDPW"

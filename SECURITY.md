@@ -99,8 +99,11 @@ RigForge is built to be reproducible and tamper-evident:
 - Pinned, verified inputs. XMRig is cloned at a pinned commit and verified against a hardcoded
   hash before it builds; GitHub Actions are SHA-pinned; CI tool installs (shellcheck, shfmt, gitleaks)
   are version- and checksum-verified. Dependabot keeps the action pins current and flags advisories,
-  and a weekly workflow watches upstream XMRig releases — a new version arrives as a bot-opened,
-  build-verified PR (never fetched-and-run; a human merges, the normal gates apply).
+  and a daily workflow watches upstream XMRig releases — a new version arrives as a bot-opened,
+  build-verified PR (never fetched-and-run; a human merges, the normal gates apply). When a
+  release's notes mention CVEs or security fixes, the bump PR also carries the `security` label and the
+  run opens a tracking issue. Unpinned distro packages (apt, dnf, pacman) take their advisories and
+  fixes from the distro's own security updates.
 - Secret scanning. [gitleaks](https://github.com/gitleaks/gitleaks) scans the full git history on
   every push and PR, and runs as a pre-commit hook, so credentials can't slip into the repo.
   Historical fixture false positives use exact commit/file/rule/line fingerprints in `.gitleaksignore`;
@@ -111,10 +114,13 @@ RigForge is built to be reproducible and tamper-evident:
   least-privilege, read-only `GITHUB_TOKEN` by default.
 - Static analysis. [CodeQL](https://codeql.github.com/) analyzes the Python servers
   (`util/control-server.py`, `util/api-server.py`) and the workflows (`Analyze (python)`,
-  `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly. Shell has no
+  `Analyze (actions)`) on pushes to `main` and `develop`, on pull requests and weekly, with the `security-extended` query suite. Shell has no
   CodeQL support, so `rigforge.sh` and the other Bash files stay ShellCheck-only. The repository
   ruleset's `code_scanning` rule is a GitHub setting an owner enables once both analyses have
   reported.
+- Dependency review. The `Dependency review` job in `security.yml` runs on pull requests only and
+  fails when a PR adds or changes a dependency with a high or critical advisory. Neither this check
+  nor the CodeQL analyses are required until the owner makes them so in the repository ruleset.
 
 Bug reports: `rigforge.sh support-bundle` produces a redacted tarball (token and pool password
 structurally removed via jq, wallet masked). Redaction covers RigForge's own fields — review the

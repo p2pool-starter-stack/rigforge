@@ -335,7 +335,9 @@ last-applied record, and it's served even when the miner is down (it comes from 
 XMRig). Pool secrets are masked: `pools[].pass` and any `tls-fingerprint` are served as
 `{"__secret__": true}` when set and omitted when not — the value itself never leaves the rig. Send
 the marker back unchanged (or leave the key out) and the rig keeps the secret it already holds,
-matching the pool by `url` + `user`; send a real string to replace it. A marker for a pool the rig
+matching the pool by `url` + `user`; send a real string to replace it. A pool whose `socks5` is
+changed, added or removed must send its `pass` again: a marker or an omitted `pass` there is refused
+with `unresolvable-secret-marker:pass`, while `tls-fingerprint` still resolves. A marker for a pool the rig
 has no matching secret for is refused with `unresolvable-secret-marker`, so a re-sent `pools` array
 can never silently blank a credential — which is what it used to do, quietly re-keying the rig to
 XMRig's throwaway `x` and reporting success (#415).

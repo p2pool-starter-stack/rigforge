@@ -62,6 +62,7 @@ _script_dir() {
 }
 for _v in RIGFORGE_LIB RIGFORGE_STATE; do [ -z "${!_v:-}" ] || [[ ${!_v} =~ ^/[A-Za-z0-9._/-]+$ ]] || exit "$(echo "rigforge: $_v must be a clean absolute path" >&2 && echo 1)"; done
 [ -z "${RIGFORGE_LIB:-}" ] || [ "$(id -u)" != 0 ] || [ -z "$(find -H "$RIGFORGE_LIB" -maxdepth 0 \( ! -user root -o -perm -020 -o -perm -002 \) 2>/dev/null)" ] || exit "$(echo "rigforge: RIGFORGE_LIB must be root-owned and not group/world-writable" >&2 && echo 1)"
+[ "${RIGFORGE_TEST_OVERRIDES:-0}" = 1 ] || unset XMRIG_VERSION XMRIG_COMMIT API_CMD DMIDECODE RDMSR_BIN SERVICE_NAME LOGROTATE_DIR GRUB_DEFAULT FSTAB LIMITS_CONF MODULES_LOAD_DIR MODULES_FILE SYSTEMD_DIR HUGEPAGES_1G_DIR BIN_DIR MEMINFO CPUINFO MSR_MODULE_DIR GOVERNOR_FILE HUGEPAGES_1G_NR NR_HUGEPAGES_FILE CPUFREQ_MAX CPU_SYSFS DMI_DIR SMT_CONTROL LOCKDOWN_FILE RIGFORGE_APPLIANCE_MARKER RIGFORGE_LEGACY_APPLIANCE_UNIT
 # shellcheck source=util/config-apply-state.sh
 source "${RIGFORGE_LIB:-$(_script_dir)}/util/config-apply-state.sh"
 SCRIPT_DIR="${RIGFORGE_HOME:-$(_script_dir)}"
@@ -86,7 +87,6 @@ REBOOT_REQUIRED=false
 SERVICE_INSTALLED=false
 # True when the caller owns service restart; install_service then only writes/reloads/enables (#413).
 SERVICE_NO_START=false
-# Pinned XMRig release for reproducible builds; environment-overridable.
 XMRIG_VERSION="${XMRIG_VERSION:-v6.26.0}"
 XMRIG_COMMIT="${XMRIG_COMMIT:-b2ca72480c58d197e18c885d9fc1a0c8d517e60a}"
 # Set to false when the pinned XMRig commit is already built, so a re-run/upgrade skips the (slow)
@@ -105,7 +105,6 @@ fi
 ENABLE_RUNTIME=""
 if [ "$RIGFORGE_APPLIANCE" = 1 ]; then ENABLE_RUNTIME="--runtime"; fi
 
-# Writable system paths are overridable for the test sandbox; defaults remain the real locations.
 LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
 GRUB_DEFAULT="${GRUB_DEFAULT:-/etc/default/grub}"
 FSTAB="${FSTAB:-/etc/fstab}"
@@ -117,7 +116,6 @@ HUGEPAGES_1G_DIR="${HUGEPAGES_1G_DIR:-/dev/hugepages1G}"
 # Directory on PATH where `setup` installs the `rigforge` command (a symlink back to this script).
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 
-# Read-only doctor paths, overridable for tests.
 MEMINFO="${MEMINFO:-/proc/meminfo}"
 # CPU flags source shared with util/proposed-grub.sh's pdpe1gb probe (#338).
 CPUINFO="${CPUINFO:-/proc/cpuinfo}"
@@ -579,10 +577,8 @@ parse_config() {
             error "api_allow_from must be an IPv4/IPv6 address or CIDR (e.g. 192.168.1.0/24 or fd00::/64); got: '$API_ALLOW_FROM'."
         fi
     fi
-    # When set, the token is sent as an HTTP Authorization header, so keep it to safe, header-clean
-    # characters. Empty is allowed and means "open API" (the default).
     if [ -n "$ACCESS_TOKEN" ] && ! [[ "$ACCESS_TOKEN" =~ ^[A-Za-z0-9._:@+-]+$ ]]; then
-        error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +): '$ACCESS_TOKEN'."
+        error "ACCESS_TOKEN has invalid characters (allowed: letters, digits, . _ - : @ +)."
     fi
 
     # ACCESS_TOKENS (#516): an OPTIONAL name -> token map, one per consuming Pithead stack, so no stack
@@ -590,7 +586,7 @@ parse_config() {
     ACCESS_TOKENS_JSON=$(jq -c '.ACCESS_TOKENS // {}' "$CONFIG_JSON" 2>/dev/null)
     jq -e 'type == "object" and all(.[]; type == "string")' <<<"$ACCESS_TOKENS_JSON" >/dev/null 2>&1 || error "ACCESS_TOKENS in $CONFIG_JSON must be a JSON object mapping names to string tokens."
     while IFS=$'\t' read -r _atn _att; do
-        [[ "$_att" =~ ^[A-Za-z0-9._:@+-]+$ ]] || error "ACCESS_TOKENS.\"$_atn\" has invalid characters (allowed: letters, digits, . _ - : @ +): '$_att'."
+        [[ "$_att" =~ ^[A-Za-z0-9._:@+-]+$ ]] || error "ACCESS_TOKENS.\"$_atn\" has invalid characters (allowed: letters, digits, . _ - : @ +)."
     done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$ACCESS_TOKENS_JSON")
 
     # Opt-in periodic live auto-tuning (#46, #95): tri-state. "disabled" (default) installs no timer;
@@ -798,19 +794,13 @@ _warn_unknown_config_keys() {
 
 prepare_workspace() {
     log "Preparing workspace at $WORKER_ROOT..."
-
-    if [ ! -d "$WORKER_ROOT" ]; then
-        mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
+    [ -d "$WORKER_ROOT" ] || mkdir -p "$WORKER_ROOT" 2>/dev/null || sudo mkdir -p "$WORKER_ROOT"
+    if [ "$(id -u)" -eq 0 ] && _rg_claim_worker; then
+        log "The code tree is root-owned, so $WORKER_ROOT stays root-owned."
+    elif [ "$(id -u)" -eq 0 ] || [ ! -w "$WORKER_ROOT" ]; then
+        ! _rg_worker_kept >/dev/null || error "The code tree is root-owned, so $WORKER_ROOT must be root-owned before the build; run this with sudo and check that root can change that folder."
+        sudo chown -R "$REAL_USER$([ "$OS_TYPE" = Darwin ] || printf ':%s' "$REAL_USER")" "$WORKER_ROOT"
     fi
-
-    if [ "${EUID:-$(id -u)}" -eq 0 ] || [ ! -w "$WORKER_ROOT" ]; then
-        if [ "$OS_TYPE" == "Darwin" ]; then
-            sudo chown -R "$REAL_USER" "$WORKER_ROOT"
-        else
-            sudo chown -R "$REAL_USER":"$REAL_USER" "$WORKER_ROOT"
-        fi
-    fi
-
     cd "$WORKER_ROOT"
 }
 
@@ -1236,8 +1226,8 @@ _render_xmrig_unit() {
     local msr_line=""
     [ "${SHARED_HOST:-false}" = true ] || _shared_host_remove
     if [ -n "${MINER_USER:-}" ] && [ "${SHARED_HOST:-false}" != true ]; then msr_line="ExecStartPre=+$(_lib_dir)/rigforge.sh msr-apply"; fi
-    WORKER_ROOT="$WORKER_ROOT" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
-        envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
+    WORKER_ROOT="$WORKER_ROOT" SYSTEMD_DIR="$SYSTEMD_DIR" MINER_USER_EFFECTIVE="${MINER_USER:-root}" MSR_APPLY_LINE="$msr_line" \
+        envsubst '$BUILD_DIR $CPUPOWER_PATH $WORKER_ROOT $SYSTEMD_DIR $NFT_PATH $MINER_USER_EFFECTIVE $MSR_APPLY_LINE' \
         <"$(_lib_dir)/systemd/xmrig.service.template" | _shared_host_unit | _unit_split_env | sudo tee "$SYSTEMD_DIR/$SERVICE_NAME.service" >/dev/null
 }
 
@@ -1351,28 +1341,20 @@ install_watchdog() {
     return "$rc"
 }
 
-# Sister API (#99/#164, xmrig-model): one tiny persistent python3-stdlib server ships pre-computed
-# JSON from /run/rigforge-api; a systemd timer (`rigforge.sh api-refresh`) recomputes the files every
-# 15 s. Requests never touch the miner. Toggle shape mirrors install_autotune above.
-# Opt-in API firewall (#142): an own `inet rigforge` nft table scoping the read-only API port(s)
-# to `api_allow_from` + loopback. nftables only (Ubuntu 24.04's native firewall — a ufw fallback
-# would double the surface); own table so teardown is a single `destroy`. Matches only the API
-# dports, so SSH and the outbound stratum connection are untouchable by construction. Applied now
-# AND re-applied on boot via xmrig.service (the always-present anchor); removed with the table.
 install_api_firewall() {
     [ "$OS_TYPE" == "Linux" ] || return 0
-    [ -n "${WORKER_ROOT:-}" ] || return 0 # nowhere to stage the rule file yet
-    local nft_file="$WORKER_ROOT/api-firewall.nft"
+    [ -n "${WORKER_ROOT:-}" ] || return 0
+    local nft_file="$SYSTEMD_DIR/rigforge-api-firewall.nft" old_file="$WORKER_ROOT/api-firewall.nft"
     if [ -z "${API_ALLOW_FROM:-}" ]; then
-        if [ -f "$nft_file" ]; then
+        [ -z "${1:-}" ] || return 0
+        if [ -f "$nft_file" ] || [ -f "$old_file" ]; then
             command -v nft >/dev/null 2>&1 && sudo nft destroy table inet rigforge 2>/dev/null || true
-            sudo rm -f "$nft_file"
+            sudo rm -f "$nft_file" "$old_file"
             log "API firewall removed."
         fi
         return 0
     fi
     command -v nft >/dev/null 2>&1 || error "api_allow_from is set but 'nft' is missing — install nftables (sudo apt-get install nftables) or clear the key."
-    # Port set: :8080 (XMRig's API) always, plus :8081 (the sister API) when it's enabled.
     local ports="8080"
     [ "${API_MODE:-disabled}" = enabled ] && ports="$ports, ${API_PORT:-8081}"
     [ "${CONTROL_MODE:-disabled}" = enabled ] && ports="$ports, ${CONTROL_PORT:-8082}"
@@ -1394,6 +1376,7 @@ NFT
     if ! sudo nft -f "$nft_file"; then
         error "API firewall FAILED to load — nft rejected the ruleset for api_allow_from='$API_ALLOW_FROM'. The API ports are NOT restricted. Fix api_allow_from and re-run."
     fi
+    [ -n "${1:-}" ] || sudo rm -f "$old_file"
     log "API firewall active — port(s) $ports reachable only from $API_ALLOW_FROM and loopback."
 }
 _wait_sister_api() {
@@ -1469,8 +1452,8 @@ install_control() (
     fi
     command -v python3 >/dev/null 2>&1 || error "The control server needs python3 (stock on Ubuntu 24.04). Install it or set \"control\": \"disabled\"."
     log "Enabling the writable control path on $CONTROL_BIND:$CONTROL_PORT (token required, pinned to $API_ALLOW_FROM; changes staged and applied off the request path)..."
-    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" API_PORT="${API_PORT:-8081}" WORKER_ROOT="${WORKER_ROOT:-}" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
-        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $RIGFORGE_STATE $API_PORT $WORKER_ROOT $NFT_PATH $RIGFORGE_APPLIANCE' \
+    CONTROL_BIND="$CONTROL_BIND" CONTROL_PORT="$CONTROL_PORT" SCRIPT_DIR="$(_lib_dir)" RIGFORGE_STATE="$(_state_dir)" API_PORT="${API_PORT:-8081}" SYSTEMD_DIR="$SYSTEMD_DIR" NFT_PATH="$(command -v nft || echo /usr/sbin/nft)" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" \
+        envsubst '$CONTROL_BIND $CONTROL_PORT $SCRIPT_DIR $RIGFORGE_STATE $API_PORT $SYSTEMD_DIR $NFT_PATH $RIGFORGE_APPLIANCE' \
         <"$(_lib_dir)/systemd/rigforge-control.service.template" | sudo tee "$svc" >/dev/null || return 1
     RIGFORGE_OPERATOR="$REAL_USER" RIGFORGE_APPLIANCE="$RIGFORGE_APPLIANCE" SCRIPT_DIR="$(_lib_dir)" \
         envsubst '$RIGFORGE_OPERATOR $RIGFORGE_APPLIANCE $SCRIPT_DIR' \
@@ -1799,7 +1782,7 @@ _reown_worker() {
     Darwin) owner="$REAL_USER" ;;
     *) return 0 ;;
     esac
-    if [ -n "${WORKER_ROOT:-}" ] && [ -e "$WORKER_ROOT" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
+    if ! _rg_claim_worker && ! _rg_worker_kept >/dev/null && [ -e "${WORKER_ROOT:-}" ]; then sudo chown -R "$owner" "$WORKER_ROOT" 2>/dev/null || true; fi
     if [ -f "$CONFIG_JSON" ]; then
         sudo chown "$owner" "$CONFIG_JSON" 2>/dev/null || true
         sudo chmod 600 "$CONFIG_JSON" 2>/dev/null || true
@@ -1961,7 +1944,7 @@ _setup_plan() {
     else
         _p "linking the rigforge command" "add_to_path is off — no symlink"
     fi
-    _p "reconciling file ownership" "chown the worker tree back to $REAL_USER${MINER_USER:+ (config+log to $MINER_USER)}"
+    _p "reconciling file ownership" "$(_rg_keeps_root "$(dirname "$WORKER_ROOT")" && echo "keep the worker tree root-owned" || echo "chown the worker tree back to $REAL_USER")${MINER_USER:+ (config+log to $MINER_USER)}"
     _p "finishing up" "print the summary$([ "$OS_TYPE" = Linux ] && echo ' (and the reboot notice when HugePages changed)')"
     echo "Dry run — nothing was changed. Run 'sudo $0 setup' to apply."
 }
@@ -2012,6 +1995,8 @@ main() {
     tune_kernel
     CURRENT_STEP="configuring limits"
     configure_limits
+    CURRENT_STEP="configuring the API firewall"
+    install_api_firewall early >/dev/null
     CURRENT_STEP="installing the service"
     install_service
     CURRENT_STEP="configuring autotune"
@@ -2117,6 +2102,7 @@ upgrade() {
     prepare_workspace
     compile_xmrig
     generate_xmrig_config
+    install_api_firewall early >/dev/null
     install_service
     install_autotune
     install_watchdog
@@ -2248,7 +2234,7 @@ uninstall() {
         log "Removed the $SERVICE_NAME service."
     fi
 
-    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP"
+    sudo rm -f "$LOGROTATE_DIR/xmrig" "$ROOT_GUARD_STAMP" "$SYSTEMD_DIR/rigforge-api-firewall.nft"
 
     _shared_host_remove
     if [ "$preserve_host" = no ]; then
@@ -2357,18 +2343,13 @@ _restore_overrides() { # <previous_overrides_json>
     _apply_runtime >/dev/null 2>&1 || true
 }
 
-# Restart the miner that a --bench run stopped, and clean the temp dir. Installed as an EXIT trap by
-# tune() so the service comes back even if the run errors or is interrupted.
 _tune_bench_cleanup() {
-    # #347: an aborted LIVE sweep would otherwise persist the mid-sweep candidate — _measure_live applies
-    # each one straight into tune-overrides.json and restarts the miner on it. Restore the pre-sweep
-    # overrides FIRST: the restore itself restarts the service, and any restart must re-read the restored
-    # file, never the candidate. tune() clears the flag once the winner deliberately lands in the file.
     if [ "${_TUNE_LIVE_DIRTY:-0}" = 1 ]; then
         _TUNE_LIVE_DIRTY=0
         log "Live sweep interrupted — restoring the pre-tune overrides and restarting the miner on them."
         _restore_overrides "$_TUNE_PRE_OVERRIDES"
     fi
+    [ -n "$TUNE_OVERRIDES" ] && sudo rm -f "${TUNE_OVERRIDES%.json}-pre.json" 2>/dev/null || true
     [ -n "${TUNE_TMP:-}" ] && rm -rf "$TUNE_TMP" 2>/dev/null
     if [ "${_TUNE_SVC_STOPPED:-0}" = 1 ]; then
         _TUNE_SVC_STOPPED=0
@@ -2935,6 +2916,15 @@ _exec_sudo_self() {
     exec sudo env "${e[@]}" "$0" "$@"
 }
 
+_tune_busy() { log "$1: another tune/autotune sweep is already running — not starting a second one." && false; }
+_tune_clear() { sudo rm -f "$TUNE_OVERRIDES" "${TUNE_OVERRIDES%.json}-pre.json" "$1" && log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config."; }
+_tune_gate() {
+    local s="$WORKER_ROOT/tune-overrides-pre.json"
+    if command -v flock >/dev/null 2>&1 && { [ -f "$WORKER_ROOT/tune.lock" ] && exec 9<"$WORKER_ROOT/tune.lock" || exec 9>"$WORKER_ROOT/tune.lock"; } 2>/dev/null; then flock -n 9 || _tune_busy "$1" || return 1; fi
+    if [ -s "$s" ]; then printf '%s\n' "$(cat "$s")" | sudo tee "$WORKER_ROOT/tune-overrides.json" >/dev/null || return 0; elif [ -f "$s" ]; then sudo rm -f "$WORKER_ROOT/tune-overrides.json" || return 0; else return 0; fi
+    sudo rm -f "$s" && _apply_runtime >/dev/null 2>&1 || true && log "$1: restored the overrides an interrupted sweep left in place."
+}
+
 tune() {
     local _hist=0 clear=0 target_set=0 now=0 now_long=0
     case " $* " in *" --history "*) _hist=1 ;; esac
@@ -2988,8 +2978,6 @@ tune() {
     [ "$target_set" = 1 ] || TUNE_TARGET="${AUTOTUNE_TARGET:-perf}"
     TUNE_OVERRIDES="$WORKER_ROOT/tune-overrides.json"
     local logf="$WORKER_ROOT/rigforge-tune.json"
-    local pre_overrides="" # #64: the overrides in place BEFORE this run, to A/B against and revert to
-    [ -f "$TUNE_OVERRIDES" ] && pre_overrides=$(cat "$TUNE_OVERRIDES" 2>/dev/null)
 
     if [ "${TUNE_HISTORY:-0}" = 1 ]; then
         _tune_history "$TUNE_OVERRIDES" "$logf" # read-only; works without a built worker
@@ -2997,11 +2985,13 @@ tune() {
     fi
 
     if [ "$clear" = 1 ]; then
-        sudo rm -f "$TUNE_OVERRIDES" "$logf"
-        log "Cleared tuning state. Run 'sudo $0 apply' to regenerate the baseline config."
+        _tune_clear "$logf" || error "tune --clear: could not remove the tuning state."
         return 0
     fi
     [ "${SHARED_HOST:-false}" != true ] || error "Full tuning is unavailable in shared_host; use tune --now for a bounded live prefetch trial."
+    _tune_gate tune || error "tune: sweep refused — another tune/autotune is running."
+    local pre_overrides=""
+    [ -f "$TUNE_OVERRIDES" ] && pre_overrides=$(cat "$TUNE_OVERRIDES" 2>/dev/null)
 
     if [ "$TUNE_MODE" = live ] && [ "$OS_TYPE" != "Linux" ]; then
         error "tune --live drives the running systemd service and is only supported on Linux."
@@ -3110,11 +3100,8 @@ tune() {
     : >"$RESULTS_FILE"
 
     if [ "$TUNE_MODE" = live ]; then
-        # #347: from here every candidate lands in tune-overrides.json and restarts the miner on it
-        # (_measure_live). Mark the file dirty so the EXIT trap above restores the pre-sweep overrides
-        # if the sweep doesn't reach its deliberate winner write below.
-        _TUNE_PRE_OVERRIDES="$pre_overrides"
-        _TUNE_LIVE_DIRTY=1
+        _TUNE_PRE_OVERRIDES="$pre_overrides" _TUNE_LIVE_DIRTY=1
+        printf '%s' "$pre_overrides" | sudo tee "${TUNE_OVERRIDES%.json}-pre.json" >/dev/null
         log "Auto-tuning LIVE against the running miner (warmup ${TUNE_LIVE_WARMUP:-60}s, ${TUNE_LIVE_SAMPLES:-3} samples) — search=$TUNE_SEARCH, knobs={$ACTIVE_KNOBS}."
     else
         log "Auto-tuning via 'xmrig --bench=$TUNE_BENCH' (median of $TUNE_ITERS) — search=$TUNE_SEARCH, knobs={$ACTIVE_KNOBS}, min-delta=$TUNE_MIN_DELTA."
@@ -3265,14 +3252,8 @@ _autotune_set_prefetch() { # <overrides_file> <mode>
     rm -f "$tmp"
 }
 
-# #347: autotune's abort protection. Each trial merges a candidate prefetch mode into the overrides file
-# and restarts the miner on it — an abort mid-sweep would otherwise persist that candidate. The EXIT trap
-# restores the pre-sweep mode through the SAME settle step the clean path ends with, so the two cannot
-# diverge. The merge-based restore (_autotune_set_prefetch) preserves any offline-`tune` knobs, exactly
-# like the sweep's own writes.
 _AUTOTUNE_DIRTY=0
-_AUTOTUNE_PRE_MODE=""
-_AUTOTUNE_OVR_FILE=""
+_AUTOTUNE_PRE_MODE="" _AUTOTUNE_OVR_FILE=""
 _autotune_settle() { # <mode> — merge the mode into the overrides and leave the miner running on it
     _autotune_set_prefetch "$_AUTOTUNE_OVR_FILE" "$1"
     _apply_runtime >/dev/null 2>&1 || true
@@ -3283,6 +3264,7 @@ _autotune_cleanup() {
         log "autotune: sweep interrupted — restoring prefetch_mode=$_AUTOTUNE_PRE_MODE."
         _autotune_settle "$_AUTOTUNE_PRE_MODE"
     fi
+    [ -n "${_AUTOTUNE_OVR_FILE:-}" ] && sudo rm -f "${_AUTOTUNE_OVR_FILE%.json}-pre.json" 2>/dev/null || true
 }
 
 # Sample the live miner for one candidate: median H/s over the window and, for the efficiency target,
@@ -3371,9 +3353,8 @@ autotune() {
         log "autotune: randomx.scratchpad_prefetch_mode is pinned by the xmrig overlay; skipping."
         return 0
     fi
-    local overrides="$WORKER_ROOT/tune-overrides.json"
-    local n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}"
-    local margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
+    _tune_gate autotune || return 0
+    local overrides="$WORKER_ROOT/tune-overrides.json" n="${AUTOTUNE_SAMPLES:-3}" iv="${AUTOTUNE_INTERVAL:-10}" warm="${AUTOTUNE_WARMUP:-60}" margin="${AUTOTUNE_MARGIN:-0.01}" modes="${AUTOTUNE_MODES:-0 1 2 3}"
     local target="${target_env:-${AUTOTUNE_TARGET:-perf}}"
     local cur base_hr base_w base_score best_mode best_score m hr w sc last_applied s
 
@@ -3396,9 +3377,8 @@ autotune() {
     last_applied="$cur"
     log "autotune: optimizing for $(_autotune_desc "$target"); live-sweeping prefetch modes [$modes] against the running miner; baseline mode=$cur at $(_autotune_fmt "$target" "$base_hr" "$base_w") (median of $n)."
 
-    # #347: arm the abort-restore before the first candidate lands in the overrides file.
-    _AUTOTUNE_PRE_MODE="$cur"
-    _AUTOTUNE_OVR_FILE="$overrides"
+    _AUTOTUNE_PRE_MODE="$cur" _AUTOTUNE_OVR_FILE="$overrides"
+    printf '%s' "$(cat "$overrides" 2>/dev/null)" | sudo tee "${overrides%.json}-pre.json" >/dev/null
     _AUTOTUNE_DIRTY=1
     trap '_autotune_cleanup' EXIT
 
@@ -3603,21 +3583,22 @@ restore() {
     local backups snap && backups="$(_state_dir)/config-backups"
     if [ -f "$CONFIG_JSON" ]; then
         snap="$backups/config-$(date -u +%Y%m%d-%H%M%S)-restore-$$.json"
-        if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$snap"); then
-            rm -f "$snap"
+        if ! _rg_config_snapshot "$snap"; then
             error "Could not snapshot config.json to $backups — existing config left untouched."
         fi
         _sweep_config_backups "$backups" || true
         log "Previous config saved to $snap"
     fi
     _config_replace "$STAGE_DIR/config.json" || error "Could not write $CONFIG_JSON."
-    _stamp_config_meta restore # #254: attribute this config to a restore (bumps revision if it differs)
+    _stamp_config_meta restore
     local restored="config.json" wr f
     wr=$(_worker_root_from_config)
+    [ "$(id -u)" -ne 0 ] || WORKER_ROOT="$wr" _rg_claim_worker || ! WORKER_ROOT="$wr" _rg_worker_kept >/dev/null || error "Could not keep $wr root-owned; the tuning was not restored."
     for f in tune-overrides.json rigforge-tune.json rigforge-bios.json; do
         if [ -f "$STAGE_DIR/$f" ]; then
             mkdir -p "$wr" 2>/dev/null || sudo mkdir -p "$wr"
             cp "$STAGE_DIR/$f" "$wr/$f" 2>/dev/null || sudo cp "$STAGE_DIR/$f" "$wr/$f"
+            [ "$f" != tune-overrides.json ] || sudo rm -f "$wr/tune-overrides-pre.json" 2>/dev/null || true
             restored="$restored $f"
         fi
     done
@@ -4093,6 +4074,7 @@ apply() {
     if [ "$OS_TYPE" = Linux ] && [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
         parse_config
         _shared_host_prepare
+        install_api_firewall early >/dev/null || true
     fi
     _apply_runtime preserve-run-state || return 1
     local _wd_rc=0 _api_rc=0 _control_rc=0
@@ -4204,18 +4186,9 @@ _control_commit() { # <staged.json> <backups-dir>
         fi
     fi
     _tor_staged_donation_conflict "$change" && return 1
-    # #415: resolve masked pool secrets before jq's array-replacing overlay. Match a stored pool by
-    # (url,user), keep only a real stored secret, and reject any sentinel left unresolved. The raw
-    # config view matters: normalized POOLS_JSON invents pass="x" for an absent password (#429).
     if printf '%s' "$change" | jq -e '(.pools | type) == "array"' >/dev/null 2>&1; then
         local resolved unresolved
-        # One jq, two output lines: the surviving markers first, the resolved config second. The
-        # marker check is a post-condition on the merged pools rather than a second pre-scan — after
-        # the merge, a marker that is STILL there is exactly one the rig could not resolve. Reading it
-        # out of the same pass also covers a marker in a pool key this resolver does not handle, which
-        # a pre-scan of the two known keys would have waved through into config.json, and it leaves a
-        # single failure branch: a scan that cannot RUN is no longer a separate outcome to name.
-        resolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" 'def pkey: [(.url? // ""), (.user? // "")]; def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({}; if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end); def stored($lut; $k): ($lut[pkey | tojson] // {} | .[$k]) as $v | if ($v | type) == "string" and $v != "" then $v else null end; ($base[0] | lut) as $lut | (.pools |= map(if type == "object" then . as $p | reduce ("pass", "tls-fingerprint") as $k (.; ($p | stored($lut; $k)) as $keep | if $keep != null and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true) or ($p | has($k) | not)) then .[$k] = $keep else . end) else . end)) as $r | ([$r.pools[]? | select(type == "object") | to_entries[] | select((.value | type) == "object" and .value.__secret__ == true) | .key] | unique | join(",")), ($r | tojson)' 2>/dev/null) || {
+        resolved=$(printf '%s' "$change" | jq -r --slurpfile base "$CONFIG_JSON" 'def pkey: [(.url? // ""), (.user? // "")]; def lut: reduce ((.pools? // []) | reverse | .[]) as $p ({}; if ($p | type) == "object" then .[$p | pkey | tojson] = $p else . end); def stored($lut; $k): ($lut[pkey | tojson] // {}) as $s | $s[$k] as $v | if ($v | type) != "string" or $v == "" then null elif $k == "pass" and $s.socks5 != .socks5 then {"__secret__": true} else $v end; ($base[0] | lut) as $lut | (.pools |= map(if type == "object" then . as $p | reduce ("pass", "tls-fingerprint") as $k (.; ($p | stored($lut; $k)) as $keep | if $keep != null and ((($p[$k] | type) == "object" and $p[$k].__secret__ == true) or ($p | has($k) | not)) then .[$k] = $keep else . end) else . end)) as $r | ([$r.pools[]? | select(type == "object") | to_entries[] | select((.value | type) == "object" and .value.__secret__ == true) | .key] | unique | join(",")), ($r | tojson)' 2>/dev/null) || {
             echo "rejected secret-merge-failed"
             return 1
         }
@@ -4242,13 +4215,10 @@ _control_commit() { # <staged.json> <backups-dir>
         echo "rejected invalid-config:$(printf '%s' "$msg" | grep -o '\[ERROR\][^\"]*' | head -1 | sed "s/'.*//")"
         return 1
     fi
-    # Only now, with a valid candidate, snapshot the old config and commit. A backup is a HARD
-    # precondition (ADR): never commit a change without first snapshotting the config it replaces —
-    # if the snapshot can't be written, reject the whole change and leave config.json untouched.
     stamp=$(date -u +%Y%m%d-%H%M%S)
     backup="$backups/config-$stamp.json"
-    if ! mkdir -p "$backups" || ! (umask 077 && cp "$CONFIG_JSON" "$backup"); then
-        rm -f "$cand" "$backup" # #438: a cp that died mid-copy leaves a TRUNCATED snapshot behind
+    if ! _rg_config_snapshot "$backup"; then
+        rm -f "$cand"
         echo "rejected backup-failed"
         return 1
     fi
@@ -4289,29 +4259,16 @@ _control_commit() { # <staged.json> <backups-dir>
     return 0
 }
 
-# Prune config-backups/ to the retention cap and hand it to the operator so they can inspect or
-# restore old configs without sudo (recovery = `cp config-backups/config-<stamp>.json config.json`
-# then `sudo rigforge apply`). Override the cap with KEEP_CONFIG_BACKUPS. #438: named for BOTH jobs.
-_sweep_config_backups() { # <backups-dir>
+_sweep_config_backups() {
     local dir="$1" keep="${KEEP_CONFIG_BACKUPS:-20}" old
     # shellcheck disable=SC2012  # names are controlled (config-YYYYmmdd-HHMMSS.json); ls -t orders by recency
     old=$(ls -t "$dir"/config-*.json 2>/dev/null | tail -n +"$((keep + 1))" || true)
     [ -z "$old" ] || printf '%s\n' "$old" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
-    if [ "$(id -u)" -eq 0 ] && [ -n "${REAL_USER:-}" ]; then sudo chown -R "$REAL_USER" "$dir" 2>/dev/null || true; fi
+    [ "$(id -u)" -eq 0 ] && [ -n "${REAL_USER:-}" ] || return 0
+    if _rg_keeps_root "$(dirname "$dir")"; then sudo chown -h "$REAL_USER" "$dir"/config-*.json; else sudo chown -R "$REAL_USER" "$dir"; fi 2>/dev/null || true
 }
 
-# The apply + liveness check control-apply gates its rollback on. Split out so tests can stub it.
-# #395: apply's exit status was discarded here — the liveness wait ran regardless and its verdict
-# became the whole answer, so an apply that failed for a reason the miner's hashrate cannot show
-# (a watchdog unit that would not write) still reported success. Gate on it: a failed apply is a
-# failed apply, and control_apply's rollback branch is the designed response to one.
 _control_do_apply() {
-    # #396: sampled BEFORE the apply, like its fast-path sibling — a rig can be LEGITIMATELY stopped when
-    # a change lands (thermal hold, manual stop) and `apply` leaves it that way. Without this the wait
-    # below would read the operator's own decision as this change's failure, roll a good change back, and
-    # then blame a "liveness failure" nobody could observe (the rollback re-apply leaves it held too).
-    # Success is "the run-state did not DEGRADE": only a rig that WAS live must come back live. Sampled
-    # here, not read out of _apply_runtime, so this function stays checkable on its own.
     local was_held=no
     _miner_deliberately_stopped && was_held=yes
     apply >/dev/null 2>&1 || return 1
@@ -4412,28 +4369,28 @@ _control_do_apply_fast() {
     [ "$is_active" -eq 0 ]
 }
 
-# A status record for the receiver's GET /status (mode 644 so the DynamicUser server reads it back) —
-# a terminal outcome, or control_upgrade's non-terminal `started` marker (#320).
-_control_status() { # <status-file> <status> <cid> <keys-csv> <reason> <backup>
-    local f="$1" cid="$3" body cdir
-    mkdir -p "$(dirname "$f")"
-    # #257: warnings[] flags a safety-relevant change (watchdog / max_temp_c = thermal protection) even
-    # when allowed, so the operator and dashboard can require an extra confirm. Additive to the shape.
+_control_status_put() {
+    local t
+    t=$(mktemp -d .rigforge-status.XXXXXX)
+    (cd -P -- "$t" && [ "$(pwd -P)" = "$1/$t" ] && [ -O . ] && printf '%s' "$3" >r && { mv -fT -- r "../$2" || mv -fh -- r "../$2" || rm -f r; })
+    rmdir -- "$t"
+}
+_control_status() {
+    local f="$1" cid="$3" body
     body=$(jq -n --arg s "$2" --arg c "$3" --arg k "$4" --arg r "$5" --arg b "$6" --arg src control --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status: $s, change_id: $c, source: $src, applied_at: $when, changed_keys: ($k | split(",") | map(select(length > 0))), reason: (if $r == "" then null else $r end), backup: (if $b == "" then null else $b end), warnings: ($k | split(",") | map(select(. == "watchdog" or . == "max_temp_c")) | map("thermal protection changed: " + .))}')
-    printf '%s' "$body" >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && chmod 644 "$f" 2>/dev/null || true
-    [ "$2" = started ] || RIGFORGE_CONTROL_TERMINAL_WRITTEN=1 # #509: `started` (#320) is the one non-terminal status written here
-    # #255: also index by change_id, so a caller can GET /status?change_id=<cid> after a concurrent
-    # change overwrote status.json. cid is server-generated 16-hex; guard it anyway (it becomes a
-    # filename). Keep only the last ~20 outcomes.
-    if [[ "$cid" =~ ^[0-9a-f]{16}$ ]]; then
-        cdir="$(dirname "$f")/changes"
-        mkdir -p "$cdir"
-        printf '%s' "$body" >"$cdir/$cid.json.tmp.$$" 2>/dev/null && mv -f "$cdir/$cid.json.tmp.$$" "$cdir/$cid.json" && chmod 644 "$cdir/$cid.json" 2>/dev/null || true
-        # shellcheck disable=SC2012  # names are controlled 16-hex; ls -t orders by recency
-        ls -t "$cdir"/*.json 2>/dev/null | tail -n +21 | while IFS= read -r old; do [ -n "$old" ] && rm -f "$old"; done
-        # A terminal apply record supersedes the receiver's pending marker (#344); an upgrade id has none.
-        rm -f "$(dirname "$f")/pending/$cid.json" 2>/dev/null || true
-    fi
+    (
+        umask 022
+        mkdir -p -- "$(dirname "$f")" && cd -P -- "$(dirname "$f")" || exit 0
+        base=$(pwd -P)
+        _control_status_put "$base" "${f##*/}" "$body"
+        [[ "$cid" =~ ^[0-9a-f]{16}$ ]] || exit 0
+        mkdir changes
+        cd -P changes && [ "$(pwd -P)" = "$base/changes" ] && _control_status_put "$base/changes" "$cid.json" "$body"
+        # shellcheck disable=SC2012
+        [ "$(pwd -P)" = "$base/changes" ] && ls -t -- *.json | tail -n +21 | while IFS= read -r old; do rm -f -- "$old"; done
+        cd -P -- "$base/pending" && [ "$(pwd -P)" = "$base/pending" ] && rm -f -- "$cid.json"
+    ) 2>/dev/null || true
+    [ "$2" = started ] || RIGFORGE_CONTROL_TERMINAL_WRITTEN=1
 }
 
 # #509/#535: control_apply and control_upgrade record an outcome on every branch, but the work between

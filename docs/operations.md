@@ -72,6 +72,20 @@ not checked. A root-owned tree passes silently.
 - To close the gap instead, make the tree root-owned: `sudo chown -R root:root <tree> && sudo chmod -R
   go-w <tree>`, then delete `/etc/rigforge-root-guard`. Afterwards, update the checkout with `sudo git`.
 
+On a tree that passes the guard, `setup`, `upgrade`, `apply`, `tune`, `bios` and `restore` keep the worker
+folder (`data/worker` by default: the miner binary and its checksum, the tune files, the markers and the log)
+owned by root and writable by no one else, instead of handing it to the operator. Every folder above the
+worker folder, as given and with links resolved, must pass the same test; otherwise the folder is handed to
+the operator as before. When root takes the folder back, it removes every symbolic link inside it and names
+them in a warning. If the miner binary was not root-owned, `setup` or `upgrade` rebuilds it (in the same
+run, or in the next one when another command took the folder back). When root cannot take the folder back,
+`setup`, `upgrade` and `restore` stop. `config.json` stays the operator's, and with `miner_user` set the
+miner's config and log are still handed to that user. On such a tree `config-backups/` stays root-owned too
+(a link there is followed, and the folders above its target must pass as well), and each snapshot in it is
+handed to the operator, so `cp config-backups/<file> config.json` still works without `sudo`. Run `setup`,
+`upgrade` and `apply` on such a tree with `sudo`, because the operator account can no longer write the
+worker folder.
+
 | Command | What it does |
 |---|---|
 | `setup` *(default)* | Provision the worker: dependencies, build, hardware + kernel tuning, and the service. Idempotent and safe to re-run; skips the recompile when the pinned XMRig is already built. |
@@ -83,7 +97,7 @@ not checked. A root-owned tree passes silently.
 | `stress [--minutes N]` | Linux stability test after firmware changes; default 30 minutes, range 1–1440. Stops the miner, samples temperature under offline load, and restores its prior state. See [Self-tests](#self-tests). |
 | `tune` | The single command for tuning. A bare `tune` measures the fastest CPU-specific knobs (prefetch, `cpu.yield`, thread count) offline and keeps them, an optional, one-time step. Live variants: `--now` / `--short` (a quick prefetch re-tune against the running miner, the *run a live tune now* path), `--now --long` (a full live search of every knob, = `--live`), `--confirm` (A/B-check the winner live). Plus `--efficiency` / `--perf`, `--history`, `--clear`. See [Tuning](#tuning). |
 | `bios` | Guided, resumable walk-through of the BIOS/UEFI changes for your hardware — the settings `tune` can't reach from the OS (Secure Boot when kernel lockdown is blocking the MSR mod, memory profile XMP/EXPO/DOCP, SMT, PBO/Eco-Mode, NUMA-per-socket NPS on EPYC; `--efficiency` picks the low-power set). Detects the current firmware state via the same probes `doctor` uses, hands you a board-specific checklist one item at a time, saves the pending items, and on the next run re-verifies which changes actually took. RigForge never writes BIOS itself; plan for console access (keyboard/KVM) for the reboot-into-BIOS step. Linux-only. See [Guided BIOS tuning](#guided-bios-tuning). |
-| `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
+| `autotune` | The scheduled live tuner. You normally don't type it; `tune --now` is the friendlier spelling for an on-demand run, and the periodic schedule is what this verb is really for: set `"autotune": "performance"` (raw H/s) or `"autotune": "efficiency"` (hashrate-per-watt) in `config.json` and setup installs a systemd timer (also re-tuned on `upgrade`). Conservative: it keeps a change only if it beats the baseline by a margin, else rolls back. An overlap with a running tune/autotune sweep is skipped with status 0 (the skip reason is logged), so the timer can't double-sweep and `upgrade` still completes. Linux-only. See [Live auto-tuning](#live-auto-tuning-opt-in). |
 | `watchdog` | One health check per run — the scheduled recovery verb, like `autotune`. You normally don't type it; set `"watchdog": "enabled"` in `config.json` and setup installs a timer that runs it every `watchdog_interval_min` minutes: two consecutive checks seeing 0 H/s or a dead API restart the wedged miner, and with `max_temp_c` set it stops the miner above that temperature (starting it again 5 °C below). Linux-only. See [Watchdog](#watchdog-opt-in). |
 | `backup` | Snapshot `config.json` + the tuning files into a timestamped `tar.gz` under `./backups`. See [Backup & restore](#backup--restore). |
 | `restore` | Restore `config.json` + tuning from a backup archive: `restore [-y] <archive>`. Prompts before overwriting. |
@@ -250,7 +264,13 @@ standalone `autotune` verb still works and is what the scheduled timer below run
 Live sweeps apply each candidate to the running miner as they measure it. If a sweep is interrupted
 (Ctrl+C, a dropped SSH session) or errors out mid-run, RigForge restores the tuning that was in place
 before the sweep and restarts the miner on it — a half-measured candidate is never left running or
-saved to `tune-overrides.json`.
+saved to `tune-overrides.json`. A sweep killed harder than that (SIGKILL, OOM, power loss) is covered
+too: the pre-sweep tuning is snapshotted in `tune-overrides-pre.json`, and the next `tune` or
+`autotune` restores it before reading its baseline; `tune --clear`, and `restore` when the backup
+carries tuning, drop the snapshot.
+Sweeps also serialize: only one tune/autotune runs at a time — a second manual `tune` refuses with a
+nonzero exit while one is in progress, and an overlapping `autotune` (timer run included) skips with
+status 0.
 
 For a hands-off schedule, set `autotune` in `config.json` to a target and re-run `setup`. RigForge
 installs a systemd timer that periodically optimizes the prefetch mode against your live miner:
@@ -605,7 +625,7 @@ A first install, a reinstall of the same version and a host without a config que
 
 The one-shot runs `rigforge package-upgrade`, which is `upgrade` outside dpkg: it rebuilds XMRig
 only when the pin, compiled minimum or checksum requires it, re-renders every unit, and restarts
-the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and hands the tree and units back to them. Follow it with `journalctl -u rigforge-upgrade`.
+the miner only after all of that succeeded, including the optional API and control units. It runs as root without `SUDO_USER`, so it takes the operator from the owner of `config.json` (which every `setup` and `upgrade` hands to the operator) and sets file ownership the way `upgrade` does. Follow it with `journalctl -u rigforge-upgrade`.
 
 If it fails, the previous build keeps running, the marker stays, `/var/lib/rigforge/upgrade-failed`
 records the failure, and both `rigforge status` and `rigforge doctor` report it. dpkg is never
@@ -850,7 +870,8 @@ How a change flows:
 **Recovery.** Every applied change leaves a timestamped snapshot in `config-backups/` (owner-readable,
 the newest `KEEP_CONFIG_BACKUPS`, default 20, are kept). The retention sweep runs on every outcome
 that got as far as snapshotting, not on the applied ones alone (#438) — a rig stuck on a failing
-disk keeps a capped, operator-owned backup directory rather than an unbounded root-owned one. To
+disk keeps a capped backup directory rather than an unbounded one. The snapshots are handed to the
+operator; on a root-owned tree the directory itself stays root-owned (see the root guard above). To
 inspect or roll back by hand:
 
 ```bash

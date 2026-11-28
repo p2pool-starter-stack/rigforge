@@ -86,6 +86,10 @@ side: both sides are measurements of different trees, and taking one bakes in a 
 true of the merged result. The gate never rewrites this baseline: `--generate` prints a proposed copy
 to stdout, and a contributor deliberately redirects and reviews it.
 
+### Test manifest
+
+`tests/manifest.json` lists every suite the Makefile or a workflow runs, with its `file`, `phases`, `all_runs`, `timeout_seconds`, `inputs`, `exit_codes` and `needs`. Phases exist only for harnesses that dispatch on their first argument (`tests/e2e-real.sh`, `tests/e2e-pithead.sh`); every other suite runs whole and has an empty list. `all_runs` is the subset the `all` phase runs. `needs` draws on `needs_vm`, `needs_hardware`, `needs_docker`, `needs_root` and `needs_macos`. The manifest names no CI system, host or status context. `tests/manifest-selftest.sh` runs in `make test-suite` and fails when the phases, `all_runs` or documented inputs drift from the harnesses, or when the Makefile or a workflow runs a `tests/` script that has no suite, so update the manifest in the same change that adds a suite, phase or input. A documented input is any `E2E_*` name in a harness's leading comment block, or any `NAME=` there that the harness does not set itself.
+
 ### Config & docs linting
 
 The YAML, Markdown, and link checks gate in CI and have matching Make targets for local runs:
@@ -118,6 +122,16 @@ The Rust workspace (`Cargo.toml`, `crates/`) is gated by `make rust-check`: `rus
 target is missing. `make check` runs `lint-all`, the suite and those gates, and prints a skip line where
 cargo is missing. `lint`, `test` and the pre-commit hooks never need cargo. The jobs live in
 `.github/workflows/rust.yml`; the aarch64 build there is best effort and never fails the workflow.
+
+Dependabot checks GitHub Actions, pip and npm daily and the test images weekly. Pip, npm and docker
+group minor and patch version updates into one PR each; security updates stay one PR per package, and
+the three-day cooldown on pip and npm never delays them.
+
+The `Security backlog expiry` check in `security.yml` lists open issues labelled `security-baseline` and
+`branch:<base>` whose `expires: YYYY-MM-DD` line has passed, on PRs into `develop` and `develop-v*`.
+Issues carrying only `review:` never count. Dependabot and `bot/xmrig-*` PRs, PRs labelled `security`
+and PRs that close the issue are exempt. It only warns until the `ENFORCE_FROM` date in the job, then
+fails; extend an expiry by editing the date in the issue.
 
 An [`.editorconfig`](./.editorconfig) encodes the whitespace conventions (`shfmt -i 4`, LF, final
 newline) so most editors match these checks automatically.

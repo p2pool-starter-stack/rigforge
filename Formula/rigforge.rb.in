@@ -15,7 +15,7 @@ class Rigforge < Formula
     (bin/"rigforge").write_env_script libexec/"rigforge.sh",
       PATH:               "#{formula_opt_bin("bash")}:#{formula_opt_bin("jq")}:#{formula_opt_bin("flock")}:$PATH",
       RIGFORGE_LIB:       libexec.to_s,
-      RIGFORGE_STATE:     "#{var}/rigforge".to_s
+      RIGFORGE_STATE:     "#{var}/rigforge"
   end
 
   def caveats
