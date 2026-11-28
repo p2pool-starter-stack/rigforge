@@ -22,6 +22,11 @@ for t in bash sed dirname cat; do ln -s "$(command -v "$t")" "$BIN/$t"; done
 for s in linux isolation; do
     check 1 "$s.sh exits 1 when the container runtime is missing" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/$s.sh"
 done
+mkdir "$BIN/dead"
+printf '#!/bin/sh\n[ "$1" != info ]\n' >"$BIN/dead/docker"
+chmod +x "$BIN/dead/docker"
+check 1 "linux.sh exits 1 when the container daemon is unreachable" env PATH="$BIN/dead:$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" deploy
+check 1 "isolation.sh exits 1 when the container daemon is unreachable" env PATH="$BIN/dead:$BIN" "$BIN/bash" "$ROOT/tests/e2e/isolation.sh"
 check 2 "linux.sh rejects an unknown mode" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" bogus
 check 2 "linux.sh rejects an empty mode" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" ""
 check 2 "linux.sh rejects extra arguments" env PATH="$BIN" "$BIN/bash" "$ROOT/tests/e2e/linux.sh" deploy extra
@@ -47,4 +52,6 @@ check 1 "gate: cancelled blocks" bash "$G" a=success b=cancelled
 check 1 "gate: skipped blocks" bash "$G" a=success b=skipped
 check 1 "gate: absent result blocks" bash "$G" a=success b=
 check 1 "gate: no children blocks" bash "$G"
+check 1 "gate: an argument without a name=result form blocks" bash "$G" success
+check 1 "gate: a result without a name blocks" bash "$G" =success
 exit "$FAIL"

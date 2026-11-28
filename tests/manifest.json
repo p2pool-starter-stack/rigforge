@@ -396,7 +396,8 @@
       "inputs": [],
       "exit_codes": {
         "0": "pass",
-        "1": "fail"
+        "1": "fail",
+        "2": "usage"
       },
       "needs": [
         "needs_docker"

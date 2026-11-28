@@ -8,6 +8,10 @@ rc=0
 for pair in "$@"; do
     name="${pair%%=*}"
     result="${pair#*=}"
+    case "$pair" in
+    ?*=*) ;;
+    *) result="" ;;
+    esac
     echo "$name: ${result:-absent}"
     [ "$result" = success ] || rc=1
 done
